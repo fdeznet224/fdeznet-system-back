@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  # 1. BASE DE DATOS
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - fdeznet-network
+
+  # 2. BACKEND (Tu API)
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./backend:/app
+    env_file: .env
+    depends_on:
+      - db
+    networks:
+      - fdeznet-network
+
+  # 3. FRONTEND (Tu React)
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - fdeznet-network
+
+  # 4. VPN (WireGuard Easy)
+  # Panel visual para gestionar routers remotos
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy
+    container_name: fdeznet_vpn
+    restart: unless-stopped
+    environment:
+      - WG_HOST=${WG_HOST}
+      - PASSWORD=${WG_PASSWORD}
+      - WG_PORT=51820
+      - WG_DEFAULT_ADDRESS=10.8.0.x
+    volumes:
+      - ./data/wireguard:/etc/wireguard
+    ports:
+      - "51820:51820/udp"
+      - "51821:51821/tcp"
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+    networks:
+      - fdeznet-network
+
+  # 5. SISTEMA AUTOMÁTICO (CRON)
+  # Este servicio corre en segundo plano y revisa los cortes
+  cron:
+    build: ./backend
+    restart: unless-stopped
+    # Ejecuta el script cada hora (3600 segundos)
+    command: >
+      sh -c "echo 'Iniciando Servicio de Automatización...';
+             while true; do 
+               echo '⏰ Ejecutando revisión de cortes...';
+               python cron_cortes.py; 
+               sleep 3600; 
+             done"
+    env_file: .env
+    depends_on:
+      - db
+      - backend
+    networks:
+      - fdeznet-network
+
+volumes:
+  postgres_data:
+
+networks:
+  fdeznet-network:
+    driver: bridge

@@ -1,0 +1,9 @@
+2026/02/26-23:59:29.742 8c6f Reusing MANIFEST /home/fdezdev/FdezDev/fdeznet-system/backend/bot_whatsapp/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/02/26-23:59:29.743 8c6f Recovering log #561
+2026/02/26-23:59:29.757 8c6f Reusing old log /home/fdezdev/FdezDev/fdeznet-system/backend/bot_whatsapp/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/000561.log 
+2026/02/26-23:59:33.014 8c72 Compacting 1@1 + 3@2 files
+2026/02/26-23:59:33.097 8c72 Generated table #577@1: 105713 keys, 2256832 bytes
+2026/02/26-23:59:33.180 8c72 Generated table #578@1: 101727 keys, 2253159 bytes
+2026/02/26-23:59:33.227 8c72 Generated table #579@1: 56213 keys, 1356768 bytes
+2026/02/26-23:59:33.228 8c72 Compacted 1@1 + 3@2 files => 5866759 bytes
+2026/02/26-23:59:33.242 8c72 compacted to: files[ 0 0 15 0 0 0 0 ]
