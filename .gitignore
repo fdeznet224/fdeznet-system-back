@@ -1,0 +1,43 @@
+# =========================
+# Entornos y Dependencias
+# =========================
+node_modules/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# =========================
+# Variables de Entorno (¡Contraseñas!)
+# =========================
+.env
+.env.local
+
+# =========================
+# Sesión de WhatsApp Web JS
+# =========================
+.wwebjs_auth/
+.wwebjs_cache/
+
+# =========================
+# Archivos subidos por clientes/técnicos
+# =========================
+uploads/
+/backend/uploads/
+*.jpg
+*.jpeg
+*.png
+*.pdf
+
+# =========================
+# Builds del Frontend (React/Vite)
+# =========================
+dist/
+build/
+
+# =========================
+# Archivos del Sistema Operativo
+# =========================
+.DS_Store
+Thumbs.db
