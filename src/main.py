@@ -75,8 +75,9 @@ async def lifespan(app: FastAPI):
 # ==========================================
 app = FastAPI(
     title="FdezNet System", 
-    version="2.2.0 Real-time Chat Ready", # Actualizamos versión
-    lifespan=lifespan
+    version="2.2.0 Real-time Chat Ready",
+    lifespan=lifespan,
+    root_path="/api"  # 👈 ¡ESTA LÍNEA ES MAGIA PARA NGINX!
 )
 
 if not os.path.exists("static/recibos"):
