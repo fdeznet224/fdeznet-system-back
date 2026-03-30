@@ -1,0 +1,17 @@
+
+[7/8] Configurando Nginx...
+[8/8] Blindando servidor...
+Rules updated
+Rules updated (v6)
+Rules updated
+Rules updated (v6)
+Rules updated
+Rules updated (v6)
+Command may disrupt existing ssh connections. Proceed with operation (y|n)? Firewall is active and enabled on system startup
+===================================================================
+✅ FDEZNET INSTALADO Y EN LÍNEA
+===================================================================
+🌐 Entra al sistema:    http://2605:a140:2300:4122::1
+🔑 LLAVE PÚBLICA VPN: C8609pr4M9GisAHhqaDaV2D6ZigfDlv4zOUmhCq8xEE=
+===================================================================
+root@vmi3004122:~# 
