@@ -90,7 +90,8 @@ class NapService:
                 selectinload(ClienteModel.zona),
                 selectinload(ClienteModel.plan),
                 selectinload(ClienteModel.plantilla),
-                selectinload(ClienteModel.caja_nap) 
+                selectinload(ClienteModel.caja_nap),
+                selectinload(ClienteModel.tecnico)
             )
         )
         

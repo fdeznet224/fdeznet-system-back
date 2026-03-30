@@ -15,7 +15,7 @@ class TipoControlEnum(str, Enum):
     colas_estaticas = "colas_estaticas"
 
 # ==========================================
-# 1. CONFIGURACIÓN DEL SISTEMA (PANEL DE CONTROL)
+# 1. CONFIGURACIÓN DEL SISTEMA
 # ==========================================
 class SystemConfigUpdate(BaseModel):
     activar_corte_automatico: bool
@@ -32,7 +32,7 @@ class ConfigUpdate(BaseModel):
     valor: str
 
 # ==========================================
-# 2. PLANTILLAS DE MENSAJES (WHATSAPP)
+# 2. PLANTILLAS DE MENSAJES
 # ==========================================
 class MessageTemplateRequest(BaseModel):
     tipo: str
@@ -83,29 +83,7 @@ class ZonaResponse(ZonaBase):
         from_attributes = True
 
 # ==========================================
-# 4.1 CAJAS NAP (INFRAESTRUCTURA FIBRA) ✅ NUEVO
-# ==========================================
-class CajaNapBase(BaseModel):
-    nombre: str
-    ubicacion: str
-    coordenadas: Optional[str] = None
-    capacidad: int = 16
-    zona_id: int
-
-class CajaNapCreate(CajaNapBase):
-    pass
-
-class CajaNapResponse(CajaNapBase):
-    id: int
-    # Campos calculados (No están en BD, se llenan en el endpoint)
-    puertos_usados: int = 0
-    puertos_libres: int = 0
-    
-    class Config:
-        from_attributes = True
-
-# ==========================================
-# 5. ROUTERS
+# 5. ROUTERS (MOVIDO ARRIBA PARA EVITAR NameError)
 # ==========================================
 class RouterBase(BaseModel):
     nombre: str = Field(..., min_length=3, max_length=100)
@@ -119,6 +97,17 @@ class RouterBase(BaseModel):
 class RouterCreate(RouterBase):
     pass_api: str = Field(..., min_length=3)
 
+# 👇 SCHEMA NUEVO PARA EVITAR ERROR 422 AL EDITAR 👇
+class RouterUpdate(BaseModel):
+    nombre: Optional[str] = None
+    ip_vpn: Optional[str] = None
+    user_api: Optional[str] = None
+    pass_api: Optional[str] = None # Opcional para no borrarla si no se envía
+    port_api: Optional[int] = None
+    tipo_seguridad: Optional[TipoSeguridadEnum] = None
+    tipo_control: Optional[TipoControlEnum] = None
+    version_os: Optional[str] = None
+
 class RouterResponse(RouterBase):
     id: int
     is_active: bool
@@ -127,14 +116,32 @@ class RouterResponse(RouterBase):
         from_attributes = True
 
 # ==========================================
-# 6. PLANES
+# 6. CAJAS NAP
+# ==========================================
+class CajaNapBase(BaseModel):
+    nombre: str
+    ubicacion: str
+    coordenadas: Optional[str] = None
+    capacidad: int = 16
+    zona_id: int
+
+class CajaNapCreate(CajaNapBase):
+    pass
+
+class CajaNapResponse(CajaNapBase):
+    id: int
+    puertos_usados: int = 0
+    puertos_libres: int = 0
+    class Config:
+        from_attributes = True
+
+# ==========================================
+# 7. PLANES
 # ==========================================
 class PlanBase(BaseModel):
     nombre: str = Field(..., min_length=3)
     precio: float
     router_id: int
-    
-    # QoS / Ráfagas
     garantia_percent: int = Field(default=100, ge=1, le=100) 
     prioridad: int = Field(default=8, ge=1, le=8)            
     burst_subida: int = Field(default=0, ge=0)
@@ -149,19 +156,11 @@ class PlanResponse(PlanBase):
     id: int
     velocidad_subida: int 
     velocidad_bajada: int
-
     class Config:
         from_attributes = True
 
-    @model_validator(mode='before')
-    @classmethod
-    def map_velocidades_db_to_schema(cls, data: Any) -> Any:
-        if hasattr(data, 'velocidad_subida'):
-            return data
-        return data
-
 # ==========================================
-# 7. REDES
+# 8. REDES
 # ==========================================
 class RedBase(BaseModel):
     nombre: str
@@ -178,7 +177,7 @@ class RedResponse(RedBase):
         from_attributes = True
 
 # ==========================================
-# 8. USUARIOS (STAFF)
+# 9. USUARIOS (STAFF)
 # ==========================================
 class UsuarioBase(BaseModel):
     nombre_completo: str
@@ -201,19 +200,11 @@ class UsuarioUpdate(BaseModel):
 class UsuarioResponse(UsuarioBase):
     id: int
     router_ids: List[int] = [] 
-
     class Config:
         from_attributes = True
 
-    @model_validator(mode='before')
-    @classmethod
-    def map_routers_to_ids(cls, data: Any) -> Any:
-        if hasattr(data, 'routers_asignados'):
-            data.router_ids = [r.id for r in data.routers_asignados]
-        return data
-
 # ==========================================
-# 9. CLIENTES
+# 10. CLIENTES
 # ==========================================
 class ClienteBase(BaseModel):
     nombre: str
@@ -221,29 +212,20 @@ class ClienteBase(BaseModel):
     telefono: Optional[str] = None
     direccion: Optional[str] = None
     correo: Optional[str] = None
-    
-    # 👇 ESTOS ERAN EL PROBLEMA (Antes decían "int" a secas)
-    router_id: Optional[int] = None   # Acepta null
-    plan_id: Optional[int] = None     # Acepta null
-    
-    # 👇 ESTE FALTABA AGREGAR (El front lo manda, el back no lo esperaba)
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+    router_id: Optional[int] = None
+    plan_id: Optional[int] = None
     tecnico_id: Optional[int] = None
-    
     plantilla_id: Optional[int] = None
     zona_id: Optional[int] = None
     red_id: Optional[int] = None
-    
-    # Campos FTTH
     caja_nap_id: Optional[int] = None
     puerto_nap: Optional[int] = None
-    
-    # Técnicos
     ip_asignada: Optional[str] = "0.0.0.0"
     user_pppoe: Optional[str] = None
     pass_pppoe: Optional[str] = None
     mac_address: Optional[str] = None
-    
-    # Estado y Servicio
     estado: str = "pendiente_instalacion"
 
 class ClienteCreate(ClienteBase):
@@ -254,21 +236,35 @@ class ClienteResponse(ClienteBase):
     estado: str
     created_at: datetime
     saldo_a_favor: float = 0.0
-    
-    # Relaciones anidadas
     router: Optional[RouterResponse] = None
     zona: Optional[ZonaResponse] = None          
     plantilla: Optional[PlantillaResponse] = None 
     plan: Optional[PlanResponse] = None
-    
-    # 👇 Relación anidada para mostrar el nombre de la caja en frontend
     caja_nap: Optional[CajaNapResponse] = None
-    
+    tecnico: Optional[UsuarioResponse] = None
     class Config:
         from_attributes = True
 
+
+
+
+
+# EL TÉCNICO EN CAMPO
+class InstalacionRequest(BaseModel):
+    cedula: str
+    mac_address: Optional[str] = None
+    caja_nap_id: Optional[int] = None 
+    puerto_nap: Optional[int] = None
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+    plan_id: Optional[int] = None    # 👈 Ahora es opcional
+    router_id: Optional[int] = None  # 👈 Ahora es opcional
+    user_pppoe: str
+    pass_pppoe: str
+    ip_asignada: Optional[str] = None
+
 # ==========================================
-# 10. FACTURAS
+# 11. FACTURAS
 # ==========================================
 class ClienteSimple(BaseModel):
     id: int
@@ -281,18 +277,14 @@ class ClienteSimple(BaseModel):
 class FacturaBase(BaseModel):
     fecha_emision: date
     fecha_vencimiento: date
-    
     plan_snapshot: Optional[str] = None
     detalles: Optional[str] = None
-    
     monto: float
     impuesto: float = 0.0
     total: float
     saldo_pendiente: float
-    
     estado: str
     mes_correspondiente: str
-    
     fecha_promesa_pago: Optional[date] = None
     es_promesa_activa: bool = False
 
@@ -302,56 +294,56 @@ class FacturaCreate(FacturaBase):
 class FacturaResponse(FacturaBase):
     id: int
     cliente: Optional[ClienteSimple] = None 
-
     class Config:
         from_attributes = True
 
 # ==========================================
-# 11. UNIFICADO (DASHBOARD/RESUMEN)
+# 12. UNIFICADO (DASHBOARD/MAPA)
 # ==========================================
-
-# Bloque Financiero
 class FacturacionResumen(BaseModel):
     facturas_pendientes_cant: int
     total_deuda: float
     saldo_a_favor: float
-    estado_financiero: str  # "al_dia" o "moroso"
+    estado_financiero: str
 
-# Bloque Técnico
 class ServicioTecnico(BaseModel):
     plan_nombre: str
     precio_plan: float
     ip_asignada: str
     router_nombre: str
-    estado_servicio: str # activo/suspendido
+    estado_servicio: str
 
-# El SUPER SCHEMA para vista detallada de cliente
 class ClienteFullResponse(BaseModel):
     id: int
     nombre: str
     cedula: Optional[str] = None
     telefono: Optional[str] = None
     direccion: Optional[str] = None
-    
-    # Agregar aquí también si necesitas ver la NAP en el detalle completo
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
     caja_nap_id: Optional[int] = None
     puerto_nap: Optional[int] = None
-    
     servicio: ServicioTecnico
     finanzas: FacturacionResumen
-
     class Config:
         from_attributes = True
 
-# ==========================================
-# 12. LOGS DE CRONJOBS (HISTORIAL)
-# ==========================================
 class LogCronjobResponse(BaseModel):
     id: int
     fecha: datetime
-    nivel: str      # 'INFO', 'ERROR', 'WARNING'
-    origen: str     # 'Facturación', 'Cortes', 'Sistema'
+    nivel: str
+    origen: str
     mensaje: str
-
     class Config:
         from_attributes = True
+
+
+# Conexion VPN
+
+
+class WireguardConfigResponse(BaseModel):
+    clientIp: str
+    clientPrivKey: str
+    serverPubKey: str
+    serverEndpoint: str
+    serverPort: int

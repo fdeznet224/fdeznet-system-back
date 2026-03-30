@@ -80,6 +80,14 @@ async def get_listado_completo(
     if estado != "cualquiera":
         if estado == "pendiente":
             query = query.where(FacturaModel.estado == "pendiente")
+        elif estado == "promesa":
+            # Filtramos facturas pendientes que tienen la bandera de promesa activa
+            query = query.where(
+                and_(
+                    FacturaModel.estado == "pendiente",
+                    FacturaModel.es_promesa_activa == True
+                )
+            )
         else:
             query = query.where(FacturaModel.estado == estado)
 
@@ -122,12 +130,14 @@ async def get_listado_completo(
             "total": f.total,
             "fecha_emision": f.fecha_emision,
             "fecha_vencimiento": f.fecha_vencimiento,
+            "fecha_promesa_pago": f.fecha_promesa_pago, # 👈 AGREGAR ESTO
+            "es_promesa_activa": f.es_promesa_activa,   # 👈 AGREGAR ESTO
             "plan_snapshot": f.plan_snapshot,
             "cliente": {
                 "id": f.cliente.id,
                 "nombre": f.cliente.nombre,
                 "ip_asignada": f.cliente.ip_asignada,
-                "sn": f.cliente.cedula  # Mapeado de Cédula a SN
+                "sn": f.cliente.cedula 
             }
         }
         items_response.append(factura_dict)

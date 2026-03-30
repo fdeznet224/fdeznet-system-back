@@ -169,6 +169,11 @@ class ClienteModel(Base):
     facturas = relationship("FacturaModel", back_populates="cliente")
     pagos = relationship("PagoModel", back_populates="cliente")
 
+    latitud = Column(Float, nullable=True)
+    longitud = Column(Float, nullable=True)
+
+
+
 class FacturaModel(Base):
     __tablename__ = "facturas"
     id = Column(Integer, primary_key=True, index=True)

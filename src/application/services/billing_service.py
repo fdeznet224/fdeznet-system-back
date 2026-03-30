@@ -85,9 +85,13 @@ class BillingService:
             if dia_objetivo:
                 debe_generar = True
             else:
-                if hoy == fecha_generacion:
+                if hoy >= fecha_generacion:
                     debe_generar = True
-                    print(f"✅ Hoy {hoy} toca facturar a {cliente.nombre} (Vence el {fecha_vencimiento})")
+                    # Opcional: Solo imprimir si es exactamente hoy para no saturar el log
+                    if hoy == fecha_generacion:
+                        print(f"✅ Hoy {hoy} toca facturar a {cliente.nombre} (Vence el {fecha_vencimiento})")
+                    else:
+                        print(f"⏰ Facturación atrasada detectada para {cliente.nombre} (Debió generarse el {fecha_generacion})")
                 else:
                     reporte["omitidos_por_fecha"] += 1
 

@@ -11,7 +11,7 @@ from src.infrastructure.database import SessionLocal as async_session
 
 # Modelos y Schemas
 from src.infrastructure.models import ClienteModel, PagoModel, RouterModel, FacturaModel, CajaNapModel 
-from src.domain.schemas import ClienteCreate
+from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.infrastructure.repositories import ClienteRepository
 
 # Servicios Externos
@@ -74,32 +74,55 @@ class ClientService:
     # ==========================================
     # 2. ACTIVAR INSTALACIÓN (VERSION FINAL - VARIABLES SEGURAS)
     # ==========================================
-    async def activar_instalacion(self, cliente_id: int, datos_finales: dict):
+    async def activar_instalacion(self, cliente_id: int, datos_finales: InstalacionRequest):
         """
-        Activa el servicio en Mikrotik y dispara la notificación de bienvenida
-        usando exclusivamente las variables autorizadas.
+        Activa el servicio en Mikrotik usando exclusivamente el Schema validado.
+        Protege los datos existentes si el celular no los envía.
         """
         # A. Recuperar Cliente
         cliente = await self.db.get(ClienteModel, cliente_id)
         if not cliente: raise ValueError("Cliente no encontrado")
 
-        # B. Actualizar Datos Técnicos desde el formulario
-        if datos_finales.get('cedula'): cliente.cedula = datos_finales['cedula']
-        if datos_finales.get('mac_address'): cliente.mac_address = datos_finales['mac_address']
-        if datos_finales.get('router_id'): cliente.router_id = int(datos_finales['router_id'])
-        if datos_finales.get('plan_id'): cliente.plan_id = int(datos_finales['plan_id'])
+        # B. Actualizar Datos Técnicos desde el Schema validado
+        if datos_finales.cedula is not None:
+            cliente.cedula = datos_finales.cedula
+            
+        if datos_finales.mac_address is not None:
+            cliente.mac_address = datos_finales.mac_address
+            
+        # 👇 PROTECCIÓN CLAVE: Solo actualizar si el técnico lo envió 👇
+        if datos_finales.router_id is not None:
+            cliente.router_id = datos_finales.router_id
+            
+        if datos_finales.plan_id is not None:
+            cliente.plan_id = datos_finales.plan_id
+        
+        # 👇 INFRAESTRUCTURA FIBRA Y GPS 👇
+        if datos_finales.caja_nap_id is not None:
+            cliente.caja_nap_id = datos_finales.caja_nap_id
+            
+        if datos_finales.puerto_nap is not None:
+            cliente.puerto_nap = datos_finales.puerto_nap
+            
+        if datos_finales.latitud is not None:
+            cliente.latitud = datos_finales.latitud
+            
+        if datos_finales.longitud is not None:
+            cliente.longitud = datos_finales.longitud
         
         # Gestión de IP
         ip_para_mikrotik = None
-        if datos_finales.get('ip_asignada') and datos_finales.get('ip_asignada') != '0.0.0.0':
-            cliente.ip_asignada = datos_finales['ip_asignada']
+        if datos_finales.ip_asignada and datos_finales.ip_asignada != '0.0.0.0':
+            cliente.ip_asignada = datos_finales.ip_asignada
             ip_para_mikrotik = cliente.ip_asignada
         elif cliente.ip_asignada:
             ip_para_mikrotik = cliente.ip_asignada
 
         # Credenciales PPPoE
-        if datos_finales.get('user_pppoe'): cliente.user_pppoe = datos_finales['user_pppoe']
-        if datos_finales.get('pass_pppoe'): cliente.pass_pppoe = datos_finales['pass_pppoe']
+        if datos_finales.user_pppoe:
+            cliente.user_pppoe = datos_finales.user_pppoe
+        if datos_finales.pass_pppoe:
+            cliente.pass_pppoe = datos_finales.pass_pppoe
 
         # E. Cargar Router y Plan para Mikrotik
         stmt_rel = select(ClienteModel).options(
@@ -120,14 +143,15 @@ class ClientService:
                 cliente_rel.router.port_api
             )
             
-            comentario = f"{cliente.nombre} | SN:{cliente.cedula} | ID:{cliente.id}"
+            cedula_str = cliente.cedula if cliente.cedula else "S/A"
+            comentario_estandar = f"{cliente.nombre} | SN:{cedula_str} | ID:{cliente.id}"
 
             mk.crear_actualizar_pppoe(
                 user=cliente.user_pppoe,
                 password=cliente.pass_pppoe,
                 profile=cliente_rel.plan.nombre, 
                 remote_address=ip_para_mikrotik,
-                comment=comentario
+                comment=comentario_estandar
             )
             
             # G. Guardar cambios en la base de datos
@@ -140,14 +164,8 @@ class ClientService:
             if cliente.telefono:
                 try:
                     notificador = NotificationService(self.db)
-                    
-                    # Pasamos un diccionario vacío o con variables mínimas porque 
-                    # tu NotificationService ya tiene la lógica para rellenar:
-                    # {nombre}, {plan}, {precio}, {direccion}, {ip}, {dia_corte}, {empresa}, {fecha_actual}
-                    
                     await notificador.notificar_evento("bienvenida", cliente.id)
                     print(f"✅ Notificación 'bienvenida' encolada para {cliente.nombre}")
-                    
                 except Exception as e_msg:
                     print(f"⚠️ Error al encolar bienvenida: {e_msg}")
 
@@ -163,22 +181,44 @@ class ClientService:
     async def editar_cliente(self, cliente_id: int, datos: ClienteCreate):
         stmt = select(ClienteModel).where(ClienteModel.id == cliente_id)
         cliente_db = (await self.db.execute(stmt)).scalar_one_or_none()
-        if not cliente_db: raise ValueError("Cliente no encontrado")
-
-        for var, value in datos.dict(exclude_unset=True).items():
+        if not cliente_db: 
+            raise ValueError("Cliente no encontrado")
+    
+        # 1. Convertimos los datos a diccionario
+        update_data = datos.dict(exclude_unset=True)
+    
+        # 2. LIMPIEZA DE LLAVES FORÁNEAS (Evita el error 1452 de MySQL)
+        # Lista de campos que deben ser NULL en lugar de 0
+        campos_fk = [
+            "caja_nap_id", "puerto_nap", "router_id", 
+            "plan_id", "tecnico_id", "plantilla_id", "zona_id", "red_id"
+        ]
+        
+        for campo in campos_fk:
+            if campo in update_data:
+                # Si el valor es 0, una cadena vacía o el string "0", lo hacemos None (NULL)
+                if update_data[campo] in [0, "0", ""]:
+                    update_data[campo] = None
+    
+        # 3. Aplicamos los cambios al objeto de la base de datos
+        for var, value in update_data.items():
             setattr(cliente_db, var, value)
             
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception as e:
+            await self.db.rollback()
+            raise ValueError(f"Error de base de datos: {str(e)}")
         
+        # 4. Sincronización con MikroTik si el cliente está activo
         if cliente_db.estado == 'activo':
             try:
                 cliente_full = await self._recargar_cliente(cliente_id)
                 await self._sincronizar_mikrotik(cliente_full)
             except Exception as e:
-                print(f"⚠️ Error sincronizando: {e}")
-
+                print(f"⚠️ Error sincronizando con MikroTik: {e}")
+    
         return await self._recargar_cliente(cliente_id)
-
     # ==========================================
     # 4. CAMBIAR ESTADO (CORTES)
     # ==========================================
@@ -223,11 +263,54 @@ class ClientService:
         return "Cliente eliminado"
 
     # ==========================================
+    # 5. PROMESA D EPAGOsi y
+    # ==========================================
+    async def registrar_promesa_pago(self, cliente_id: int, fecha_promesa: date):
+        """
+        Registra una promesa de pago y reactiva el servicio si es necesario.
+        """
+        # 1. Buscar factura pendiente más antigua
+        stmt_f = select(FacturaModel).where(
+            FacturaModel.cliente_id == cliente_id,
+            FacturaModel.estado == 'pendiente'
+        ).order_by(FacturaModel.fecha_vencimiento.asc())
+        
+        res_f = await self.db.execute(stmt_f)
+        factura = res_f.scalars().first()
+        
+        if not factura:
+            raise ValueError("El cliente no tiene facturas pendientes para aplicar promesa.")
+
+        # 2. Aplicar promesa a la factura
+        factura.es_promesa_activa = True
+        factura.fecha_promesa_pago = fecha_promesa
+
+        # 3. Reactivar cliente si está suspendido
+        cliente = await self.db.get(ClienteModel, cliente_id)
+        reactivado = False
+        
+        if cliente.estado == 'suspendido':
+            cliente.estado = 'activo'
+            # Usamos la lógica que ya tienes en BillingService
+            from src.application.services.billing_service import BillingService
+            b_service = BillingService(self.db)
+            reactivado = await b_service._reactivar_en_mikrotik(cliente)
+
+        await self.db.commit()
+        
+        msg = f"Promesa exitosa hasta el {fecha_promesa}."
+        if reactivado:
+            msg += " 📡 Servicio reactivado en MikroTik."
+            
+        return msg
+
+    # ==========================================
     # 6. LISTADO UNIFICADO (DASHBOARD)
     # ==========================================
     async def get_listado_unificado(self):
         query = text("""
             SELECT c.id, c.nombre, c.cedula, c.telefono, c.direccion,
+                   c.latitud, c.longitud, -- 👇 1. AGREGADO AL SELECT
                    p.nombre as plan_nombre, p.precio as precio_plan,
                    c.ip_asignada, r.nombre as router_nombre, c.estado as estado_servicio,
                    nap.nombre as nap_nombre, c.puerto_nap,
@@ -250,6 +333,8 @@ class ClientService:
             lista_final.append({
                 "id": row.id, "nombre": row.nombre, "cedula": row.cedula or "",
                 "telefono": row.telefono, "direccion": row.direccion,
+                "latitud": row.latitud,   # 👇 2. AGREGADO AL JSON DE RETORNO
+                "longitud": row.longitud, # 👇 2. AGREGADO AL JSON DE RETORNO
                 "servicio": {
                     "plan_nombre": row.plan_nombre or "Sin Plan",
                     "precio_plan": row.precio_plan or 0,
@@ -274,7 +359,8 @@ class ClientService:
         stmt = select(ClienteModel).options(
             selectinload(ClienteModel.plan), selectinload(ClienteModel.router),
             selectinload(ClienteModel.plantilla), selectinload(ClienteModel.zona),
-            selectinload(ClienteModel.caja_nap)
+            selectinload(ClienteModel.caja_nap),
+            selectinload(ClienteModel.tecnico)
         ).where(ClienteModel.id == cliente_id)
         return (await self.db.execute(stmt)).scalar_one()
 

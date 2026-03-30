@@ -185,8 +185,8 @@ class NetworkService:
             for cliente in clientes:
                 if not cliente.plan or not cliente.user_pppoe: continue
 
-                sn = cliente.cedula if cliente.cedula else "S/N"
-                comentario_sync = f"ID:{cliente.id} | {cliente.nombre} | {sn}"
+                cedula_str = cliente.cedula if cliente.cedula else "S/A"
+                comentario_estandar = f"{cliente.nombre} | SN:{cedula_str} | ID:{cliente.id}"
 
                 # 1. Configuración Técnica PPPoE
                 mk.crear_actualizar_pppoe(
@@ -194,7 +194,7 @@ class NetworkService:
                     password=cliente.pass_pppoe,
                     profile=cliente.plan.nombre,
                     remote_address=cliente.ip_asignada,
-                    comment=comentario_sync
+                    comment=comentario_estandar
                 )
 
                 # 2. Estado (Corte vs Activo usando la nueva función unificada)

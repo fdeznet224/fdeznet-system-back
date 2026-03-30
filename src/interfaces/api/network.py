@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse # 👈 CORRECCIÓN CLAVE: Usamos StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from src.application.services.vpn_service import VPNService 
+from src.domain.schemas import WireguardConfigResponse
 
 # Infraestructura y Auth
 from src.infrastructure.database import get_db
@@ -22,7 +24,8 @@ from src.domain.schemas import (
     RouterCreate, 
     RouterResponse, 
     RedCreate, 
-    RedResponse
+    RedResponse,
+    RouterUpdate
 )
 
 # Servicios
@@ -57,38 +60,61 @@ async def crear_router(
 @router.put("/routers/{router_id}", response_model=RouterResponse)
 async def editar_router(
     router_id: int, 
-    router_data: RouterCreate, 
+    router_data: RouterUpdate, # Usamos el nuevo Schema opcional
     db: AsyncSession = Depends(get_db),
     current_user = Depends(role_required(["admin"]))
 ):
-    """Actualiza la IP, usuario o contraseña del Router."""
+    """Actualiza la configuración del Router de forma segura y validada."""
+    
+    # 1. Buscar el router actual en la DB
     router_db = await db.get(RouterModel, router_id)
     if not router_db:
         raise HTTPException(status_code=404, detail="Router no encontrado")
     
-    # Verificar duplicados de IP (excepto si es el mismo router)
-    stmt = select(RouterModel).where(
-        (RouterModel.ip_vpn == router_data.ip_vpn) & (RouterModel.id != router_id)
-    )
-    duplicado = await db.execute(stmt)
-    if duplicado.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Esa IP ya está registrada en otro router.")
+    # 2. Convertir datos de entrada a diccionario (solo los que el usuario envió)
+    datos_nuevos = router_data.dict(exclude_unset=True)
 
-    # Actualizar datos
-    for key, value in router_data.dict().items():
+    # 3. Si se intenta cambiar la IP, verificar que no esté duplicada
+    if 'ip_vpn' in datos_nuevos and datos_nuevos['ip_vpn'] != router_db.ip_vpn:
+        stmt = select(RouterModel).where(RouterModel.ip_vpn == datos_nuevos['ip_vpn'])
+        res = await db.execute(stmt)
+        if res.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Esa IP ya está registrada en otro nodo.")
+
+    # 4. PRUEBA DE CONEXIÓN ANTES DE GUARDAR (Filtro de seguridad)
+    try:
+        # Si no mandaron pass nueva, usamos la que ya tenemos en la DB
+        pass_test = datos_nuevos.get('pass_api') if datos_nuevos.get('pass_api') else router_db.pass_api
+        ip_test = datos_nuevos.get('ip_vpn', router_db.ip_vpn)
+        user_test = datos_nuevos.get('user_api', router_db.user_api)
+        port_test = datos_nuevos.get('port_api', router_db.port_api)
+
+        mk = MikroTikService(ip_test, user_test, pass_test, port_test)
+        conectado, msg = mk.probar_conexion()
+        
+        if not conectado:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Los nuevos datos no permiten conexión con el MikroTik: {msg}"
+            )
+    except Exception as e:
+        if isinstance(e, HTTPException): raise e
+        raise HTTPException(status_code=400, detail=f"Error técnico al validar: {str(e)}")
+
+    # 5. Aplicar los cambios al objeto de la DB
+    for key, value in datos_nuevos.items():
+        # Regla: No sobrescribir con vacío/None si es la contraseña
+        if key == "pass_api" and (value == "" or value is None):
+            continue
         setattr(router_db, key, value)
     
-    await db.commit()
-    await db.refresh(router_db)
-    
-    # Prueba de conexión silenciosa (Solo log)
     try:
-        mk = MikroTikService(router_db.ip_vpn, router_db.user_api, router_db.pass_api, router_db.port_api)
-        mk.probar_conexion()
+        await db.commit()
+        await db.refresh(router_db)
+        return router_db
     except Exception as e:
-        print(f"⚠️ Aviso: Router actualizado pero sin conexión: {e}")
-        
-    return router_db
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Error interno al guardar en base de datos")
 
 @router.delete("/routers/{router_id}")
 async def eliminar_router(
@@ -434,3 +460,20 @@ async def verificar_trafico_cliente(cliente_id: int, db: AsyncSession = Depends(
         # 🚀 Esto imprimirá el error real en la consola en lugar de ocultarlo
         print(f"❌ Error al consultar tráfico del cliente {cliente_id}: {e}") 
         return {"velocidad_subida": 0, "velocidad_bajada": 0}
+    
+
+
+# VPN
+
+@router.post("/vpn/generate", response_model=WireguardConfigResponse)
+async def generar_acceso_vpn(db: AsyncSession = Depends(get_db)):
+    """
+    Genera un par de llaves WireGuard, calcula la siguiente IP disponible
+    y devuelve los datos para auto-configurar un router remoto.
+    """
+    service = VPNService(db)
+    try:
+        datos_vpn = await service.generar_script_cliente()
+        return datos_vpn
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

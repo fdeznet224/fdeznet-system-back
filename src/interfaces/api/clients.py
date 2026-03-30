@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_ 
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
+from src.domain.schemas import InstalacionRequest
 
 # Infraestructura y Base de Datos
 from src.infrastructure.database import get_db
@@ -189,7 +190,8 @@ async def listar_clientes(
         selectinload(ClienteModel.router),
         selectinload(ClienteModel.plantilla),
         selectinload(ClienteModel.zona),
-        selectinload(ClienteModel.caja_nap)
+        selectinload(ClienteModel.caja_nap),
+        selectinload(ClienteModel.tecnico)
     )
 
     if search:
@@ -231,7 +233,8 @@ async def obtener_cliente(cliente_id: int, db: AsyncSession = Depends(get_db)):
         selectinload(ClienteModel.router),
         selectinload(ClienteModel.plantilla),
         selectinload(ClienteModel.zona),
-        selectinload(ClienteModel.caja_nap) 
+        selectinload(ClienteModel.caja_nap),
+        selectinload(ClienteModel.tecnico)
     ).where(ClienteModel.id == cliente_id)
     
     result = await db.execute(query)
@@ -271,16 +274,13 @@ async def registrar_cliente(
 @router.post("/{cliente_id}/completar-instalacion")
 async def completar_instalacion(
     cliente_id: int,
-    datos: dict, 
+    datos: InstalacionRequest, # 👈 AQUÍ PONEMOS EL BLINDAJE
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """
-    Paso 2: Activar Servicio (Botón Final).
-    Valida puertos NAP, actualiza hardware, conecta a Mikrotik y activa.
-    """
     service = ClientService(db)
     try:
+        # Ahora le pasamos un objeto validado, no un diccionario
         cliente_activado = await service.activar_instalacion(cliente_id, datos)
         
         return {
@@ -290,11 +290,9 @@ async def completar_instalacion(
         }
     
     except ValueError as ve:
-        # Error de validación (Puerto ocupado, IP duplicada, etc.)
         raise HTTPException(status_code=409, detail=str(ve)) 
         
     except Exception as e:
-        # Error técnico de conexión Mikrotik
         print(f"Error activando: {e}")
         raise HTTPException(status_code=500, detail=f"Error en activación: {str(e)}")
 
