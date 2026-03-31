@@ -299,3 +299,16 @@ class MensajeChatModel(Base):
     ack = Column(Integer, default=0) # 0=Pendiente, 1=Enviado, 2=Entregado, 3=Visto
 
     cliente = relationship("ClienteModel", backref="historial_chat")
+
+
+
+class VpnTunnelModel(Base):
+    __tablename__ = "vpn_tunnels"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String(100), nullable=False) # Ej: "Torre Principal", "Cliente Juan"
+    ip_asignada = Column(String(20), unique=True, nullable=False)
+    public_key = Column(String(100), nullable=False)
+    script_mikrotik = Column(Text, nullable=True) # Guardamos el script por si quieres volver a verlo
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=func.now())

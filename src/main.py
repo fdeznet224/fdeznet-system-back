@@ -23,7 +23,7 @@ from src.domain.schemas import UsuarioCreate
 from src.interfaces.api import (
     auth, clients, planes, finanzas, network,          
     zonas, usuarios, configuracion, dashboard,
-    whatsapp, naps
+    whatsapp, naps,vpn
 )
 
 # ==========================================
@@ -103,6 +103,7 @@ app.include_router(zonas.router)
 app.include_router(configuracion.router) 
 app.include_router(whatsapp.router)
 app.include_router(naps.router)
+app.include_router(vpn.router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

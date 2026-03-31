@@ -463,16 +463,3 @@ async def verificar_trafico_cliente(cliente_id: int, db: AsyncSession = Depends(
     
 
 
-# VPN
-
-@router.get("/routers/{router_id}/vpn-script/")
-async def obtener_vpn_config(router_id: int, db: AsyncSession = Depends(get_db)):
-    service = VPNService(db)
-    try:
-        # Llamamos al nuevo método pasando el ID
-        resultado = await service.generar_script_cliente(router_id)
-        return resultado
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")

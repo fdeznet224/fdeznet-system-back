@@ -347,3 +347,19 @@ class WireguardConfigResponse(BaseModel):
     serverPubKey: str
     serverEndpoint: str
     serverPort: int
+
+
+class VpnTunnelCreate(BaseModel):
+    nombre: str
+
+class VpnTunnelResponse(BaseModel):
+    id: int
+    nombre: str
+    ip_asignada: str
+    public_key: str
+    script_mikrotik: str
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        orm_mode = True # o from_attributes = True si usas Pydantic v2
