@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-
+from pydantic import BaseModel
 from src.application.services.vpn_service import VPNService
 from src.domain.schemas import VpnTunnelCreate, VpnTunnelResponse
 from src.infrastructure.database import get_db
 from src.infrastructure.models import VpnTunnelModel
+
+class VpnTecnicoCreate(BaseModel):
+    nombre: str
 
 router = APIRouter(prefix="/vpn", tags=["WireGuard VPN"])
 
@@ -56,3 +59,29 @@ async def eliminar_tunel(tunnel_id: int, db: AsyncSession = Depends(get_db)):
     await db.commit()
     
     return {"message": "Túnel eliminado y la IP ha sido liberada"}
+
+
+
+@router.post("/tecnicos/")
+async def crear_vpn_para_tecnico(
+    datos: VpnTecnicoCreate, 
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Crea un túnel VPN optimizado para Celulares (iOS/Android) o PCs (Windows/Mac).
+    Devuelve la configuración en texto (.conf) y en imagen (Código QR en Base64).
+    """
+    service = VPNService(db)
+    try:
+        resultado = await service.crear_acceso_tecnico(datos.nombre)
+        
+        # Devolvemos un JSON con todo listo para que React lo dibuje
+        return {
+            "id": resultado["tunel"].id,
+            "nombre": resultado["tunel"].nombre,
+            "ip_asignada": resultado["tunel"].ip_asignada,
+            "archivo_conf": resultado["archivo_conf"],
+            "qr_imagen": resultado["qr_imagen"]  # <--- ¡La magia está aquí!
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta
 from typing import Optional
+from dotenv import load_dotenv # Importamos dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -11,10 +12,14 @@ from sqlalchemy import select
 from src.infrastructure.database import get_db
 from src.infrastructure.models import UsuarioModel
 
-# --- CONFIGURACIÓN ---
-SECRET_KEY = "FDEZNET_SUPER_SECRET_KEY_2025" # Misma clave que usabas
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 720 # 12 Horas
+# Cargar variables del .env
+load_dotenv()
+
+# --- CONFIGURACIÓN DESDE .ENV ---
+# Usamos valores por defecto en caso de que a alguien se le olvide ponerlos en el .env
+SECRET_KEY = os.getenv("SECRET_KEY", "clave_por_defecto_insegura_cambiar_urgente")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "720"))
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")

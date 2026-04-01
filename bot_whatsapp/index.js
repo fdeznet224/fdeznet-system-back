@@ -1,9 +1,16 @@
+require('dotenv').config(); // ✅ Carga el archivo .env primero que nada
+
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const axios = require('axios');
-const fs = require('fs'); // ✅ Para manejar archivos
-const path = require('path'); // ✅ Para rutas de carpetas
+const fs = require('fs');
+const path = require('path');
+
+// --- VARIABLES DE ENTORNO ---
+const PORT = process.env.PORT || 3000;
+const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
+const BACKEND_URL = process.env.API_BACKEND_URL || 'http://127.0.0.1:8000';
 
 const app = express();
 app.use(express.json());
@@ -13,7 +20,6 @@ const UPLOADS_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) {
     fs.mkdirSync(UPLOADS_DIR);
 }
-// ✅ Servir la carpeta para que las imágenes sean accesibles vía URL
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 const client = new Client({
@@ -49,34 +55,32 @@ client.on('message', async (msg) => {
     try {
         let contenido = msg.body;
 
-        // 📍 DETECTAR UBICACIÓN (Formato mejorado para el Front)
+        // 📍 DETECTAR UBICACIÓN (Corregido sintaxis ${lat} y link estándar)
         if (msg.type === 'location') {
             const lat = msg.location.latitude;
             const lng = msg.location.longitude;
-            contenido = `📍 Ubicación: https://www.google.com/maps?q=${lat},${lng}`;
+            contenido = `📍 Ubicación: https://maps.google.com/?q=${lat},${lng}`;
         }
 
-        // 🖼️ DETECTAR IMAGEN / FOTO (Guardado físico)
+        // 🖼️ DETECTAR IMAGEN / FOTO
         if (msg.hasMedia && (msg.type === 'image' || msg.type === 'sticker')) {
             const media = await msg.downloadMedia();
             if (media) {
-                // Generar nombre único: img_17000000.jpg
                 const fileName = `img_${Date.now()}.jpg`;
                 const filePath = path.join(UPLOADS_DIR, fileName);
 
-                // ✅ Guardar archivo en disco
                 fs.writeFileSync(filePath, media.data, { encoding: 'base64' });
 
-                // ✅ URL pública (Usa tu IP o dominio en lugar de localhost si accedes desde fuera)
-                // Ejemplo: http://192.168.1.50:3000/uploads/img_...
-                const fileUrl = `http://localhost:3000/uploads/${fileName}`;
+                // ✅ Usa la URL del .env dinámicamente
+                const fileUrl = `${PUBLIC_URL}/uploads/${fileName}`;
                 contenido = `[IMAGE]${fileUrl}`;
                 
                 console.log(`📸 Imagen guardada: ${fileName}`);
             }
         }
 
-        await axios.post('http://127.0.0.1:8000/whatsapp/webhook/recibir', {
+        // ✅ Llama al backend dinámico
+        await axios.post(`${BACKEND_URL}/whatsapp/webhook/recibir`, {
             telefono: msg.from,
             mensaje: contenido 
         });
@@ -88,11 +92,14 @@ client.on('message', async (msg) => {
 // ESCUCHAR LECTURA DE MENSAJES (PALOMITAS)
 client.on('message_ack', async (msg, ack) => {
     try {
-        await axios.post('http://127.0.0.1:8000/whatsapp/webhook/ack', {
+        // ✅ Llama al backend dinámico
+        await axios.post(`${BACKEND_URL}/whatsapp/webhook/ack`, {
             wa_id: msg.id.id,
             ack: ack 
         });
-    } catch (error) { console.error("❌ Error enviando ACK a Python:", error.message); }
+    } catch (error) { 
+        console.error("❌ Error enviando ACK a Python:", error.message); 
+    }
 });
 
 // --- ENDPOINTS ---
@@ -114,4 +121,6 @@ app.post('/logout', async (req, res) => {
 });
 
 client.initialize();
-app.listen(3000, () => console.log('🚀 Puente WWebJS en puerto 3000 con soporte de imágenes'));
+
+// ✅ Inicia el servidor usando el puerto del .env
+app.listen(PORT, () => console.log(`🚀 Puente WWebJS en puerto ${PORT} con soporte de imágenes`));
