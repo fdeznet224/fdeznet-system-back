@@ -11,9 +11,11 @@ from src.infrastructure.models import (
     UsuarioModel, PlantillaFacturacionModel, PlanModel, RouterModel
 )
 
-# Servicios
+# Servicios e Helpers
 from src.infrastructure.mikrotik_service import MikroTikService
+# 👇 IMPORTAMOS EL NUEVO SERVICIO UNIFICADO 👇
 from src.application.services.notification_service import NotificationService
+from src.application.helpers.pdf_generator import generar_recibo_pdf
 
 class BillingService:
     def __init__(self, db: AsyncSession):
@@ -23,14 +25,10 @@ class BillingService:
     # 1. GENERACIÓN MASIVA INTELIGENTE
     # ==========================================
     async def generar_emision_masiva(self, dia_objetivo: int = None):
-        """
-        Genera facturas basándose en la configuración de 'dias_antes_emision'.
-        """
         hoy = date.today()
         mes_actual_str = hoy.strftime("%B %Y").capitalize()
-        notificador = NotificationService(self.db)
+        notificador = NotificationService(self.db) # 👈 Instancia única
 
-        # 1. Traer TODOS los clientes activos con sus plantillas y planes
         stmt = select(ClienteModel).options(
             selectinload(ClienteModel.plantilla),
             selectinload(ClienteModel.plan)
@@ -40,9 +38,7 @@ class BillingService:
             ClienteModel.plan_id.isnot(None)
         )
         
-        # SI ES MODO MANUAL (Filtramos por grupo de pago, ej: 15)
         if dia_objetivo:
-            print(f"🔧 MODO MANUAL: Forzando generación para clientes con día de pago {dia_objetivo}")
             stmt = stmt.join(PlantillaFacturacionModel).where(
                 PlantillaFacturacionModel.dia_pago == dia_objetivo
             )
@@ -50,124 +46,70 @@ class BillingService:
         result = await self.db.execute(stmt)
         clientes = result.scalars().all()
         
-        nuevas_facturas = []
-        reporte = {
-            "total_procesados": 0, 
-            "facturas_generadas": 0, 
-            "mensajes_enviados": 0,
-            "omitidos_por_fecha": 0,
-            "omitidos_ya_existentes": 0
-        }
+        reporte = {"total_procesados": 0, "facturas_generadas": 0, "mensajes_enviados": 0}
 
         for cliente in clientes:
             plantilla = cliente.plantilla
             plan = cliente.plan
-            if not plantilla or not plan: continue
-            
             reporte["total_procesados"] += 1
-
-            # --- LÓGICA DE CALENDARIO ---
-            dia_pago = plantilla.dia_pago
             
-            # 1. Calcular Fecha de Vencimiento (Día X de este mes)
             try:
-                fecha_vencimiento = date(hoy.year, hoy.month, dia_pago)
+                fecha_vencimiento = date(hoy.year, hoy.month, plantilla.dia_pago)
             except ValueError:
                 fecha_vencimiento = hoy + relativedelta(day=31)
 
-            # 2. Calcular Fecha de Generación (El día que debe crearse)
-            dias_antes = plantilla.dias_antes_emision if plantilla.dias_antes_emision else 0
+            dias_antes = plantilla.dias_antes_emision or 0
             fecha_generacion = fecha_vencimiento - timedelta(days=dias_antes)
             
-            # --- DECISIÓN: ¿GENERAMOS LA FACTURA? ---
-            debe_generar = False
-            
-            if dia_objetivo:
-                debe_generar = True
-            else:
-                if hoy >= fecha_generacion:
-                    debe_generar = True
-                    # Opcional: Solo imprimir si es exactamente hoy para no saturar el log
-                    if hoy == fecha_generacion:
-                        print(f"✅ Hoy {hoy} toca facturar a {cliente.nombre} (Vence el {fecha_vencimiento})")
-                    else:
-                        print(f"⏰ Facturación atrasada detectada para {cliente.nombre} (Debió generarse el {fecha_generacion})")
-                else:
-                    reporte["omitidos_por_fecha"] += 1
-
-            if not debe_generar:
+            if not dia_objetivo and hoy < fecha_generacion:
                 continue
 
-            # --- EVITAR DUPLICADOS ---
+            # Evitar duplicados
             stmt_dup = select(FacturaModel).where(and_(
                 FacturaModel.cliente_id == cliente.id,
                 extract('month', FacturaModel.fecha_vencimiento) == fecha_vencimiento.month,
                 extract('year', FacturaModel.fecha_vencimiento) == fecha_vencimiento.year
             ))
-            res_dup = await self.db.execute(stmt_dup)
-            if res_dup.scalars().first():
-                reporte["omitidos_ya_existentes"] += 1
+            if (await self.db.execute(stmt_dup)).scalars().first():
                 continue 
 
-            # --- CREACIÓN ---
-            dias_tolerancia = plantilla.dias_tolerancia if plantilla.dias_tolerancia else 0
-            fecha_corte = fecha_vencimiento + timedelta(days=dias_tolerancia)
-
-            subtotal = plan.precio
-            impuesto_val = (subtotal * plantilla.impuesto) / 100
-            total = subtotal + impuesto_val
+            # Creación
+            total = plan.precio + (plan.precio * plantilla.impuesto / 100)
 
             nueva_factura = FacturaModel(
                 cliente_id=cliente.id,
                 plan_snapshot=plan.nombre,
                 detalles=f"Servicio Internet - {plan.nombre}",
-                monto=subtotal,
-                impuesto=impuesto_val,
-                total=total,
-                saldo_pendiente=total,
-                estado='pendiente',
-                fecha_emision=hoy,              
+                monto=plan.precio, total=total, saldo_pendiente=total,
+                estado='pendiente', fecha_emision=hoy,              
                 fecha_vencimiento=fecha_vencimiento, 
-                fecha_limite_corte=fecha_corte,      
+                fecha_limite_corte=fecha_vencimiento + timedelta(days=plantilla.dias_tolerancia or 0),      
                 mes_correspondiente=mes_actual_str
             )
-            
             self.db.add(nueva_factura)
             await self.db.flush()
-            nuevas_facturas.append(nueva_factura)
             reporte["facturas_generadas"] += 1
 
-            # --- ENVÍO WHATSAPP ---
+            # 👇 NOTIFICACIÓN DE COBRO (Simple y limpia) 👇
             if cliente.telefono:
-                try:
-                    vars_msg = {
-                        "nombre_cliente": cliente.nombre,
-                        "monto": f"${total}",
-                        "fecha_vencimiento": fecha_vencimiento.strftime("%d/%m/%Y"),
-                        "folio": str(nueva_factura.id)
-                    }
-                    await notificador.notificar_evento("nueva_factura", cliente.id, vars_msg)
-                    reporte["mensajes_enviados"] += 1
-                except Exception as e:
-                    print(f"⚠️ Error enviando WhatsApp a {cliente.nombre}: {e}")
+                # Solo pasamos lo que no es "fijo" del cliente (monto y folio)
+                exito = await notificador.notificar(
+                    "nueva_factura", 
+                    cliente.id, 
+                    variables_extra={"monto": f"${total}", "folio": str(nueva_factura.id)}
+                )
+                if exito: reporte["mensajes_enviados"] += 1
 
-        if nuevas_facturas:
-            await self.db.commit()
-            
+        await self.db.commit()
         return reporte
 
     # ==========================================
     # 2. MOTOR DE CORTES AUTOMÁTICOS
     # ==========================================
     async def procesar_cortes_automaticos(self):
-        """
-        Busca todas las facturas pendientes cuya fecha límite de corte ya pasó
-        y suspende a los clientes automáticamente en BD y MikroTik.
-        """
         hoy = date.today()
         notificador = NotificationService(self.db)
-        
-        # Buscar facturas vencidas (límite superado)
+
         stmt = select(FacturaModel).options(
             joinedload(FacturaModel.cliente).joinedload(ClienteModel.router)
         ).where(
@@ -176,61 +118,43 @@ class BillingService:
             FacturaModel.es_promesa_activa == False 
         )
         
-        result = await self.db.execute(stmt)
-        facturas_vencidas = result.scalars().all()
-
+        facturas_vencidas = (await self.db.execute(stmt)).scalars().all()
         reporte = {"clientes_suspendidos": 0, "errores": 0}
 
         for factura in facturas_vencidas:
             cliente = factura.cliente
-            
-            # Solo cortamos si el cliente sigue activo
             if cliente.estado == 'activo':
                 cliente.estado = 'suspendido'
                 factura.estado = 'vencida' 
                 
-                if cliente.router:
-                    try:
-                        mk = MikroTikService(
-                            cliente.router.ip_vpn, 
-                            cliente.router.user_api, 
-                            cliente.router.pass_api, 
-                            cliente.router.port_api
-                        )
-                        # 1. Agregar al Firewall (Address-List)
-                        mk.gestionar_corte_cliente(cliente.ip_asignada, suspender=True)
-                        
-                        # 2. Desconectar (Kick) para bloqueo inmediato
-                        if cliente.user_pppoe:
-                            mk.desconectar_cliente_activo(cliente.user_pppoe)
-                            
-                        reporte["clientes_suspendidos"] += 1
-                        
-                        # 3. WhatsApp de Suspensión
-                        if cliente.telefono:
-                            vars_msg = {
-                                "nombre_cliente": cliente.nombre,
-                                "monto": f"${factura.total}",
-                            }
-                            await notificador.notificar_evento("aviso_corte", cliente.id, vars_msg)
-                            
-                    except Exception as e:
-                        print(f"⚠️ Error al cortar a {cliente.nombre} en MK: {e}")
-                        reporte["errores"] += 1
+                try:
+                    mk = MikroTikService(cliente.router.ip_vpn, cliente.router.user_api, cliente.router.pass_api, cliente.router.port_api)
+                    mk.gestionar_corte_cliente(cliente.ip_asignada, suspender=True)
+                    if cliente.user_pppoe: mk.desconectar_cliente_activo(cliente.user_pppoe)
+                    
+                    reporte["clientes_suspendidos"] += 1
+                    # 👇 AVISO DE CORTE 👇
+                    await notificador.notificar("aviso_corte", cliente.id)
+                except Exception as e:
+                    reporte["errores"] += 1
 
-        if reporte["clientes_suspendidos"] > 0:
-            await self.db.commit()
-            print(f"🔴 CORTES EJECUTADOS: {reporte['clientes_suspendidos']} clientes suspendidos hoy {hoy}.")
-            
+        await self.db.commit()
         return reporte
 
     # ==========================================
-    # 3. PAGOS Y LISTADOS
+    # 3. REGISTRO DE PAGOS (CON PDF ADJUNTO)
     # ==========================================
     async def registrar_pago_completo(self, factura_id: int, usuario_operador: UsuarioModel, metodo_pago: str, monto: float, referencia: str = None):
         factura = await self.db.get(FacturaModel, factura_id)
         if not factura: raise ValueError("Factura no encontrada")
-        cliente = await self.db.get(ClienteModel, factura.cliente_id)
+        
+        # Necesitamos cargar el cliente con sus planes para el PDF
+        stmt_c = select(ClienteModel).options(
+            selectinload(ClienteModel.plan),
+            selectinload(ClienteModel.plantilla),
+            joinedload(ClienteModel.router)
+        ).where(ClienteModel.id == factura.cliente_id)
+        cliente = (await self.db.execute(stmt_c)).scalar_one()
         
         factura.estado = "pagada"
         factura.saldo_pendiente = 0
@@ -238,12 +162,9 @@ class BillingService:
         factura.es_promesa_activa = False 
         
         nuevo_pago = PagoModel(
-            cliente_id=cliente.id,
-            factura_id=factura.id, 
-            usuario_id=usuario_operador.id,
-            monto_total=monto, 
-            metodo_pago=metodo_pago,
-            referencia=referencia,
+            cliente_id=cliente.id, factura_id=factura.id, 
+            usuario_id=usuario_operador.id, monto_total=monto, 
+            metodo_pago=metodo_pago, referencia=referencia,
             fecha_pago=datetime.now()
         )
         self.db.add(nuevo_pago)
@@ -254,9 +175,60 @@ class BillingService:
             reactivado = await self._reactivar_en_mikrotik(cliente)
 
         await self.db.commit() 
+
+        # 👇 🚀 LOGICA DE COMPROBANTE WHATSAPP UNIFICADA 👇
+        if cliente.telefono:
+            try:
+                # 1. Generar la fecha del próximo vencimiento para el PDF
+                prox_venc = (factura.fecha_vencimiento + relativedelta(months=1)).strftime("%d/%m/%Y")
+                
+                # 2. Generar el archivo PDF físico
+                ruta_pdf = await generar_recibo_pdf(
+                    nombre_cliente=cliente.nombre,
+                    monto=monto,
+                    concepto=f"MENSUALIDAD INTERNET - {factura.plan_snapshot}",
+                    fecha_pago=nuevo_pago.fecha_pago,
+                    folio=factura.id,
+                    nueva_fecha_vencimiento=prox_venc,
+                    telefono_cliente=cliente.telefono,
+                    metodo_pago=metodo_pago
+                )
+
+                # 3. Enviar mensaje de pago_recibido ADJUNTANDO el PDF
+                notificador = NotificationService(self.db)
+                await notificador.notificar(
+                    tipo_evento="pago_recibido", 
+                    cliente_id=cliente.id,
+                    variables_extra={"monto_pagado": f"${monto}", "referencia": referencia or "N/A"},
+                    ruta_pdf=ruta_pdf # 👈 Aquí ocurre la magia del adjunto
+                )
+                
+            except Exception as e:
+                print(f"⚠️ Error al notificar pago con PDF: {e}")
+
         return {"status": "ok", "reactivado": reactivado}
 
+    # ==========================================
+    # HELPERS
+    # ==========================================
+    async def _reactivar_en_mikrotik(self, cliente):
+        if not cliente.router_id: return False
+        try:
+            router = await self.db.get(RouterModel, cliente.router_id)
+            if not router or not router.is_active: return False
+            mk = MikroTikService(router.ip_vpn, router.user_api, router.pass_api, router.port_api)
+            mk.gestionar_corte_cliente(cliente.ip_asignada, suspender=False)
+            
+            # 👇 NOTIFICACIÓN RECONEXIÓN 👇
+            notificador = NotificationService(self.db)
+            await notificador.notificar("reconexion", cliente.id)
+            return True
+        except Exception as e:
+            print(f"⚠️ Error reactivando en MK: {e}")
+            return False
+
     async def listar_facturas_por_permisos(self, usuario_id_solicitante: int, cliente_id: Optional[int] = None, router_id: Optional[int] = None):
+        # ... (Tu código de permisos se mantiene igual) ...
         stmt_user = select(UsuarioModel).options(selectinload(UsuarioModel.routers_asignados)).where(UsuarioModel.id == usuario_id_solicitante)
         usuario = (await self.db.execute(stmt_user)).scalar_one()
         query = select(FacturaModel).join(ClienteModel).options(joinedload(FacturaModel.cliente).joinedload(ClienteModel.router))
@@ -268,27 +240,3 @@ class BillingService:
             query = query.where(ClienteModel.router_id.in_(ids_permitidos))
         query = query.order_by(FacturaModel.id.desc()).limit(200)
         return (await self.db.execute(query)).scalars().all()
-
-    # ==========================================
-    # HELPERS
-    # ==========================================
-    async def _reactivar_en_mikrotik(self, cliente):
-        """Reactivación fluida para redes FTTH/PPPoE (Sin caída de enlace)."""
-        if not cliente.router_id: return False
-        
-        try:
-            router = await self.db.get(RouterModel, cliente.router_id)
-            if not router or not router.is_active: return False
-            
-            mk = MikroTikService(router.ip_vpn, router.user_api, router.pass_api, router.port_api)
-            
-            # 1. Quitar de la lista de morosos (Firewall)
-            # Al sacarlo de la lista, el MikroTik permite el tráfico inmediatamente
-            # sin desconectar el PPPoE. ¡El cliente ni siente la transición!
-            mk.gestionar_corte_cliente(cliente.ip_asignada, suspender=False)
-            
-            return True
-            
-        except Exception as e:
-            print(f"⚠️ Error reactivando en MK para {cliente.nombre}: {e}")
-            return False

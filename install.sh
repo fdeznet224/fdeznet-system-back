@@ -4,29 +4,41 @@
 # 🚀 INSTALADOR INTEGRAL - FDEZNET SYSTEM v1.2 (Producción)
 # =========================================================================
 
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
+# Forzar que el script se detenga si cualquier comando falla
+set -e
+
+GREEN='\033;32m'
+BLUE='\033;34m'
 YELLOW='\033[1;33m'
-RED='\033[0;31m'
+RED='\033;0;31m'
 NC='\033[0m' 
 
-# ⚠️ CONFIGURACIÓN DE REPOSITORIOS (Asegúrate de que sean accesibles)
+# ⚠️ CONFIGURACIÓN DE REPOSITORIOS
 BACKEND_REPO="https://github.com/fdeznet224/fdeznet-system-back.git"
 FRONTEND_REPO="https://github.com/fdeznet224/fdeznet-system-frontend.git"
 
 APP_DIR="/opt/fdeznet"
-SERVER_IP=$(curl -s ifconfig.me)
+SERVER_IP=$(curl -s ifconfig.me || echo "127.0.0.1")
 
 echo -e "${BLUE}Iniciando despliegue de infraestructura FdezNet...${NC}"
 
+# Verificar si se ejecuta como root
+if [ "$EUID" -ne 0 ]; then 
+  echo -e "${RED}❌ Por favor, ejecuta este script como root (sudo ./install.sh)${NC}"
+  exit 1
+fi
+
 # 1. ACTUALIZAR E INSTALAR DEPENDENCIAS
-echo -e "${GREEN}[1/9] Instalando dependencias del sistema y Chrome para el Bot...${NC}"
+echo -e "${GREEN}[1/9] Instalando dependencias del sistema y librerías de Chromium...${NC}"
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-# Instalamos dependencias de sistema + librerías necesarias para Puppeteer/WhatsApp
+apt-get upgrade -y
+
+# Instalamos dependencias de sistema + librerías necesarias para Puppeteer/WhatsApp sin entorno gráfico
 apt-get install -y python3-venv python3-pip git wireguard iptables ufw nginx curl \
 mysql-server libmysqlclient-dev pkg-config build-essential \
 libnss3 libatk-bridge2.0-0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 \
-libpangocairo-1.0-0 libcups2 libxshmfence1 libglu1
+libpangocairo-1.0-0 libcups2 libxshmfence1 libglu1 libxss1 fonts-liberation libegl1
 
 # Instalar Node.js 20.x
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -36,6 +48,9 @@ apt-get install -y nodejs
 echo -e "${GREEN}[2/9] Configurando Base de Datos MySQL...${NC}"
 DB_PASS="fdeznet224" 
 SECRET_KEY=$(openssl rand -hex 32)
+
+systemctl start mysql
+systemctl enable mysql
 
 mysql -e "CREATE DATABASE IF NOT EXISTS fdeznet_db;"
 mysql -e "CREATE USER IF NOT EXISTS 'admin_isp'@'localhost' IDENTIFIED WITH mysql_native_password BY '$DB_PASS';"
@@ -48,7 +63,12 @@ WG_DIR="/etc/wireguard"
 mkdir -p $WG_DIR
 cd $WG_DIR
 umask 077
-wg genkey | tee server_private.key | wg pubkey > server_public.key
+
+# Generar llaves si no existen
+if [ ! -f server_private.key ]; then
+    wg genkey | tee server_private.key | wg pubkey > server_public.key
+fi
+
 PRIV_KEY=$(cat server_private.key)
 MAIN_IFACE=$(ip route ls default | awk '{print $5}' | head -n 1)
 
@@ -65,7 +85,7 @@ EOF
 echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-fdeznet.conf
 sysctl -p /etc/sysctl.d/99-fdeznet.conf
 systemctl enable wg-quick@wg0
-systemctl start wg-quick@wg0
+systemctl start wg-quick@wg0 || systemctl restart wg-quick@wg0
 
 # Permisos sudo para la VPN (FastAPI)
 echo "root ALL=(ALL) NOPASSWD: /usr/bin/wg, /usr/bin/wg-quick" > /etc/sudoers.d/fdeznet_vpn
@@ -91,6 +111,12 @@ python3 -m venv venv
 ./venv/bin/pip install --upgrade pip
 ./venv/bin/pip install -r requirements.txt
 
+# 🚀 GENERACIÓN AUTOMÁTICA DE TABLAS (Si usas Alembic o un script init)
+# Si ejecutas las tablas directo desde Python, descomenta la siguiente línea:
+# ./venv/bin/python -c "from src.infrastructure.database import Base, engine; import asyncio; from src.infrastructure.models import *; asyncio.run(engine.begin().then(lambda conn: conn.run_sync(Base.metadata.create_all)))"
+# O si usas migraciones de Alembic normales:
+# ./venv/bin/alembic upgrade head || true
+
 cat <<EOF > /etc/systemd/system/fdeznet-api.service
 [Unit]
 Description=FdezNet Backend API
@@ -113,7 +139,7 @@ systemctl enable fdeznet-api && systemctl start fdeznet-api
 # 6. CONFIGURAR BOT WHATSAPP (Node.js)
 echo -e "${GREEN}[6/9] Instalando Bot de WhatsApp...${NC}"
 cd $APP_DIR/backend/bot_whatsapp
-npm install
+npm install --unsafe-perm
 
 cat <<EOF > /etc/systemd/system/fdeznet-bot.service
 [Unit]
@@ -134,13 +160,13 @@ EOF
 systemctl enable fdeznet-bot && systemctl start fdeznet-bot
 
 # 7. COMPILAR FRONTEND (React)
-echo -e "${GREEN}[7/9] Compilando Frontend (esto puede tardar)...${NC}"
+echo -e "${GREEN}[7/9] Compilando Frontend...${NC}"
 cd $APP_DIR/frontend
 npm install
 npm run build
 
-# 8. CONFIGURAR NGINX
-echo -e "${GREEN}[8/9] Configurando Nginx como Proxy...${NC}"
+# 8. CONFIGURAR NGINX (REPARADO PARA LA API)
+echo -e "${GREEN}[8/9] Configurando Nginx como Proxy Reverso...${NC}"
 cat <<EOF > /etc/nginx/sites-available/fdeznet
 server {
     listen 80;
@@ -152,16 +178,19 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
+    # ✅ CORREGIDO: quitamos la barra inclinada del final para mapear las rutas de FastAPI intactas
     location /api/ {
-        proxy_pass http://127.0.0.1:8000/;
+        proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
 
-rm -f /etc/nginx/sites-enabled/default
-ln -s /etc/nginx/sites-available/fdeznet /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default || true
+ln -sf /etc/nginx/sites-available/fdeznet /etc/nginx/sites-enabled/
 systemctl restart nginx
 
 # 9. FIREWALL
@@ -175,6 +204,6 @@ echo -e "${BLUE}================================================================
 echo -e "${GREEN}✅ DESPLIEGUE COMPLETADO EXITOSAMENTE${NC}"
 echo -e "${BLUE}===================================================================${NC}"
 echo -e "🌐 Sistema:      http://$SERVER_IP"
-echo -e "🔐 VPN Public:   $(cat $WG_DIR/server_public.key)"
+echo -e "🔐 VPN Public:   $(cat $WG_DIR/server_public.key || echo 'N/A')"
 echo -e "📱 WhatsApp:     Ver logs con 'journalctl -u fdeznet-bot -f'"
 echo -e "${BLUE}===================================================================${NC}"

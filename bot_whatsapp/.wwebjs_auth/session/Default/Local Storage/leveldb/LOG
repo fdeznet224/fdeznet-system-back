@@ -1,3 +1,6 @@
-2026/03/31-23:51:43.789 3448 Reusing MANIFEST /home/fdezdev/FdezDev/fdeznet-system/backend/bot_whatsapp/.wwebjs_auth/session/Default/Local Storage/leveldb/MANIFEST-000001
-2026/03/31-23:51:43.794 3448 Recovering log #27
-2026/03/31-23:51:43.796 3448 Reusing old log /home/fdezdev/FdezDev/fdeznet-system/backend/bot_whatsapp/.wwebjs_auth/session/Default/Local Storage/leveldb/000027.log 
+2026/04/27-22:00:37.632 23f7 Reusing MANIFEST /home/fdezdev/FdezDev/fdeznet-system/backend/bot_whatsapp/.wwebjs_auth/session/Default/Local Storage/leveldb/MANIFEST-000001
+2026/04/27-22:00:37.638 23f7 Recovering log #4
+2026/04/27-22:00:37.640 23f7 Reusing old log /home/fdezdev/FdezDev/fdeznet-system/backend/bot_whatsapp/.wwebjs_auth/session/Default/Local Storage/leveldb/000004.log 
+2026/04/27-22:30:50.086 2407 Level-0 table #8: started
+2026/04/27-22:30:50.094 2407 Level-0 table #8: 17717 bytes OK
+2026/04/27-22:30:50.104 2407 Delete type=0 #4

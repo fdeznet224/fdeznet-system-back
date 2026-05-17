@@ -13,6 +13,7 @@ from src.domain.schemas import WireguardConfigResponse
 from src.infrastructure.database import get_db
 from src.infrastructure.auth import role_required
 from src.infrastructure.models import (
+    InventarioONUModel,
     RouterModel, 
     RedModel, 
     ClienteModel, 
@@ -258,6 +259,7 @@ async def descargar_plantilla_preparada(
     zona_id: int,
     plantilla_id: int,
     plan_id: int,
+    olt_id: int = 0,
     db: AsyncSession = Depends(get_db),
     current_user = Depends(role_required(["admin"]))
 ):
@@ -266,7 +268,8 @@ async def descargar_plantilla_preparada(
     # 1. Obtener Datos
     router_db = await db.get(RouterModel, router_id)
     red_db = await db.get(RedModel, red_id)
-    if not router_db or not red_db: raise HTTPException(404, "Datos no encontrados")
+    if not router_db or not red_db: 
+        raise HTTPException(404, "Datos no encontrados")
 
     planes_db = (await db.execute(select(PlanModel).where(PlanModel.router_id == router_id))).scalars().all()
     mapa_planes = {p.nombre.strip().lower(): p.id for p in planes_db if p.nombre}
@@ -276,11 +279,9 @@ async def descargar_plantilla_preparada(
     filas = []
 
     try:
-        # Obtenemos directamente los usuarios PPPoE
         secrets = mk.obtener_todos_pppoe()
 
         for item in secrets:
-            # Lógica de coincidencia de planes
             perfil_mk = item.get('profile', '') or item.get('comment', '') or ''
             perfil_limpio = perfil_mk.strip().lower()
             plan_final_id = mapa_planes.get(perfil_limpio)
@@ -290,16 +291,17 @@ async def descargar_plantilla_preparada(
                     if p_nombre in perfil_limpio:
                         plan_final_id = p_id
                         break
-            if not plan_final_id: plan_final_id = plan_id 
+            if not plan_final_id: 
+                plan_final_id = plan_id 
 
             ip = item.get('remote-address') or ''
-            # En PPPoE el nombre principal es el user_pppoe, si hay comentario lo usamos como nombre del cliente
             nombre_mk = item.get('comment') or item.get('name') or f"Cliente PPPoE {ip}"
 
             filas.append({
                 "nombre_cliente": nombre_mk, 
+                "cedula": "", # 👈 NUEVA COLUMNA: Aquí pegarás las cédulas viejas
                 "ip_asignada": ip,
-                "mac_address": item.get('caller-id') or '', 
+                "identificador_onu": item.get('caller-id') or '', 
                 "usuario_pppoe": item.get('name', ''),
                 "password_pppoe": item.get('password', ''),
                 "telefono": "",
@@ -308,13 +310,14 @@ async def descargar_plantilla_preparada(
                 "id_zona": zona_id,
                 "id_plantilla_facturacion": plantilla_id,
                 "id_plan_sugerido": plan_final_id, 
+                "id_olt": olt_id, 
                 "perfil_mikrotik_original": perfil_mk
             })
 
     except Exception as e:
         print(f"⚠️ Error leyendo Mikrotik PPPoE: {e}")
     
-    # 3. Generar Excel en MEMORIA (Sin guardar en disco)
+    # 3. Generar Excel en MEMORIA
     df = pd.DataFrame(filas)
     filename = f"Importacion_PPPoE_{router_db.nombre.replace(' ', '_')}.xlsx"
     
@@ -323,7 +326,6 @@ async def descargar_plantilla_preparada(
         df.to_excel(writer, index=False)
     output.seek(0)
     
-    # 4. Enviar Stream al navegador
     headers = {'Content-Disposition': f'attachment; filename="{filename}"'}
     return StreamingResponse(
         output, 
@@ -338,25 +340,35 @@ async def procesar_importacion(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(role_required(["admin"]))
 ):
-    """Procesa el Excel subido y crea los clientes."""
+    """Procesa el Excel subido, autogenera Inventario de ONUs y relaciona todos los IDs."""
+    import random
+    import io
+    import pandas as pd
+    from sqlalchemy import select
+
     if not await db.get(RouterModel, router_id): 
         raise HTTPException(400, "Router inválido")
     
     try:
         content = await archivo.read()
         df = pd.read_excel(io.BytesIO(content))
+        # Normalizamos cabeceras a minúsculas y guiones bajos
         df.columns = [str(c).strip().lower().replace(' ', '_') for c in df.columns] 
         df = df.fillna("")
 
-        # Caches para optimizar
+        # 1. Caches para optimizar y evitar colisiones en la DB
         ips_db = (await db.execute(select(ClienteModel.ip_asignada))).scalars().all()
         ips_existentes = set(ips_db)
+        
         users_db = (await db.execute(select(ClienteModel.user_pppoe))).scalars().all()
         users_existentes = set(users_db)
         
-        redes_cache = {}
+        cedulas_db = (await db.execute(select(ClienteModel.cedula))).scalars().all()
+        cedulas_existentes = set(cedulas_db)
+        
         count_ok = 0
         errores = []
+        caracteres_hex = "0123456789ABCDEF"
 
         for idx, row in df.iterrows():
             fila = idx + 2
@@ -365,6 +377,7 @@ async def procesar_importacion(
                 zona_id = int(row.get('id_zona', 0))
                 plantilla_id = int(row.get('id_plantilla_facturacion', 0))
                 plan_id = int(row.get('id_plan_sugerido', 0))
+                olt_id = int(row.get('id_olt', 0)) 
             except:
                 errores.append(f"Fila {fila}: IDs corruptos.")
                 continue
@@ -372,44 +385,79 @@ async def procesar_importacion(
             nombre = str(row.get('nombre_cliente', '')).strip() or f"Cliente Fila {fila}"
             ip = str(row.get('ip_asignada', '')).strip()
             user_ppp = str(row.get('usuario_pppoe', '')).strip() or None
+            
+            # 🔥 2. AUTO-REGISTRO DE INVENTARIO ONU (Por SN/Identificador) 🔥
+            sn_excel = str(row.get('identificador_onu', '')).strip().upper()
+            onu_id_asignado = None
 
-            # Validaciones básicas
+            if sn_excel:
+                stmt_inv = select(InventarioONUModel).where(InventarioONUModel.identificador == sn_excel)
+                onu_existente = (await db.execute(stmt_inv)).scalar_one_or_none()
+
+                if onu_existente:
+                    onu_id_asignado = onu_existente.id
+                    onu_existente.estado = "INSTALADO"
+                else:
+                    nueva_onu = InventarioONUModel(
+                        identificador=sn_excel,
+                        tecnologia="GPON",
+                        modelo="Auto-Importado",
+                        estado="INSTALADO"
+                    )
+                    db.add(nueva_onu)
+                    await db.flush() 
+                    onu_id_asignado = nueva_onu.id
+
+            # 3. Validaciones de IP y Usuario
             if ip and ip in ips_existentes:
                 errores.append(f"Fila {fila}: IP {ip} duplicada.")
                 continue
-
-            if ip:
-                if red_id not in redes_cache:
-                    r_db = await db.get(RedModel, red_id)
-                    if r_db: redes_cache[red_id] = ipaddress.ip_network(r_db.cidr, strict=False)
-                    else:
-                        errores.append(f"Fila {fila}: Red ID {red_id} no encontrada.")
-                        continue
-                try:
-                    if ipaddress.ip_address(ip) not in redes_cache[red_id]:
-                        errores.append(f"Fila {fila}: IP fuera de rango.")
-                except:
-                    errores.append(f"Fila {fila}: IP inválida.")
-                    continue
 
             if user_ppp and user_ppp in users_existentes:
                 errores.append(f"Fila {fila}: Usuario PPPoE duplicado.")
                 continue
 
+            # 🔥 4. LÓGICA DE CÉDULA: ¿Vieja o Nueva? 🔥
+            cedula_excel = str(row.get('cedula', '')).strip().upper()
+            cedula_final = ""
+
+            if cedula_excel:
+                # Si escribiste una cédula, verificamos que no esté repetida
+                if cedula_excel in cedulas_existentes:
+                    errores.append(f"Fila {fila}: La cédula {cedula_excel} ya existe. Se omitió este cliente.")
+                    continue
+                cedula_final = cedula_excel
+                cedulas_existentes.add(cedula_final)
+            else:
+                # Si viene vacía en el Excel, el sistema crea una aleatoria nueva
+                while True:
+                    codigo_hex = ''.join(random.choices(caracteres_hex, k=4))
+                    if codigo_hex not in cedulas_existentes:
+                        cedula_final = codigo_hex
+                        cedulas_existentes.add(cedula_final)
+                        break
+
+            # 🚀 5. CREACIÓN DEL CLIENTE
             nuevo = ClienteModel(
                 nombre=nombre,
+                cedula=cedula_final, # 👈 AQUÍ INYECTAMOS LA CÉDULA CORRECTA
                 telefono=str(row.get('telefono', '')),
                 direccion=str(row.get('direccion', '')),
                 user_pppoe=user_ppp,
                 pass_pppoe=str(row.get('password_pppoe', '12345')),
-                ip_asignada=ip,
-                mac_address=str(row.get('mac_address', '')),
+                ip_asignada=ip if ip else None,
+                
+                onu_id=onu_id_asignado,  
+                red_id=red_id if red_id > 0 else None, 
+                olt_id=olt_id if olt_id > 0 else None,
+                
                 router_id=router_id,
                 zona_id=zona_id if zona_id > 0 else None,
                 plantilla_id=plantilla_id if plantilla_id > 0 else None,
                 plan_id=plan_id if plan_id > 0 else None,
                 estado="activo"
             )
+            
             db.add(nuevo)
             if ip: ips_existentes.add(ip)
             if user_ppp: users_existentes.add(user_ppp)

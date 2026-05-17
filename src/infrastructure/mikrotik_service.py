@@ -64,6 +64,24 @@ class MikroTikService:
             payload["local-address"] = local_addr
             return self._request("PUT", "/ppp/profile", payload)
 
+    # 🔥 NUEVA FUNCIÓN DE RENOMBRADO (Adaptada a REST API) 🔥
+    def renombrar_perfil_ppp(self, nombre_viejo: str, nombre_nuevo: str):
+        """Busca el perfil por su nombre viejo y lo actualiza al nuevo nombre"""
+        res = self._request("GET", f"/ppp/profile?name={nombre_viejo}")
+        if res and isinstance(res, list) and len(res) > 0:
+            return self._request("PATCH", f"/ppp/profile/{res[0]['.id']}", {"name": nombre_nuevo})
+        else:
+            print(f"⚠️ MikroTik: No se encontró el perfil '{nombre_viejo}' para renombrar.")
+            return None
+
+    def eliminar_perfil_pppoe(self, nombre_plan: str):
+        """Elimina un profile de PPP del MikroTik"""
+        res = self._request("GET", f"/ppp/profile?name={nombre_plan}")
+        if res and isinstance(res, list) and len(res) > 0:
+            self._request("DELETE", f"/ppp/profile/{res[0]['.id']}")
+            return True
+        return False
+
     # ==========================================
     #  2. GESTIÓN DE ONUs / CLIENTES (SECRETS)
     # ==========================================
@@ -85,9 +103,21 @@ class MikroTikService:
             return self._request("PUT", "/ppp/secret", payload)
 
     def eliminar_pppoe_user(self, usuario):
-        self._request("DELETE", f"/ppp/secret?name={usuario}")
-        self.desconectar_cliente_activo(usuario)
-        return True
+        try:
+            respuesta = self._request("GET", f"/ppp/secret?name={usuario}")
+            if isinstance(respuesta, list) and len(respuesta) > 0:
+                id_interno = respuesta[0].get(".id")
+                self._request("DELETE", f"/ppp/secret/{id_interno}")
+                print(f"✅ MikroTik: Usuario {usuario} eliminado correctamente.")
+            else:
+                print(f"⚠️ MikroTik: El usuario {usuario} ya no existía.")
+                
+            self.desconectar_cliente_activo(usuario)
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error al eliminar usuario {usuario} en MikroTik: {e}")
+            raise Exception(f"Fallo en MikroTik: {str(e)}")
 
     def activar_desactivar_pppoe(self, usuario, disabled: bool):
         res = self._request("GET", f"/ppp/secret?name={usuario}")
@@ -106,16 +136,16 @@ class MikroTikService:
     #  3. SESIONES ACTIVAS PPPoE
     # ==========================================
     def desconectar_cliente_activo(self, usuario):
-        """Fuerza la reconexión de la ONU para aplicar cambios de velocidad o IP."""
-        res = self._request("GET", f"/ppp/active?name={usuario}")
-        if res and isinstance(res, list):
-            for item in res:
-                self._request("DELETE", f"/ppp/active/{item['.id']}")
-            return True
-        return False
+        try:
+            respuesta = self._request("GET", f"/ppp/active?name={usuario}")
+            if isinstance(respuesta, list) and len(respuesta) > 0:
+                id_activo = respuesta[0].get(".id")
+                self._request("DELETE", f"/ppp/active/{id_activo}")
+                print(f"✅ MikroTik: Sesión de internet de {usuario} cortada de golpe.")
+        except Exception as e:
+            print(f"⚠️ MikroTik: No se pudo desconectar sesión activa: {e}")
 
     def obtener_info_sesion(self, usuario):
-        """Retorna Uptime, IP actual y MAC (Caller-ID) de la ONU."""
         res = self._request("GET", f"/ppp/active?name={usuario}")
         if res and isinstance(res, list) and len(res) > 0:
             return {
@@ -127,10 +157,6 @@ class MikroTikService:
         return {"online": False}
 
     def obtener_todos_active_pppoe(self):
-        """
-        Descarga de golpe todas las sesiones activas. 
-        Vital para que el Dashboard muestre el puntito verde (Online) rápido.
-        """
         res = self._request("GET", "/ppp/active")
         return res if isinstance(res, list) else []
 
@@ -161,7 +187,6 @@ class MikroTikService:
             return False, str(e)
 
     def gestionar_corte_cliente(self, ip_target, suspender: bool):
-        """Agrega o quita al cliente de la lista de cortes."""
         if not ip_target or ip_target == '0.0.0.0': return False
         LISTA_CORTE = "CORTE_FDEZNET"
         
@@ -179,38 +204,23 @@ class MikroTikService:
     #  5. DIAGNÓSTICO AVANZADO
     # ==========================================
     def obtener_consumo_interfaz_pppoe(self, usuario):
-        """Obtiene el consumo real directamente de la interfaz virtual PPPoE."""
         interfaz = f"<pppoe-{usuario}>"
-        
-        # PLAN A: Usar monitor-traffic (Requiere POST porque es una acción en REST API)
         try:
-            payload = {
-                "interface": interfaz,
-                "once": "true" # Ejecuta el monitoreo 1 sola vez y devuelve el resultado
-            }
+            payload = {"interface": interfaz, "once": "true"}
             res = self._request("POST", "/interface/monitor-traffic", payload)
-            
             if res and isinstance(res, list) and len(res) > 0:
                 return {
                     "up_bps": int(res[0].get('tx-bits-per-second', 0)),
                     "down_bps": int(res[0].get('rx-bits-per-second', 0))
                 }
-        except Exception as e: 
-            print(f"⚠️ Error Monitor Traffic en {interfaz}: {e}")
+        except Exception as e: pass
 
-        # PLAN B (Fallback): Leer la cola dinámica que genera PPPoE
         try:
-            # Las URLs con símbolos < y > a veces fallan en GET, pero el wrapper REST
-            # de Python (requests) suele manejarlo. Si no, busca por nombre.
             res_q = self._request("GET", f"/queue/simple?name={interfaz}")
             if res_q and isinstance(res_q, list) and len(res_q) > 0:
                 r_up, r_down = res_q[0].get('rate', '0/0').split('/')
-                return {
-                    "up_bps": int(r_up),
-                    "down_bps": int(r_down)
-                }
-        except Exception as e:
-            print(f"⚠️ Error Queue Simple en {interfaz}: {e}")
+                return {"up_bps": int(r_up), "down_bps": int(r_down)}
+        except Exception as e: pass
             
         return {"up_bps": 0, "down_bps": 0}
 
@@ -222,7 +232,6 @@ class MikroTikService:
         except: return {"status": "error"}
 
     def eliminar_item(self, path, name_identifier):
-        """Utilidad genérica para borrar por nombre."""
         res = self._request("GET", f"{path}?name={name_identifier}")
         if res and isinstance(res, list):
             for item in res: self._request("DELETE", f"{path}/{item['.id']}")

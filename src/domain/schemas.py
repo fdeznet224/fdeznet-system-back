@@ -124,6 +124,8 @@ class CajaNapBase(BaseModel):
     coordenadas: Optional[str] = None
     capacidad: int = 16
     zona_id: int
+    olt_id: Optional[int] = None
+    puerto_olt: Optional[int] = None
 
 class CajaNapCreate(CajaNapBase):
     pass
@@ -134,6 +136,61 @@ class CajaNapResponse(CajaNapBase):
     puertos_libres: int = 0
     class Config:
         from_attributes = True
+
+
+# ==========================================
+# 6.5. OLTs (Infraestructura de Fibra)
+# ==========================================
+class OLTBase(BaseModel):
+    nombre: str = Field(..., min_length=3, max_length=100)
+    ip: str = Field(..., min_length=7, max_length=15)
+    comunidad: str = "public"
+    tecnologia: str = Field(..., pattern="^(GPON|EPON)$") # Asegura que solo envíen "GPON" o "EPON"
+    modelo: Optional[str] = None
+    router_id: Optional[int] = None
+
+class OLTCreate(OLTBase):
+    pass
+
+class OLTUpdate(BaseModel):
+    nombre: Optional[str] = None
+    ip: Optional[str] = None
+    comunidad: Optional[str] = None
+    tecnologia: Optional[str] = Field(None, pattern="^(GPON|EPON)$")
+    modelo: Optional[str] = None
+    router_id: Optional[int] = None
+    is_active: Optional[bool] = None
+
+class OLTResponse(OLTBase):
+    id: int
+    is_active: bool
+    created_at: datetime
+    class Config:
+        from_attributes = True
+
+class ONUSimple(BaseModel):
+    id: int
+    identificador: str
+    modelo: Optional[str] = None
+    tecnologia: str
+    estado: str
+    
+    class Config:
+        from_attributes = True
+
+
+
+class ONURetorno(BaseModel):
+    id: int
+    identificador: str
+    tecnologia: str
+    modelo: str
+    estado: str
+    tecnico_id: Optional[int] = None
+    cliente_id: Optional[int] = None
+    cliente_nombre: Optional[str] = None
+    cliente_direccion: Optional[str] = None
+    cliente_zona: Optional[str] = None  #
 
 # ==========================================
 # 7. PLANES
@@ -209,6 +266,8 @@ class UsuarioResponse(UsuarioBase):
 class ClienteBase(BaseModel):
     nombre: str
     cedula: Optional[str] = None 
+    onu_id: int | None = None
+    identificador_onu: Optional[str] = None
     telefono: Optional[str] = None
     direccion: Optional[str] = None
     correo: Optional[str] = None
@@ -220,6 +279,7 @@ class ClienteBase(BaseModel):
     plantilla_id: Optional[int] = None
     zona_id: Optional[int] = None
     red_id: Optional[int] = None
+    olt_id: Optional[int] = None
     caja_nap_id: Optional[int] = None
     puerto_nap: Optional[int] = None
     ip_asignada: Optional[str] = "0.0.0.0"
@@ -242,6 +302,8 @@ class ClienteResponse(ClienteBase):
     plan: Optional[PlanResponse] = None
     caja_nap: Optional[CajaNapResponse] = None
     tecnico: Optional[UsuarioResponse] = None
+    olt: Optional[OLTResponse] = None
+    onu_asignada: Optional[ONUSimple] = None
     class Config:
         from_attributes = True
 
@@ -252,7 +314,9 @@ class ClienteResponse(ClienteBase):
 # EL TÉCNICO EN CAMPO
 class InstalacionRequest(BaseModel):
     cedula: str
+    onu_id: Optional[int] = None
     mac_address: Optional[str] = None
+    olt_id: Optional[int] = None
     caja_nap_id: Optional[int] = None 
     puerto_nap: Optional[int] = None
     latitud: Optional[float] = None
@@ -323,6 +387,7 @@ class ClienteFullResponse(BaseModel):
     longitud: Optional[float] = None
     caja_nap_id: Optional[int] = None
     puerto_nap: Optional[int] = None
+    zona: Optional[str] = "Sin Zona"
     servicio: ServicioTecnico
     finanzas: FacturacionResumen
     class Config:

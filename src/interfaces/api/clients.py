@@ -1,18 +1,20 @@
 from typing import List, Optional
 from datetime import date
 import re 
+from sqlalchemy import select, or_, func
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Body, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_ 
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
+from src.application.services.snmp_service import SNMPMonitorService
 from src.domain.schemas import InstalacionRequest
 
 # Infraestructura y Base de Datos
 from src.infrastructure.database import get_db
 from src.infrastructure.auth import get_current_user
-from src.infrastructure.models import ClienteModel, ConfiguracionModel
+from src.infrastructure.models import ClienteModel, ConfiguracionModel, FacturaModel
+
 
 # Servicios y Herramientas
 from src.infrastructure.whatsapp_client import whatsapp_queue
@@ -45,11 +47,13 @@ class ClientePortalResponse(BaseModel):
     # Técnicos
     ip_asignada: Optional[str] = None
     mac_address: Optional[str] = None
+    identificador_onu: Optional[str] = None # 👇 AÑADIDO PARA LA APP DEL TÉCNICO
     router_nombre: str       
     estado: str              
     is_online: bool
     
-    # Campos NAP
+    # Campos NAP y OLT 👇
+    olt_nombre: Optional[str] = None
     nap_nombre: Optional[str] = None
     puerto_nap: Optional[int] = None
 
@@ -86,10 +90,6 @@ class PromesaRequest(BaseModel):
 
 @router.get("/{dato}/portal", response_model=ClientePortalResponse)
 async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
-    """
-    Busca por ID (si es numérico) o por Cédula (S/N).
-    Usado por la App del Técnico para ver detalles antes y después de activar.
-    """
     if dato.isdigit():
         criterio = ClienteModel.id == int(dato)
     else:
@@ -99,7 +99,9 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
         selectinload(ClienteModel.plan),
         selectinload(ClienteModel.router),
         selectinload(ClienteModel.facturas),
-        selectinload(ClienteModel.caja_nap)
+        selectinload(ClienteModel.caja_nap),
+        selectinload(ClienteModel.olt),
+        selectinload(ClienteModel.onu_asignada) # Relación de inventario corregida
     ).where(criterio) 
     
     res = await db.execute(stmt)
@@ -108,17 +110,23 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
 
-    # --- A. CÁLCULOS FINANCIEROS ---
-    facturas_pendientes = [f for f in cliente.facturas if f.estado == 'pendiente']
-    total_deuda = sum(f.saldo_pendiente for f in facturas_pendientes)
+    # --- A. CÁLCULOS FINANCIEROS (Sincronizado con listado-completo) ---
+    # Filtramos facturas: pendientes, vencidas o promesas (Adeudos reales)
+    facturas_adeudo = [f for f in cliente.facturas if f.estado in ['pendiente', 'vencida', 'promesa']]
+    
+    total_deuda = sum(f.saldo_pendiente for f in facturas_adeudo)
+    
+    # Contamos solo las que están realmente vencidas para la alerta roja
+    vencidas_count = len([f for f in facturas_adeudo if f.estado == 'vencida'])
+    
     fecha_corte = None
-    if facturas_pendientes:
-        facturas_pendientes.sort(key=lambda x: x.fecha_vencimiento)
-        fecha_corte = facturas_pendientes[0].fecha_vencimiento
+    if facturas_adeudo:
+        # Ordenamos por vencimiento para mostrar la fecha más urgente
+        facturas_adeudo.sort(key=lambda x: x.fecha_vencimiento)
+        fecha_corte = facturas_adeudo[0].fecha_vencimiento
 
     # --- B. DIAGNÓSTICO TÉCNICO (Ping) ---
     online_status = False
-    # Solo intentamos ping si el cliente está activo y tiene IP real
     if cliente.estado == 'activo' and cliente.router and cliente.ip_asignada and cliente.ip_asignada != '0.0.0.0':
         try:
             mk = MikroTikService(
@@ -134,12 +142,13 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
             online_status = False
 
     # --- C. CREDENCIALES PPPoE ---
-    # Priorizamos lo que ya está en BD. Si no hay (orden nueva), sugerimos según formato.
-    sug_user = cliente.user_pppoe if cliente.user_pppoe else RefPPP.generar_formato(cliente.nombre)
+    sug_user = cliente.user_pppoe if cliente.user_pppoe else f"user_{cliente.id}"
     sug_pass = cliente.pass_pppoe if cliente.pass_pppoe else "123456"
 
     # --- D. DATOS EXTRA ---
     nap_nombre = cliente.caja_nap.nombre if cliente.caja_nap else "No Asignada"
+    olt_nombre = cliente.olt.nombre if cliente.olt else "No Asignada"
+    id_onu = cliente.onu_asignada.identificador if cliente.onu_asignada else "Sin Equipo"
 
     return {
         "id": cliente.id,
@@ -147,27 +156,26 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
         "cedula": cliente.cedula,
         "telefono": cliente.telefono,
         "direccion": cliente.direccion,
-        
         "ip_asignada": cliente.ip_asignada or "Pendiente",
-        "mac_address": cliente.mac_address,
+        "identificador_onu": id_onu, 
         "router_nombre": cliente.router.nombre if cliente.router else "Sin Router",
         "router_id": cliente.router_id, 
         "estado": cliente.estado,
         "is_online": online_status,
-        
+        "olt_nombre": olt_nombre,
         "nap_nombre": nap_nombre,
         "puerto_nap": cliente.puerto_nap,
-
         "suggested_user": sug_user,
         "suggested_pass": sug_pass,
-        
         "plan_nombre": cliente.plan.nombre if cliente.plan else "Sin Plan",
         "velocidad_bajada": cliente.plan.velocidad_bajada if cliente.plan else 0,
+        
+        # 🚀 CORRECCIÓN: Agregamos el campo faltante requerido por el esquema
         "velocidad_subida": cliente.plan.velocidad_subida if cliente.plan else 0,
+        
         "precio_plan": cliente.plan.precio if cliente.plan else 0.0,
-
         "total_deuda": total_deuda,
-        "facturas_pendientes": len(facturas_pendientes),
+        "facturas_pendientes": vencidas_count,
         "fecha_corte": fecha_corte,
         "saldo_a_favor": cliente.saldo_a_favor or 0.0
     }
@@ -177,6 +185,50 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
 # 2. GESTIÓN DE CLIENTES (CRUD & BÚSQUEDA)
 # ==========================================
 
+
+@router.get("/buscar")
+async def buscar_clientes_global(
+    query: str = Query(..., min_length=3), 
+    db: AsyncSession = Depends(get_db)
+):
+    filtro = f"%{query}%"
+    stmt = (
+        select(
+            ClienteModel.id,
+            ClienteModel.nombre,
+            ClienteModel.telefono,
+            ClienteModel.estado,
+            ClienteModel.cedula,  
+            func.coalesce(func.sum(FacturaModel.saldo_pendiente), 0).label("total_deuda")
+        )
+        .outerjoin(FacturaModel, (FacturaModel.cliente_id == ClienteModel.id) & (FacturaModel.estado == 'pendiente'))
+        .where(
+            or_(
+                ClienteModel.nombre.ilike(filtro),
+                ClienteModel.telefono.ilike(filtro),
+                ClienteModel.cedula.ilike(filtro),     
+                ClienteModel.identificador_onu.ilike(filtro) # 👇 BÚSQUEDA POR MAC O SERIAL
+            )
+        )
+        .group_by(ClienteModel.id)
+        .limit(8)
+    )
+
+    result = await db.execute(stmt)
+    rows = result.mappings().all()
+    
+    return [
+        {
+            "id": r.id,
+            "nombre": r.nombre,
+            "cedula": r.cedula, 
+            "telefono": r.telefono,
+            "estado": r.estado,
+            "total_deuda": float(r.total_deuda)
+        }
+        for r in rows
+    ]
+
 @router.get("/", response_model=List[ClienteResponse])
 async def listar_clientes(
     router_id: Optional[int] = None, 
@@ -185,32 +237,50 @@ async def listar_clientes(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
+    # 👇 1. Importación local de Inventario para la consulta cruzada
+    from src.infrastructure.models import InventarioONUModel 
+
+    # 👇 2. Agregamos 'onu_asignada' a las opciones de carga (SELECTINLOAD)
     query = select(ClienteModel).options(
         selectinload(ClienteModel.plan),
         selectinload(ClienteModel.router),
         selectinload(ClienteModel.plantilla),
         selectinload(ClienteModel.zona),
         selectinload(ClienteModel.caja_nap),
-        selectinload(ClienteModel.tecnico)
+        selectinload(ClienteModel.tecnico),
+        selectinload(ClienteModel.olt),
+        selectinload(ClienteModel.onu_asignada) # 🔥 ESTO PERMITE QUE EL TECH VEA EL SERIAL
     )
 
+    # 3. Filtro de búsqueda (Buscador general)
     if search:
         filtro = f"%{search}%"
         query = query.where(
             or_(
                 ClienteModel.nombre.ilike(filtro),     
                 ClienteModel.cedula.ilike(filtro),     
-                ClienteModel.ip_asignada.ilike(filtro) 
+                ClienteModel.ip_asignada.ilike(filtro),
+                # Buscamos también en el identificador de la ONU vinculada
+                ClienteModel.onu_asignada.has(InventarioONUModel.identificador.ilike(filtro))
             )
         )
     
     if router_id:
         query = query.where(ClienteModel.router_id == router_id)
 
+    # 👇 4. LÓGICA DE FILTRADO PARA EL TÉCNICO (CORE) 👇
     if tecnico_id:
+        # El técnico debe ver:
+        # A) Clientes donde él es el instalador Y no están cancelados.
+        # B) Clientes cuya ONU en bodega tiene asignado su ID para retiro.
         query = query.where(
-            ClienteModel.tecnico_id == tecnico_id,
-            ClienteModel.estado != 'cancelado' 
+            or_(
+                # Caso A: Instalaciones pendientes
+                (ClienteModel.tecnico_id == tecnico_id) & (ClienteModel.estado != 'cancelado'),
+                
+                # Caso B: Retiros de equipos (Bajas) asignados a él en inventario
+                ClienteModel.onu_asignada.has(InventarioONUModel.tecnico_id == tecnico_id)
+            )
         )
 
     query = query.order_by(ClienteModel.id.desc()).limit(50)
@@ -234,7 +304,9 @@ async def obtener_cliente(cliente_id: int, db: AsyncSession = Depends(get_db)):
         selectinload(ClienteModel.plantilla),
         selectinload(ClienteModel.zona),
         selectinload(ClienteModel.caja_nap),
-        selectinload(ClienteModel.tecnico)
+        selectinload(ClienteModel.tecnico),
+        selectinload(ClienteModel.olt),
+        selectinload(ClienteModel.onu_asignada)
     ).where(ClienteModel.id == cliente_id)
     
     result = await db.execute(query)
@@ -257,30 +329,25 @@ async def registrar_cliente(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """
-    Paso 1: Crear Orden / Registrar Prospecto.
-    Guarda en BD como 'pendiente_instalacion'. NO toca Mikrotik.
-    """
     service = ClientService(db)
     try:
         return await service.registrar_cliente(cliente, background_tasks)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"Error registro: {e}")
+        print(f"Error registro API: {e}")
         raise HTTPException(status_code=500, detail="Error interno al registrar cliente")
 
 
 @router.post("/{cliente_id}/completar-instalacion")
 async def completar_instalacion(
     cliente_id: int,
-    datos: InstalacionRequest, # 👈 AQUÍ PONEMOS EL BLINDAJE
+    datos: InstalacionRequest, 
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
     service = ClientService(db)
     try:
-        # Ahora le pasamos un objeto validado, no un diccionario
         cliente_activado = await service.activar_instalacion(cliente_id, datos)
         
         return {
@@ -350,18 +417,15 @@ async def enviar_mensaje_directo(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    # 1. Obtener al cliente para tener su número
     cliente = await db.get(ClienteModel, cliente_id)
     if not cliente or not cliente.telefono:
         raise HTTPException(status_code=404, detail="Cliente o teléfono no encontrado")
     
     try:
-        # 2. 🚀 ENCOLAR PARA ENVÍO
-        # Enviamos directo a la fila de WhatsApp sin guardar nada más
         await whatsapp_queue.agregar_tarea({
             "numero": cliente.telefono,
             "mensaje": datos.mensaje,
-            "intervalo": 2  # Pausa de seguridad
+            "intervalo": 2  
         })
 
         return {
@@ -399,3 +463,53 @@ async def test_cortes_automaticos(
         return {"status": "ok", "mensaje": "Proceso finalizado", "clientes_suspendidos_hoy": cantidad}
     except Exception as e:
         return {"status": "error", "detalle": str(e)}
+    
+
+
+@router.get("/{cliente_id}/diagnostico-fibra")
+async def diagnostico_fibra_cliente(cliente_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Botón mágico para el área de Soporte Técnico: 
+    Revisa la potencia óptica en vivo de un solo cliente.
+    """
+    servicio = SNMPMonitorService(db)
+    try:
+        resultado = await servicio.monitorear_cliente_individual(cliente_id)
+        return {"status": "success", "data": resultado}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error conectando con la OLT: {str(e)}")
+    
+
+
+
+@router.post("/{cliente_id}/dar-de-baja")
+async def dar_de_baja_cliente(cliente_id: int, db: AsyncSession = Depends(get_db)):
+    """Desconecta al cliente de MikroTik y envía la ONU a 'Por Recoger'"""
+    service = ClientService(db)
+    try:
+        mensaje = await service.procesar_baja_servicio(cliente_id)
+        return {"status": "success", "message": mensaje}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/{cliente_id}/confirmar-retiro-onu")
+async def confirmar_retiro_onu(cliente_id: int, db: AsyncSession = Depends(get_db)):
+    """El técnico presiona esto al recuperar el equipo. Libera la MAC/Serial."""
+    service = ClientService(db)
+    try:
+        mensaje = await service.confirmar_retiro_tecnico(cliente_id)
+        return {"status": "success", "message": mensaje}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+
+@router.post("/{cliente_id}/asignar-retiro/{tecnico_id}") 
+async def asignar_retiro(cliente_id: int, tecnico_id: int, db: AsyncSession = Depends(get_db)):
+    service = ClientService(db)
+    try:
+        mensaje = await service.asignar_tecnico_retiro(cliente_id, tecnico_id)
+        return {"status": "success", "message": mensaje}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

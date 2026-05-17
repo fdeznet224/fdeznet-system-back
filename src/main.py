@@ -23,7 +23,7 @@ from src.domain.schemas import UsuarioCreate
 from src.interfaces.api import (
     auth, clients, planes, finanzas, network,          
     zonas, usuarios, configuracion, dashboard,
-    whatsapp, naps,vpn
+    whatsapp, naps,vpn, olts,inventario
 )
 
 # ==========================================
@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
 
     print("⏳ Iniciando Planificador de Tareas Automáticas...")
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(tarea_cron_unificada, 'cron', minute=0)
+    scheduler.add_job(tarea_cron_unificada, 'cron', minute=1)
     scheduler.start()
     print("✅ Planificador Activo.")
 
@@ -104,6 +104,8 @@ app.include_router(configuracion.router)
 app.include_router(whatsapp.router)
 app.include_router(naps.router)
 app.include_router(vpn.router)
+app.include_router(olts.router)
+app.include_router(inventario.router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

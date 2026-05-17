@@ -1,0 +1,213 @@
+import asyncio
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload # 👈 VITAL: Para cargar la relación de la ONU
+
+from src.infrastructure.models import OLTModel, ClienteModel
+# Asegúrate de tener formatear_mac_hioso en tu archivo snmp_oids.py
+from src.infrastructure.snmp_oids import MAPA_OIDS, procesar_potencia, formatear_mac_hioso
+
+class SNMPMonitorService:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def _ejecutar_comando(self, cmd: str) -> str:
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        return stdout.decode('utf-8')
+
+    async def _consulta_individual(self, ip: str, comm: str, oid: str) -> str:
+        cmd = f"snmpget -v2c -c {comm} -On {ip} {oid}"
+        res = await self._ejecutar_comando(cmd)
+        if "STRING:" in res: return res.split('STRING:')[1].strip().replace('"', '')
+        if "INTEGER:" in res: return res.split('INTEGER:')[1].strip()
+        return "N/A"
+
+    # ✅ CORRECCIÓN: Ahora recibe modelo_key directamente
+    async def _escanear_olt_fisica(self, ip: str, comunidad: str, modelo_key: str):
+        conf = MAPA_OIDS.get(modelo_key)
+        
+        if not conf:
+            raise ValueError(f"No hay OIDs configurados para el modelo {modelo_key}")
+
+        tipo_tec = conf['TIPO']
+        
+        # V-SOL EPON camina potencia. GPON y HIOSO caminan los IDs primero.
+        rama_walk = conf['RAMA_POTENCIA'] if tipo_tec == 'EPON' else conf['RAMA_IDS']
+        
+        cmd_walk = f"snmpwalk -v2c -c {comunidad} -On {ip} {rama_walk}"
+        res_walk = await self._ejecutar_comando(cmd_walk)
+        
+        reporte = []
+        if not res_walk.strip(): return reporte
+
+        for linea in res_walk.strip().split('\n'):
+            if "STRING:" in linea:
+                oid_parte = linea.split('=')[0].strip()
+                full_idx = oid_parte.replace(rama_walk, "").strip().lstrip('.')
+                
+                if tipo_tec == 'EPON':
+                    # Lógica V-SOL EPON
+                    raw_pwr = linea.split('STRING:')[-1].strip().replace('"', '')
+                    pwr_limpia = procesar_potencia(raw_pwr, tipo_tec)
+                    sub_idx = full_idx.split('.')[-1]
+                    val_id = await self._consulta_individual(ip, comunidad, f"{conf['RAMA_IDS']}.{sub_idx}")
+                
+                else:
+                    # Lógica GPON y HIOSO
+                    val_id = linea.split('STRING:')[-1].strip().replace('"', '')
+                    
+                    if tipo_tec == 'EPON_HIOSO':
+                        val_id = formatear_mac_hioso(val_id)
+
+                    raw_pwr = await self._consulta_individual(ip, comunidad, f"{conf['RAMA_POTENCIA']}.{full_idx}")
+                    pwr_limpia = procesar_potencia(raw_pwr, tipo_tec)
+
+                try:
+                    p_float = float(pwr_limpia)
+                    status = "online" if p_float < -5.0 else "offline"
+                except:
+                    pwr_limpia = "0.00"
+                    status = "offline"
+
+                reporte.append({
+                    "identificador": val_id.upper().strip(),
+                    "potencia": pwr_limpia,
+                    "status": status
+                })
+        return reporte
+
+    # ==========================================
+    # 2. EL CEREBRO: CRUCE BD VS HARDWARE
+    # ==========================================
+    async def monitorear_olt(self, olt_id: int):
+        olt = await self.db.get(OLTModel, olt_id)
+        if not olt: raise ValueError("OLT no encontrada")
+
+        stmt = select(ClienteModel).options(
+            selectinload(ClienteModel.onu_asignada) 
+        ).where(ClienteModel.olt_id == olt_id)
+        
+        clientes_db = (await self.db.execute(stmt)).scalars().all()
+        
+        mapa_bd = {}
+        for c in clientes_db:
+            sn = c.onu_asignada.identificador.upper() if c.onu_asignada else None
+            if sn:
+                mapa_bd[sn] = c
+
+        # ✅ CORRECCIÓN: Le pasamos olt.modelo en lugar de olt.tecnologia
+        onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
+
+        resultados = {
+            "olt_nombre": olt.nombre,
+            "tecnologia": olt.tecnologia,
+            "resumen": {"activos": 0, "caidos": 0, "desconocidos": 0},
+            "clientes_activos": [],
+            "clientes_caidos": [],
+            "onus_desconocidas": [] 
+        }
+
+        onus_encontradas = set() 
+
+        for onu in onus_fisicas:
+            id_fisico = onu["identificador"]
+            if id_fisico == "N/A": continue
+            onus_encontradas.add(id_fisico)
+
+            if id_fisico in mapa_bd:
+                cliente_real = mapa_bd[id_fisico]
+                datos_cruzados = {
+                    "id_cliente": cliente_real.id,
+                    "nombre": cliente_real.nombre,
+                    "identificador": id_fisico,
+                    "rx_power": f"{onu['potencia']} dBm",
+                    "estado_fisico": onu['status'],
+                    "estado_fdeznet": cliente_real.estado
+                }
+
+                if onu['status'] == "online":
+                    resultados["clientes_activos"].append(datos_cruzados)
+                    resultados["resumen"]["activos"] += 1
+                else:
+                    resultados["clientes_caidos"].append(datos_cruzados)
+                    resultados["resumen"]["caidos"] += 1
+            else:
+                resultados["onus_desconocidas"].append({
+                    "identificador": id_fisico,
+                    "rx_power": f"{onu['potencia']} dBm",
+                    "status": onu['status']
+                })
+                resultados["resumen"]["desconocidos"] += 1
+
+        for id_bd, cliente in mapa_bd.items():
+            if id_bd not in onus_encontradas:
+                resultados["clientes_caidos"].append({
+                    "id_cliente": cliente.id,
+                    "nombre": cliente.nombre,
+                    "identificador": id_bd,
+                    "rx_power": "LOS / Sin señal",
+                    "estado_fisico": "offline",
+                    "estado_fdeznet": cliente.estado
+                })
+                resultados["resumen"]["caidos"] += 1
+
+        return resultados
+
+    async def monitorear_cliente_individual(self, cliente_id: int):
+        """Diagnóstico en tiempo real para un solo cliente"""
+        stmt = select(ClienteModel).options(
+            selectinload(ClienteModel.onu_asignada)
+        ).where(ClienteModel.id == cliente_id)
+        
+        cliente = (await self.db.execute(stmt)).scalar_one_or_none()
+        
+        if not cliente:
+            raise ValueError("Cliente no encontrado.")
+            
+        sn_cliente = cliente.onu_asignada.identificador if cliente.onu_asignada else None
+        
+        if not cliente.olt_id or not sn_cliente:
+            raise ValueError("Al cliente le falta OLT o Identificador de ONU (SN).")
+
+        olt = await self.db.get(OLTModel, cliente.olt_id)
+        
+        # ✅ CORRECCIÓN: Le pasamos olt.modelo en lugar de olt.tecnologia
+        onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
+
+        id_buscado = sn_cliente.upper().strip()
+        
+        for onu in onus_fisicas:
+            if onu["identificador"] == id_buscado:
+                pwr = float(onu['potencia'])
+                
+                if pwr < -27.0:
+                    msg = "Señal CRÍTICA. Revisar dobleces en la fibra o conectores sucios."
+                elif pwr < -25.0:
+                    msg = "Señal aceptable, pero al límite. Revisar si hay margen de mejora."
+                else:
+                    msg = "¡Señal EXCELENTE! Instalación óptima."
+
+                return {
+                    "cliente_id": cliente.id,
+                    "nombre": cliente.nombre,
+                    "identificador": id_buscado,
+                    "potencia": f"{onu['potencia']} dBm",
+                    "estado_fisico": onu['status'],
+                    "tecnologia": olt.tecnologia,
+                    "recomendacion": msg 
+                }
+
+        return {
+            "cliente_id": cliente.id,
+            "nombre": cliente.nombre,
+            "identificador": id_buscado,
+            "potencia": "LOS / Sin señal",
+            "estado_fisico": "offline",
+            "tecnologia": olt.tecnologia,
+            "recomendacion": "La OLT no ve la ONU. Verificar energía del cliente o ruptura de fibra troncal."
+        }

@@ -24,6 +24,34 @@ usuario_routers_association = Table(
     Column('router_id', Integer, ForeignKey('routers.id'), primary_key=True)
 )
 
+class EstadoEquipo(str, enum.Enum):
+    INSTALADO = "instalado"
+    POR_RECOGER = "por_recoger"
+    EN_BODEGA = "en_bodega"
+
+
+class InventarioONUModel(Base):
+    __tablename__ = "inventario_onus"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # MAC para EPON, SN para GPON
+    identificador = Column(String(100), unique=True, index=True, nullable=False)
+    
+    tecnologia = Column(String(20), nullable=False) # 'GPON' o 'EPON'
+    modelo = Column(String(100), nullable=True)     # Ej: 'ZTE F670L'
+    
+    # Estados: DISPONIBLE, INSTALADO, POR_RECOGER, DAÑADO
+    estado = Column(String(50), default='DISPONIBLE', nullable=False)
+    
+    # Quién tiene el equipo si no está en bodega
+    tecnico_id = Column(Integer, ForeignKey('usuarios.id'), nullable=True) 
+    
+    created_at = Column(DateTime, default=func.now())
+
+    # Relaciones
+    cliente = relationship("ClienteModel", back_populates="onu_asignada", uselist=False)
+    tecnico = relationship("UsuarioModel")
+
 # ==========================================
 # 2. INFRAESTRUCTURA (Routers, Redes, Planes, NAPs)
 # ==========================================
@@ -96,13 +124,40 @@ class CajaNapModel(Base):
     ubicacion = Column(String(200))     # Ej: "Poste 54, Calle Hidalgo"
     coordenadas = Column(String(100))   # Opcional para mapa
     capacidad = Column(Integer, default=16) # 8 o 16 puertos
+    puerto_olt = Column(Integer, nullable=True)
     
     # Relación con Zona (Para filtrar por colonia)
     zona_id = Column(Integer, ForeignKey("zonas.id"))
     zona = relationship("ZonaModel", back_populates="cajas_nap")
     
     # Relación con Clientes
+    olt_id = Column(Integer, ForeignKey("olts.id"), nullable=True)
+    puerto_olt = Column(Integer, nullable=True)
+    olt = relationship("OLTModel", back_populates="cajas_nap")
     clientes = relationship("ClienteModel", back_populates="caja_nap")
+
+
+class OLTModel(Base):
+    __tablename__ = "olts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String(100), nullable=False)        # Ej: "OLT San Lucas"
+    ip = Column(String(50), nullable=False, unique=True)
+    comunidad = Column(String(50), default="public")
+    tecnologia = Column(String(20), nullable=False)     # "GPON" o "EPON"
+    modelo = Column(String(50))                         # "V1600GS", "V1601E02-DP", "HIOSO"
+    
+    router_id = Column(Integer, ForeignKey("routers.id"), nullable=True) # A qué MikroTik está conectada
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relaciones
+    router = relationship("RouterModel", backref="olts")
+    clientes = relationship("ClienteModel", back_populates="olt")
+    cajas_nap = relationship("CajaNapModel", back_populates="olt") # Opcional: Para mapear la red física
+
+
+
 
 
 # ==========================================
@@ -124,42 +179,46 @@ class PlantillaFacturacionModel(Base):
 
 class ClienteModel(Base):
     __tablename__ = "clientes"
-    id = Column(Integer, primary_key=True, index=True)
-    nombre = Column(String(150))
     
-    # NOTA: Usamos 'cedula' para guardar el SN de la ONU
-    cedula = Column(String(50)) 
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String(150), nullable=False)
+    cedula = Column(String(50), unique=True, index=True) 
     
     telefono = Column(String(20))
     direccion = Column(String(200))
     correo = Column(String(100))
     
+    # ... (Tus campos de IP, MAC y PPPoE se mantienen igual)
     ip_asignada = Column(String(20), unique=True)
     mac_address = Column(String(20))
     user_pppoe = Column(String(50))
     pass_pppoe = Column(String(50))
     
+    # ... (Tus llaves foráneas se mantienen igual)
     router_id = Column(Integer, ForeignKey("routers.id"))
     plan_id = Column(Integer, ForeignKey("planes.id"))
     zona_id = Column(Integer, ForeignKey("zonas.id"))
     red_id = Column(Integer, ForeignKey("redes.id"))
     plantilla_id = Column(Integer, ForeignKey("plantillas_facturacion.id"))
+    olt_id = Column(Integer, ForeignKey("olts.id"), nullable=True)
 
-    # 👇👇👇 NUEVOS CAMPOS FTTH 👇👇👇
+    # 👇👇👇 CAMPOS FTTH 👇👇👇
     caja_nap_id = Column(Integer, ForeignKey("cajas_nap.id"), nullable=True)
-    puerto_nap = Column(Integer, nullable=True)  # El número del puerto (1-16)
+    puerto_nap = Column(Integer, nullable=True)
     tecnico_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
+    onu_id = Column(Integer, ForeignKey('inventario_onus.id'), nullable=True)
+    onu_asignada = relationship("InventarioONUModel", back_populates="cliente")
+    
+    # ... (Tus relaciones se mantienen igual)
     tecnico = relationship("UsuarioModel", foreign_keys=[tecnico_id])
-
-    # Relaciones
     router = relationship("RouterModel", back_populates="clientes")
     plan = relationship("PlanModel", back_populates="clientes")
     zona = relationship("ZonaModel", back_populates="clientes")
     red = relationship("RedModel", back_populates="clientes")
     plantilla = relationship("PlantillaFacturacionModel", back_populates="clientes")
-    
-    # Relación con Caja NAP
     caja_nap = relationship("CajaNapModel", back_populates="clientes")
+    olt = relationship("OLTModel", back_populates="clientes")
+    
     
     estado = Column(String(50), default="activo")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -171,7 +230,6 @@ class ClienteModel(Base):
 
     latitud = Column(Float, nullable=True)
     longitud = Column(Float, nullable=True)
-
 
 
 class FacturaModel(Base):
@@ -236,6 +294,14 @@ class UsuarioModel(Base):
         backref="usuarios_permitidos",
         lazy="selectin" 
     )
+
+    @property
+    def router_ids(self):
+        """
+        Esta propiedad es leída automáticamente por Pydantic (gracias a from_attributes=True)
+        para llenar la lista de 'router_ids' en el JSON de respuesta.
+        """
+        return [router.id for router in self.routers_asignados] if self.routers_asignados else []
 
 class ConfiguracionModel(Base):
     __tablename__ = "configuracion"
@@ -312,3 +378,23 @@ class VpnTunnelModel(Base):
     script_mikrotik = Column(Text, nullable=True) # Guardamos el script por si quieres volver a verlo
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=func.now())
+
+
+class PagoAutovalidadoModel(Base):
+    __tablename__ = "pagos_autovalidados"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id"))
+    
+    # Datos extraídos del ticket por el Bot
+    monto = Column(Float, nullable=False)
+    folio_banco = Column(String(100), unique=True, nullable=False) # 👈 ESTO EVITA EL FRAUDE
+    banco_emisor = Column(String(50), nullable=True)
+    fecha_pago_banco = Column(String(50), nullable=True)
+    
+    # Datos de control
+    whatsapp_remitente = Column(String(20), nullable=True)
+    fecha_registro = Column(DateTime, default=datetime.now)
+
+    # Relación para saber de quién es el dinero
+    # cliente = relationship("ClienteModel", back_populates="pagos_auto")

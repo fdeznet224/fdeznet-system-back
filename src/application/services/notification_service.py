@@ -1,106 +1,86 @@
 from datetime import datetime
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
-logger = logging.getLogger(__name__)
-
 from src.infrastructure.models import PlantillaMensajeModel, ClienteModel
-
-# 👇 IMPORTANTE: Importamos la COLA GLOBAL, no solo el servicio
+from src.application.helpers.message_formatter import formatear_mensaje
 from src.infrastructure.whatsapp_client import whatsapp_queue
+
+logger = logging.getLogger(__name__)
 
 class NotificationService:
     def __init__(self, db: AsyncSession):
         self.db = db
-        # Ya no instanciamos WhatsAppService aquí, usamos la cola global importada
 
-    async def notificar_evento(self, evento: str, cliente_id: int, variables: dict = None, intervalo: int = 60):
+    async def notificar(self, tipo_evento: str, cliente_id: int, variables_extra: dict = None, ruta_pdf: str = None):
         """
-        Busca plantilla, reemplaza variables y ENCOLA el mensaje.
-        :param intervalo: Tiempo en segundos a esperar después de enviar este mensaje (Default 60s)
+        MOTOR ÚNICO GLOBAL: Busca plantilla, extrae datos del cliente, 
+        formatea y encola en WhatsApp (soporta texto y PDF).
         """
         
         # 1. BUSCAR PLANTILLA
-        stmt_plantilla = select(PlantillaMensajeModel).where(
-            PlantillaMensajeModel.tipo == evento,
-            PlantillaMensajeModel.activo == True
+        stmt_p = select(PlantillaMensajeModel).where(
+            PlantillaMensajeModel.tipo == tipo_evento,
+            PlantillaMensajeModel.activo == 1
         )
-        plantilla = (await self.db.execute(stmt_plantilla)).scalar_one_or_none()
+        plantilla = (await self.db.execute(stmt_p)).scalar_one_or_none()
 
         if not plantilla:
+            logger.warning(f"⚠️ Plantilla '{tipo_evento}' no encontrada o inactiva.")
             return False
 
-        # 2. OBTENER CLIENTE
-        stmt_cliente = select(ClienteModel).options(
+        # 2. BUSCAR CLIENTE CON TODA SU INFO (Cargamos todas las relaciones necesarias)
+        stmt_c = select(ClienteModel).options(
             joinedload(ClienteModel.plan),
-            joinedload(ClienteModel.plantilla)
+            joinedload(ClienteModel.plantilla),
+            joinedload(ClienteModel.router),
+            joinedload(ClienteModel.onu_asignada) # ✅ Cargamos la relación de la ONU
         ).where(ClienteModel.id == cliente_id)
         
-        cliente = (await self.db.execute(stmt_cliente)).scalar_one_or_none()
+        cliente = (await self.db.execute(stmt_c)).scalar_one_or_none()
 
         if not cliente or not cliente.telefono:
-            logger.warning(f"⚠️ Cliente {cliente_id} sin teléfono para evento {evento}")
+            logger.warning(f"⚠️ Cliente {cliente_id} no existe o no tiene teléfono.")
             return False
 
-        # 3. PREPARAR DATOS
-        nombre_plan = cliente.plan.nombre if cliente.plan else "N/A"
-        precio_plan = f"${cliente.plan.precio}" if cliente.plan else "$0.00"
-        dia_corte = str(cliente.plantilla.dia_pago) if cliente.plantilla else "1"
-
+        # 3. EL DICCIONARIO MAESTRO
         datos_base = {
+            "empresa": "FdezNet",
+            "fecha_actual": datetime.now().strftime("%d/%m/%Y"),
             "nombre": cliente.nombre,
             "telefono": cliente.telefono,
-            "direccion": cliente.direccion or "",
-            "ip": cliente.ip_asignada or "",
-            "plan": nombre_plan,
-            "precio": precio_plan,
-            "dia_corte": dia_corte,
-            "fecha_actual": datetime.now().strftime("%d/%m/%Y"),
-            "empresa": "FdezNet",
+            "direccion": cliente.direccion or "Domicilio conocido",
+            "cedula": cliente.cedula or "Pendiente",
+            
+            # 🔥 CORRECCIÓN AQUÍ 🔥
+            # En lugar de usar identificador_onu, entramos a la relación cargada
+            "onu_serial": cliente.onu_asignada.identificador if cliente.onu_asignada else "N/A", 
+            
+            "ip": cliente.ip_asignada or "Pendiente",
+            "nodo": cliente.router.nombre if cliente.router else "Principal",
+            "plan": cliente.plan.nombre if cliente.plan else "Básico",
+            "precio": f"${cliente.plan.precio}" if cliente.plan else "$0.00",
+            "dia_corte": str(cliente.plantilla.dia_pago) if cliente.plantilla else "1",
+            "usuario_pppoe": cliente.user_pppoe or "N/A",
+            "pass_pppoe": cliente.pass_pppoe or "N/A",
         }
-        
-        datos_finales = {**datos_base, **(variables or {})}
 
-        # 4. REEMPLAZO DE VARIABLES
-        mensaje_final = plantilla.texto
-        for clave, valor in datos_finales.items():
-            marcador = f"{{{clave}}}" 
-            if marcador in mensaje_final:
-                mensaje_final = mensaje_final.replace(marcador, str(valor))
+        # Unir con datos específicos del momento
+        datos_finales = {**datos_base, **(variables_extra or {})}
 
-        # 5. 👇 AQUÍ EL CAMBIO: AGREGAR A LA COLA
-        logger.info(f"📨 Encolando '{evento}' para {cliente.nombre} (Espera: {intervalo}s)")
+        # 4. FORMATEAR MENSAJE
+        mensaje_formateado = formatear_mensaje(plantilla.texto, datos_finales)
         
+        # 5. ENCOLAR TAREA
         tarea = {
             "numero": cliente.telefono,
-            "mensaje": mensaje_final,
-            "ruta": None,
-            "intervalo": intervalo # 👈 Pasamos el tiempo que decidió el Frontend o Default
-        }
-        
-        await whatsapp_queue.agregar_tarea(tarea)
-        
-        return True
-
-    async def enviar_factura_pdf(self, cliente_id: int, ruta_pdf: str, mensaje_opcional: str = None, intervalo: int = 60):
-        """
-        Encola el envío de un PDF.
-        """
-        cliente = await self.db.get(ClienteModel, cliente_id)
-        if not cliente or not cliente.telefono: return False
-        
-        texto = mensaje_opcional or f"Hola {cliente.nombre}, adjuntamos tu comprobante."
-        
-        logger.info(f"📎 Encolando PDF para {cliente.nombre}")
-        
-        tarea = {
-            "numero": cliente.telefono,
-            "mensaje": texto,
+            "mensaje": mensaje_formateado,
             "ruta": ruta_pdf,
-            "intervalo": intervalo # 👈 Tiempo seguro
+            "intervalo": 5 
         }
         
         await whatsapp_queue.agregar_tarea(tarea)
+        logger.info(f"📨 Notificación '{tipo_evento}' encolada para {cliente.nombre}")
         return True
