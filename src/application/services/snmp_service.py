@@ -15,9 +15,16 @@ class SNMPMonitorService:
         proc = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE  # 👈 Atrapamos el canal de errores
         )
-        stdout, _ = await proc.communicate()
+        stdout, stderr = await proc.communicate()
+        
+        # ⚡ Si hay un error del sistema operativo (ej: comand not found o falta de permisos), lo imprimimos en la consola
+        if stderr:
+            err_msg = stderr.decode('utf-8').strip()
+            if err_msg:
+                print(f"❌ [SISTEMA OS] Error ejecutando comando ({cmd}): {err_msg}")
+                
         return stdout.decode('utf-8')
 
     async def _consulta_individual(self, ip: str, comm: str, oid: str) -> str:
@@ -37,42 +44,48 @@ class SNMPMonitorService:
         tipo_tec = conf['TIPO']
         rama_walk = conf['RAMA_POTENCIA'] if tipo_tec == 'EPON' else conf['RAMA_IDS']
         
-        cmd_walk = f"snmpwalk -v2c -c {comunidad} -On {ip} {rama_walk}"
+        # Forzamos la ruta absoluta por seguridad de entorno
+        cmd_walk = f"/usr/bin/snmpwalk -v2c -c {comunidad} -On {ip} {rama_walk}"
         res_walk = await self._ejecutar_comando(cmd_walk)
         
         reporte = []
         if not res_walk.strip(): return reporte
 
         for linea in res_walk.strip().split('\n'):
-            # Convertimos toda la línea a mayúsculas temporalmente para validar si trae un texto/string
-            linea_upper = linea.upper()
-            
-            if "STRING:" in linea_upper:
-                oid_parte = linea.split('=')[0].strip()
-                full_idx = oid_parte.replace(rama_walk, "").strip().lstrip('.')
+            if "=" in linea:
+                # 1. Separamos el OID completo del valor de la línea
+                partes = linea.split("=")
+                oid_completo = partes[0].strip()  # Ej: "iso.3.6.1.4.1.37950.1.1.6.3.5.1.7.0.1"
+                valor_crudo = partes[1].strip()   # Ej: "STRING: \"HWTC38737fb2\""
                 
+                # 2. Extraemos el final del OID (los últimos números después de la rama base)
+                # Al limpiar caracteres, nos aseguramos de quedarnos con el "0.1", "0.2", etc.
+                clean_oid = oid_completo.replace("iso", "").replace("authenticated", "").strip().lstrip('.')
+                clean_rama = rama_walk.strip().lstrip('.')
+                full_idx = clean_oid.replace(clean_rama, "").strip().lstrip('.')
+                
+                # Validamos que de verdad tengamos un índice limpio
+                if not full_idx: continue
+
+                # 3. Limpiamos el Identificador (Serial o MAC)
+                if "STRING:" in valor_crudo.upper():
+                    # Corta sin importar si viene en mayúsculas o minúsculas
+                    val_id = valor_crudo.split(':')[-1].strip().replace('"', '')
+                else:
+                    val_id = valor_crudo.replace('"', '')
+
                 if tipo_tec == 'EPON':
                     # Lógica V-SOL EPON
-                    raw_pwr = linea.split('STRING:')[-1].strip().replace('"', '') if "STRING:" in linea else linea.split('=')[-1].strip().replace('"', '')
-                    pwr_limpia = procesar_potencia(raw_pwr, tipo_tec)
+                    pwr_limpia = procesar_potencia(val_id, tipo_tec)
                     sub_idx = full_idx.split('.')[-1]
                     val_id = await self._consulta_individual(ip, comunidad, f"{conf['RAMA_IDS']}.{sub_idx}")
-                
                 else:
-                    # Lógica GPON (V1600GS) y HIOSO
-                    # ⚡ Extraemos el valor cortando por el separador genérico 'STRING:' sin importar mayúsculas/minúsculas
-                    if "STRING:" in linea:
-                        val_id = linea.split('STRING:')[-1].strip().replace('"', '')
-                    elif "String:" in linea:
-                        val_id = linea.split('String:')[-1].strip().replace('"', '')
-                    else:
-                        val_id = linea.split('=')[-1].strip().replace('"', '')
-
+                    # Lógica GPON y HIOSO
                     if tipo_tec == 'EPON_HIOSO':
                         val_id = formatear_mac_hioso(val_id)
                         oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{full_idx}"
                     else:
-                        # Ajuste de índice GPON V1600GS
+                        # ⚡ Ajuste quirúrgico para GPON V1600GS: Cambiamos el "0.x" por "1.x" para la potencia
                         idx_potencia = full_idx.replace("0.", "1.") if full_idx.startswith("0.") else full_idx
                         oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{idx_potencia}"
 
