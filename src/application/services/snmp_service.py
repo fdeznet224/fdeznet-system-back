@@ -19,7 +19,7 @@ class SNMPMonitorService:
         )
         stdout, stderr = await proc.communicate()
         
-        # ⚡ Si hay un error del sistema operativo (ej: comand not found o falta de permisos), lo imprimimos en la consola
+        # ⚡ Si hay un error del sistema operativo (ej: command not found o falta de permisos), lo imprimimos en la consola
         if stderr:
             err_msg = stderr.decode('utf-8').strip()
             if err_msg:
@@ -28,10 +28,13 @@ class SNMPMonitorService:
         return stdout.decode('utf-8')
 
     async def _consulta_individual(self, ip: str, comm: str, oid: str) -> str:
-        cmd = f"snmpget -v2c -c {comm} -On {ip} {oid}"
+        # ⚡ CORRECCIÓN: Ruta absoluta forzada para que el entorno de Uvicorn encuentre siempre snmpget
+        cmd = f"/usr/bin/snmpget -v2c -c {comm} -On {ip} {oid}"
         res = await self._ejecutar_comando(cmd)
-        if "STRING:" in res: return res.split('STRING:')[1].strip().replace('"', '')
-        if "INTEGER:" in res: return res.split('INTEGER:')[1].strip()
+        if "STRING:" in res.upper(): 
+            return res.split('STRING:')[1].strip().replace('"', '')
+        if "INTEGER:" in res.upper(): 
+            return res.split('INTEGER:')[1].strip()
         return "N/A"
 
     # ✅ CORRECCIÓN: Ahora recibe modelo_key directamente
@@ -59,7 +62,7 @@ class SNMPMonitorService:
                 valor_crudo = partes[1].strip()   # Ej: "STRING: \"HWTC38737fb2\""
                 
                 # 2. Extraemos el final del OID (los últimos números después de la rama base)
-                # Al limpiar caracteres, nos aseguramos de quedarnos con el "0.1", "0.2", etc.
+                # Al limpiar caracteres, nos aseguramos de quedarnos con el "0.1", "0.2", etc. quitando la palabra "iso"
                 clean_oid = oid_completo.replace("iso", "").replace("authenticated", "").strip().lstrip('.')
                 clean_rama = rama_walk.strip().lstrip('.')
                 full_idx = clean_oid.replace(clean_rama, "").strip().lstrip('.')
@@ -67,9 +70,8 @@ class SNMPMonitorService:
                 # Validamos que de verdad tengamos un índice limpio
                 if not full_idx: continue
 
-                # 3. Limpiamos el Identificador (Serial o MAC)
+                # 3. Limpiamos el Identificador (Serial o MAC) sin importar mayúsculas/minúsculas
                 if "STRING:" in valor_crudo.upper():
-                    # Corta sin importar si viene en mayúsculas o minúsculas
                     val_id = valor_crudo.split(':')[-1].strip().replace('"', '')
                 else:
                     val_id = valor_crudo.replace('"', '')
@@ -128,7 +130,7 @@ class SNMPMonitorService:
             if sn:
                 mapa_bd[sn] = c
 
-        # ✅ CORRECCIÓN: Le pasamos olt.modelo en lugar de olt.tecnologia
+        # ✅ Le pasamos olt.modelo
         onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
 
         resultados = {
@@ -204,14 +206,17 @@ class SNMPMonitorService:
 
         olt = await self.db.get(OLTModel, cliente.olt_id)
         
-        # ✅ CORRECCIÓN: Le pasamos olt.modelo en lugar de olt.tecnologia
+        # ✅ Le pasamos olt.modelo
         onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
 
         id_buscado = sn_cliente.upper().strip()
         
         for onu in onus_fisicas:
             if onu["identificador"] == id_buscado:
-                pwr = float(onu['potencia'])
+                try:
+                    pwr = float(onu['potencia'])
+                except:
+                    pwr = 0.00
                 
                 if pwr < -27.0:
                     msg = "Señal CRÍTICA. Revisar dobleces en la fibra o conectores sucios."
