@@ -7,7 +7,8 @@ from sqlalchemy import select
 
 # Scheduler para Cronjobs
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from src.jobs import tarea_cron_unificada
+# 👇 AGREGAMOS LA NUEVA FUNCIÓN AQUÍ
+from src.jobs import tarea_cron_unificada, tarea_sincronizar_estados_red
 
 # Base de Datos
 from src.infrastructure.database import engine, Base, SessionLocal
@@ -59,9 +60,15 @@ async def lifespan(app: FastAPI):
 
     print("⏳ Iniciando Planificador de Tareas Automáticas...")
     scheduler = AsyncIOScheduler()
+    
+    # 1. Tarea de Facturación y Cortes (Se ejecuta cada hora)
     scheduler.add_job(tarea_cron_unificada, 'cron', minute=1)
+    
+    # 2. ⚡ NUEVA TAREA: Sincronización de MikroTik (Se ejecuta cada 3 minutos)
+    scheduler.add_job(tarea_sincronizar_estados_red, 'interval', minutes=3)
+    
     scheduler.start()
-    print("✅ Planificador Activo.")
+    print("✅ Planificador Activo con tareas de Facturación y Red.")
 
     yield 
 
@@ -113,7 +120,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 def home():
     return {
         "mensaje": "API FdezNet Arquitectura Limpia Activa 🚀",
-        "cronjob": "Activo (Revisión cada hora)",
+        "cronjob": "Activo (Revisión cada hora y estados cada 3 min)",
         "chat_system": "WebSocket Online",
         "version": "2.2.0"
     }

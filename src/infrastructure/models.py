@@ -230,6 +230,8 @@ class ClienteModel(Base):
 
     latitud = Column(Float, nullable=True)
     longitud = Column(Float, nullable=True)
+    is_online = Column(Boolean, default=False)
+    ultimo_cambio_estado = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
 class FacturaModel(Base):
