@@ -44,44 +44,46 @@ class SNMPMonitorService:
         if not res_walk.strip(): return reporte
 
         for linea in res_walk.strip().split('\n'):
-            if "STRING:" in linea:
+            # Convertimos toda la línea a mayúsculas temporalmente para validar si trae un texto/string
+            linea_upper = linea.upper()
+            
+            if "STRING:" in linea_upper:
                 oid_parte = linea.split('=')[0].strip()
-                # Extraemos la colita exacta del índice (ej: "0.1" o "1.1")
                 full_idx = oid_parte.replace(rama_walk, "").strip().lstrip('.')
                 
                 if tipo_tec == 'EPON':
                     # Lógica V-SOL EPON
-                    raw_pwr = linea.split('STRING:')[-1].strip().replace('"', '')
+                    raw_pwr = linea.split('STRING:')[-1].strip().replace('"', '') if "STRING:" in linea else linea.split('=')[-1].strip().replace('"', '')
                     pwr_limpia = procesar_potencia(raw_pwr, tipo_tec)
                     sub_idx = full_idx.split('.')[-1]
                     val_id = await self._consulta_individual(ip, comunidad, f"{conf['RAMA_IDS']}.{sub_idx}")
                 
                 else:
                     # Lógica GPON (V1600GS) y HIOSO
-                    val_id = linea.split('STRING:')[-1].strip().replace('"', '')
-                    
+                    # ⚡ Extraemos el valor cortando por el separador genérico 'STRING:' sin importar mayúsculas/minúsculas
+                    if "STRING:" in linea:
+                        val_id = linea.split('STRING:')[-1].strip().replace('"', '')
+                    elif "String:" in linea:
+                        val_id = linea.split('String:')[-1].strip().replace('"', '')
+                    else:
+                        val_id = linea.split('=')[-1].strip().replace('"', '')
+
                     if tipo_tec == 'EPON_HIOSO':
                         val_id = formatear_mac_hioso(val_id)
-                        # El índice se concatena directo
                         oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{full_idx}"
                     else:
-                        # ⚡ CORRECCIÓN CLAVE PARA GPON V1600GS:
-                        # Si el walk te dio el índice como "0.1", para la potencia ocupamos cambiar el "0." por "1." 
-                        # para que apunte al puerto PON de lectura correcto (1.1)
+                        # Ajuste de índice GPON V1600GS
                         idx_potencia = full_idx.replace("0.", "1.") if full_idx.startswith("0.") else full_idx
                         oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{idx_potencia}"
 
                     raw_pwr = await self._consulta_individual(ip, comunidad, oid_buscar_potencia)
                     pwr_limpia = procesar_potencia(raw_pwr, tipo_tec)
 
-                # Si la potencia viene escalada por la OLT (ej: -1950 en lugar de -19.50)
                 try:
                     p_float = float(pwr_limpia)
-                    # Corrección de escala común en OLTs de formato entero
                     if p_float < -100:
                         p_float = p_float / 100.0
-                        pwr_limpia = f"{p_float:.2f}"
-                        
+                    pwr_limpia = f"{p_float:.2f}"
                     status = "online" if -5.0 > p_float > -35.0 else "offline"
                 except:
                     pwr_limpia = "0.00"
