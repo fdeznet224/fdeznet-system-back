@@ -35,8 +35,6 @@ class SNMPMonitorService:
             raise ValueError(f"No hay OIDs configurados para el modelo {modelo_key}")
 
         tipo_tec = conf['TIPO']
-        
-        # V-SOL EPON camina potencia. GPON y HIOSO caminan los IDs primero.
         rama_walk = conf['RAMA_POTENCIA'] if tipo_tec == 'EPON' else conf['RAMA_IDS']
         
         cmd_walk = f"snmpwalk -v2c -c {comunidad} -On {ip} {rama_walk}"
@@ -48,6 +46,7 @@ class SNMPMonitorService:
         for linea in res_walk.strip().split('\n'):
             if "STRING:" in linea:
                 oid_parte = linea.split('=')[0].strip()
+                # Extraemos la colita exacta del índice (ej: "0.1" o "1.1")
                 full_idx = oid_parte.replace(rama_walk, "").strip().lstrip('.')
                 
                 if tipo_tec == 'EPON':
@@ -58,18 +57,32 @@ class SNMPMonitorService:
                     val_id = await self._consulta_individual(ip, comunidad, f"{conf['RAMA_IDS']}.{sub_idx}")
                 
                 else:
-                    # Lógica GPON y HIOSO
+                    # Lógica GPON (V1600GS) y HIOSO
                     val_id = linea.split('STRING:')[-1].strip().replace('"', '')
                     
                     if tipo_tec == 'EPON_HIOSO':
                         val_id = formatear_mac_hioso(val_id)
+                        # El índice se concatena directo
+                        oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{full_idx}"
+                    else:
+                        # ⚡ CORRECCIÓN CLAVE PARA GPON V1600GS:
+                        # Si el walk te dio el índice como "0.1", para la potencia ocupamos cambiar el "0." por "1." 
+                        # para que apunte al puerto PON de lectura correcto (1.1)
+                        idx_potencia = full_idx.replace("0.", "1.") if full_idx.startswith("0.") else full_idx
+                        oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{idx_potencia}"
 
-                    raw_pwr = await self._consulta_individual(ip, comunidad, f"{conf['RAMA_POTENCIA']}.{full_idx}")
+                    raw_pwr = await self._consulta_individual(ip, comunidad, oid_buscar_potencia)
                     pwr_limpia = procesar_potencia(raw_pwr, tipo_tec)
 
+                # Si la potencia viene escalada por la OLT (ej: -1950 en lugar de -19.50)
                 try:
                     p_float = float(pwr_limpia)
-                    status = "online" if p_float < -5.0 else "offline"
+                    # Corrección de escala común en OLTs de formato entero
+                    if p_float < -100:
+                        p_float = p_float / 100.0
+                        pwr_limpia = f"{p_float:.2f}"
+                        
+                    status = "online" if -5.0 > p_float > -35.0 else "offline"
                 except:
                     pwr_limpia = "0.00"
                     status = "offline"
