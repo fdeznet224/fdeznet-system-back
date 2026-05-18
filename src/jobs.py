@@ -1,6 +1,6 @@
 # backend/src/jobs.py
 import asyncio
-import routeros_api
+import requests  # 👈 Usamos la librería web estándar en lugar de routeros_api
 from datetime import datetime
 from sqlalchemy import select
 from src.infrastructure.database import SessionLocal
@@ -8,31 +8,41 @@ from src.infrastructure.models import ConfiguracionSistema, RouterModel, Cliente
 from src.application.services.billing_service import BillingService
 
 # ==========================================
-# ⚡ NUEVO: FUNCIÓN SÍNCRONA AISLADA PARA LA VPN
+# ⚡ FUNCIÓN SÍNCRONA AISLADA PARA PETICIÓN HTTP (PUERTO 80)
 # ==========================================
-def obtener_usuarios_activos_sync(ip, user, password, port):
-    """Hace el viaje al MikroTik en un hilo separado para no bloquear la API"""
+def obtener_usuarios_activos_http_sync(ip, user, password, port=80):
+    """
+    Hace la petición web al MikroTik por el puerto 80 en un hilo separado.
+    Ajusta la URL interna según cómo responde tu script o API en el router.
+    """
     try:
-        connection = routeros_api.RouterOsApiPool(
-            ip, username=user, password=password, port=port, plaintext_login=True
-        )
-        api = connection.get_api()
-        # Traemos la lista de PPPoE activos
-        conexiones = api.get_resource('/ppp/active').get()
-        # Extraemos solo los nombres de usuario para una búsqueda ultra rápida
-        usuarios_online = [c.get('name') for c in conexiones]
-        connection.disconnect()
-        return usuarios_online
+        # Ejemplo base: consultando la API web del MikroTik o tu script intermedio
+        # Ajusta '/rest/ppp/active' o la ruta exacta que usabas antes si cambiaste el endpoint
+        url = f"http://{ip}:{port}/rest/ppp/active" 
+        
+        # Timeout corto de 5 segundos: si el enlace está inestable o caído, no congela el flujo
+        response = requests.get(url, auth=(user, password), timeout=5)
+        
+        if response.status_code == 200:
+            datos = response.json()
+            # Extraemos los nombres de los usuarios PPPoE conectados
+            # (Asumiendo que el JSON te regresa una lista de objetos con el campo 'name')
+            usuarios_online = [usuario.get('name') for usuario in datos if usuario.get('name')]
+            return usuarios_online
+        else:
+            print(f"⚠️ [RED] Router {ip} respondió con código: {response.status_code}")
+            return None
+            
     except Exception as e:
-        print(f"⚠️ [RED] Error contactando MikroTik {ip}: {e}")
+        print(f"⚠️ [RED] Error HTTP contactando MikroTik {ip}: {e}")
         return None
 
 # ==========================================
-# 🔄 NUEVO: CRONJOB DE ESTADOS (Ejecutar cada 3 min)
+# 🔄 CRONJOB DE ESTADOS (Ejecutar cada 3 min)
 # ==========================================
 async def tarea_sincronizar_estados_red():
-    """Descarga los estados de los routers y actualiza la BD silenciosamente"""
-    print("📡 [RED] Iniciando barrido de estados MikroTik...")
+    """Descarga los estados de los routers por HTTP y actualiza la BD silenciosamente"""
+    print("📡 [RED] Iniciando barrido de estados MikroTik por Web/HTTP...")
     
     async with SessionLocal() as db:
         # 1. Buscar todos los routers activos
@@ -40,13 +50,16 @@ async def tarea_sincronizar_estados_red():
         routers = res.scalars().all()
         
         for router in routers:
-            # 2. Hacer la consulta al MikroTik sin congelar el servidor
+            # 2. Hacemos la petición HTTP sin congelar el servidor FastAPI
+            # Pasamos las credenciales y forzamos el puerto de la API web (usualmente 80 o el configurado)
+            puerto_web = router.port_api if router.port_api else 80
+            
             usuarios_online = await asyncio.to_thread(
-                obtener_usuarios_activos_sync, 
-                router.ip_vpn, router.user_api, router.pass_api, router.port_api
+                obtener_usuarios_activos_http_sync, 
+                router.ip_vpn, router.user_api, router.pass_api, puerto_web
             )
             
-            # Si el router no respondió (apagado o error de VPN), saltamos al siguiente
+            # Si el router no respondió por timeout o error, saltamos al siguiente sin tumbar el script
             if usuarios_online is None:
                 continue 
                 
@@ -56,7 +69,7 @@ async def tarea_sincronizar_estados_red():
             
             cambios_detectados = 0
             for cliente in clientes:
-                # Validamos si su usuario PPPoE está en la lista que nos dio el router
+                # Validamos si su usuario PPPoE está en la lista que nos dio el JSON del router
                 estado_real = cliente.user_pppoe in usuarios_online
                 
                 # Solo escribimos en la base de datos si hubo un cambio de estado
@@ -65,9 +78,9 @@ async def tarea_sincronizar_estados_red():
                     cliente.ultimo_cambio_estado = datetime.now()
                     cambios_detectados += 1
             
-            print(f"✅ [RED] Router '{router.nombre}': Sincronizado. {cambios_detectados} cambios de estado.")
+            print(f"✅ [RED] Router '{router.nombre}': Sincronizado por HTTP. {cambios_detectados} cambios de estado.")
             
-        # 4. Guardamos todos los cambios de golpe
+        # 4. Guardamos todos los cambios de golpe en MySQL
         await db.commit()
 
 

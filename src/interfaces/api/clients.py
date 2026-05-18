@@ -206,8 +206,9 @@ async def buscar_clientes_global(
             or_(
                 ClienteModel.nombre.ilike(filtro),
                 ClienteModel.telefono.ilike(filtro),
-                ClienteModel.cedula.ilike(filtro),     
-                ClienteModel.identificador_onu.ilike(filtro) # 👇 BÚSQUEDA POR MAC O SERIAL
+                ClienteModel.cedula.ilike(filtro),       # 👈 Búsqueda limpia por Cédula
+                ClienteModel.user_pppoe.ilike(filtro),   # ⚡ Extra: Puedes buscar por usuario PPPoE
+                ClienteModel.ip_asignada.ilike(filtro)   # ⚡ Extra: Puedes buscar por IP asignada
             )
         )
         .group_by(ClienteModel.id)
