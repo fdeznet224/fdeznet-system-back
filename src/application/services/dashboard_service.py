@@ -116,7 +116,7 @@ class DashboardService:
     async def obtener_tabla_coloreada(self):
         """
         Retorna el estado técnico exacto leyendo MySQL.
-        ⚡ CARGA EN MILISEGUNDOS ⚡
+        ⚡ CARGA EN MILISEGUNDOS y compatible con el Front ⚡
         """
         # Traemos ID, IP, Estado y el is_online que guardó el cronjob
         stmt = select(ClienteModel.id, ClienteModel.ip_asignada, ClienteModel.estado, ClienteModel.is_online)
@@ -128,6 +128,7 @@ class DashboardService:
             # --- LÓGICA DE COLORES ---
             if is_online:
                 estado_tecnico = "ONLINE"
+                estado_front = "online"  # 👈 Compatibilidad para el front viejo
                 if estado == 'activo':
                     color = "green"   # Todo perfecto
                     diag = "Conexión estable"
@@ -136,19 +137,22 @@ class DashboardService:
                     diag = "ALERTA: Suspendido con servicio activo"
             else:
                 estado_tecnico = "OFFLINE"
+                estado_front = "offline"  # 👈 Compatibilidad para el front viejo
                 if estado == 'activo':
-                    color = "rose"    # Falla técnica
+                    color = "red"     # ⚡ CORRECCIÓN: Volvemos a 'red' por si el front no reconoce 'rose'
                     diag = "Sin conexión al Router (Posible falla de luz o cable)"
                 else:
                     color = "gray"    # Normal: Está cortado por falta de pago
                     diag = "Corte administrativo"
 
-            # En lugar de un array pesado, enviamos un diccionario donde la llave es el ID
-            # Esto hace que el Frontend lo pinte de inmediato
-            mapa_colores[c_id] = {
+            # ⚡ FORZAMOS str(c_id) para garantizar que la llave viaje idéntica en el JSON
+            mapa_colores[str(c_id)] = {
                 "estado_tecnico": estado_tecnico,
                 "color": color,
-                "diagnostico_sistema": diag
+                "diagnostico_sistema": diag,
+                # 👇 Salvavidas para el Frontend 👇
+                "estado": estado_front,
+                "is_online": is_online
             }
             
         return {"detalle_clientes": mapa_colores}
