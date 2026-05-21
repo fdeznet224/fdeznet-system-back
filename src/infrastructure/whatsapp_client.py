@@ -1,3 +1,5 @@
+#src/infraestutura/whsapp_client.py
+
 import httpx
 import logging
 import os
@@ -15,16 +17,14 @@ class WhatsAppService:
         self.TEXT_URL = f"{self.BASE_URL}/enviar-mensaje"
 
     def _formatear_numero(self, numero: str):
-        """
-        Limpia el número y fuerza el formato 521 para México.
-        Necesario para que whatsapp-web.js encuentre el contacto.
-        """
         if not numero: return None
         
-        # 1. Extraer solo dígitos
+        # 🔥 CORRECCIÓN: Si es un LID o ya trae arroba, no lo formatees, pásalo intacto
+        if "@" in str(numero):
+            return str(numero)
+            
         num = "".join(re.findall(r'\d+', str(numero)))
         
-        # 2. Normalización para México
         if len(num) == 10:
             return f"521{num}"
             

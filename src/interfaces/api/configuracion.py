@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, desc
 from sqlalchemy.exc import IntegrityError 
+from fastapi_cache.decorator import cache
 
 # --- INFRAESTRUCTURA (Tus Modelos y DB) ---
 from src.infrastructure.database import get_db
@@ -34,6 +35,7 @@ router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
 # =========================================================
 
 @router.get("/plantillas-facturacion", response_model=List[PlantillaResponse])
+@cache(expire=300)
 async def listar_plantillas_facturacion(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PlantillaFacturacionModel))
     return result.scalars().all()
@@ -82,6 +84,7 @@ async def eliminar_plantilla_facturacion(id: int, db: AsyncSession = Depends(get
 # =========================================================
 
 @router.get("/plantillas", response_model=List[PlantillaMensajeResponse])
+@cache(expire=300)
 async def listar_plantillas_mensajes(db: AsyncSession = Depends(get_db)):
     """Lista todas las plantillas de mensajes disponibles."""
     result = await db.execute(select(PlantillaMensajeModel))
@@ -135,6 +138,7 @@ async def eliminar_plantilla_mensaje(id: int, db: AsyncSession = Depends(get_db)
 # =========================================================
 
 @router.get("/sistema")
+@cache(expire=300)
 async def obtener_configuracion_sistema(db: AsyncSession = Depends(get_db)):
     stmt = select(ConfiguracionSistema).where(ConfiguracionSistema.id == 1)
     result = await db.execute(stmt)
@@ -161,6 +165,7 @@ async def guardar_configuracion_sistema(datos: SystemConfigUpdate, db: AsyncSess
 # =========================================================
 
 @router.get("/pppoe-default")
+@cache(expire=300)
 async def obtener_password_default(db: AsyncSession = Depends(get_db)):
     stmt = select(ConfiguracionModel).where(ConfiguracionModel.clave == 'pppoe_password_default')
     res = await db.execute(stmt)

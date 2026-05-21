@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { Client, LocalAuth , MessageMedia} = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const axios = require('axios');
@@ -95,10 +95,21 @@ function iniciarMotor() {
                 }
             }
 
-            // 3. ENVIAR AL WEBHOOK DE FASTAPI
-            // Enviamos el objeto con la mediaUrl para el OCR
+            // 🔥 3. DESENMASCARAR EL LID: Obtener el número real del contacto
+            let numeroReal = msg.from;
+            try {
+                const contact = await msg.getContact();
+                if (contact && contact.number) {
+                    numeroReal = `${contact.number}@c.us`; // Número real extraído
+                }
+            } catch (err) {
+                console.log("⚠️ No se pudo obtener el número real del contacto:", err.message);
+            }
+
+            // 4. ENVIAR AL WEBHOOK DE FASTAPI
             await axios.post(`${BACKEND_URL}/whatsapp/webhook/recibir`, { 
-                telefono: msg.from, 
+                telefono: numeroReal,       // Para buscar en la BD de Python (Ej: 5219614708391@c.us)
+                telefono_raw: msg.from,     // Para enviarle mensajes de vuelta (Ej: 59889191751761@lid o @c.us)
                 mensaje: contenido,
                 mediaUrl: mediaUrl,
                 wa_id: msg.id.id
@@ -166,15 +177,13 @@ app.post('/logout', async (req, res) => {
 app.post('/enviar-mensaje', async (req, res) => {
     const { numero, mensaje, ruta } = req.body; 
 
-    if (!client || !isReady) {
-        return res.status(503).json({ error: 'WhatsApp no conectado' });
-    }
+    if (!client || !isReady) return res.status(503).json({ error: 'WhatsApp no conectado' });
 
     try {
-        const chatId = `${numero}@c.us`;
+        // 🔥 CORRECCIÓN: Si ya trae @lid o @c.us, úsalo. Si no, agrégale @c.us
+        const chatId = numero.includes('@') ? numero : `${numero}@c.us`;
         let response;
 
-        // Si Python manda una ruta de archivo (PDF de factura/comprobante)
         if (ruta && fs.existsSync(ruta)) {
             const media = MessageMedia.fromFilePath(ruta);
             response = await client.sendMessage(chatId, media, { caption: mensaje });
@@ -184,7 +193,6 @@ app.post('/enviar-mensaje', async (req, res) => {
 
         res.json({ status: 'sent', wa_id: response.id.id });
     } catch (e) { 
-        console.error("❌ Error al enviar:", e.message);
         res.status(500).json({ error: e.message }); 
     }
 });

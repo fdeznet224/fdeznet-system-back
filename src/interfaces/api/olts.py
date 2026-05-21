@@ -2,6 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 
+# 🔥 1. IMPORTAMOS EL CACHÉ
+from fastapi_cache.decorator import cache
+
 from src.infrastructure.database import get_db
 from src.domain import schemas 
 from src.application.services.olt_service import OLTService
@@ -9,20 +12,30 @@ from src.application.services.snmp_service import SNMPMonitorService
 
 router = APIRouter(prefix="/olts", tags=["OLTs"])
 
+# ==========================================
+# CATÁLOGO DE OLTs (¡CON CACHÉ!)
+# ==========================================
+
 @router.get("/", response_model=List[schemas.OLTResponse])
+@cache(expire=300) # 🔥 Guardamos la lista de OLTs por 5 minutos
 async def listar_olts(db: AsyncSession = Depends(get_db)):
     servicio = OLTService(db)
     return await servicio.obtener_todas()
+
+@router.get("/{olt_id}", response_model=schemas.OLTResponse)
+@cache(expire=300) # 🔥 También podemos guardar el detalle de una OLT específica
+async def obtener_olt(olt_id: int, db: AsyncSession = Depends(get_db)):
+    servicio = OLTService(db)
+    return await servicio.obtener_por_id(olt_id)
+
+# ==========================================
+# ESCRITURA (¡SIN CACHÉ!)
+# ==========================================
 
 @router.post("/", response_model=schemas.OLTResponse, status_code=status.HTTP_201_CREATED)
 async def crear_olt(olt: schemas.OLTCreate, db: AsyncSession = Depends(get_db)):
     servicio = OLTService(db)
     return await servicio.crear_olt(olt)
-
-@router.get("/{olt_id}", response_model=schemas.OLTResponse)
-async def obtener_olt(olt_id: int, db: AsyncSession = Depends(get_db)):
-    servicio = OLTService(db)
-    return await servicio.obtener_por_id(olt_id)
 
 @router.put("/{olt_id}", response_model=schemas.OLTResponse)
 async def actualizar_olt(olt_id: int, olt: schemas.OLTUpdate, db: AsyncSession = Depends(get_db)):
@@ -35,12 +48,17 @@ async def eliminar_olt(olt_id: int, db: AsyncSession = Depends(get_db)):
     await servicio.eliminar_olt(olt_id)
 
 
+# ==========================================
+# MONITOREO SNMP EN VIVO (¡ESTRICTAMENTE SIN CACHÉ!)
+# ==========================================
+
 @router.get("/{olt_id}/monitoreo-vivo")
 async def dashboard_olt_snmp(olt_id: int, db: AsyncSession = Depends(get_db)):
     """
     Escanea toda la OLT y cruza TODO con la Base de Datos.
     Ideal para la vista de "Mapa de Fibra" general.
     """
+    # 🚫 NO USAMOS CACHÉ AQUÍ: Necesitamos los datos frescos de la OLT en tiempo real
     servicio = SNMPMonitorService(db)
     try:
         resultados = await servicio.monitorear_olt(olt_id)
@@ -57,6 +75,7 @@ async def diagnostico_individual_cliente(cliente_id: int, db: AsyncSession = Dep
     Diagnóstico en tiempo real de potencia óptica para un cliente específico.
     Llamado desde el Portal del Técnico.
     """
+    # 🚫 NO USAMOS CACHÉ AQUÍ: Si el técnico está moviendo la fibra, necesita ver el cambio al instante.
     servicio = SNMPMonitorService(db)
     try:
         resultado = await servicio.monitorear_cliente_individual(cliente_id)

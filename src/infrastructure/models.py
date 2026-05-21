@@ -67,6 +67,7 @@ class RouterModel(Base):
     tipo_control = Column(Enum(TipoControl), default=TipoControl.colas_dinamicas)
     version_os = Column(String(10), default="v7")
     is_active = Column(Boolean, default=True)
+    is_online = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     planes = relationship("PlanModel", back_populates="router")
@@ -325,7 +326,8 @@ class ConfiguracionSistema(Base):
     
     generar_facturas_automaticamente = Column(Boolean, default=True)
     dia_generacion_factura = Column(Integer, default=1)
-    aviso_pantalla_corte = Column(Boolean, default=False) 
+    aviso_pantalla_corte = Column(Boolean, default=False)
+    telefonos_alerta = Column(String(255), default="")
 
 class PlantillaMensajeModel(Base):
     __tablename__ = "plantillas_mensajes"
@@ -342,8 +344,8 @@ class LogCronjobModel(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     fecha = Column(DateTime, default=func.now()) 
-    nivel = Column(String(20))  # 'INFO', 'ERROR', 'WARNING'
-    origen = Column(String(50)) # 'Facturación', 'Cortes', 'Sistema'
+    nivel = Column(String(20))
+    origen = Column(String(50))
     mensaje = Column(Text)
 
 

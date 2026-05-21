@@ -3,9 +3,13 @@ import ipaddress
 import io
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from fastapi.responses import StreamingResponse # 👈 CORRECCIÓN CLAVE: Usamos StreamingResponse
+from fastapi.responses import StreamingResponse 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+
+# 🔥 1. IMPORTAMOS EL CACHÉ
+from fastapi_cache.decorator import cache
+
 from src.application.services.vpn_service import VPNService 
 from src.domain.schemas import WireguardConfigResponse
 
@@ -40,6 +44,7 @@ router = APIRouter(prefix="/network", tags=["Infraestructura y Redes"])
 # ==========================================
 
 @router.get("/routers/", response_model=List[RouterResponse])
+@cache(expire=300) # 🔥 Catálogo de Routers en caché por 5 minutos
 async def listar_routers(db: AsyncSession = Depends(get_db)):
     """Lista todos los routers (Nodos/OLTs) registrados."""
     result = await db.execute(select(RouterModel)) 
@@ -61,7 +66,7 @@ async def crear_router(
 @router.put("/routers/{router_id}", response_model=RouterResponse)
 async def editar_router(
     router_id: int, 
-    router_data: RouterUpdate, # Usamos el nuevo Schema opcional
+    router_data: RouterUpdate, 
     db: AsyncSession = Depends(get_db),
     current_user = Depends(role_required(["admin"]))
 ):
@@ -173,6 +178,7 @@ async def sincronizar_configuracion_router(
 # ==========================================
 
 @router.get("/redes/", response_model=List[RedResponse])
+@cache(expire=300) # 🔥 Catálogo de Redes en caché
 async def listar_todas_las_redes(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(RedModel))
     return result.scalars().all()
@@ -218,11 +224,13 @@ async def eliminar_red(
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/redes/router/{router_id}", response_model=List[RedResponse])
+@cache(expire=300) # 🔥 Lista de redes filtrada en caché
 async def listar_redes_por_router(router_id: int, db: AsyncSession = Depends(get_db)):
     res = await db.execute(select(RedModel).where(RedModel.router_id == router_id))
     return res.scalars().all()
 
 @router.get("/redes/{red_id}/ips-libres", response_model=List[str])
+# 🚫 SIN CACHÉ: Las IPs libres deben calcularse en estricto tiempo real
 async def obtener_ips_libres(red_id: int, db: AsyncSession = Depends(get_db)):
     """Calcula las siguientes IPs disponibles."""
     red = await db.get(RedModel, red_id)
@@ -440,7 +448,7 @@ async def procesar_importacion(
             # 🚀 5. CREACIÓN DEL CLIENTE
             nuevo = ClienteModel(
                 nombre=nombre,
-                cedula=cedula_final, # 👈 AQUÍ INYECTAMOS LA CÉDULA CORRECTA
+                cedula=cedula_final, 
                 telefono=str(row.get('telefono', '')),
                 direccion=str(row.get('direccion', '')),
                 user_pppoe=user_ppp,
@@ -505,9 +513,5 @@ async def verificar_trafico_cliente(cliente_id: int, db: AsyncSession = Depends(
     try:
         return await service.verificar_trafico(cliente_id)
     except Exception as e:
-        # 🚀 Esto imprimirá el error real en la consola en lugar de ocultarlo
         print(f"❌ Error al consultar tráfico del cliente {cliente_id}: {e}") 
         return {"velocidad_subida": 0, "velocidad_bajada": 0}
-    
-
-

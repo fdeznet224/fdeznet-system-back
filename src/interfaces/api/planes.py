@@ -2,6 +2,9 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# 🔥 1. IMPORTAMOS EL DECORADOR DE CACHÉ
+from fastapi_cache.decorator import cache
+
 # Infraestructura y Auth
 from src.infrastructure.database import get_db
 from src.infrastructure.auth import role_required 
@@ -16,21 +19,23 @@ from src.infrastructure.repositories import PlanRepository
 router = APIRouter(prefix="/planes", tags=["Catálogo - Planes de Internet"])
 
 # ==========================================
-# 1. LECTURA
+# 1. LECTURA (¡AQUÍ VA EL CACHÉ!)
 # ==========================================
 
 @router.get("/", response_model=List[PlanResponse])
+@cache(expire=300) # 🔥 2. Guardamos la lista general por 5 minutos
 async def listar_planes(db: AsyncSession = Depends(get_db)):
     repo = PlanRepository(db)
     return await repo.get_all_planes()
 
 @router.get("/router/{router_id}", response_model=List[PlanResponse])
+@cache(expire=300) # 🔥 3. Guardamos la lista filtrada por router por 5 minutos
 async def listar_planes_por_router(router_id: int, db: AsyncSession = Depends(get_db)):
     repo = PlanRepository(db)
     return await repo.get_planes_by_router(router_id)
 
 # ==========================================
-# 2. ESCRITURA (ADMIN)
+# 2. ESCRITURA (ADMIN) - SIN CACHÉ
 # ==========================================
 
 @router.post("/", response_model=PlanResponse)

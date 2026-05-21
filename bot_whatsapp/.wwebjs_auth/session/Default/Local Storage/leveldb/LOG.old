@@ -1,3 +1,24 @@
-2026/04/27-00:28:07.422 f627 Reusing MANIFEST /home/fdezdev/FdezDev/fdeznet-system/backend/bot_whatsapp/.wwebjs_auth/session/Default/Local Storage/leveldb/MANIFEST-000001
-2026/04/27-00:28:07.430 f627 Recovering log #4
-2026/04/27-00:28:07.431 f627 Reusing old log /home/fdezdev/FdezDev/fdeznet-system/backend/bot_whatsapp/.wwebjs_auth/session/Default/Local Storage/leveldb/000004.log 
+2026/05/20-21:08:01.887 3c39 Reusing MANIFEST /home/fdezdev/FdezDev/fdeznet-system/backend/bot_whatsapp/.wwebjs_auth/session/Default/Local Storage/leveldb/MANIFEST-000001
+2026/05/20-21:08:01.895 3c39 Recovering log #7
+2026/05/20-21:08:01.896 3c39 Reusing old log /home/fdezdev/FdezDev/fdeznet-system/backend/bot_whatsapp/.wwebjs_auth/session/Default/Local Storage/leveldb/000007.log 
+2026/05/20-21:12:08.762 3c3f Level-0 table #11: started
+2026/05/20-21:12:08.772 3c3f Level-0 table #11: 16935 bytes OK
+2026/05/20-21:12:08.780 3c3f Delete type=0 #7
+2026/05/20-21:29:19.273 3c3f Level-0 table #13: started
+2026/05/20-21:29:19.281 3c3f Level-0 table #13: 17824 bytes OK
+2026/05/20-21:29:19.288 3c3f Delete type=0 #10
+2026/05/20-21:43:08.760 3c3f Level-0 table #15: started
+2026/05/20-21:43:08.769 3c3f Level-0 table #15: 16859 bytes OK
+2026/05/20-21:43:08.778 3c3f Delete type=0 #12
+2026/05/20-22:12:27.796 3c3f Level-0 table #17: started
+2026/05/20-22:12:27.804 3c3f Level-0 table #17: 17075 bytes OK
+2026/05/20-22:12:27.812 3c3f Delete type=0 #14
+2026/05/20-22:12:27.813 3c3f Compacting 4@0 + 1@1 files
+2026/05/20-22:12:27.821 3c3f Generated table #18@0: 25 keys, 3151 bytes
+2026/05/20-22:12:27.821 3c3f Compacted 4@0 + 1@1 files => 3151 bytes
+2026/05/20-22:12:27.827 3c3f compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/05/20-22:12:27.829 3c3f Delete type=2 #8
+2026/05/20-22:12:27.829 3c3f Delete type=2 #15
+2026/05/20-22:12:27.829 3c3f Delete type=2 #17
+2026/05/20-22:12:27.829 3c3f Delete type=2 #11
+2026/05/20-22:12:27.829 3c3f Delete type=2 #13

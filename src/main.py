@@ -4,15 +4,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
 
 # Scheduler para Cronjobs
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-# 👇 AGREGAMOS LA NUEVA FUNCIÓN AQUÍ
-from src.jobs import tarea_cron_unificada, tarea_sincronizar_estados_red
+from src.jobs import tarea_cron_unificada, tarea_monitoreo_routers, tarea_sincronizar_clientes
 
 # Base de Datos
 from src.infrastructure.database import engine, Base, SessionLocal
-from src.infrastructure import models
 from src.infrastructure.models import UsuarioModel 
 
 # Servicios y Schemas
@@ -20,24 +20,29 @@ from src.application.services.user_service import UserService
 from src.domain.schemas import UsuarioCreate
 
 # Importar Routers
-# 👇 AGREGAMOS 'chat' AQUÍ
 from src.interfaces.api import (
     auth, clients, planes, finanzas, network,          
     zonas, usuarios, configuracion, dashboard,
-    whatsapp, naps,vpn, olts,inventario
+    whatsapp, naps, vpn, olts, inventario
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN DEL CICLO DE VIDA (LIFESPAN)
+# ⚙️ CONFIGURACIÓN DEL CICLO DE VIDA
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Iniciando FdezNet System...")
 
+    # 1. INICIALIZAR CACHÉ
+    FastAPICache.init(InMemoryBackend(), prefix="fdeznet-cache")
+    print("⚡ Caché en memoria RAM inicializado")
+
+    # 2. SINCRONIZAR BASE DE DATOS
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     print("✅ Base de Datos Sincronizada")
 
+    # 3. VERIFICAR/CREAR SUPER ADMIN
     async with SessionLocal() as db:
         try:
             stmt = select(UsuarioModel).where(UsuarioModel.usuario == "admin")
@@ -58,19 +63,19 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠️ Error verificando admin: {e}")
 
+    # 4. INICIAR CRONJOBS
     print("⏳ Iniciando Planificador de Tareas Automáticas...")
     scheduler = AsyncIOScheduler()
     
-    # 1. Tarea de Facturación y Cortes (Se ejecuta cada hora)
+    # Monitoreo (1 min), Clientes (3 min), Facturación/Cortes (1 hora/día)
+    scheduler.add_job(tarea_monitoreo_routers, 'interval', minutes=1)
+    scheduler.add_job(tarea_sincronizar_clientes, 'interval', minutes=3)
     scheduler.add_job(tarea_cron_unificada, 'cron', minute=1)
     
-    # 2. ⚡ NUEVA TAREA: Sincronización de MikroTik (Se ejecuta cada 3 minutos)
-    scheduler.add_job(tarea_sincronizar_estados_red, 'interval', minutes=3)
-    
     scheduler.start()
-    print("✅ Planificador Activo con tareas de Facturación y Red.")
+    print("✅ Planificador Activo (Facturación, Red, Estados).")
 
-    yield 
+    yield # --- LA APP CORRE AQUÍ ---
 
     print("🛑 Apagando Planificador...")
     scheduler.shutdown()
@@ -78,13 +83,13 @@ async def lifespan(app: FastAPI):
 
 
 # ==========================================
-# 🚀 INICIALIZACIÓN DE LA APP
+# 🚀 INSTANCIA DE LA APP
 # ==========================================
 app = FastAPI(
     title="FdezNet System", 
-    version="2.2.0 Real-time Chat Ready",
+    version="2.2.0 Real-time System",
     lifespan=lifespan,
-    root_path="/api"  # 👈 ¡ESTA LÍNEA ES MAGIA PARA NGINX!
+    root_path="/api"
 )
 
 if not os.path.exists("static/recibos"):
@@ -92,7 +97,7 @@ if not os.path.exists("static/recibos"):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # En producción cambia "*" por tu dominio real
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -119,8 +124,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/")
 def home():
     return {
-        "mensaje": "API FdezNet Arquitectura Limpia Activa 🚀",
-        "cronjob": "Activo (Revisión cada hora y estados cada 3 min)",
-        "chat_system": "WebSocket Online",
-        "version": "2.2.0"
+        "status": "online",
+        "system": "FdezNet v2.2.0",
+        "cron_status": "active"
     }

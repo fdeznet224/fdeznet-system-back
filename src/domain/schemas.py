@@ -27,6 +27,7 @@ class SystemConfigUpdate(BaseModel):
     generar_facturas_automaticamente: bool
     dia_generacion_factura: int = 1
     aviso_pantalla_corte: bool
+    telefonos_alerta: Optional[str] = ""
 
 class ConfigUpdate(BaseModel):
     valor: str
