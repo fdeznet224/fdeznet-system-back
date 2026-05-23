@@ -9,10 +9,6 @@ class NapService:
         self.db = db
 
     async def listar_naps(self, zona_id: int = None):
-        """
-        Lista todas las cajas NAP, calculando en tiempo real
-        cuántos puertos están ocupados y cuántos libres.
-        """
         stmt = select(CajaNapModel)
         if zona_id:
             stmt = stmt.where(CajaNapModel.zona_id == zona_id)
@@ -22,16 +18,21 @@ class NapService:
         
         respuesta = []
         for caja in cajas:
-            # Contar clientes conectados a esta caja específica
             stmt_count = select(func.count(ClienteModel.id)).where(ClienteModel.caja_nap_id == caja.id)
             usados_res = await self.db.execute(stmt_count)
             usados = usados_res.scalar() or 0
             
-            # Convertimos el objeto ORM a diccionario para agregar campos calculados
-            caja_dict = caja.__dict__.copy() # Usamos copy para no afectar la sesión
-            caja_dict['puertos_usados'] = usados
-            caja_dict['puertos_libres'] = caja.capacidad - usados
-            
+            # 🔥 Mapeo manual 100% a prueba de fallos
+            caja_dict = {
+                "id": caja.id,
+                "nombre": caja.nombre,
+                "ubicacion": caja.ubicacion,
+                "coordenadas": caja.coordenadas,
+                "capacidad": caja.capacidad,
+                "zona_id": caja.zona_id,
+                "puertos_usados": usados,
+                "puertos_libres": caja.capacidad - usados
+            }
             respuesta.append(caja_dict)
             
         return respuesta
