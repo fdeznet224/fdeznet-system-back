@@ -84,6 +84,11 @@ class PromesaRequest(BaseModel):
     fecha_promesa: date
 
 
+class CambioONURequest(BaseModel):
+    nuevo_inventario_id: int
+    estado_vieja_onu: str
+
+
 # ==========================================
 # 1. PORTAL TÉCNICO (QR - VISTA DETALLE Y ORDEN)
 # ==========================================
@@ -494,23 +499,49 @@ async def dar_de_baja_cliente(cliente_id: int, db: AsyncSession = Depends(get_db
         return {"status": "success", "message": mensaje}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
 
-@router.post("/{cliente_id}/confirmar-retiro-onu")
-async def confirmar_retiro_onu(cliente_id: int, db: AsyncSession = Depends(get_db)):
-    """El técnico presiona esto al recuperar el equipo. Libera la MAC/Serial."""
+@router.post("/{cliente_id}/reactivar")
+async def reactivar_cliente_cancelado(cliente_id: int, db: AsyncSession = Depends(get_db)):
+    """Reconecta a un cliente cancelado y lo vuelve a activar en MikroTik."""
     service = ClientService(db)
     try:
-        mensaje = await service.confirmar_retiro_tecnico(cliente_id)
+        mensaje = await service.reactivar_servicio(cliente_id)
+        return {"status": "success", "message": mensaje}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+
+# 🔥 CORRECCIÓN APLICADA AQUÍ: Usa inventario_id en lugar de cliente_id
+@router.post("/inventario/{inventario_id}/confirmar-retiro-onu")
+async def confirmar_retiro_onu(inventario_id: int, db: AsyncSession = Depends(get_db)):
+    """El técnico presiona esto al recuperar el equipo físico."""
+    service = ClientService(db)
+    try:
+        mensaje = await service.confirmar_retiro_tecnico(inventario_id)
         return {"status": "success", "message": mensaje}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     
-
-@router.post("/{cliente_id}/asignar-retiro/{tecnico_id}") 
-async def asignar_retiro(cliente_id: int, tecnico_id: int, db: AsyncSession = Depends(get_db)):
+@router.post("/inventario/{inventario_id}/asignar-retiro/{tecnico_id}") 
+async def asignar_retiro(inventario_id: int, tecnico_id: int, db: AsyncSession = Depends(get_db)):
     service = ClientService(db)
     try:
-        mensaje = await service.asignar_tecnico_retiro(cliente_id, tecnico_id)
+        # En tu ClientService también asegúrate de que 'asignar_tecnico_retiro' 
+        # busque la ONU por inventario_id.
+        mensaje = await service.asignar_tecnico_retiro(inventario_id, tecnico_id)
+        return {"status": "success", "message": mensaje}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# 🔥 NUEVO ENDPOINT PARA EL CAMBIO POR FALLA 🔥
+@router.post("/{cliente_id}/cambiar-onu")
+async def cambiar_onu_cliente(cliente_id: int, req: CambioONURequest, db: AsyncSession = Depends(get_db)):
+    """Sustituye la ONU de un cliente y actualiza el inventario."""
+    service = ClientService(db)
+    try:
+        mensaje = await service.procesar_cambio_onu(cliente_id, req.nuevo_inventario_id, req.estado_vieja_onu)
         return {"status": "success", "message": mensaje}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

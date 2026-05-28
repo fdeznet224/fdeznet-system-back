@@ -495,6 +495,62 @@ class ClientService:
             msg += " 📡 Servicio reactivado en MikroTik."
             
         return msg
+    
+
+# ==========================================
+    # 8. REACTIVAR SERVICIO CANCELADO
+    # ==========================================
+    async def reactivar_servicio(self, cliente_id: int):
+        """
+        Toma un cliente en estado 'cancelado', lo devuelve a 'activo' 
+        y vuelve a crear su usuario PPPoE en el MikroTik.
+        """
+        # 1. Buscamos al cliente con sus relaciones necesarias
+        stmt = select(ClienteModel).options(
+            selectinload(ClienteModel.router), 
+            selectinload(ClienteModel.plan)
+        ).where(ClienteModel.id == cliente_id)
+        
+        cliente = (await self.db.execute(stmt)).scalar_one_or_none()
+        
+        if not cliente:
+            raise ValueError("Cliente no encontrado")
+            
+        if cliente.estado != 'cancelado':
+            raise ValueError("El cliente no está cancelado, no se puede reactivar.")
+
+        # 2. Conectamos al MikroTik y creamos el usuario PPPoE de nuevo
+        if cliente.router and cliente.plan and cliente.user_pppoe and cliente.pass_pppoe:
+            try:
+                mk = MikroTikService(
+                    cliente.router.ip_vpn, 
+                    cliente.router.user_api, 
+                    cliente.router.pass_api, 
+                    cliente.router.port_api
+                )
+                
+                cedula_str = cliente.cedula if cliente.cedula else "S/A"
+                comentario_estandar = f"{cliente.nombre} | ID:{cedula_str}"
+                
+                # Usamos el mismo método que en la instalación para asegurar que todo quede idéntico
+                mk.crear_actualizar_pppoe(
+                    user=cliente.user_pppoe, 
+                    password=cliente.pass_pppoe, 
+                    profile=cliente.plan.nombre, 
+                    remote_address=cliente.ip_asignada,
+                    comment=comentario_estandar
+                )
+            except Exception as e:
+                raise ValueError(f"Error al conectar con MikroTik durante reactivación: {e}")
+        else:
+            print(f"⚠️ Aviso: Cliente {cliente_id} reactivado en BD, pero le falta Router, Plan o PPPoE para MikroTik.")
+
+        # 3. Lo marcamos como activo en la base de datos
+        cliente.estado = 'activo'
+        await self.db.commit()
+        
+        return "Servicio reactivado y conectado al MikroTik exitosamente."
+
 
     # ==========================================
     # 6. LISTADO UNIFICADO (DASHBOARD)
@@ -591,9 +647,6 @@ class ClientService:
     # ==========================================
 
     async def procesar_baja_servicio(self, cliente_id: int):
-        """
-        CLIC 1 (Admin/Cajera): Corta el internet y manda la ONU física a POR_RECOGER en el inventario.
-        """
         stmt = select(ClienteModel).options(selectinload(ClienteModel.router)).where(ClienteModel.id == cliente_id)
         cliente = (await self.db.execute(stmt)).scalar_one_or_none()
         
@@ -612,10 +665,8 @@ class ClientService:
             except Exception as e:
                 print(f"⚠️ Aviso: No se pudo conectar a MikroTik al dar de baja: {e}")
 
-        # Actualizar BD del Cliente
         cliente.estado = 'cancelado'
         
-        # 👇 MAGIA DEL INVENTARIO: Cambiamos el estado de la ONU física 👇
         if cliente.onu_id:
             onu = await self.db.get(InventarioONUModel, cliente.onu_id)
             if onu:
@@ -626,51 +677,69 @@ class ClientService:
         await self.db.commit()
         return "Servicio cancelado. (Este cliente no tenía un equipo de bodega asignado)."
 
-    # BORRA EL SEGUNDO 'confirmar_retiro_tecnico' QUE TIENES DUPLICADO, DEJA SOLO ESTE:
-    async def confirmar_retiro_tecnico(self, cliente_id: int):
-        """
-        CLIC 2 (Técnico): Confirma que ya tiene la ONU y la regresa a bodega.
-        """
-        cliente = await self.db.get(ClienteModel, cliente_id)
-        if not cliente:
-            raise ValueError("Cliente no encontrado")
+    # 🔥 CORRECCIÓN DEL NULL: Ahora recibe inventario_id en lugar de cliente_id 🔥
+    async def confirmar_retiro_tecnico(self, inventario_id: int):
+        onu = await self.db.get(InventarioONUModel, inventario_id)
+        if not onu:
+            raise ValueError("Este equipo no existe en el inventario.")
 
-        # 👇 MAGIA DEL INVENTARIO 👇
-        if not cliente.onu_id:
-            raise ValueError("Este cliente no tiene equipo asignado en el inventario.")
-
-        onu = await self.db.get(InventarioONUModel, cliente.onu_id)
-        if not onu or onu.estado != 'POR_RECOGER':
+        if onu.estado != 'POR_RECOGER':
             raise ValueError("Este equipo no está marcado para recolección.")
 
         serial_recuperado = onu.identificador
 
         # 1. Regresamos la ONU a Bodega
         onu.estado = 'DISPONIBLE'
-        onu.tecnico_id = None # Le quitamos la responsabilidad al técnico
+        onu.tecnico_id = None 
         
-        # 2. 🔥 LIBERACIÓN ABSOLUTA DEL CLIENTE 🔥
-        cliente.onu_id = None             # Desvinculamos el equipo
-        cliente.caja_nap_id = None        # El poste queda libre
-        cliente.puerto_nap = None         # El puerto queda libre
-        cliente.ip_asignada = None        # La IP queda libre
+        # 2. Buscamos si algún cliente tenía esta ONU asignada y lo liberamos
+        from sqlalchemy import select
+        stmt = select(ClienteModel).where(ClienteModel.onu_id == inventario_id)
+        cliente = (await self.db.execute(stmt)).scalar_one_or_none()
+        
+        if cliente:
+            cliente.onu_id = None             
+            cliente.caja_nap_id = None        
+            cliente.puerto_nap = None         
+            cliente.ip_asignada = None        
         
         await self.db.commit()
-        return f"¡Éxito! ONU {serial_recuperado} ingresada a stock y puerto liberado."
+        return f"¡Éxito! ONU {serial_recuperado} ingresada a stock."
 
-    async def asignar_tecnico_retiro(self, cliente_id: int, tecnico_id: int):
-        """
-        Asigna un técnico específico para ir a recoger el equipo.
-        """
-        cliente = await self.db.get(ClienteModel, cliente_id)
-        if not cliente or not cliente.onu_id:
-            raise ValueError("Cliente no encontrado o no tiene equipo.")
-        
-        onu = await self.db.get(InventarioONUModel, cliente.onu_id)
+    async def asignar_tecnico_retiro(self, inventario_id: int, tecnico_id: int):
+        # Buscamos la ONU directo en el inventario
+        onu = await self.db.get(InventarioONUModel, inventario_id)
         if not onu or onu.estado != 'POR_RECOGER':
-            raise ValueError("Esta ONU no tiene un retiro pendiente.")
+            raise ValueError("Esta ONU no tiene un retiro pendiente o no existe.")
 
-        onu.tecnico_id = tecnico_id # Asignamos al técnico elegido a la ONU física
+        onu.tecnico_id = tecnico_id 
         await self.db.commit()
         
         return f"Retiro asignado al técnico ID: {tecnico_id}"
+
+    # 🔥 NUEVA FUNCIÓN: SWAP DE ONU POR FALLA 🔥
+    async def procesar_cambio_onu(self, cliente_id: int, nuevo_inventario_id: int, estado_vieja_onu: str):
+        cliente = await self.db.get(ClienteModel, cliente_id)
+        if not cliente:
+            raise ValueError("Cliente no encontrado")
+
+        # 1. Gestionar la ONU vieja (si tiene)
+        if cliente.onu_id:
+            onu_vieja = await self.db.get(InventarioONUModel, cliente.onu_id)
+            if onu_vieja:
+                onu_vieja.estado = estado_vieja_onu # Será 'CON_FALLA' o 'DISPONIBLE'
+                onu_vieja.tecnico_id = None
+
+        # 2. Validar la ONU nueva
+        onu_nueva = await self.db.get(InventarioONUModel, nuevo_inventario_id)
+        if not onu_nueva:
+            raise ValueError("La nueva ONU no existe en el inventario.")
+        if onu_nueva.estado != 'DISPONIBLE':
+            raise ValueError(f"La nueva ONU no está disponible (Estado: {onu_nueva.estado}).")
+
+        # 3. Hacer el Swap
+        cliente.onu_id = nuevo_inventario_id
+        onu_nueva.estado = 'INSTALADO'
+
+        await self.db.commit()
+        return f"Cambio exitoso. Nueva ONU asignada: {onu_nueva.identificador}"

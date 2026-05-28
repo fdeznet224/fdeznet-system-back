@@ -9,7 +9,6 @@ MAPA_OIDS = {
     'V1600GS': {
         'TIPO': 'GPON',
         'ID_NAME': 'SERIAL',
-        # 👇 Quitamos los fijos (.0 y .1) del final para que actúen como raíces de escaneo walk
         'RAMA_IDS':         '.1.3.6.1.4.1.37950.1.1.6.3.5.1.7', 
         'RAMA_POTENCIA':    '.1.3.6.1.4.1.37950.1.1.6.1.1.3.1.7', 
         'RAMA_TEMP':        '.1.3.6.1.4.1.37950.1.1.6.1.1.3.1.3',
