@@ -87,7 +87,7 @@ async def generar_recibo_pdf(nombre_cliente, monto, concepto, fecha_pago, folio,
     # --- 6. INFORMACIÓN DEL CLIENTE Y MÉTODO DE PAGO ---
     info_data = [
         [Paragraph("EMISOR", style_label), Paragraph("CLIENTE", style_label)],
-        [Paragraph("<b>FDEZNET TELECOMUNICACIONES</b><br/>Vicente Guerrero, Chiapas.<br/>Tel: 961-XXX-XXXX", style_normal), 
+        [Paragraph("<b>FDEZNET TELECOMUNICACIONES</b><br/>Vicente Guerrero, Chiapas.<br/>Tel: 961-363-2496", style_normal), 
          Paragraph(f"<b>{nombre_cliente.upper()}</b><br/>Tel: {telefono_cliente}<br/>Vence: {nueva_fecha_vencimiento}", style_normal)],
         
         # Espacio separador
