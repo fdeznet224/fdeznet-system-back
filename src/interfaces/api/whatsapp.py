@@ -6,10 +6,9 @@ from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, cast, String
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, cast, String
 
 # Importaciones de Infraestructura y Modelos
 from src.infrastructure.database import get_db
@@ -18,9 +17,10 @@ from src.infrastructure.models import (
     MensajeChatModel, 
     PagoAutovalidadoModel, 
     FacturaModel, 
-    UsuarioModel
+    UsuarioModel,
+    ConfiguracionSistema # 👈 Añadido para poder alertarte de fraudes
 )
-from src.infrastructure.whatsapp_client import whatsapp_queue
+from src.infrastructure.whatsapp_client import whatsapp_queue, WhatsAppService
 from src.infrastructure.socket_manager import manager
 
 # Importaciones de Servicios
@@ -54,6 +54,54 @@ class MensajeEnviarRequest(BaseModel):
 class AckWebhookRequest(BaseModel):
     wa_id: str
     ack: int
+
+# ==========================================
+# ⚙️ FUNCION AUXILIAR: VALIDACIÓN FINAL (CAPA 3)
+# ==========================================
+async def procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db, wa_service):
+    cedula_input = mensaje_texto.upper().strip()
+    cliente_final = await db.get(ClienteModel, estado["cliente_id"])
+
+    # Verificación de firma: Si viene de "confirmar", debe escribir su cédula exacta
+    if cedula_input != "SI" and cedula_input != cliente_final.cedula:
+        await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="❌ Cédula de seguridad incorrecta. Inténtalo de nuevo o escribe 'cancelar'.")
+        return {"status": "firma_invalida"}
+
+    stmt_f = select(FacturaModel).where(FacturaModel.cliente_id == cliente_final.id, FacturaModel.estado == "pendiente").order_by(FacturaModel.fecha_vencimiento.asc())
+    factura = (await db.execute(stmt_f)).scalars().first()
+
+    if not factura:
+        res = "✅ Identidad confirmada, pero no tienes facturas pendientes de pago en este momento."
+        del bot_memory[telefono_raw]
+    else:
+        # 🛡️ CAPA 3: Validación Matemática de Montos
+        monto_ticket = float(estado["pago"]["monto"])
+        deuda_real = float(factura.total)
+
+        if monto_ticket < deuda_real:
+            res = f"❌ *Pago Rechazado*\n\nEl comprobante indica un pago de *${monto_ticket}*, pero tu factura es de *${deuda_real}*.\n\nSi es un error de lectura, envía una foto más clara o contacta a soporte."
+            del bot_memory[telefono_raw]
+        else:
+            try:
+                stmt_u = select(UsuarioModel).where(UsuarioModel.id == 1)
+                admin_user = (await db.execute(stmt_u)).scalar_one()
+
+                billing_service = BillingService(db)
+                await billing_service.registrar_pago_completo(factura_id=factura.id, usuario_operador=admin_user, metodo_pago="BOT_AUTOPAGO", monto=monto_ticket, referencia=estado["pago"]["folio"])
+                
+                db.add(PagoAutovalidadoModel(cliente_id=cliente_final.id, monto=monto_ticket, folio_banco=estado["pago"]["folio"], whatsapp_remitente=telefono_raw))
+                await db.commit()
+
+                res = f"✅ ¡Todo listo, {cliente_final.nombre}!\nTu pago de *${monto_ticket}* ha sido procesado exitosamente.\nTu internet quedará activo en breve. 🚀"
+                del bot_memory[telefono_raw]
+            except Exception as e:
+                print(f"Error procesando pago bot: {e}")
+                res = "❌ Error interno al procesar el pago. Contacta a soporte."
+                del bot_memory[telefono_raw]
+    
+    await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
+    return {"status": "bot_pago_finished"}
+
 
 # ==========================================
 # ⚙️ ENDPOINTS DE CONFIGURACIÓN Y CAMPAÑAS
@@ -91,9 +139,8 @@ async def enviar_campana(datos: CampanaMasiva):
 async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(get_db)):
     datos = await request.json()
     
-    # 🔥 AHORA RECIBIMOS DOS TELÉFONOS DESDE NODE
-    telefono_busqueda = datos.get("telefono", "").strip() # El número real para buscar
-    telefono_raw = datos.get("telefono_raw", telefono_busqueda).strip() # El LID para guardar y responder
+    telefono_busqueda = datos.get("telefono", "").strip() 
+    telefono_raw = datos.get("telefono_raw", telefono_busqueda).strip() 
     
     mensaje_texto = datos.get("mensaje", "").strip()
     media_url = datos.get("mediaUrl")
@@ -101,29 +148,18 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
     if not telefono_raw: return {"status": "ignorado"}
     texto_limpio = mensaje_texto.lower().strip()
 
+    # 🔥 CARRIL RÁPIDO PARA BOT Y CHAT MANUAL 🔥
+    wa_service = WhatsAppService()
+
     # =========================================================
     # 1. CHAT NORMAL Y GUARDADO EN CRM 
     # =========================================================
-    # Extraemos los 10 dígitos del NÚMERO REAL
     numero_base = telefono_busqueda.split('@')[0]
     ultimos_10 = numero_base[-10:] if len(numero_base) >= 10 else numero_base
     
-    print("="*40)
-    print(f"👉 ID DE WHATSAPP (LID): {telefono_raw}")
-    print(f"👉 NÚMERO REAL EXTRAÍDO: {telefono_busqueda}")
-    print(f"👉 BUSCANDO EN BD: {ultimos_10}")
-
-    # Forzamos la columna a que se trate como Texto para que el LIKE no falle
     stmt_h = select(ClienteModel).where(cast(ClienteModel.telefono, String).like(f"%{ultimos_10}%"))
     cliente_h = (await db.execute(stmt_h)).scalars().first()
 
-    if cliente_h:
-        print(f"✅ ENCONTRADO: {cliente_h.nombre} (ID: {cliente_h.id})")
-    else:
-        print("❌ NO SE ENCONTRÓ EN LA BD")
-    print("="*40)
-
-    # Formateamos cómo se verá en el CRM si mandan una foto/audio
     texto_historial = mensaje_texto
     if media_url:
         if "[FOTO_COMPROBANTE]" in mensaje_texto:
@@ -131,7 +167,6 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
         else:
             texto_historial = f"📎 [Archivo adjunto] {media_url}"
 
-    # Guardamos en base de datos usando el ID crudo
     nuevo_mensaje = MensajeChatModel(
         cliente_id=cliente_h.id if cliente_h else None,
         telefono=telefono_raw, 
@@ -142,7 +177,6 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
     db.add(nuevo_mensaje)
     await db.commit()
 
-    # Avisamos a React (WebSocket)
     await manager.broadcast({
         "type": "NEW_MESSAGE",
         "data": {
@@ -154,32 +188,31 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
     })
 
     # =========================================================
-    # 2. ACTIVACIÓN DEL BOT (SOLO SI ESCRIBEN "fdezbot")
+    # 2. ACTIVACIÓN DEL BOT (NUEVA PALABRA CLAVE)
     # =========================================================
-    if texto_limpio == "fdezbot":
+    if texto_limpio == "fdezpay":
         bot_memory[telefono_raw] = {"paso": "ESPERANDO_OPCION"}
         menu = (
-            "🤖 *Bienvenido a FdezNet Bot*\n"
-            "Soy tu asistente virtual. Elige una opción:\n\n"
+            "🤖 *Bienvenido a FdezPay*\n"
+            "Soy tu asistente de pagos y servicios. Elige una opción:\n\n"
             "1️⃣ *Reportar pago* (Transferencia o Depósito)\n"
             "2️⃣ *Promesa de pago* (Reactivar servicio)\n"
             "3️⃣ *Estado de mi servicio*\n\n"
             "👉 _Responde solo con el número._\n\n"
             "❌ _(Escribe *cancelar* en cualquier momento para salir)_"
         )
-        await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": menu})
+        await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=menu)
         return {"status": "bot_iniciado"}
 
     # =========================================================
-    # 3. LÓGICA DEL BOT (SOLO SI ESTÁ DESPIERTO PARA ESTE NÚMERO)
+    # 3. LÓGICA DEL BOT 
     # =========================================================
     if telefono_raw in bot_memory:
         estado = bot_memory[telefono_raw]
 
-        # Comando maestro para apagar el bot
         if texto_limpio == "cancelar":
             del bot_memory[telefono_raw]
-            await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": "🤖 Asistente desactivado. Un asesor humano te atenderá a la brevedad. ¡Buen día!"})
+            await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="🤖 Asistente desactivado. Un asesor humano te atenderá a la brevedad. ¡Buen día!")
             return {"status": "bot_apagado"}
 
         # --- SELECCIÓN DEL MENÚ ---
@@ -187,103 +220,110 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
             if texto_limpio == "1":
                 estado["paso"] = "ESPERANDO_FOTO_PAGO"
                 res = "📄 *Reporte de Pago*\nPor favor, envíame la **foto del comprobante** o ticket bien enfocada."
-                await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res})
                 
             elif texto_limpio == "2":
                 estado["paso"] = "VALIDAR_CEDULA_PROMESA"
                 res = "⏳ *Promesa de Pago*\nPor favor escribe tu *Cédula de Cliente* para buscar tu cuenta (Ej: 329B)."
-                await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res})
                 
             elif texto_limpio == "3":
                 estado["paso"] = "VALIDAR_CEDULA_ESTADO"
                 res = "📊 *Estado del Servicio*\nPor favor, escribe tu *Cédula de Cliente* para buscar tus datos."
-                await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res})
                 
             else:
                 res = "❌ Opción no válida. Por favor, responde 1, 2 o 3. (Escribe 'cancelar' para salir)."
-                await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res})
             
+            await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "procesando_menu"}
 
         # --- FLUJO 1: REPORTAR PAGO ---
         elif estado["paso"] == "ESPERANDO_FOTO_PAGO":
             if media_url and "[FOTO_COMPROBANTE]" in mensaje_texto:
-                await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": "🤖 Analizando tu comprobante... ⏳"})
+                await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="🤖 Analizando tu comprobante... ⏳")
                 
                 resultado_ocr = await ocr_tool.procesar_ticket(media_url)
                 
                 if not resultado_ocr["exito"]:
-                    await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": "⚠️ No logré leer el folio o monto. Envía una foto más clara o escribe 'cancelar'."})
+                    await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="⚠️ No logré leer el folio o monto. Envía una foto más clara, sin reflejos, o escribe 'cancelar'.")
                     return {"status": "ocr_failed"}
 
+                # 🛡️ CAPA 1: Evitar Folios Duplicados
                 folio_banco = resultado_ocr["folio"]
                 stmt_fraude = select(PagoAutovalidadoModel).where(PagoAutovalidadoModel.folio_banco == folio_banco)
                 pago_existente = (await db.execute(stmt_fraude)).scalars().first()
 
                 if pago_existente:
-                    res_fraude = f"🚫 *¡Alerta de Seguridad!*\n\nEl comprobante con folio *{folio_banco}* ya fue registrado anteriormente en nuestro sistema. Si crees que es un error, contacta a soporte."
+                    res_fraude = f"🚫 *¡Alerta de Seguridad!*\n\nEl comprobante con folio *{folio_banco}* ya fue registrado anteriormente. Este intento ha sido bloqueado. Si es un error, contacta a soporte."
                     del bot_memory[telefono_raw]
-                    await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res_fraude})
+                    await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res_fraude)
+                    
+                    # 🚨 ALERTA AL ADMINISTRADOR 🚨
+                    config_res = await db.execute(select(ConfiguracionSistema).where(ConfiguracionSistema.id == 1))
+                    config = config_res.scalar_one_or_none()
+                    if config and config.telefonos_alerta:
+                        numeros_admin = [n.strip() for n in config.telefonos_alerta.split(",") if n.strip()]
+                        alerta_admin = f"🚨 *INTENTO DE FRAUDE DETECTADO*\nEl número {telefono_raw} intentó subir un ticket duplicado con folio {folio_banco}."
+                        for admin_num in numeros_admin:
+                            await wa_service.enviar_mensaje(telefono=admin_num, mensaje=alerta_admin)
+                            
                     return {"status": "fraude_detectado"}
+
+                # Guardamos los datos leídos en memoria
+                estado["pago"] = resultado_ocr
+                cedula_ocr = resultado_ocr.get("cedula_detectada")
+
+                # 🛡️ CAPA 2: Triangulación de Identidad
+                if cedula_ocr:
+                    stmt_c_ocr = select(ClienteModel).where(ClienteModel.cedula == cedula_ocr)
+                    cliente_ocr = (await db.execute(stmt_c_ocr)).scalars().first()
+                    
+                    if cliente_ocr:
+                        estado["paso"] = "VALIDACION_FINAL_PAGO" 
+                        estado["cliente_id"] = cliente_ocr.id
+                        res = f"Detecté la cédula *{cedula_ocr}* en el ticket.\n\n¿Deseas aplicar el pago de *${resultado_ocr['monto']}* a la cuenta de *{cliente_ocr.nombre}*? (Responde *SI* o *NO*)"
+                        await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
+                        return {"status": "confirmar_ocr"}
 
                 if cliente_h:
                     estado["paso"] = "CONFIRMAR_NOMBRE_PAGO"
                     estado["cliente_id"] = cliente_h.id
-                    estado["pago"] = resultado_ocr
-                    res = f"Detecto que eres *{cliente_h.nombre}*.\n\n¿Deseas aplicar este pago a tu cuenta? (Responde *SI* o *NO*)"
+                    res = f"Detecto que envías desde el celular de *{cliente_h.nombre}*.\n\nHe leído un pago por *${resultado_ocr['monto']}*.\n¿Deseas aplicar este pago a tu cuenta? (Responde *SI* o *NO*)"
                 else:
-                    estado["paso"] = "VALIDAR_CEDULA_PAGO"
-                    estado["pago"] = resultado_ocr
-                    res = f"He leído tu ticket por *${resultado_ocr['monto']}*.\n¿A qué cuenta aplicamos el pago? Escribe la *Cédula de Cliente*."
+                    estado["paso"] = "PEDIR_CEDULA_PAGO"
+                    res = f"He leído tu ticket por *${resultado_ocr['monto']}*.\n¿A qué cuenta aplicamos el pago? Escribe la *Cédula de Cliente* (Ej. 329B)."
 
-                await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res})
+                await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
                 return {"status": "bot_init_pago"}
             else:
-                await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": "⚠️ Estoy esperando una FOTO. (Escribe 'cancelar' para salir). "})
+                await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="⚠️ Estoy esperando una FOTO de tu comprobante. (Escribe 'cancelar' para salir).")
                 return {"status": "esperando_foto"}
 
         elif estado["paso"] == "CONFIRMAR_NOMBRE_PAGO":
             if "si" in texto_limpio:
-                estado["paso"] = "VALIDAR_CEDULA_PAGO"
-                res = "¡Perfecto! ✅ Escribe tu *Cédula de 4 dígitos* para confirmar la transacción."
+                estado["paso"] = "VALIDACION_FINAL_PAGO" 
+                res = "¡Perfecto! ✅ Escribe tu *Cédula de 4 dígitos* como firma de seguridad para confirmar la transacción."
             else:
-                estado["paso"] = "VALIDAR_CEDULA_PAGO"
+                estado["paso"] = "PEDIR_CEDULA_PAGO"
                 res = "Entendido. Escribe la *Cédula de Cliente* a la que deseas aplicar el pago (Ej. la cuenta de un familiar)."
-            await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res})
+            
+            await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "bot_confirmando_pago"}
 
-        elif estado["paso"] == "VALIDAR_CEDULA_PAGO":
+        elif estado["paso"] == "PEDIR_CEDULA_PAGO":
             cedula_input = mensaje_texto.upper().strip()
             stmt_c = select(ClienteModel).where(ClienteModel.cedula == cedula_input)
             cliente_final = (await db.execute(stmt_c)).scalars().first()
-
+            
             if cliente_final:
-                stmt_f = select(FacturaModel).where(FacturaModel.cliente_id == cliente_final.id, FacturaModel.estado == "pendiente").order_by(FacturaModel.fecha_vencimiento.asc())
-                factura = (await db.execute(stmt_f)).scalars().first()
-
-                if not factura:
-                    res = "✅ Identidad confirmada, pero no tienes facturas pendientes."
-                else:
-                    try:
-                        stmt_u = select(UsuarioModel).where(UsuarioModel.id == 1)
-                        admin_user = (await db.execute(stmt_u)).scalar_one()
-
-                        billing_service = BillingService(db)
-                        await billing_service.registrar_pago_completo(factura_id=factura.id, usuario_operador=admin_user, metodo_pago="BOT_AUTOPAGO", monto=estado["pago"]["monto"], referencia=estado["pago"]["folio"])
-                        
-                        db.add(PagoAutovalidadoModel(cliente_id=cliente_final.id, monto=estado["pago"]["monto"], folio_banco=estado["pago"]["folio"], whatsapp_remitente=telefono_raw))
-                        await db.commit()
-
-                        res = f"✅ ¡Todo listo, {cliente_final.nombre}!\nTu pago ha sido procesado exitosamente. Tu internet quedará activo en breve. 🚀"
-                    except Exception as e:
-                        res = f"❌ Error al procesar el pago: {str(e)}"
-                
-                del bot_memory[telefono_raw] 
+                estado["paso"] = "VALIDACION_FINAL_PAGO"
+                estado["cliente_id"] = cliente_final.id
+                return await procesar_validacion_final_pago("si", estado, telefono_raw, db, wa_service)
             else:
                 res = "❌ Cédula incorrecta. Inténtalo de nuevo o escribe 'cancelar'."
-            
-            await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res})
-            return {"status": "bot_pago_finished"}
+                await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
+                return {"status": "cedula_invalida"}
+
+        elif estado["paso"] == "VALIDACION_FINAL_PAGO":
+            return await procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db, wa_service)
 
         # --- FLUJO 2: PROMESA DE PAGO ---
         elif estado["paso"] == "VALIDAR_CEDULA_PROMESA":
@@ -309,7 +349,7 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
             else:
                 res = "❌ Cédula incorrecta. Inténtalo de nuevo o escribe 'cancelar'."
             
-            await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res})
+            await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "pidiendo_dia_promesa"}
 
         elif estado["paso"] == "PEDIR_DIA_PROMESA":
@@ -347,7 +387,7 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
             except ValueError:
                 res = "❌ Día no válido. Escribe solamente el número del día (del 1 al 31) o escribe 'cancelar'."
 
-            await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res})
+            await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "promesa_finalizada"}
 
         # --- FLUJO 3: ESTADO DEL SERVICIO ---
@@ -368,13 +408,13 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
                     f"🌐 *IP:* {cliente_final.ip_asignada or 'Dinámica'}\n"
                     f"🔌 *Estado:* {estado_str}\n"
                     f"💰 *Saldo a favor:* ${cliente_final.saldo_a_favor}\n\n"
-                    f"Para volver al menú escribe *fdezbot*."
+                    f"Para volver al menú escribe *fdezpay*."
                 )
                 del bot_memory[telefono_raw]
             else:
                 res = "❌ Cédula incorrecta. Inténtalo de nuevo o escribe 'cancelar'."
             
-            await whatsapp_queue.agregar_tarea({"numero": telefono_raw, "mensaje": res})
+            await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "bot_estado_finished"}
 
     return {"status": "chat_normal"}
@@ -443,16 +483,14 @@ async def enviar_mensaje_chat(cliente_id: int, data: MensajeEnviarRequest, db: A
     await db.refresh(nuevo_mensaje)
 
     try:
-        async with httpx.AsyncClient() as http_client:
-            payload = {"numero": telefono_limpio, "mensaje": data.mensaje}
-            resp = await http_client.post(f"{BASE_NODE_URL}/enviar-mensaje", json=payload, timeout=10.0)
-            if resp.status_code == 200:
-                 datos_respuesta = resp.json()
-                 if "wa_id" in datos_respuesta:
-                     nuevo_mensaje.wa_id = datos_respuesta["wa_id"]
-                     nuevo_mensaje.ack = 1 
-                     await db.commit()
-    except Exception as e: print(f"❌ Error de conexión Node.js: {e}")
+        # 🔥 CARRIL RÁPIDO PARA EL CHAT MANUAL DEL PANEL 🔥
+        wa_service = WhatsAppService()
+        exito = await wa_service.enviar_mensaje(telefono=telefono_limpio, mensaje=data.mensaje)
+        if exito:
+             # Aquí asumes que tu servicio puente regresará ok (node)
+             nuevo_mensaje.ack = 1 
+             await db.commit()
+    except Exception as e: print(f"❌ Error enviando mensaje instantáneo: {e}")
     return {"status": "ok"}
 
 @router.websocket("/ws/{user_id}")
@@ -470,33 +508,27 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 # ==========================================
 @router.get("/status")
 async def obtener_estado():
-    """Pregunta a Node.js si el motor está Activo, Conectado y el texto del QR"""
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{BASE_NODE_URL}/status", timeout=5.0)
             return resp.json() 
     except Exception as e:
-        print(f"⚠️ Error consultando motor Node.js: {e}")
         return {"active": False, "connected": False, "qr": None}
 
 @router.post("/init")
 async def iniciar_whatsapp():
-    """Manda la orden a Node.js de arrancar el navegador y generar QR"""
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(f"{BASE_NODE_URL}/init", timeout=15.0)
             return resp.json()
     except Exception as e:
-        print(f"⚠️ Error al iniciar motor: {e}")
         raise HTTPException(status_code=500, detail="No se pudo arrancar el motor de WhatsApp")
 
 @router.post("/logout")
 async def logout_whatsapp():
-    """Cierra la sesión oficial y apaga el navegador en Node.js"""
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(f"{BASE_NODE_URL}/logout", timeout=10.0)
             return resp.json()
     except Exception as e:
-        print(f"⚠️ Error al intentar apagar motor: {e}")
         raise HTTPException(status_code=500, detail="Error de comunicación con el motor")

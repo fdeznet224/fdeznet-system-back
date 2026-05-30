@@ -53,11 +53,7 @@ class NotificationService:
             "telefono": cliente.telefono,
             "direccion": cliente.direccion or "Domicilio conocido",
             "cedula": cliente.cedula or "Pendiente",
-            
-            # 🔥 CORRECCIÓN AQUÍ 🔥
-            # En lugar de usar identificador_onu, entramos a la relación cargada
             "onu_serial": cliente.onu_asignada.identificador if cliente.onu_asignada else "N/A", 
-            
             "ip": cliente.ip_asignada or "Pendiente",
             "nodo": cliente.router.nombre if cliente.router else "Principal",
             "plan": cliente.plan.nombre if cliente.plan else "Básico",
@@ -78,7 +74,8 @@ class NotificationService:
             "numero": cliente.telefono,
             "mensaje": mensaje_formateado,
             "ruta": ruta_pdf,
-            "intervalo": 5 
+            # Mandamos 0 para que la cola use GLOBAL_SETTINGS["intervalo_default"]
+            "intervalo": 0 
         }
         
         await whatsapp_queue.agregar_tarea(tarea)

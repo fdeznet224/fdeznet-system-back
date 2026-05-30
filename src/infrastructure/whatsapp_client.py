@@ -10,6 +10,8 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+GLOBAL_SETTINGS = {"intervalo_default": 60}
+
 class WhatsAppService:
     def __init__(self):
         # Determina si usa el contenedor de Docker o Localhost
@@ -70,10 +72,6 @@ class WhatsAppQueue:
         self.service = WhatsAppService()
 
     async def agregar_tarea(self, tarea: dict):
-        """
-        Agrega una tarea a la cola. 
-        'tarea' debe ser un dict con: numero, mensaje y opcionalmente ruta.
-        """
         await self.queue.put(tarea)
         if not self.is_running:
             asyncio.create_task(self.procesar_cola())
@@ -83,27 +81,34 @@ class WhatsAppQueue:
         while not self.queue.empty():
             tarea = await self.queue.get()
             
-            # Tiempo de espera entre mensajes para evitar baneos de WhatsApp
-            wait_time = tarea.get('intervalo', 5) 
-            
             try:
-                # 👇 PASAMOS LA RUTA AL SERVICIO DESDE LA TAREA 👇
                 exito = await self.service.enviar_mensaje(
                     telefono=tarea['numero'], 
                     mensaje=tarea['mensaje'], 
-                    ruta=tarea.get('ruta') # Si no existe, enviará None
+                    ruta=tarea.get('ruta') 
                 )
                 
                 if exito:
                     tipo = "PDF + Texto" if tarea.get('ruta') else "Texto"
                     logger.info(f"✅ Notificación ({tipo}) enviada a {tarea['numero']}")
                 else:
-                    logger.error(f"🚫 Falló envío a {tarea['numero']}. Revisa logs del puente Node.")
+                    logger.error(f"🚫 Falló envío a {tarea['numero']}. Revisa logs.")
             except Exception as e:
                 logger.error(f"❌ Fallo crítico en el hilo de la cola: {e}")
 
-            # Esperar antes del siguiente mensaje
+            # 🔥 MAGIA ANTI-BAN LEYENDO TU CONFIGURACIÓN EN MEMORIA 🔥
+            # 1. Checa si la tarea trae un intervalo específico (como en tu enviar_campana)
+            # 2. Si no trae (como las notificaciones automáticas), lee el GLOBAL_SETTINGS
+            intervalo_tarea = tarea.get('intervalo', 0)
+            
+            if intervalo_tarea > 0:
+                wait_time = intervalo_tarea
+            else:
+                wait_time = GLOBAL_SETTINGS.get("intervalo_default", 60)
+
+            logger.info(f"⏳ Escudo Anti-Ban: El motor descansará {wait_time} segundos...")
             await asyncio.sleep(wait_time)
+            
             self.queue.task_done()
             
         self.is_running = False
