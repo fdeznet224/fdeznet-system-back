@@ -109,24 +109,67 @@ async def tarea_sincronizar_clientes():
 # 3. TAREA DE FACTURACIÓN Y CORTES
 # ==========================================
 async def tarea_cron_unificada():
+    # Extrae la hora actual en formato de 24 horas (ej: "03", "06", "09")
     hora_actual = datetime.now().strftime("%H")
+    
     async with SessionLocal() as db:
         try:
             config = (await db.execute(select(ConfiguracionSistema).where(ConfiguracionSistema.id == 1))).scalar_one_or_none()
             if not config: return
             billing_service = BillingService(db)
 
-            # Facturación
-            if hora_actual == getattr(config, 'hora_generacion_facturas', "06:00").split(":")[0]:
-                resultado = await billing_service.generar_emision_masiva()
-                db.add(LogCronjobModel(nivel="INFO", origen="Facturación", mensaje=f"Facturación: {resultado}"))
-            
-            # Cortes
-            if config.activar_corte_automatico and hora_actual == config.hora_ejecucion_corte.split(":")[0]:
-                resultado = await billing_service.procesar_cortes_automaticos()
-                db.add(LogCronjobModel(nivel="INFO", origen="Cortes", mensaje=f"Cortes: {resultado}"))
+            # Extraemos limpiamente solo el componente de la hora (de "03:00" nos deja "03")
+            hora_corte = config.hora_ejecucion_corte.split(":")[0] if config.hora_ejecucion_corte else "03"
+            hora_facturas = config.hora_generacion_facturas.split(":")[0] if config.hora_generacion_facturas else "06"
+            hora_mensajes = config.hora_recordatorios.split(":")[0] if config.hora_recordatorios else "09"
+
+            # ------------------------------------------------------
+            # A. GENERACIÓN DE FACTURAS AUTOMÁTICA (5 días antes)
+            # ------------------------------------------------------
+            if config.generar_facturas_automaticamente:
+                if hora_actual == hora_facturas:
+                    resultado = await billing_service.generar_emision_masiva()
+                    db.add(LogCronjobModel(
+                        nivel="INFO", 
+                        origen="Facturación", 
+                        mensaje=f"Emisión Masiva Ejecutada: {resultado}"
+                    ))
+
+            # ------------------------------------------------------
+            # B. RECORDATORIO DE PAGO URGENTE (1 día antes)
+            # ------------------------------------------------------
+            if config.activar_notificaciones:
+                if hora_actual == hora_mensajes:
+                    # Lee directamente tu nueva columna de la BD
+                    dias_urgente = config.recordatorio_2_dias or 0
+                    
+                    # Ejecuta sólo si el interruptor no es 0
+                    if dias_urgente > 0:
+                        resultado_rec = await billing_service.enviar_recordatorios_automaticos(dias_aviso_urgente=dias_urgente)
+                        db.add(LogCronjobModel(
+                            nivel="INFO", 
+                            origen="Recordatorios", 
+                            mensaje=f"Recordatorios Enviados ({dias_urgente} días antes): {resultado_rec}"
+                        ))
+
+            # ------------------------------------------------------
+            # C. MOTOR DE CORTES AUTOMÁTICOS (Fecha límite superada)
+            # ------------------------------------------------------
+            if config.activar_corte_automatico:
+                if hora_actual == hora_corte:
+                    resultado_corte = await billing_service.procesar_cortes_automaticos()
+                    db.add(LogCronjobModel(
+                        nivel="INFO", 
+                        origen="Cortes", 
+                        mensaje=f"Cortes del día procesados: {resultado_corte}"
+                    ))
             
             await db.commit()
+            
         except Exception as e:
-            db.add(LogCronjobModel(nivel="ERROR", origen="Sistema", mensaje=f"Error global: {str(e)}"))
+            db.add(LogCronjobModel(
+                nivel="ERROR", 
+                origen="Sistema", 
+                mensaje=f"Error fatal en el ciclo del Cronjob: {str(e)}"
+            ))
             await db.commit()

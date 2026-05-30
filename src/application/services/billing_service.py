@@ -26,8 +26,7 @@ class BillingService:
     # ==========================================
     async def generar_emision_masiva(self, dia_objetivo: int = None):
         hoy = date.today()
-        mes_actual_str = hoy.strftime("%B %Y").capitalize()
-        notificador = NotificationService(self.db) # 👈 Instancia única
+        notificador = NotificationService(self.db) 
 
         stmt = select(ClienteModel).options(
             selectinload(ClienteModel.plantilla),
@@ -53,18 +52,31 @@ class BillingService:
             plan = cliente.plan
             reporte["total_procesados"] += 1
             
+            # 🔥 LÓGICA CORREGIDA DE FECHAS (EL BUG ESTABA AQUÍ) 🔥
             try:
-                fecha_vencimiento = date(hoy.year, hoy.month, plantilla.dia_pago)
+                venc_este_mes = date(hoy.year, hoy.month, plantilla.dia_pago)
             except ValueError:
-                fecha_vencimiento = hoy + relativedelta(day=31)
+                # Si el mes no tiene día 31, lo ajusta al último día del mes (ej. Febrero 28)
+                ultimo_dia_mes = (date(hoy.year, hoy.month, 1) + relativedelta(months=1, days=-1)).day
+                venc_este_mes = date(hoy.year, hoy.month, min(plantilla.dia_pago, ultimo_dia_mes))
+
+            # Si hoy ya pasó la fecha de pago de este mes (ej. hoy es 26 y el pago es el 1),
+            # significa que estamos calculando la factura del PRÓXIMO mes (Junio).
+            if hoy > venc_este_mes:
+                prox_mes_date = hoy + relativedelta(months=1)
+                ultimo_dia_prox = (date(prox_mes_date.year, prox_mes_date.month, 1) + relativedelta(months=1, days=-1)).day
+                fecha_vencimiento = date(prox_mes_date.year, prox_mes_date.month, min(plantilla.dia_pago, ultimo_dia_prox))
+            else:
+                fecha_vencimiento = venc_este_mes
 
             dias_antes = plantilla.dias_antes_emision or 0
             fecha_generacion = fecha_vencimiento - timedelta(days=dias_antes)
             
+            # 1. Si no es el día, saltamos (A menos que el cajero lo force manualmente)
             if not dia_objetivo and hoy < fecha_generacion:
                 continue
 
-            # Evitar duplicados
+            # 2. Evitar duplicados (Buscando por el mes/año correcto de vencimiento)
             stmt_dup = select(FacturaModel).where(and_(
                 FacturaModel.cliente_id == cliente.id,
                 extract('month', FacturaModel.fecha_vencimiento) == fecha_vencimiento.month,
@@ -73,8 +85,11 @@ class BillingService:
             if (await self.db.execute(stmt_dup)).scalars().first():
                 continue 
 
-            # Creación
+            # 3. Creación
             total = plan.precio + (plan.precio * plantilla.impuesto / 100)
+            
+            # 🚀 EXTRA: Ahora el recibo dice "Junio 2026", no "Mayo 2026"
+            mes_actual_str = fecha_vencimiento.strftime("%B %Y").capitalize()
 
             nueva_factura = FacturaModel(
                 cliente_id=cliente.id,
@@ -90,15 +105,68 @@ class BillingService:
             await self.db.flush()
             reporte["facturas_generadas"] += 1
 
-            # 👇 NOTIFICACIÓN DE COBRO (Simple y limpia) 👇
+            # 👇 NOTIFICACIÓN DE COBRO 👇
             if cliente.telefono:
-                # Solo pasamos lo que no es "fijo" del cliente (monto y folio)
                 exito = await notificador.notificar(
                     "nueva_factura", 
                     cliente.id, 
                     variables_extra={"monto": f"${total}", "folio": str(nueva_factura.id)}
                 )
                 if exito: reporte["mensajes_enviados"] += 1
+
+        await self.db.commit()
+        return reporte
+    
+
+    # ==========================================
+    # 4. MOTOR DE RECORDATORIOS (CON INTERRUPTOR 0 = DESACTIVADO)
+    # ==========================================
+
+
+    async def enviar_recordatorios_automaticos(self, dias_aviso_urgente: int = 1):
+        # 🔥 EL INTERRUPTOR INTELIGENTE: Si se configura en 0, la opción queda DESACTIVADA 🔥
+        if dias_aviso_urgente <= 0:
+            return {"status": "desactivado", "aviso_urgente_enviados": 0}
+            
+        hoy = date.today()
+        notificador = NotificationService(self.db)
+        
+        # Buscamos todas las facturas pendientes que no tengan promesa activa
+        stmt = select(FacturaModel).options(
+            joinedload(FacturaModel.cliente)
+        ).where(
+            FacturaModel.estado == 'pendiente',
+            FacturaModel.es_promesa_activa == False
+        )
+        
+        facturas = (await self.db.execute(stmt)).scalars().all()
+        reporte = {"status": "activo", "aviso_urgente_enviados": 0}
+
+        for factura in facturas:
+            cliente = factura.cliente
+            # Solo enviamos a clientes activos con teléfono registrado
+            if not cliente.telefono or cliente.estado != 'activo':
+                continue
+
+            # Calculamos cuántos días faltan para la fecha de pago
+            dias_restantes = (factura.fecha_vencimiento - hoy).days
+            
+            # Se ejecuta dinámicamente según los días del parámetro (ej: 1 día antes)
+            if dias_restantes == dias_aviso_urgente:
+                try:
+                    # Usamos tu plantilla existente: 'aviso_corte'
+                    await notificador.notificar(
+                        tipo_evento="aviso_corte", 
+                        cliente_id=cliente.id,
+                        variables_extra={
+                            "monto": f"${factura.total}", 
+                            "folio": str(factura.id),
+                            "fecha_vencimiento": factura.fecha_vencimiento.strftime("%d/%m/%Y")
+                        }
+                    )
+                    reporte["aviso_urgente_enviados"] += 1
+                except Exception as e:
+                    print(f"⚠️ Error enviando aviso previo a {cliente.nombre}: {e}")
 
         await self.db.commit()
         return reporte

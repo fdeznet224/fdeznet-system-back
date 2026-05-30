@@ -316,16 +316,23 @@ class ConfiguracionSistema(Base):
     __tablename__ = "configuracion_sistema"
     id = Column(Integer, primary_key=True, index=True)
     
+    # --- CORTES ---
     activar_corte_automatico = Column(Boolean, default=True)
     hora_ejecucion_corte = Column(String(10), default="03:00")
     
+    # --- NOTIFICACIONES / RECORDATORIOS ---
     activar_notificaciones = Column(Boolean, default=True)
-    recordatorio_1_dias = Column(Integer, default=3)
+    hora_recordatorios = Column(String(10), default="09:00") # 👈 NUEVA
+    recordatorio_1_dias = Column(Integer, default=5)
     recordatorio_2_dias = Column(Integer, default=1)
     recordatorio_3_dias = Column(Integer, default=0)
     
+    # --- FACTURACIÓN ---
     generar_facturas_automaticamente = Column(Boolean, default=True)
+    hora_generacion_facturas = Column(String(10), default="06:00") # 👈 NUEVA
     dia_generacion_factura = Column(Integer, default=1)
+    
+    # --- EXTRA ---
     aviso_pantalla_corte = Column(Boolean, default=False)
     telefonos_alerta = Column(String(255), default="")
 
