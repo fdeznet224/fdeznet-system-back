@@ -1,11 +1,10 @@
 import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload # 👈 VITAL: Para cargar la relación de la ONU
+from sqlalchemy.orm import selectinload
 
 from src.infrastructure.models import OLTModel, ClienteModel
-# Asegúrate de tener formatear_mac_hioso en tu archivo snmp_oids.py
-from src.infrastructure.snmp_oids import MAPA_OIDS, procesar_potencia, formatear_mac_hioso
+from src.infrastructure.snmp_oids import MAPA_OIDS, procesar_potencia
 
 class SNMPMonitorService:
     def __init__(self, db: AsyncSession):
@@ -15,11 +14,10 @@ class SNMPMonitorService:
         proc = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE  # 👈 Atrapamos el canal de errores
+            stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await proc.communicate()
         
-        # ⚡ Si hay un error del sistema operativo (ej: command not found o falta de permisos), lo imprimimos en la consola
         if stderr:
             err_msg = stderr.decode('utf-8').strip()
             if err_msg:
@@ -28,7 +26,6 @@ class SNMPMonitorService:
         return stdout.decode('utf-8')
 
     async def _consulta_individual(self, ip: str, comm: str, oid: str) -> str:
-        # ⚡ CORRECCIÓN: Ruta absoluta forzada para que el entorno de Uvicorn encuentre siempre snmpget
         cmd = f"/usr/bin/snmpget -v2c -c {comm} -On {ip} {oid}"
         res = await self._ejecutar_comando(cmd)
         if "STRING:" in res.upper(): 
@@ -37,7 +34,6 @@ class SNMPMonitorService:
             return res.split('INTEGER:')[1].strip()
         return "N/A"
 
-    # ✅ CORRECCIÓN: Ahora recibe modelo_key directamente
     async def _escanear_olt_fisica(self, ip: str, comunidad: str, modelo_key: str):
         conf = MAPA_OIDS.get(modelo_key)
         
@@ -47,7 +43,6 @@ class SNMPMonitorService:
         tipo_tec = conf['TIPO']
         rama_walk = conf['RAMA_POTENCIA'] if tipo_tec == 'EPON' else conf['RAMA_IDS']
         
-        # Forzamos la ruta absoluta por seguridad de entorno
         cmd_walk = f"/usr/bin/snmpwalk -v2c -c {comunidad} -On {ip} {rama_walk}"
         res_walk = await self._ejecutar_comando(cmd_walk)
         
@@ -56,41 +51,36 @@ class SNMPMonitorService:
 
         for linea in res_walk.strip().split('\n'):
             if "=" in linea:
-                # 1. Separamos el OID completo del valor de la línea
                 partes = linea.split("=")
-                oid_completo = partes[0].strip()  # Ej: "iso.3.6.1.4.1.37950.1.1.6.3.5.1.7.0.1"
-                valor_crudo = partes[1].strip()   # Ej: "STRING: \"HWTC38737fb2\""
+                oid_completo = partes[0].strip()
+                valor_crudo = partes[1].strip()
                 
-                # 2. Extraemos el final del OID (los últimos números después de la rama base)
-                # Al limpiar caracteres, nos aseguramos de quedarnos con el "0.1", "0.2", etc. quitando la palabra "iso"
                 clean_oid = oid_completo.replace("iso", "").replace("authenticated", "").strip().lstrip('.')
                 clean_rama = rama_walk.strip().lstrip('.')
                 full_idx = clean_oid.replace(clean_rama, "").strip().lstrip('.')
                 
-                # Validamos que de verdad tengamos un índice limpio
                 if not full_idx: continue
 
-                # 3. Limpiamos el Identificador (Serial o MAC) sin importar mayúsculas/minúsculas
                 if "STRING:" in valor_crudo.upper():
                     val_id = valor_crudo.split(':')[-1].strip().replace('"', '')
                 else:
                     val_id = valor_crudo.replace('"', '')
 
                 if tipo_tec == 'EPON':
-                    # Lógica V-SOL EPON
+                    # Lógica V-SOL EPON (No cambia)
                     pwr_limpia = procesar_potencia(val_id, tipo_tec)
                     sub_idx = full_idx.split('.')[-1]
                     val_id = await self._consulta_individual(ip, comunidad, f"{conf['RAMA_IDS']}.{sub_idx}")
                 else:
-                    # Lógica GPON y HIOSO
-                    if tipo_tec == 'EPON_HIOSO':
-                        val_id = formatear_mac_hioso(val_id)
-                        oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{full_idx}"
-                    else:
-                        # ⚡ Ajuste quirúrgico para GPON V1600GS: Cambiamos el "0.x" por "1.x" para la potencia
+                    # Lógica GPON (V-SOL 1 Pon y 4 Pon)
+                    if modelo_key == 'V1600GS':
+                        # Ajuste para la de 1 puerto (Cambiamos el "0.x" por "1.x")
                         idx_potencia = full_idx.replace("0.", "1.") if full_idx.startswith("0.") else full_idx
-                        oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{idx_potencia}"
-
+                    else:
+                        # Ajuste para la de 4 puertos (Usa el índice directo, ej. .1.4 o .2.1)
+                        idx_potencia = full_idx
+                        
+                    oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{idx_potencia}"
                     raw_pwr = await self._consulta_individual(ip, comunidad, oid_buscar_potencia)
                     pwr_limpia = procesar_potencia(raw_pwr, tipo_tec)
 
@@ -130,7 +120,6 @@ class SNMPMonitorService:
             if sn:
                 mapa_bd[sn] = c
 
-        # ✅ Le pasamos olt.modelo
         onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
 
         resultados = {
@@ -206,7 +195,6 @@ class SNMPMonitorService:
 
         olt = await self.db.get(OLTModel, cliente.olt_id)
         
-        # ✅ Le pasamos olt.modelo
         onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
 
         id_buscado = sn_cliente.upper().strip()
