@@ -48,6 +48,13 @@ class ClientePortalResponse(BaseModel):
     ip_asignada: Optional[str] = None
     mac_address: Optional[str] = None
     identificador_onu: Optional[str] = None # 👇 AÑADIDO PARA LA APP DEL TÉCNICO
+    
+    # 🚀 AÑADIDOS LOS IDs NECESARIOS PARA EL FRONTEND 🚀
+    olt_id: Optional[int] = None
+    onu_id: Optional[int] = None
+    caja_nap_id: Optional[int] = None
+    plan_id: Optional[int] = None       # Agregado por si el front lo necesita en el POST
+    
     router_nombre: str       
     estado: str              
     is_online: bool
@@ -153,7 +160,9 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
     # --- D. DATOS EXTRA ---
     nap_nombre = cliente.caja_nap.nombre if cliente.caja_nap else "No Asignada"
     olt_nombre = cliente.olt.nombre if cliente.olt else "No Asignada"
-    id_onu = cliente.onu_asignada.identificador if cliente.onu_asignada else "Sin Equipo"
+    
+    # Manejo seguro si no hay ONU asignada (para no enviar el string literal "Sin Equipo" que no coincidirá en el front)
+    id_onu = cliente.onu_asignada.identificador if cliente.onu_asignada else None
 
     return {
         "id": cliente.id,
@@ -162,9 +171,17 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
         "telefono": cliente.telefono,
         "direccion": cliente.direccion,
         "ip_asignada": cliente.ip_asignada or "Pendiente",
+        
+        # 🚀 ESTOS SON LOS IDs VITALES PARA EL FRONTEND DE REACT 🚀
+        "olt_id": cliente.olt_id,
+        "onu_id": cliente.onu_id,
+        "caja_nap_id": cliente.caja_nap_id,
+        "plan_id": cliente.plan_id,
+        "router_id": cliente.router_id, 
+        
+        # Datos visuales que ya tenías
         "identificador_onu": id_onu, 
         "router_nombre": cliente.router.nombre if cliente.router else "Sin Router",
-        "router_id": cliente.router_id, 
         "estado": cliente.estado,
         "is_online": online_status,
         "olt_nombre": olt_nombre,
@@ -174,10 +191,7 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
         "suggested_pass": sug_pass,
         "plan_nombre": cliente.plan.nombre if cliente.plan else "Sin Plan",
         "velocidad_bajada": cliente.plan.velocidad_bajada if cliente.plan else 0,
-        
-        # 🚀 CORRECCIÓN: Agregamos el campo faltante requerido por el esquema
         "velocidad_subida": cliente.plan.velocidad_subida if cliente.plan else 0,
-        
         "precio_plan": cliente.plan.precio if cliente.plan else 0.0,
         "total_deuda": total_deuda,
         "facturas_pendientes": vencidas_count,

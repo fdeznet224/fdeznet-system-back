@@ -314,7 +314,7 @@ class ClienteResponse(ClienteBase):
 
 # EL TÉCNICO EN CAMPO
 class InstalacionRequest(BaseModel):
-    cedula: str
+    cedula: Optional[str] = None  # 🚀 AQUÍ ESTÁ EL CAMBIO CLAVE
     onu_id: Optional[int] = None
     mac_address: Optional[str] = None
     olt_id: Optional[int] = None
@@ -322,8 +322,8 @@ class InstalacionRequest(BaseModel):
     puerto_nap: Optional[int] = None
     latitud: Optional[float] = None
     longitud: Optional[float] = None
-    plan_id: Optional[int] = None    # 👈 Ahora es opcional
-    router_id: Optional[int] = None  # 👈 Ahora es opcional
+    plan_id: Optional[int] = None    
+    router_id: Optional[int] = None  
     user_pppoe: str
     pass_pppoe: str
     ip_asignada: Optional[str] = None
