@@ -36,7 +36,7 @@ class NotificationService:
             joinedload(ClienteModel.plan),
             joinedload(ClienteModel.plantilla),
             joinedload(ClienteModel.router),
-            joinedload(ClienteModel.onu_asignada) # ✅ Cargamos la relación de la ONU
+            joinedload(ClienteModel.onu_asignada) 
         ).where(ClienteModel.id == cliente_id)
         
         cliente = (await self.db.execute(stmt_c)).scalar_one_or_none()
@@ -45,39 +45,70 @@ class NotificationService:
             logger.warning(f"⚠️ Cliente {cliente_id} no existe o no tiene teléfono.")
             return False
 
-        # 3. EL DICCIONARIO MAESTRO
+        # =========================================================
+        # 3. CÁLCULOS INTELIGENTES (Las nuevas super variables)
+        # =========================================================
+        
+        # A. Cálculos de Fechas
+        dia_pago = cliente.plantilla.dia_pago if cliente.plantilla else 1
+        dias_tolerancia = cliente.plantilla.dias_tolerancia if cliente.plantilla else 0
+        
+        # Sumamos el día de pago + la tolerancia para sacar el día límite
+        dia_final_calc = dia_pago + dias_tolerancia
+        dia_final_seguro = dia_final_calc if dia_final_calc <= 30 else 30
+
+        # B. Mes en texto humano
+        meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        mes_actual_nombre = meses[datetime.now().month - 1]
+
+        # C. Conversión de velocidad (Kbps a Megas comerciales)
+        velocidad = f"{int(cliente.plan.velocidad_bajada / 1024)} Megas" if cliente.plan and cliente.plan.velocidad_bajada else "Básico"
+
+        # =========================================================
+        # 4. EL DICCIONARIO MAESTRO RECARGADO
+        # =========================================================
         datos_base = {
             "empresa": "FdezNet",
             "fecha_actual": datetime.now().strftime("%d/%m/%Y"),
+            "mes_actual": mes_actual_nombre,
             "nombre": cliente.nombre,
             "telefono": cliente.telefono,
             "direccion": cliente.direccion or "Domicilio conocido",
             "cedula": cliente.cedula or "Pendiente",
+            
+            # Hardware e IP
             "onu_serial": cliente.onu_asignada.identificador if cliente.onu_asignada else "N/A", 
             "ip": cliente.ip_asignada or "Pendiente",
             "nodo": cliente.router.nombre if cliente.router else "Principal",
-            "plan": cliente.plan.nombre if cliente.plan else "Básico",
-            "precio": f"${cliente.plan.precio}" if cliente.plan else "$0.00",
-            "dia_corte": str(cliente.plantilla.dia_pago) if cliente.plantilla else "1",
             "usuario_pppoe": cliente.user_pppoe or "N/A",
             "pass_pppoe": cliente.pass_pppoe or "N/A",
+            
+            # Servicio y Finanzas
+            "plan": cliente.plan.nombre if cliente.plan else "Básico",
+            "precio": f"${cliente.plan.precio}" if cliente.plan else "$0.00",
+            "velocidad": velocidad,
+            "dia_corte": str(dia_pago),
+            "dia_final": str(dia_final_seguro),
+            "saldo_favor": f"${cliente.saldo_a_favor}" if cliente.saldo_a_favor else "$0.00",
+            "estado_cliente": cliente.estado.capitalize()
         }
 
-        # Unir con datos específicos del momento
+        # 5. UNIFICAR DATOS (Mezclamos la base con variables extras como {monto_pagado} o {referencia})
         datos_finales = {**datos_base, **(variables_extra or {})}
 
-        # 4. FORMATEAR MENSAJE
+        # 6. FORMATEAR MENSAJE (Reemplazando las llaves { } por los datos reales)
         mensaje_formateado = formatear_mensaje(plantilla.texto, datos_finales)
         
-        # 5. ENCOLAR TAREA
+        # 7. ENCOLAR TAREA HACIA EL BOT DE WHATSAPP
         tarea = {
             "numero": cliente.telefono,
             "mensaje": mensaje_formateado,
             "ruta": ruta_pdf,
-            # Mandamos 0 para que la cola use GLOBAL_SETTINGS["intervalo_default"]
+            # Mandamos 0 para que la cola use la velocidad por defecto configurada en tus settings
             "intervalo": 0 
         }
         
         await whatsapp_queue.agregar_tarea(tarea)
         logger.info(f"📨 Notificación '{tipo_evento}' encolada para {cliente.nombre}")
+        
         return True

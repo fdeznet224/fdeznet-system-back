@@ -723,23 +723,38 @@ class ClientService:
         if not cliente:
             raise ValueError("Cliente no encontrado")
 
-        # 1. Gestionar la ONU vieja (si tiene)
+        # 1. Gestionar y liberar la ONU vieja
         if cliente.onu_id:
             onu_vieja = await self.db.get(InventarioONUModel, cliente.onu_id)
             if onu_vieja:
-                onu_vieja.estado = estado_vieja_onu # Será 'CON_FALLA' o 'DISPONIBLE'
+                # 🧼 Sanitización: Cualquiera de estas opciones se convierte en 'CON_FALLA'
+                estado_limpio = estado_vieja_onu.upper().strip()
+                if estado_limpio in ["DAÑADA", "DANADA", "DAÑADO", "DANADO", "CON_FALLA", "FALLA"]:
+                    onu_vieja.estado = "CON_FALLA" # 🔥 AQUÍ ESTÁ EL AJUSTE CLAVE 🔥
+                else:
+                    onu_vieja.estado = estado_limpio
+                
                 onu_vieja.tecnico_id = None
+                self.db.add(onu_vieja)
 
-        # 2. Validar la ONU nueva
+        # 2. Validar la nueva ONU que sale de la bodega
         onu_nueva = await self.db.get(InventarioONUModel, nuevo_inventario_id)
         if not onu_nueva:
-            raise ValueError("La nueva ONU no existe en el inventario.")
+            raise ValueError("La nueva ONU seleccionada no existe en el inventario.")
         if onu_nueva.estado != 'DISPONIBLE':
-            raise ValueError(f"La nueva ONU no está disponible (Estado: {onu_nueva.estado}).")
+            raise ValueError(f"La nueva ONU no está disponible en bodega (Estado actual: {onu_nueva.estado}).")
 
-        # 3. Hacer el Swap
+        # 3. Hacer el Swap de IDs en el perfil del cliente
         cliente.onu_id = nuevo_inventario_id
         onu_nueva.estado = 'INSTALADO'
+        
+        if cliente.tecnico_id:
+            onu_nueva.tecnico_id = cliente.tecnico_id
 
+        self.db.add(onu_nueva)
+        self.db.add(cliente)
+
+        # 4. Confirmar cambios
         await self.db.commit()
-        return f"Cambio exitoso. Nueva ONU asignada: {onu_nueva.identificador}"
+        
+        return f"Cambio exitoso. Nueva ONU asignada: {onu_nueva.identificador}."

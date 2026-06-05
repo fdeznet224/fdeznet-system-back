@@ -215,6 +215,7 @@ class BillingService:
     async def registrar_pago_completo(self, factura_id: int, usuario_operador: UsuarioModel, metodo_pago: str, monto: float, referencia: str = None):
         factura = await self.db.get(FacturaModel, factura_id)
         if not factura: raise ValueError("Factura no encontrada")
+        if monto <= 0: raise ValueError("El monto debe ser mayor a cero.")
         
         # Necesitamos cargar el cliente con sus planes para el PDF
         stmt_c = select(ClienteModel).options(
@@ -223,58 +224,99 @@ class BillingService:
             joinedload(ClienteModel.router)
         ).where(ClienteModel.id == factura.cliente_id)
         cliente = (await self.db.execute(stmt_c)).scalar_one()
-        
-        factura.estado = "pagada"
-        factura.saldo_pendiente = 0
-        factura.fecha_pago_real = datetime.now()
-        factura.es_promesa_activa = False 
-        
+
+        deuda_actual = factura.saldo_pendiente
+        estado_previo = cliente.estado
+        reactivado = False
+        pago_completado = False # Bandera para saber si se envía el PDF o solo un aviso de abono
+
+        # =======================================================
+        # LÓGICA DE COBRO: PARCIAL, EXACTO O SOBRANTE
+        # =======================================================
+        if monto < deuda_actual:
+            # A) ABONO PARCIAL
+            factura.saldo_pendiente -= monto
+            factura.estado = 'vencida' if factura.fecha_vencimiento < datetime.now().date() else 'pendiente'
+            pago_completado = False
+
+        elif monto == deuda_actual:
+            # B) PAGO EXACTO
+            factura.saldo_pendiente = 0.0
+            factura.estado = 'pagada'
+            factura.fecha_pago_real = datetime.now()
+            factura.es_promesa_activa = False
+            pago_completado = True
+
+        else:
+            # C) PAGA DE MÁS (Genera Saldo a Favor)
+            sobrante = monto - deuda_actual
+            
+            factura.saldo_pendiente = 0.0
+            factura.estado = 'pagada'
+            factura.fecha_pago_real = datetime.now()
+            factura.es_promesa_activa = False
+            pago_completado = True
+
+            # Acumulamos el dinero extra en el perfil del cliente
+            if cliente.saldo_a_favor is None:
+                cliente.saldo_a_favor = 0.0
+            cliente.saldo_a_favor += sobrante
+
+        # Registramos el movimiento en la caja (historial de pagos)
         nuevo_pago = PagoModel(
             cliente_id=cliente.id, factura_id=factura.id, 
-            usuario_id=usuario_operador.id, monto_total=monto, 
+            usuario_id=usuario_operador.id, monto_total=monto, # Se registra lo que dio el cliente físicamente
             metodo_pago=metodo_pago, referencia=referencia,
             fecha_pago=datetime.now()
         )
         self.db.add(nuevo_pago)
         
-        reactivado = False
-        if cliente.estado == 'suspendido':
+        # Reconexión automática SOLO si la factura quedó pagada por completo
+        if pago_completado and estado_previo == 'suspendido':
             cliente.estado = 'activo'
             reactivado = await self._reactivar_en_mikrotik(cliente)
 
         await self.db.commit() 
 
-        # 👇 🚀 LOGICA DE COMPROBANTE WHATSAPP UNIFICADA 👇
+        # 👇 🚀 LOGICA DE WHATSAPP 👇
         if cliente.telefono:
             try:
-                # 1. Generar la fecha del próximo vencimiento para el PDF
-                prox_venc = (factura.fecha_vencimiento + relativedelta(months=1)).strftime("%d/%m/%Y")
-                
-                # 2. Generar el archivo PDF físico
-                ruta_pdf = await generar_recibo_pdf(
-                    nombre_cliente=cliente.nombre,
-                    monto=monto,
-                    concepto=f"MENSUALIDAD INTERNET - {factura.plan_snapshot}",
-                    fecha_pago=nuevo_pago.fecha_pago,
-                    folio=factura.id,
-                    nueva_fecha_vencimiento=prox_venc,
-                    telefono_cliente=cliente.telefono,
-                    metodo_pago=metodo_pago
-                )
-
-                # 3. Enviar mensaje de pago_recibido ADJUNTANDO el PDF
                 notificador = NotificationService(self.db)
-                await notificador.notificar(
-                    tipo_evento="pago_recibido", 
-                    cliente_id=cliente.id,
-                    variables_extra={"monto_pagado": f"${monto}", "referencia": referencia or "N/A"},
-                    ruta_pdf=ruta_pdf # 👈 Aquí ocurre la magia del adjunto
-                )
+                
+                if pago_completado:
+                    # Si liquidó, se le manda su PDF
+                    prox_venc = (factura.fecha_vencimiento + relativedelta(months=1)).strftime("%d/%m/%Y")
+                    ruta_pdf = await generar_recibo_pdf(
+                        nombre_cliente=cliente.nombre,
+                        monto=monto, # Se refleja el pago total
+                        concepto=f"MENSUALIDAD INTERNET - {factura.plan_snapshot}",
+                        fecha_pago=nuevo_pago.fecha_pago,
+                        folio=factura.id,
+                        nueva_fecha_vencimiento=prox_venc,
+                        telefono_cliente=cliente.telefono,
+                        metodo_pago=metodo_pago
+                    )
+                    await notificador.notificar(
+                        tipo_evento="pago_recibido", 
+                        cliente_id=cliente.id,
+                        variables_extra={"monto_pagado": f"${monto}", "referencia": referencia or "N/A"},
+                        ruta_pdf=ruta_pdf
+                    )
+                else:
+                    # Si solo abonó una parte, se manda este aviso sencillo sin PDF
+                    await notificador.notificar(
+                        tipo_evento="abono_recibido", # 👈 Aquí hace match con la BD
+                        cliente_id=cliente.id,
+                        variables_extra={
+                            "monto_pagado": f"${monto}", 
+                            "referencia": f"Abono parcial registrado. (Resta por pagar: ${factura.saldo_pendiente})"
+                        }
+                    )
                 
             except Exception as e:
-                print(f"⚠️ Error al notificar pago con PDF: {e}")
+                print(f"⚠️ Error al notificar pago: {e}")
 
-        return {"status": "ok", "reactivado": reactivado}
+        return {"status": "ok", "factura_liquidada": pago_completado, "reactivado": reactivado}
 
     # ==========================================
     # HELPERS
