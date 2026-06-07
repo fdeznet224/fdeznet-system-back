@@ -154,15 +154,12 @@ class BillingService:
             # Se ejecuta dinámicamente según los días del parámetro (ej: 1 día antes)
             if dias_restantes == dias_aviso_urgente:
                 try:
-                    # Usamos tu plantilla existente: 'aviso_corte'
+                    # 🔥 CORRECCIÓN: Llamamos a la nueva plantilla 'recordatorio_pago'
+                    # Ya no mandamos variables_extra porque el Notificador Global
+                    # se encarga de inyectar el {precio}, {dia_corte}, etc.
                     await notificador.notificar(
-                        tipo_evento="aviso_corte", 
-                        cliente_id=cliente.id,
-                        variables_extra={
-                            "monto": f"${factura.total}", 
-                            "folio": str(factura.id),
-                            "fecha_vencimiento": factura.fecha_vencimiento.strftime("%d/%m/%Y")
-                        }
+                        tipo_evento="recordatorio_pago", 
+                        cliente_id=cliente.id
                     )
                     reporte["aviso_urgente_enviados"] += 1
                 except Exception as e:
