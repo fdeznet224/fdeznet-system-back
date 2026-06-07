@@ -477,15 +477,21 @@ class ClientService:
 
         await self.db.commit()
         
-        # 👇 NOTIFICACIÓN DE PROMESA 👇
+        # 👇 NOTIFICACIÓN DE PROMESA SINCRONIZADA 👇
         if cliente.telefono:
             try:
                 notificador = NotificationService(self.db)
-                # Usamos el método .notificar y pasamos las variables extra
+                # Formateamos la fecha elegida
+                fecha_promesa_str = fecha_promesa.strftime("%d/%m/%Y")
+                
+                # Pasamos exactamente las variables que lee la plantilla 8
                 await notificador.notificar(
                     tipo_evento="promesa_pago", 
                     cliente_id=cliente.id, 
-                    variables_extra={"fecha_limite": fecha_promesa.strftime("%d/%m/%Y")}
+                    variables_extra={
+                        "fecha_limite_promesa": fecha_promesa_str,              # 🔥 Ajustado para la plantilla
+                        "monto_promesa": f"${factura.saldo_pendiente:.2f}"     # 🔥 Añadido para la plantilla
+                    }
                 )
             except Exception as e:
                 print(f"⚠️ Error notificación promesa: {e}")

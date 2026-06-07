@@ -178,11 +178,12 @@ class BillingService:
         hoy = date.today()
         notificador = NotificationService(self.db)
 
+        # 🔥 CORRECCIÓN: Agregamos el operador <= para que corte el MISMO DÍA del límite
         stmt = select(FacturaModel).options(
             joinedload(FacturaModel.cliente).joinedload(ClienteModel.router)
         ).where(
             FacturaModel.estado == 'pendiente',
-            FacturaModel.fecha_limite_corte < hoy,
+            FacturaModel.fecha_limite_corte <= hoy,  # 🚀 AQUÍ ESTÁ EL CAMBIO CLAVE (<=)
             FacturaModel.es_promesa_activa == False 
         )
         

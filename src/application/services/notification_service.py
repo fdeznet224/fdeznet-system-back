@@ -36,7 +36,8 @@ class NotificationService:
             joinedload(ClienteModel.plan),
             joinedload(ClienteModel.plantilla),
             joinedload(ClienteModel.router),
-            joinedload(ClienteModel.onu_asignada) 
+            joinedload(ClienteModel.onu_asignada),
+            joinedload(ClienteModel.zona)
         ).where(ClienteModel.id == cliente_id)
         
         cliente = (await self.db.execute(stmt_c)).scalar_one_or_none()
@@ -65,7 +66,7 @@ class NotificationService:
         velocidad = f"{int(cliente.plan.velocidad_bajada / 1024)} Megas" if cliente.plan and cliente.plan.velocidad_bajada else "Básico"
 
         # =========================================================
-        # 4. EL DICCIONARIO MAESTRO RECARGADO
+        # 4. EL DICCIONARIO MAESTRO BLINDADO
         # =========================================================
         datos_base = {
             "empresa": "FdezNet",
@@ -75,6 +76,7 @@ class NotificationService:
             "telefono": cliente.telefono,
             "direccion": cliente.direccion or "Domicilio conocido",
             "cedula": cliente.cedula or "Pendiente",
+            "zona": cliente.zona.nombre if cliente.zona else "Cobertura General",
             
             # Hardware e IP
             "onu_serial": cliente.onu_asignada.identificador if cliente.onu_asignada else "N/A", 
@@ -83,20 +85,27 @@ class NotificationService:
             "usuario_pppoe": cliente.user_pppoe or "N/A",
             "pass_pppoe": cliente.pass_pppoe or "N/A",
             
-            # Servicio y Finanzas
+            # Servicio y Finanzas Básicas
             "plan": cliente.plan.nombre if cliente.plan else "Básico",
             "precio": f"${cliente.plan.precio}" if cliente.plan else "$0.00",
             "velocidad": velocidad,
             "dia_corte": str(dia_pago),
             "dia_final": str(dia_final_seguro),
             "saldo_favor": f"${cliente.saldo_a_favor}" if cliente.saldo_a_favor else "$0.00",
-            "estado_cliente": cliente.estado.capitalize()
+            "estado_cliente": cliente.estado.capitalize(),
+
+            # 🔥 VALORES POR DEFECTO PARA VARIABLES TRANSACCIONALES 🔥
+            # Evita que el formateador falle si la variable está en la plantilla pero no aplica al evento
+            "monto_pagado": "$0.00",
+            "referencia": "N/A",
+            "fecha_limite_promesa": "N/A",
+            "monto_promesa": "$0.00"
         }
 
-        # 5. UNIFICAR DATOS (Mezclamos la base con variables extras como {monto_pagado} o {referencia})
+        # 5. UNIFICAR DATOS (Las variables de 'variables_extra' sobrescriben los valores por defecto)
         datos_finales = {**datos_base, **(variables_extra or {})}
 
-        # 6. FORMATEAR MENSAJE (Reemplazando las llaves { } por los datos reales)
+        # 6. FORMATEAR MENSAJE
         mensaje_formateado = formatear_mensaje(plantilla.texto, datos_finales)
         
         # 7. ENCOLAR TAREA HACIA EL BOT DE WHATSAPP
@@ -104,7 +113,6 @@ class NotificationService:
             "numero": cliente.telefono,
             "mensaje": mensaje_formateado,
             "ruta": ruta_pdf,
-            # Mandamos 0 para que la cola use la velocidad por defecto configurada en tus settings
             "intervalo": 0 
         }
         
