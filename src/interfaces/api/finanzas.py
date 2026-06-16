@@ -45,11 +45,11 @@ class PromesaPagoRequest(BaseModel):
 async def get_listado_completo(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    tipo_fecha: str = Query("emision"), 
+    tipo_fecha: str = Query("vencimiento"), # 🔥 Por defecto ya pide vencimiento en el back
     estado: str = Query("cualquiera"),   
     router_id: Optional[int] = None,
     cliente_id: Optional[int] = None,
-    busqueda: Optional[str] = None, # 👈 NUEVO: Permitir buscar por texto (nombre/cédula)
+    busqueda: Optional[str] = None, 
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
@@ -67,11 +67,16 @@ async def get_listado_completo(
             return {"items": [], "resumen": {"pagadas_cant": 0, "pagadas_total": 0, "pendientes_cant": 0, "pendientes_total": 0}}
         query = query.where(ClienteModel.router_id.in_(allowed_router_ids))
 
-    # 🔥 LA MAGIA: Si el cobrador está buscando a alguien en específico, IGNORAMOS las fechas
-    # para que puedan aparecer las deudas de meses anteriores (los suspendidos).
+    # 🔥 LA MAGIA: Solución al "Mes Fantasma" y filtro de Caja
     if start_date and end_date and not cliente_id and not busqueda:
         if tipo_fecha == "vencimiento":
             query = query.where(and_(FacturaModel.fecha_vencimiento >= start_date, FacturaModel.fecha_vencimiento <= end_date))
+        elif tipo_fecha == "pago":
+            # 🚀 NUEVO: Comparamos extrayendo solo el día (func.date) para ignorar la hora de la transacción
+            query = query.where(and_(
+                func.date(FacturaModel.fecha_pago_real) >= start_date, 
+                func.date(FacturaModel.fecha_pago_real) <= end_date
+            ))
         else:
             query = query.where(and_(FacturaModel.fecha_emision >= start_date, FacturaModel.fecha_emision <= end_date))
 
@@ -79,7 +84,7 @@ async def get_listado_completo(
     if router_id: query = query.where(ClienteModel.router_id == router_id)
     if cliente_id: query = query.where(FacturaModel.cliente_id == cliente_id)
     
-    # 👈 NUEVO: Filtro de Búsqueda por Texto
+    # Filtro de Búsqueda por Texto
     if busqueda:
         termino = f"%{busqueda.lower()}%"
         query = query.where(
@@ -93,12 +98,10 @@ async def get_listado_completo(
     today = date.today()
     if estado != "cualquiera":
         if estado == "adeudos":
-            # 🚀 EL SUPER FILTRO: Trae de golpe todo lo que se deba (pendientes y vencidas)
             query = query.where(FacturaModel.estado.in_(["pendiente", "vencida"]))
         elif estado == "pendiente":
             query = query.where(FacturaModel.estado == "pendiente")
         elif estado == "vencida":
-            # Corregido: La BD SÍ guarda la palabra literal "vencida"
             query = query.where(FacturaModel.estado == "vencida")
         elif estado == "promesa":
             query = query.where(FacturaModel.es_promesa_activa == True)
@@ -128,7 +131,6 @@ async def get_listado_completo(
             resumen["anuladas_cant"] += 1
             resumen["anuladas_total"] += valor
         elif f.estado == "vencida":
-            # 👈 AHORA SÍ LAS VA A CONTAR
             resumen["vencidas_cant"] += 1
             resumen["vencidas_total"] += valor
         elif f.estado == "pendiente":

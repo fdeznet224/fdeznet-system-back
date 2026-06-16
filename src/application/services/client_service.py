@@ -8,6 +8,7 @@ from fastapi import BackgroundTasks, HTTPException
 import re
 from src.application.services.olt_service import OLTService
 from src.infrastructure.models import InventarioONUModel
+from sqlalchemy import select, update
 
 # Base de datos 
 from src.infrastructure.database import SessionLocal as async_session 
@@ -246,11 +247,7 @@ class ClientService:
     # 3. EDITAR CLIENTE (GENERAL)
     # ==========================================
     async def editar_cliente(self, cliente_id: int, datos: ClienteCreate):
-        """
-        Actualiza un cliente y gestiona la vinculación de hardware (ONU) 
-        ya sea por ID numérico o por Identificador (SN/MAC).
-        """
-        from sqlalchemy import select
+        from sqlalchemy import select, update
         from sqlalchemy.orm import selectinload
         from src.infrastructure.models import ClienteModel, InventarioONUModel
     
@@ -261,38 +258,33 @@ class ClientService:
         if not cliente_db: 
             raise ValueError("Cliente no encontrado")
     
-        # 2. Convertir esquema Pydantic a diccionario (solo datos enviados)
+        # 2. Convertir esquema Pydantic a diccionario
         update_data = datos.model_dump(exclude_unset=True)
     
-        # 3. LIMPIEZA DE LLAVES FORÁNEAS (Evita errores de integridad)
+        # 3. LIMPIEZA DE LLAVES FORÁNEAS
         campos_fk = [
             "caja_nap_id", "puerto_nap", "router_id", "plan_id", 
             "tecnico_id", "plantilla_id", "zona_id", "red_id", "olt_id"
         ]
         for campo in campos_fk:
             if campo in update_data:
-                # Si el valor es 0, "0" o vacío, lo mandamos como NULL
                 if update_data[campo] in [0, "0", ""]:
                     update_data[campo] = None
     
-        # 🔥 4. LÓGICA DE VINCULACIÓN DE HARDWARE (ONU) 🔥
-        # Buscamos si el usuario envió el SN/MAC en 'identificador_onu' o 'mac_address'
+        # 🔥 4. LÓGICA DE VINCULACIÓN DE HARDWARE BLINDADA 🔥
         sn_texto = update_data.get("identificador_onu") or update_data.get("mac_address")
     
         if sn_texto and sn_texto.strip() != "":
             sn_limpio = sn_texto.strip().upper()
+            nuevo_onu_id = None
             
-            # A. Buscamos si el SN ya existe en el inventario
             stmt_inv = select(InventarioONUModel).where(InventarioONUModel.identificador == sn_limpio)
-            res_inv = await self.db.execute(stmt_inv)
-            onu_existente = res_inv.scalar_one_or_none()
+            onu_existente = (await self.db.execute(stmt_inv)).scalar_one_or_none()
     
             if onu_existente:
-                # Si existe, tomamos su ID y la marcamos como instalada
-                update_data["onu_id"] = onu_existente.id
+                nuevo_onu_id = onu_existente.id
                 onu_existente.estado = "INSTALADO"
             else:
-                # B. Si no existe (caso Excel), la creamos automáticamente
                 nueva_onu = InventarioONUModel(
                     identificador=sn_limpio,
                     tecnologia="GPON", 
@@ -301,15 +293,27 @@ class ClientService:
                     tecnico_id=update_data.get("tecnico_id") or cliente_db.tecnico_id
                 )
                 self.db.add(nueva_onu)
-                await self.db.flush() # Para obtener el ID autogenerado
-                update_data["onu_id"] = nueva_onu.id
+                await self.db.flush()
+                nuevo_onu_id = nueva_onu.id
+
+            # 🛡️ BLINDAJE: Si el cliente ya tenía una ONU y es DIFERENTE a la nueva, LA LIBERAMOS 🛡️
+            if cliente_db.onu_id and cliente_db.onu_id != nuevo_onu_id:
+                await self.db.execute(
+                    update(InventarioONUModel)
+                    .where(InventarioONUModel.id == cliente_db.onu_id)
+                    .values(estado='DISPONIBLE', tecnico_id=None)
+                )
+
+            update_data["onu_id"] = nuevo_onu_id
         
         elif "onu_id" in update_data and update_data["onu_id"] in [0, None, ""]:
-            # C. Si el campo se envió vacío, desvinculamos la ONU anterior
+            # 🛡️ BLINDAJE: Si borran el campo de la ONU en el formulario, liberamos la actual
             if cliente_db.onu_id:
-                onu_v = await self.db.get(InventarioONUModel, cliente_db.onu_id)
-                if onu_v: 
-                    onu_v.estado = "DISPONIBLE"
+                await self.db.execute(
+                    update(InventarioONUModel)
+                    .where(InventarioONUModel.id == cliente_db.onu_id)
+                    .values(estado='DISPONIBLE', tecnico_id=None)
+                )
             update_data["onu_id"] = None
     
         # 5. APLICAR CAMBIOS AL MODELO
@@ -323,18 +327,15 @@ class ClientService:
             raise ValueError(f"Error al persistir cambios: {str(e)}")
         
         # 6. SINCRONIZACIÓN CON MIKROTIK
-        # Solo si el cliente está activo y tiene plan/router
         if cliente_db.estado == 'activo':
             try:
-                # Recargamos con todas las relaciones necesarias para el script de MK
                 cliente_full = await self._recargar_cliente(cliente_id)
                 if cliente_full.router and cliente_full.plan:
                     await self._sincronizar_mikrotik(cliente_full)
             except Exception as e:
-                # Logeamos el error pero no bloqueamos la respuesta al usuario
                 print(f"⚠️ Error MikroTik (Perfil/Conexión): {e}")
     
-        # 7. RESPUESTA FINAL RECARGADA (Crucial para ver los datos en el Front)
+        # 7. RESPUESTA FINAL RECARGADA
         return await self._recargar_cliente(cliente_id)
 
     # ==========================================
@@ -725,42 +726,51 @@ class ClientService:
 
     # 🔥 NUEVA FUNCIÓN: SWAP DE ONU POR FALLA 🔥
     async def procesar_cambio_onu(self, cliente_id: int, nuevo_inventario_id: int, estado_vieja_onu: str):
+        # 1. Validaciones iniciales
         cliente = await self.db.get(ClienteModel, cliente_id)
         if not cliente:
             raise ValueError("Cliente no encontrado")
 
-        # 1. Gestionar y liberar la ONU vieja
-        if cliente.onu_id:
-            onu_vieja = await self.db.get(InventarioONUModel, cliente.onu_id)
-            if onu_vieja:
-                # 🧼 Sanitización: Cualquiera de estas opciones se convierte en 'CON_FALLA'
-                estado_limpio = estado_vieja_onu.upper().strip()
-                if estado_limpio in ["DAÑADA", "DANADA", "DAÑADO", "DANADO", "CON_FALLA", "FALLA"]:
-                    onu_vieja.estado = "CON_FALLA" # 🔥 AQUÍ ESTÁ EL AJUSTE CLAVE 🔥
-                else:
-                    onu_vieja.estado = estado_limpio
-                
-                onu_vieja.tecnico_id = None
-                self.db.add(onu_vieja)
-
-        # 2. Validar la nueva ONU que sale de la bodega
         onu_nueva = await self.db.get(InventarioONUModel, nuevo_inventario_id)
-        if not onu_nueva:
-            raise ValueError("La nueva ONU seleccionada no existe en el inventario.")
-        if onu_nueva.estado != 'DISPONIBLE':
-            raise ValueError(f"La nueva ONU no está disponible en bodega (Estado actual: {onu_nueva.estado}).")
+        if not onu_nueva or onu_nueva.estado != 'DISPONIBLE':
+            raise ValueError("La nueva ONU no existe o no está DISPONIBLE.")
 
-        # 3. Hacer el Swap de IDs en el perfil del cliente
-        cliente.onu_id = nuevo_inventario_id
-        onu_nueva.estado = 'INSTALADO'
-        
-        if cliente.tecnico_id:
-            onu_nueva.tecnico_id = cliente.tecnico_id
+        estado_limpio = estado_vieja_onu.upper().strip()
+        if estado_limpio in ["DAÑADA", "DANADA", "DAÑADO", "DANADO", "CON_FALLA", "FALLA"]:
+            estado_limpio = "CON_FALLA"
 
-        self.db.add(onu_nueva)
-        self.db.add(cliente)
+        # ==========================================
+        # PASO 1: LIBERAR LA ONU VIEJA (Fuerza Bruta)
+        # ==========================================
+        if cliente.onu_id:
+            await self.db.execute(
+                update(InventarioONUModel)
+                .where(InventarioONUModel.id == cliente.onu_id)
+                .values(estado=estado_limpio, tecnico_id=None)
+            )
 
-        # 4. Confirmar cambios
+        # ==========================================
+        # PASO 2: ASIGNAR LA NUEVA ONU AL CLIENTE
+        # ==========================================
+        await self.db.execute(
+            update(InventarioONUModel)
+            .where(InventarioONUModel.id == nuevo_inventario_id)
+            .values(estado='INSTALADO', tecnico_id=cliente.tecnico_id)
+        )
+
+        # ==========================================
+        # PASO 3: ACTUALIZAR EL PERFIL DEL CLIENTE
+        # ==========================================
+        await self.db.execute(
+            update(ClienteModel)
+            .where(ClienteModel.id == cliente_id)
+            .values(
+                onu_id=nuevo_inventario_id,
+                mac_address=onu_nueva.identificador
+            )
+        )
+
+        # Confirmamos los cambios directamente en el disco duro de la BD
         await self.db.commit()
         
         return f"Cambio exitoso. Nueva ONU asignada: {onu_nueva.identificador}."

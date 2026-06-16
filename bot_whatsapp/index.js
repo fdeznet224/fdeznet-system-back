@@ -10,7 +10,6 @@ const mime = require('mime-types');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
-// URL de tu API de FastAPI
 const BACKEND_URL = process.env.API_BACKEND_URL || 'http://127.0.0.1:8000';
 
 const app = express();
@@ -25,17 +24,26 @@ let isReady = false;
 let lastQR = null;
 
 function iniciarMotor() {
-    console.log('⚡ Iniciando motor de WhatsApp...');
+    console.log('⚡ Iniciando motor de WhatsApp con optimización de memoria...');
     
     client = new Client({
         authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
+        webVersionCache: {
+            type: 'remote',
+            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+        },
         puppeteer: { 
             headless: true, 
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox', 
                 '--disable-extensions',
-                '--disable-gpu'
+                '--disable-gpu',
+                '--disable-dev-shm-usage',      // 🔥 CRÍTICO: Evita caídas de memoria compartida en Linux
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',             // 🔥 Reduce drásticamente el consumo de RAM de Chromium
+                '--disable-accelerated-2d-canvas'
             ] 
         }
     });
@@ -53,27 +61,41 @@ function iniciarMotor() {
         console.log('✅ WHATSAPP CONECTADO Y LISTO');
     });
 
-    client.on('disconnected', async (reason) => {
-        console.log('❌ CLIENTE DESCONECTADO:', reason);
+    // 🔥 CAPTURA DE FALLO DE AUTENTICACIÓN: Evita que el proceso se quede colgado si el token se corrompe
+    client.on('auth_failure', async (msg) => {
+        console.error('❌ FALLO DE AUTENTICACIÓN:', msg);
+        isReady = false;
         await detenerMotor();
+        // Limpiamos la sesión corrupta para poder generar un QR limpio de inmediato
+        const authPath = path.join(__dirname, '.wwebjs_auth');
+        if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
+        console.log('🔄 Sesión limpia. Por favor, reinicia o llama a /init para reescanear.');
     });
 
-    // --- EVENTOS DE MENSAJERÍA (CORE DEL BOT) ---
+    client.on('disconnected', async (reason) => {
+        console.log('❌ CLIENTE DESCONECTADO:', reason);
+        isReady = false;
+        await detenerMotor();
+        
+        // 🔄 AUTO-RECONEXIÓN AUTOMÁTICA: Intenta reconectar después de 10 segundos sin intervención manual
+        console.log('⏳ Intentando auto-reconexión automática en 10 segundos...');
+        setTimeout(() => {
+            if (!client) iniciarMotor();
+        }, 10000);
+    });
+
     client.on('message', async (msg) => {
-        // Ignorar grupos y estados para ahorrar recursos
         if(msg.from.includes('@g.us') || msg.isStatus) return;
 
         try {
             let contenido = msg.body;
             let mediaUrl = null;
 
-            // 1. Manejo de Ubicación
             if (msg.type === 'location') {
                 const { latitude: lat, longitude: lng } = msg.location;
                 contenido = `📍 Ubicación: http://maps.google.com/maps?q=${lat},${lng}`;
             }
 
-            // 2. Manejo de Multimedia (Imágenes de tickets, etc.)
             if (msg.hasMedia) {
                 const media = await msg.downloadMedia();
                 if (media) {
@@ -84,7 +106,6 @@ function iniciarMotor() {
                     fs.writeFileSync(filePath, media.data, { encoding: 'base64' });
                     mediaUrl = `${PUBLIC_URL}/uploads/${fileName}`;
 
-                    // Etiquetamos el contenido para que Python sepa qué hacer
                     if (msg.type === 'image') {
                         contenido = `[FOTO_COMPROBANTE]`;
                     } else if (msg.type === 'audio' || msg.type === 'ptt') {
@@ -95,21 +116,19 @@ function iniciarMotor() {
                 }
             }
 
-            // 🔥 3. DESENMASCARAR EL LID: Obtener el número real del contacto
             let numeroReal = msg.from;
             try {
                 const contact = await msg.getContact();
                 if (contact && contact.number) {
-                    numeroReal = `${contact.number}@c.us`; // Número real extraído
+                    numeroReal = `${contact.number}@c.us`; 
                 }
             } catch (err) {
                 console.log("⚠️ No se pudo obtener el número real del contacto:", err.message);
             }
 
-            // 4. ENVIAR AL WEBHOOK DE FASTAPI
             await axios.post(`${BACKEND_URL}/whatsapp/webhook/recibir`, { 
-                telefono: numeroReal,       // Para buscar en la BD de Python (Ej: 5219614708391@c.us)
-                telefono_raw: msg.from,     // Para enviarle mensajes de vuelta (Ej: 59889191751761@lid o @c.us)
+                telefono: numeroReal,       
+                telefono_raw: msg.from,     
                 mensaje: contenido,
                 mediaUrl: mediaUrl,
                 wa_id: msg.id.id
@@ -148,7 +167,6 @@ async function detenerMotor() {
     }
     client = null;
     isReady = false;
-    lastQR = null;
 }
 
 // --- ENDPOINTS API ---
@@ -173,14 +191,12 @@ app.post('/logout', async (req, res) => {
     res.json({ status: 'stopped' });
 });
 
-// ENVIAR MENSAJE (Desde Python -> Usuario)
 app.post('/enviar-mensaje', async (req, res) => {
     const { numero, mensaje, ruta } = req.body; 
 
     if (!client || !isReady) return res.status(503).json({ error: 'WhatsApp no conectado' });
 
     try {
-        // 🔥 CORRECCIÓN: Si ya trae @lid o @c.us, úsalo. Si no, agrégale @c.us
         const chatId = numero.includes('@') ? numero : `${numero}@c.us`;
         let response;
 
@@ -199,4 +215,6 @@ app.post('/enviar-mensaje', async (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`🚀 Motor WhatsApp FdezNet en puerto ${PORT}`);
+    // Opcional: Autoiniciar al levantar la app de Node para evitar llamadas manuales
+    iniciarMotor();
 });
