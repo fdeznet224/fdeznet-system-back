@@ -18,9 +18,20 @@ async def enviar_alertas_whatsapp(mensaje, db):
         
         lista_numeros = [n.strip() for n in config.telefonos_alerta.split(",") if n.strip()]
         for numero in lista_numeros:
+            # Hacemos la petición al bot local
             requests.post("http://127.0.0.1:3000/enviar-mensaje", json={"numero": numero, "mensaje": mensaje}, timeout=5)
+            
     except Exception as e:
-        print(f"❌ Fallo al enviar WhatsApp: {e}")
+        error_msg = f"Fallo al enviar WhatsApp al {numero}: El bot no responde o está apagado. Detalle: {str(e)}"
+        print(f"❌ {error_msg}")
+        
+        # Guardar en la base de datos para verlo en el panel
+        db.add(LogCronjobModel(
+            nivel="ERROR", 
+            origen="WhatsAppBot", 
+            mensaje=error_msg
+        ))
+        await db.commit()
 
 # ==========================================
 # ⚡ FUNCIÓN SÍNCRONA HTTP (Clientes)

@@ -39,10 +39,10 @@ function iniciarMotor() {
                 '--disable-setuid-sandbox', 
                 '--disable-extensions',
                 '--disable-gpu',
-                '--disable-dev-shm-usage',      // 🔥 CRÍTICO: Evita caídas de memoria compartida en Linux
+                '--disable-dev-shm-usage',      // CRÍTICO: Evita caídas de memoria compartida en Linux
                 '--no-first-run',
                 '--no-zygote',
-                '--single-process',             // 🔥 Reduce drásticamente el consumo de RAM de Chromium
+                '--single-process',             // Reduce drásticamente el consumo de RAM de Chromium
                 '--disable-accelerated-2d-canvas'
             ] 
         }
@@ -59,14 +59,20 @@ function iniciarMotor() {
         isReady = true;
         lastQR = null;
         console.log('✅ WHATSAPP CONECTADO Y LISTO');
+
+        // 🔥 CORRECCIÓN 1: EL PERRO GUARDIÁN
+        // Vigila si Chromium muere silenciosamente (por falta de RAM o el OOM Killer de Linux)
+        client.pupBrowser.on('disconnected', () => {
+            console.error('☠️ FATAL: El navegador Chromium se cerró inesperadamente (Posible pico de RAM).');
+            console.log('🔄 Forzando cierre para que Systemd reinicie el servicio limpio...');
+            process.exit(1); 
+        });
     });
 
-    // 🔥 CAPTURA DE FALLO DE AUTENTICACIÓN: Evita que el proceso se quede colgado si el token se corrompe
     client.on('auth_failure', async (msg) => {
         console.error('❌ FALLO DE AUTENTICACIÓN:', msg);
         isReady = false;
         await detenerMotor();
-        // Limpiamos la sesión corrupta para poder generar un QR limpio de inmediato
         const authPath = path.join(__dirname, '.wwebjs_auth');
         if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
         console.log('🔄 Sesión limpia. Por favor, reinicia o llama a /init para reescanear.');
@@ -75,13 +81,12 @@ function iniciarMotor() {
     client.on('disconnected', async (reason) => {
         console.log('❌ CLIENTE DESCONECTADO:', reason);
         isReady = false;
-        await detenerMotor();
         
-        // 🔄 AUTO-RECONEXIÓN AUTOMÁTICA: Intenta reconectar después de 10 segundos sin intervención manual
-        console.log('⏳ Intentando auto-reconexión automática en 10 segundos...');
-        setTimeout(() => {
-            if (!client) iniciarMotor();
-        }, 10000);
+        // 🔥 CORRECCIÓN 2: DELEGAR REINICIO A SYSTEMD
+        // Eliminamos el setTimeout que causaba fugas de memoria y procesos zombies.
+        // Al salir con código de error (1), Systemd detecta la caída y levanta Node.js fresco al instante.
+        console.log('🔄 Delegando auto-reconexión a Systemd...');
+        process.exit(1);
     });
 
     client.on('message', async (msg) => {
@@ -152,7 +157,8 @@ function iniciarMotor() {
 
     client.initialize().catch(err => {
         console.error("❌ Fallo crítico al inicializar:", err.message);
-        detenerMotor();
+        // Si falla al arrancar de cero, también nos suicidamos para que Systemd intente de nuevo
+        process.exit(1);
     });
 }
 
@@ -215,6 +221,5 @@ app.post('/enviar-mensaje', async (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`🚀 Motor WhatsApp FdezNet en puerto ${PORT}`);
-    // Opcional: Autoiniciar al levantar la app de Node para evitar llamadas manuales
     iniciarMotor();
 });
