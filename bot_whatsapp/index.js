@@ -90,7 +90,16 @@ function iniciarMotor() {
     });
 
     client.on('message', async (msg) => {
+        // 1. Ignorar grupos y estados
         if(msg.from.includes('@g.us') || msg.isStatus) return;
+
+        // 2. Filtro Anti-Avalancha de mensajes viejos
+        const tiempoActual = Math.floor(Date.now() / 1000);
+        const edadDelMensaje = tiempoActual - msg.timestamp;
+
+        if (edadDelMensaje > 120) {
+            return; // Detiene la ejecución aquí, no envía nada al webhook de Python
+        }
 
         try {
             let contenido = msg.body;
