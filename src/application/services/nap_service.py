@@ -86,7 +86,11 @@ class NapService:
             select(ClienteModel)
             .where(ClienteModel.caja_nap_id == nap_id)
             .options(
-                # Cargamos todas las relaciones que usa tu ClienteResponse
+                # 🔥 AQUÍ ESTÁN LOS DOS QUE FALTABAN
+                selectinload(ClienteModel.olt),
+                selectinload(ClienteModel.onu_asignada),
+                
+                # Y los que ya habías puesto, que también están excelentes:
                 selectinload(ClienteModel.router),
                 selectinload(ClienteModel.zona),
                 selectinload(ClienteModel.plan),
