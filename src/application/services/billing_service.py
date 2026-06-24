@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional, List
 from dateutil.relativedelta import relativedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc, func, extract
+from sqlalchemy import select, and_, or_, desc, func, extract
 from sqlalchemy.orm import joinedload, selectinload
 
 # Modelos
@@ -169,29 +169,45 @@ class BillingService:
         return reporte
 
     # ==========================================
-    # 2. MOTOR DE CORTES AUTOMÁTICOS
+    # 2. MOTOR DE CORTES AUTOMÁTICOS (CORREGIDO)
     # ==========================================
     async def procesar_cortes_automaticos(self):
         hoy = date.today()
         notificador = NotificationService(self.db)
 
-        # 🔥 CORRECCIÓN: Agregamos el operador <= para que corte el MISMO DÍA del límite
+        # 🔥 LA MAGIA: Usamos or_() para atrapar ambos casos
         stmt = select(FacturaModel).options(
             joinedload(FacturaModel.cliente).joinedload(ClienteModel.router)
         ).where(
             FacturaModel.estado == 'pendiente',
-            FacturaModel.fecha_limite_corte <= hoy,  # 🚀 AQUÍ ESTÁ EL CAMBIO CLAVE (<=)
-            FacturaModel.es_promesa_activa == False 
+            or_(
+                # CASO 1: Corte Normal (Llegó su fecha límite de corte y NO tiene prórroga)
+                and_(
+                    FacturaModel.fecha_limite_corte <= hoy,
+                    FacturaModel.es_promesa_activa == False
+                ),
+                # CASO 2: Promesa Rota (Tiene prórroga, pero la fecha de promesa ya pasó)
+                # NOTA: Usamos "< hoy" para cortarlo al día SIGUIENTE de su promesa
+                and_(
+                    FacturaModel.es_promesa_activa == True,
+                    FacturaModel.fecha_promesa_pago < hoy 
+                )
+            )
         )
         
         facturas_vencidas = (await self.db.execute(stmt)).scalars().all()
-        reporte = {"clientes_suspendidos": 0, "errores": 0}
+        reporte = {"clientes_suspendidos": 0, "promesas_rotas": 0, "errores": 0}
 
         for factura in facturas_vencidas:
             cliente = factura.cliente
             if cliente.estado == 'activo':
                 cliente.estado = 'suspendido'
-                factura.estado = 'vencida' 
+                factura.estado = 'vencida'
+                
+                # Si lo estamos cortando por romper la promesa, la desactivamos
+                if factura.es_promesa_activa:
+                    factura.es_promesa_activa = False
+                    reporte["promesas_rotas"] += 1
                 
                 try:
                     mk = MikroTikService(cliente.router.ip_vpn, cliente.router.user_api, cliente.router.pass_api, cliente.router.port_api)
@@ -199,10 +215,12 @@ class BillingService:
                     if cliente.user_pppoe: mk.desconectar_cliente_activo(cliente.user_pppoe)
                     
                     reporte["clientes_suspendidos"] += 1
+                    
                     # 👇 AVISO DE CORTE 👇
                     await notificador.notificar("aviso_corte", cliente.id)
                 except Exception as e:
                     reporte["errores"] += 1
+                    print(f"⚠️ Error al cortar en MikroTik al cliente {cliente.nombre}: {e}")
 
         await self.db.commit()
         return reporte

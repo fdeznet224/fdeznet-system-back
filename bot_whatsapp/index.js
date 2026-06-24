@@ -60,13 +60,30 @@ function iniciarMotor() {
         lastQR = null;
         console.log('✅ WHATSAPP CONECTADO Y LISTO');
 
-        // 🔥 CORRECCIÓN 1: EL PERRO GUARDIÁN
-        // Vigila si Chromium muere silenciosamente (por falta de RAM o el OOM Killer de Linux)
+        // 1. Vigila si Chromium muere (El Perro Guardián que ya tenías)
         client.pupBrowser.on('disconnected', () => {
-            console.error('☠️ FATAL: El navegador Chromium se cerró inesperadamente (Posible pico de RAM).');
-            console.log('🔄 Forzando cierre para que Systemd reinicie el servicio limpio...');
+            console.error('☠️ FATAL: El navegador Chromium se cerró inesperadamente.');
             process.exit(1); 
         });
+
+        // 🔥 2. NUEVO: El Latido (Heartbeat) contra Desconexiones Silenciosas
+        // Cada 5 minutos (300,000 milisegundos) verificamos el estado real de la conexión
+        setInterval(async () => {
+            try {
+                // Le pedimos el estado directamente a la página web interna de WhatsApp
+                const state = await client.getState();
+                
+                // Si el estado no es CONNECTED, el socket está muerto
+                if (state !== 'CONNECTED') {
+                    console.error(`⚠️ Alerta: WhatsApp reporta estado anómalo (${state}). Forzando reinicio limpio...`);
+                    process.exit(1);
+                }
+            } catch (error) {
+                // Si getState() falla por un timeout, significa que la pestaña se congeló totalmente
+                console.error('☠️ FATAL: Falló el ping a WhatsApp (Socket colgado/congelado). Reiniciando...', error.message);
+                process.exit(1);
+            }
+        }, 300000); 
     });
 
     client.on('auth_failure', async (msg) => {
