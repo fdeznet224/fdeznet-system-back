@@ -107,10 +107,19 @@ class BillingService:
 
             # 👇 NOTIFICACIÓN DE COBRO 👇
             if cliente.telefono:
+                # 1. Calculamos el nombre del mes basado en la 'fecha_vencimiento' (que ya tiene la lógica del mes próximo)
+                meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+                mes_cobro = meses[fecha_vencimiento.month - 1]
+
+                # 2. Inyectamos el 'mes_actual' en las variables extra para sobrescribir el datetime.now() del notificador
                 exito = await notificador.notificar(
                     "nueva_factura", 
                     cliente.id, 
-                    variables_extra={"monto": f"${total}", "folio": str(nueva_factura.id)}
+                    variables_extra={
+                        "monto": f"${total}", 
+                        "folio": str(nueva_factura.id),
+                        "mes_actual": mes_cobro  # 👈 Aquí está la magia
+                    }
                 )
                 if exito: reporte["mensajes_enviados"] += 1
 
