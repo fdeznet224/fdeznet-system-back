@@ -54,9 +54,12 @@ class NotificationService:
         dia_pago = cliente.plantilla.dia_pago if cliente.plantilla else 1
         dias_tolerancia = cliente.plantilla.dias_tolerancia if cliente.plantilla else 0
         
-        # Sumamos el día de pago + la tolerancia para sacar el día límite
-        dia_final_calc = dia_pago + dias_tolerancia
-        dia_final_seguro = dia_final_calc if dia_final_calc <= 30 else 30
+        # El día que se ejecuta el corte de servicio
+        dia_corte_calc = dia_pago + dias_tolerancia
+        dia_corte_servicio = dia_corte_calc if dia_corte_calc <= 30 else 30
+
+        # El último día que el cliente tiene para pagar tranquilamente (un día antes del corte)
+        ultimo_dia_pago = (dia_corte_servicio - 1) if dias_tolerancia > 0 else dia_corte_servicio
 
         # B. Mes en texto humano
         meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
@@ -89,13 +92,20 @@ class NotificationService:
             "plan": cliente.plan.nombre if cliente.plan else "Básico",
             "precio": f"${cliente.plan.precio}" if cliente.plan else "$0.00",
             "velocidad": velocidad,
+            
+            # 🔥 NUEVAS VARIABLES DE FECHAS CLARAS 🔥
+            "dia_inicio_pago": str(dia_pago),             # Ej: 1
+            "ultimo_dia_pago": str(ultimo_dia_pago),      # Ej: 5
+            "dia_corte_servicio": str(dia_corte_servicio),# Ej: 6
+            
+            # (Se mantienen las viejas para no romper plantillas anteriores)
             "dia_corte": str(dia_pago),
-            "dia_final": str(dia_final_seguro),
+            "dia_final": str(dia_corte_servicio),
+            
             "saldo_favor": f"${cliente.saldo_a_favor}" if cliente.saldo_a_favor else "$0.00",
             "estado_cliente": cliente.estado.capitalize(),
 
-            # 🔥 VALORES POR DEFECTO PARA VARIABLES TRANSACCIONALES 🔥
-            # Evita que el formateador falle si la variable está en la plantilla pero no aplica al evento
+            # Valores por defecto...
             "monto_pagado": "$0.00",
             "referencia": "N/A",
             "fecha_limite_promesa": "N/A",
