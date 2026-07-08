@@ -14,6 +14,16 @@ class TipoControlEnum(str, Enum):
     colas_dinamicas = "colas_dinamicas"
     colas_estaticas = "colas_estaticas"
 
+
+class TipoFacturacionEnum(str, Enum):
+    prepago = "prepago"
+    postpago = "postpago"
+
+
+class CicloFacturacionEnum(str, Enum):
+    calendario = "calendario"
+    aniversario = "aniversario"
+
 # ==========================================
 # 1. CONFIGURACIÓN DEL SISTEMA
 # ==========================================
@@ -314,19 +324,26 @@ class ClienteResponse(ClienteBase):
 
 # EL TÉCNICO EN CAMPO
 class InstalacionRequest(BaseModel):
-    cedula: Optional[str] = None  # 🚀 AQUÍ ESTÁ EL CAMBIO CLAVE
+    cedula: Optional[str] = None
     onu_id: Optional[int] = None
     mac_address: Optional[str] = None
     olt_id: Optional[int] = None
-    caja_nap_id: Optional[int] = None 
+    caja_nap_id: Optional[int] = None
     puerto_nap: Optional[int] = None
     latitud: Optional[float] = None
     longitud: Optional[float] = None
-    plan_id: Optional[int] = None    
-    router_id: Optional[int] = None  
+    plan_id: Optional[int] = None
+    router_id: Optional[int] = None
+
     user_pppoe: str
     pass_pppoe: str
     ip_asignada: Optional[str] = None
+
+    fecha_instalacion: Optional[date] = None
+    fecha_activacion: Optional[date] = None
+    tipo_facturacion: TipoFacturacionEnum = TipoFacturacionEnum.prepago
+    ciclo_facturacion: CicloFacturacionEnum = CicloFacturacionEnum.calendario
+    meses_gratis: int = Field(default=1, ge=0, le=12)
 
 # ==========================================
 # 11. FACTURAS

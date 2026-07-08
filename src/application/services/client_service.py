@@ -7,6 +7,9 @@ from sqlalchemy.orm import joinedload, selectinload
 from fastapi import BackgroundTasks, HTTPException
 import re
 from src.application.services.olt_service import OLTService
+from src.application.services.billing_calendar_service import (
+    BillingCalendarService,
+)
 from src.infrastructure.models import InventarioONUModel
 from sqlalchemy import select, update
 
@@ -14,7 +17,17 @@ from sqlalchemy import select, update
 from src.infrastructure.database import SessionLocal as async_session 
 
 # Modelos y Schemas
-from src.infrastructure.models import ClienteModel, PagoModel, RouterModel, FacturaModel, CajaNapModel 
+from src.infrastructure.models import (
+    ClienteModel,
+    PagoModel,
+    RouterModel,
+    FacturaModel,
+    CajaNapModel,
+    InventarioONUModel,
+    ServicioModel,
+    TipoFacturacion,
+    CicloFacturacion,
+)
 from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.infrastructure.repositories import ClienteRepository
 
@@ -30,6 +43,38 @@ class ClientService:
         self.db = db
         self.repo = ClienteRepository(db)
         self.olt_service = OLTService(db)
+
+
+    async def _obtener_o_crear_servicio(
+        self,
+        cliente: ClienteModel,
+    ) -> ServicioModel:
+        stmt = (
+            select(ServicioModel)
+            .where(
+                ServicioModel.cliente_id == cliente.id,
+                ServicioModel.estado != "cancelado",
+            )
+            .order_by(ServicioModel.id.desc())
+        )
+
+        resultado = await self.db.execute(stmt)
+        servicio = resultado.scalars().first()
+        if servicio:
+            return servicio
+
+        servicio = ServicioModel(
+            cliente_id=cliente.id,
+            plan_id=cliente.plan_id,
+            plantilla_id=cliente.plantilla_id,
+            tipo_facturacion=TipoFacturacion.prepago,
+            ciclo_facturacion=CicloFacturacion.calendario,
+            meses_gratis=1,
+            estado="pendiente_instalacion",
+        )
+        self.db.add(servicio)
+        await self.db.flush()
+        return servicio
 
     # ==========================================
     # 0. MÉTODOS DE BÚSQUEDA
@@ -116,6 +161,8 @@ class ClientService:
             
             nuevo_cliente.cedula = codigo_hex
 
+            # Creamos el contrato/servicio pendiente del abonado.
+            await self._obtener_o_crear_servicio(nuevo_cliente)
             # F. Guardamos permanentemente
             await self.db.commit()
             await self.db.refresh(nuevo_cliente)
@@ -192,6 +239,8 @@ class ClientService:
         if datos_finales.pass_pppoe: cliente.pass_pppoe = datos_finales.pass_pppoe
 
         # E. Cargar Router y Plan para Mikrotik
+        await self.db.flush()
+
         stmt_rel = select(ClienteModel).options(
             selectinload(ClienteModel.router), 
             selectinload(ClienteModel.plan),
@@ -201,6 +250,64 @@ class ClientService:
         
         result_rel = await self.db.execute(stmt_rel)
         cliente_rel = result_rel.scalar_one()
+
+
+        # =====================================================
+        # CONFIGURACIÓN COMERCIAL DEL SERVICIO
+        # =====================================================
+        servicio = await self._obtener_o_crear_servicio(cliente)
+
+        fecha_instalacion = (
+            datos_finales.fecha_instalacion
+            or servicio.fecha_instalacion
+            or date.today()
+        )
+        fecha_activacion = (
+            datos_finales.fecha_activacion
+            or servicio.fecha_activacion
+            or fecha_instalacion
+        )
+
+        tipo_facturacion = TipoFacturacion(
+            datos_finales.tipo_facturacion.value
+        )
+        ciclo_facturacion = CicloFacturacion(
+            datos_finales.ciclo_facturacion.value
+        )
+
+        fechas_servicio = BillingCalendarService.calcular_fechas_servicio(
+            fecha_instalacion=fecha_instalacion,
+            fecha_activacion=fecha_activacion,
+            meses_gratis=datos_finales.meses_gratis,
+            ciclo_facturacion=ciclo_facturacion.value,
+        )
+
+        servicio.plan_id = cliente.plan_id
+        servicio.plantilla_id = cliente.plantilla_id
+        servicio.tipo_facturacion = tipo_facturacion
+        servicio.ciclo_facturacion = ciclo_facturacion
+        servicio.fecha_instalacion = fechas_servicio.fecha_instalacion
+        servicio.fecha_activacion = fechas_servicio.fecha_activacion
+        servicio.fecha_inicio_servicio = fechas_servicio.fecha_inicio_servicio
+        servicio.fecha_fin_periodo_gratis = (
+            fechas_servicio.fecha_fin_periodo_gratis
+        )
+        servicio.fecha_inicio_cobro = fechas_servicio.fecha_inicio_cobro
+        servicio.proxima_facturacion = fechas_servicio.proxima_facturacion
+        servicio.meses_gratis = datos_finales.meses_gratis
+        servicio.estado = "activo"
+
+        if cliente_rel.plantilla:
+            servicio.dia_vencimiento = cliente_rel.plantilla.dia_pago
+            servicio.dias_tolerancia = (
+                cliente_rel.plantilla.dias_tolerancia or 0
+            )
+        else:
+            servicio.dia_vencimiento = None
+            servicio.dias_tolerancia = 0
+
+        # Compatibilidad temporal con el motor anterior.
+        cliente.proxima_factura = fechas_servicio.proxima_facturacion
 
         # F. ACTIVACIÓN EN MIKROTIK 🚀
         try:

@@ -17,6 +17,12 @@ from src.infrastructure.mikrotik_service import MikroTikService
 from src.application.services.notification_service import NotificationService
 from src.application.helpers.pdf_generator import generar_recibo_pdf
 
+from src.infrastructure.models import (
+    ServicioModel,
+    TipoFacturacion,
+    CicloFacturacion,
+)
+
 class BillingService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -30,7 +36,8 @@ class BillingService:
 
         stmt = select(ClienteModel).options(
             selectinload(ClienteModel.plantilla),
-            selectinload(ClienteModel.plan)
+            selectinload(ClienteModel.plan),
+            selectinload(ClienteModel.servicios)
         ).where(
             ClienteModel.estado.in_(['activo', 'suspendido']),
             ClienteModel.plantilla_id.isnot(None),
@@ -45,13 +52,47 @@ class BillingService:
         result = await self.db.execute(stmt)
         clientes = result.scalars().all()
         
-        reporte = {"total_procesados": 0, "facturas_generadas": 0, "mensajes_enviados": 0}
-
+        reporte = {
+            "total_procesados": 0,
+            "facturas_generadas": 0,
+            "mensajes_enviados": 0,
+            "omitidos_sin_servicio": 0,
+            "omitidos_periodo_gratis": 0,
+            "omitidos_modalidad_pendiente": 0,
+        }
         for cliente in clientes:
+            reporte["total_procesados"] += 1
+
+            servicio = next(
+                (
+                    item
+                    for item in cliente.servicios
+                    if item.estado in {"activo", "suspendido"}
+                ),
+                None,
+            )
+
+            if servicio is None:
+                reporte["omitidos_sin_servicio"] += 1
+                continue
+
+            if (
+                servicio.fecha_inicio_cobro
+                and hoy < servicio.fecha_inicio_cobro
+            ):
+                reporte["omitidos_periodo_gratis"] += 1
+                continue
+
+            if (
+                servicio.tipo_facturacion == TipoFacturacion.postpago
+                or servicio.ciclo_facturacion == CicloFacturacion.aniversario
+            ):
+                reporte["omitidos_modalidad_pendiente"] += 1
+                continue
+
             plantilla = cliente.plantilla
             plan = cliente.plan
-            reporte["total_procesados"] += 1
-            
+
             # 🔥 LÓGICA CORREGIDA DE FECHAS (EL BUG ESTABA AQUÍ) 🔥
             try:
                 venc_este_mes = date(hoy.year, hoy.month, plantilla.dia_pago)
@@ -78,7 +119,7 @@ class BillingService:
 
             # 2. Evitar duplicados (Buscando por el mes/año correcto de vencimiento)
             stmt_dup = select(FacturaModel).where(and_(
-                FacturaModel.cliente_id == cliente.id,
+                FacturaModel.servicio_id == servicio.id,
                 extract('month', FacturaModel.fecha_vencimiento) == fecha_vencimiento.month,
                 extract('year', FacturaModel.fecha_vencimiento) == fecha_vencimiento.year
             ))
@@ -93,6 +134,7 @@ class BillingService:
 
             nueva_factura = FacturaModel(
                 cliente_id=cliente.id,
+                servicio_id=servicio.id,
                 plan_snapshot=plan.nombre,
                 detalles=f"Servicio Internet - {plan.nombre}",
                 monto=plan.precio, total=total, saldo_pendiente=total,

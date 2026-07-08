@@ -52,10 +52,7 @@ def test_servicio_sin_mes_gratis():
 
 
 def test_activacion_no_puede_ser_anterior():
-    with pytest.raises(
-        ValueError,
-        match="no puede ser anterior",
-    ):
+    with pytest.raises(ValueError, match="no puede ser anterior"):
         BillingCalendarService.calcular_fechas_servicio(
             fecha_instalacion=date(2026, 7, 15),
             fecha_activacion=date(2026, 7, 14),
@@ -64,11 +61,23 @@ def test_activacion_no_puede_ser_anterior():
 
 
 def test_meses_gratis_no_pueden_ser_negativos():
-    with pytest.raises(
-        ValueError,
-        match="no pueden ser negativos",
-    ):
+    with pytest.raises(ValueError, match="no pueden ser negativos"):
         BillingCalendarService.calcular_fechas_servicio(
             fecha_instalacion=date(2026, 7, 15),
             meses_gratis=-1,
         )
+
+
+def test_instalacion_tiene_facturacion_prepago_por_defecto():
+    from src.domain.schemas import InstalacionRequest
+
+    solicitud = InstalacionRequest(
+        user_pppoe="cliente-test",
+        pass_pppoe="clave-test",
+    )
+
+    assert solicitud.tipo_facturacion.value == "prepago"
+    assert solicitud.ciclo_facturacion.value == "calendario"
+    assert solicitud.meses_gratis == 1
+    assert solicitud.fecha_instalacion is None
+    assert solicitud.fecha_activacion is None
