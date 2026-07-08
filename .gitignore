@@ -40,4 +40,11 @@ build/
 # Archivos del Sistema Operativo
 # =========================
 .DS_Store
-Thumbs.db
+Thumbs.dbbackups/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Respaldos locales
+backups/

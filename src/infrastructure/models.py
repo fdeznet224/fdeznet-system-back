@@ -1,5 +1,18 @@
 import enum
-from sqlalchemy import Column, Date, Integer, String, Boolean, DateTime, Enum, ForeignKey, Float, Text, Table
+from sqlalchemy import (
+    Column,
+    Date,
+    Integer,
+    String,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Float,
+    Text,
+    Table,
+    Index,
+)
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from .database import Base
@@ -16,6 +29,16 @@ class TipoSeguridad(str, enum.Enum):
 class TipoControl(str, enum.Enum):
     colas_dinamicas = "colas_dinamicas"
     colas_estaticas = "colas_estaticas"
+
+
+class TipoFacturacion(str, enum.Enum):
+    prepago = "prepago"
+    postpago = "postpago"
+
+
+class CicloFacturacion(str, enum.Enum):
+    calendario = "calendario"
+    aniversario = "aniversario"
 
 usuario_routers_association = Table(
     'usuario_routers',
@@ -228,6 +251,7 @@ class ClienteModel(Base):
 
     facturas = relationship("FacturaModel", back_populates="cliente")
     pagos = relationship("PagoModel", back_populates="cliente")
+    servicios = relationship("ServicioModel",back_populates="cliente",)
 
     latitud = Column(Float, nullable=True)
     longitud = Column(Float, nullable=True)
@@ -239,6 +263,8 @@ class FacturaModel(Base):
     __tablename__ = "facturas"
     id = Column(Integer, primary_key=True, index=True)
     cliente_id = Column(Integer, ForeignKey("clientes.id"))
+    servicio_id = Column(
+    Integer,ForeignKey("servicios.id"),nullable=True,index=True,)
     
     plan_snapshot = Column(String(150))
     detalles = Column(Text)
@@ -258,7 +284,170 @@ class FacturaModel(Base):
     es_promesa_activa = Column(Boolean, default=False)
     
     cliente = relationship("ClienteModel", back_populates="facturas")
+    servicio = relationship("ServicioModel",back_populates="facturas",)
     pagos = relationship("PagoModel", back_populates="factura")
+
+
+
+class ServicioModel(Base):
+    __tablename__ = "servicios"
+
+    __table_args__ = (
+        Index(
+            "ix_servicios_cliente_estado",
+            "cliente_id",
+            "estado",
+        ),
+        Index(
+            "ix_servicios_proxima_facturacion",
+            "proxima_facturacion",
+        ),
+    )
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    cliente_id = Column(
+        Integer,
+        ForeignKey("clientes.id"),
+        nullable=False,
+        index=True,
+    )
+
+    plan_id = Column(
+        Integer,
+        ForeignKey("planes.id"),
+        nullable=True,
+        index=True,
+    )
+
+    plantilla_id = Column(
+        Integer,
+        ForeignKey("plantillas_facturacion.id"),
+        nullable=True,
+        index=True,
+    )
+
+    tipo_facturacion = Column(
+        Enum(
+            TipoFacturacion,
+            native_enum=False,
+            length=20,
+        ),
+        nullable=False,
+        default=TipoFacturacion.prepago,
+        server_default=TipoFacturacion.prepago.value,
+    )
+
+    ciclo_facturacion = Column(
+        Enum(
+            CicloFacturacion,
+            native_enum=False,
+            length=20,
+        ),
+        nullable=False,
+        default=CicloFacturacion.calendario,
+        server_default=CicloFacturacion.calendario.value,
+    )
+
+    fecha_instalacion = Column(
+        Date,
+        nullable=True,
+    )
+
+    fecha_activacion = Column(
+        Date,
+        nullable=True,
+    )
+
+    fecha_inicio_servicio = Column(
+        Date,
+        nullable=True,
+    )
+
+    fecha_fin_periodo_gratis = Column(
+        Date,
+        nullable=True,
+    )
+
+    fecha_inicio_cobro = Column(
+        Date,
+        nullable=True,
+    )
+
+    proxima_facturacion = Column(
+        Date,
+        nullable=True,
+    )
+
+    dia_vencimiento = Column(
+        Integer,
+        nullable=True,
+    )
+
+    dias_tolerancia = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
+    meses_gratis = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
+    politica_prorrateo = Column(
+        String(30),
+        nullable=False,
+        default="dias_reales_mes",
+        server_default="dias_reales_mes",
+    )
+
+    estado = Column(
+        String(30),
+        nullable=False,
+        default="pendiente_instalacion",
+        server_default="pendiente_instalacion",
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    cliente = relationship(
+        "ClienteModel",
+        back_populates="servicios",
+    )
+
+    plan = relationship(
+        "PlanModel",
+    )
+
+    plantilla = relationship(
+        "PlantillaFacturacionModel",
+    )
+
+    facturas = relationship(
+        "FacturaModel",
+        back_populates="servicio",
+    )
+
+
 
 class PagoModel(Base):
     __tablename__ = "pagos"

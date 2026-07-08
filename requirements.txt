@@ -65,3 +65,4 @@ tzlocal==5.3.1
 urllib3==2.6.3
 uvicorn==0.47.0
 xlsxwriter==3.2.9
+alembic==1.17.2
