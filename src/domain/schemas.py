@@ -370,6 +370,17 @@ class FacturaBase(BaseModel):
     fecha_promesa_pago: Optional[date] = None
     es_promesa_activa: bool = False
 
+    servicio_id: Optional[int] = None
+    periodo_desde: Optional[date] = None
+    periodo_hasta: Optional[date] = None
+    dias_facturados: Optional[int] = None
+    dias_periodo: Optional[int] = None
+    precio_mensual_snapshot: Optional[float] = None
+    precio_diario: Optional[float] = None
+    es_prorrateada: bool = False
+    tipo_facturacion_snapshot: Optional[str] = None
+    ciclo_facturacion_snapshot: Optional[str] = None
+
 class FacturaCreate(FacturaBase):
     cliente_id: int
 

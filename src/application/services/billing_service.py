@@ -23,6 +23,10 @@ from src.infrastructure.models import (
     CicloFacturacion,
 )
 
+from src.application.services.billing_calendar_service import (
+    BillingCalendarService,
+)
+
 class BillingService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -32,36 +36,46 @@ class BillingService:
     # ==========================================
     async def generar_emision_masiva(self, dia_objetivo: int = None):
         hoy = date.today()
-        notificador = NotificationService(self.db) 
+        notificador = NotificationService(self.db)
 
-        stmt = select(ClienteModel).options(
-            selectinload(ClienteModel.plantilla),
-            selectinload(ClienteModel.plan),
-            selectinload(ClienteModel.servicios)
-        ).where(
-            ClienteModel.estado.in_(['activo', 'suspendido']),
-            ClienteModel.plantilla_id.isnot(None),
-            ClienteModel.plan_id.isnot(None)
+        stmt = (
+            select(ClienteModel)
+            .options(
+                selectinload(ClienteModel.plantilla),
+                selectinload(ClienteModel.plan),
+                selectinload(ClienteModel.servicios),
+            )
+            .where(
+                ClienteModel.estado.in_(["activo", "suspendido"]),
+                ClienteModel.plantilla_id.isnot(None),
+                ClienteModel.plan_id.isnot(None),
+            )
         )
-        
+
         if dia_objetivo:
             stmt = stmt.join(PlantillaFacturacionModel).where(
                 PlantillaFacturacionModel.dia_pago == dia_objetivo
             )
-        
+
         result = await self.db.execute(stmt)
         clientes = result.scalars().all()
-        
+
         reporte = {
             "total_procesados": 0,
             "facturas_generadas": 0,
+            "facturas_prorrateadas": 0,
             "mensajes_enviados": 0,
             "omitidos_sin_servicio": 0,
             "omitidos_periodo_gratis": 0,
             "omitidos_modalidad_pendiente": 0,
+            "omitidos_prorrateo_no_vencido": 0,
         }
+
         for cliente in clientes:
             reporte["total_procesados"] += 1
+
+            plantilla = cliente.plantilla
+            plan = cliente.plan
 
             servicio = next(
                 (
@@ -90,46 +104,163 @@ class BillingService:
                 reporte["omitidos_modalidad_pendiente"] += 1
                 continue
 
-            plantilla = cliente.plantilla
-            plan = cliente.plan
+            tipo_snapshot = (
+                servicio.tipo_facturacion.value
+                if hasattr(servicio.tipo_facturacion, "value")
+                else str(servicio.tipo_facturacion)
+            )
+            ciclo_snapshot = (
+                servicio.ciclo_facturacion.value
+                if hasattr(servicio.ciclo_facturacion, "value")
+                else str(servicio.ciclo_facturacion)
+            )
 
-            # 🔥 LÓGICA CORREGIDA DE FECHAS (EL BUG ESTABA AQUÍ) 🔥
+            primer_prorrateo_pendiente = (
+                servicio.fecha_inicio_cobro is not None
+                and servicio.proxima_facturacion == servicio.fecha_inicio_cobro
+                and servicio.fecha_inicio_cobro.day != 1
+            )
+
+            if primer_prorrateo_pendiente:
+                if hoy < servicio.proxima_facturacion:
+                    reporte["omitidos_prorrateo_no_vencido"] += 1
+                    continue
+
+                periodo = BillingCalendarService.calcular_prorrateo_calendario(
+                    fecha_inicio_cobro=servicio.fecha_inicio_cobro,
+                    precio_mensual=plan.precio,
+                    impuesto_porcentaje=plantilla.impuesto or 0,
+                )
+
+                stmt_dup = select(FacturaModel).where(
+                    and_(
+                        FacturaModel.servicio_id == servicio.id,
+                        FacturaModel.periodo_desde == periodo.periodo_desde,
+                        FacturaModel.periodo_hasta == periodo.periodo_hasta,
+                    )
+                )
+                if (await self.db.execute(stmt_dup)).scalars().first():
+                    servicio.proxima_facturacion = periodo.siguiente_facturacion
+                    cliente.proxima_factura = periodo.siguiente_facturacion
+                    continue
+
+                fecha_vencimiento = periodo.periodo_desde
+                mes_actual_str = (
+                    f"Prorrateo {periodo.periodo_desde.strftime('%d/%m/%Y')} "
+                    f"- {periodo.periodo_hasta.strftime('%d/%m/%Y')}"
+                )
+
+                nueva_factura = FacturaModel(
+                    cliente_id=cliente.id,
+                    servicio_id=servicio.id,
+                    plan_snapshot=plan.nombre,
+                    detalles=(
+                        f"Prorrateo Internet - {plan.nombre} "
+                        f"({periodo.dias_facturados} de "
+                        f"{periodo.dias_periodo} días)"
+                    ),
+                    monto=float(periodo.subtotal),
+                    impuesto=float(periodo.impuesto),
+                    total=float(periodo.total),
+                    saldo_pendiente=float(periodo.total),
+                    estado="pendiente",
+                    fecha_emision=hoy,
+                    fecha_vencimiento=fecha_vencimiento,
+                    fecha_limite_corte=(
+                        fecha_vencimiento
+                        + timedelta(days=plantilla.dias_tolerancia or 0)
+                    ),
+                    mes_correspondiente=mes_actual_str,
+                    periodo_desde=periodo.periodo_desde,
+                    periodo_hasta=periodo.periodo_hasta,
+                    dias_facturados=periodo.dias_facturados,
+                    dias_periodo=periodo.dias_periodo,
+                    precio_mensual_snapshot=float(periodo.precio_mensual),
+                    precio_diario=float(periodo.precio_diario),
+                    es_prorrateada=periodo.es_prorrateada,
+                    tipo_facturacion_snapshot=tipo_snapshot,
+                    ciclo_facturacion_snapshot=ciclo_snapshot,
+                )
+
+                self.db.add(nueva_factura)
+                await self.db.flush()
+
+                servicio.proxima_facturacion = periodo.siguiente_facturacion
+                cliente.proxima_factura = periodo.siguiente_facturacion
+
+                reporte["facturas_generadas"] += 1
+                reporte["facturas_prorrateadas"] += 1
+
+                if cliente.telefono:
+                    exito = await notificador.notificar(
+                        "nueva_factura",
+                        cliente.id,
+                        variables_extra={
+                            "monto": f"${periodo.total}",
+                            "folio": str(nueva_factura.id),
+                            "mes_actual": mes_actual_str,
+                        },
+                    )
+                    if exito:
+                        reporte["mensajes_enviados"] += 1
+
+                continue
+
             try:
-                venc_este_mes = date(hoy.year, hoy.month, plantilla.dia_pago)
+                venc_este_mes = date(
+                    hoy.year,
+                    hoy.month,
+                    plantilla.dia_pago,
+                )
             except ValueError:
-                # Si el mes no tiene día 31, lo ajusta al último día del mes (ej. Febrero 28)
-                ultimo_dia_mes = (date(hoy.year, hoy.month, 1) + relativedelta(months=1, days=-1)).day
-                venc_este_mes = date(hoy.year, hoy.month, min(plantilla.dia_pago, ultimo_dia_mes))
+                ultimo_dia_mes = (
+                    date(hoy.year, hoy.month, 1)
+                    + relativedelta(months=1, days=-1)
+                ).day
+                venc_este_mes = date(
+                    hoy.year,
+                    hoy.month,
+                    min(plantilla.dia_pago, ultimo_dia_mes),
+                )
 
-            # Si hoy ya pasó la fecha de pago de este mes (ej. hoy es 26 y el pago es el 1),
-            # significa que estamos calculando la factura del PRÓXIMO mes (Junio).
             if hoy > venc_este_mes:
                 prox_mes_date = hoy + relativedelta(months=1)
-                ultimo_dia_prox = (date(prox_mes_date.year, prox_mes_date.month, 1) + relativedelta(months=1, days=-1)).day
-                fecha_vencimiento = date(prox_mes_date.year, prox_mes_date.month, min(plantilla.dia_pago, ultimo_dia_prox))
+                ultimo_dia_prox = (
+                    date(prox_mes_date.year, prox_mes_date.month, 1)
+                    + relativedelta(months=1, days=-1)
+                ).day
+                fecha_vencimiento = date(
+                    prox_mes_date.year,
+                    prox_mes_date.month,
+                    min(plantilla.dia_pago, ultimo_dia_prox),
+                )
             else:
                 fecha_vencimiento = venc_este_mes
 
             dias_antes = plantilla.dias_antes_emision or 0
             fecha_generacion = fecha_vencimiento - timedelta(days=dias_antes)
-            
-            # 1. Si no es el día, saltamos (A menos que el cajero lo force manualmente)
+
             if not dia_objetivo and hoy < fecha_generacion:
                 continue
 
-            # 2. Evitar duplicados (Buscando por el mes/año correcto de vencimiento)
-            stmt_dup = select(FacturaModel).where(and_(
-                FacturaModel.servicio_id == servicio.id,
-                extract('month', FacturaModel.fecha_vencimiento) == fecha_vencimiento.month,
-                extract('year', FacturaModel.fecha_vencimiento) == fecha_vencimiento.year
-            ))
-            if (await self.db.execute(stmt_dup)).scalars().first():
-                continue 
+            periodo = BillingCalendarService.calcular_mensualidad_calendario(
+                fecha_periodo=fecha_vencimiento,
+                precio_mensual=plan.precio,
+                impuesto_porcentaje=plantilla.impuesto or 0,
+            )
 
-            # 3. Creación
-            total = plan.precio + (plan.precio * plantilla.impuesto / 100)
-            
-            # 🚀 EXTRA: Ahora el recibo dice "Junio 2026", no "Mayo 2026"
+            stmt_dup = select(FacturaModel).where(
+                and_(
+                    FacturaModel.servicio_id == servicio.id,
+                    extract("month", FacturaModel.fecha_vencimiento)
+                    == fecha_vencimiento.month,
+                    extract("year", FacturaModel.fecha_vencimiento)
+                    == fecha_vencimiento.year,
+                )
+            )
+            if (await self.db.execute(stmt_dup)).scalars().first():
+                continue
+
             mes_actual_str = fecha_vencimiento.strftime("%B %Y").capitalize()
 
             nueva_factura = FacturaModel(
@@ -137,36 +268,58 @@ class BillingService:
                 servicio_id=servicio.id,
                 plan_snapshot=plan.nombre,
                 detalles=f"Servicio Internet - {plan.nombre}",
-                monto=plan.precio, total=total, saldo_pendiente=total,
-                estado='pendiente', fecha_emision=hoy,              
-                fecha_vencimiento=fecha_vencimiento, 
-                fecha_limite_corte=fecha_vencimiento + timedelta(days=plantilla.dias_tolerancia or 0),      
-                mes_correspondiente=mes_actual_str
+                monto=float(periodo.subtotal),
+                impuesto=float(periodo.impuesto),
+                total=float(periodo.total),
+                saldo_pendiente=float(periodo.total),
+                estado="pendiente",
+                fecha_emision=hoy,
+                fecha_vencimiento=fecha_vencimiento,
+                fecha_limite_corte=(
+                    fecha_vencimiento
+                    + timedelta(days=plantilla.dias_tolerancia or 0)
+                ),
+                mes_correspondiente=mes_actual_str,
+                periodo_desde=periodo.periodo_desde,
+                periodo_hasta=periodo.periodo_hasta,
+                dias_facturados=periodo.dias_facturados,
+                dias_periodo=periodo.dias_periodo,
+                precio_mensual_snapshot=float(periodo.precio_mensual),
+                precio_diario=float(periodo.precio_diario),
+                es_prorrateada=periodo.es_prorrateada,
+                tipo_facturacion_snapshot=tipo_snapshot,
+                ciclo_facturacion_snapshot=ciclo_snapshot,
             )
+
             self.db.add(nueva_factura)
             await self.db.flush()
+
+            servicio.proxima_facturacion = periodo.siguiente_facturacion
+            cliente.proxima_factura = periodo.siguiente_facturacion
+
             reporte["facturas_generadas"] += 1
 
-            # 👇 NOTIFICACIÓN DE COBRO 👇
             if cliente.telefono:
-                # 1. Calculamos el nombre del mes basado en la 'fecha_vencimiento' (que ya tiene la lógica del mes próximo)
-                meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+                meses = [
+                    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+                ]
                 mes_cobro = meses[fecha_vencimiento.month - 1]
-
-                # 2. Inyectamos el 'mes_actual' en las variables extra para sobrescribir el datetime.now() del notificador
                 exito = await notificador.notificar(
-                    "nueva_factura", 
-                    cliente.id, 
+                    "nueva_factura",
+                    cliente.id,
                     variables_extra={
-                        "monto": f"${total}", 
+                        "monto": f"${periodo.total}",
                         "folio": str(nueva_factura.id),
-                        "mes_actual": mes_cobro  # 👈 Aquí está la magia
-                    }
+                        "mes_actual": mes_cobro,
+                    },
                 )
-                if exito: reporte["mensajes_enviados"] += 1
+                if exito:
+                    reporte["mensajes_enviados"] += 1
 
         await self.db.commit()
         return reporte
+
     
 
     # ==========================================

@@ -276,6 +276,21 @@ class FacturaModel(Base):
     fecha_emision = Column(Date)       
     fecha_vencimiento = Column(Date)
     fecha_limite_corte = Column(Date)
+    periodo_desde = Column(Date, nullable=True)
+    periodo_hasta = Column(Date, nullable=True)
+    dias_facturados = Column(Integer, nullable=True)
+    dias_periodo = Column(Integer, nullable=True)
+    precio_mensual_snapshot = Column(Float, nullable=True)
+    precio_diario = Column(Float, nullable=True)
+    es_prorrateada = Column(
+        Boolean,
+        default=False,
+        server_default="0",
+        nullable=False,
+    )
+    tipo_facturacion_snapshot = Column(String(20), nullable=True)
+    ciclo_facturacion_snapshot = Column(String(20), nullable=True)
+
     fecha_pago_real = Column(DateTime, nullable=True)
     mes_correspondiente = Column(String(20)) 
     estado = Column(String(20), default="pendiente")
