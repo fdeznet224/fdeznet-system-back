@@ -69,6 +69,8 @@ class BillingService:
             "omitidos_periodo_gratis": 0,
             "omitidos_modalidad_pendiente": 0,
             "omitidos_prorrateo_no_vencido": 0,
+            "omitidos_no_toca_emitir": 0,
+            "omitidos_factura_existente": 0,
         }
 
         for cliente in clientes:
@@ -142,6 +144,7 @@ class BillingService:
                 if (await self.db.execute(stmt_dup)).scalars().first():
                     servicio.proxima_facturacion = periodo.siguiente_facturacion
                     cliente.proxima_factura = periodo.siguiente_facturacion
+                    reporte["omitidos_factura_existente"] += 1
                     continue
 
                 fecha_vencimiento = periodo.periodo_desde
@@ -206,45 +209,39 @@ class BillingService:
 
                 continue
 
-            try:
-                venc_este_mes = date(
-                    hoy.year,
-                    hoy.month,
-                    plantilla.dia_pago,
-                )
-            except ValueError:
-                ultimo_dia_mes = (
-                    date(hoy.year, hoy.month, 1)
-                    + relativedelta(months=1, days=-1)
-                ).day
-                venc_este_mes = date(
-                    hoy.year,
-                    hoy.month,
-                    min(plantilla.dia_pago, ultimo_dia_mes),
-                )
+            # Ciclo normal calendario.
+            # Importante: se usa servicio.proxima_facturacion como inicio
+            # del siguiente ciclo pendiente. Antes se calculaba desde "hoy",
+            # por eso saltaba julio cuando la fecha actual ya iba en agosto
+            # o cuando el dia de pago del mes actual ya habia pasado.
+            periodo_base = servicio.proxima_facturacion
+            if periodo_base is None:
+                periodo_base = date(hoy.year, hoy.month, 1)
 
-            if hoy > venc_este_mes:
-                prox_mes_date = hoy + relativedelta(months=1)
-                ultimo_dia_prox = (
-                    date(prox_mes_date.year, prox_mes_date.month, 1)
-                    + relativedelta(months=1, days=-1)
-                ).day
-                fecha_vencimiento = date(
-                    prox_mes_date.year,
-                    prox_mes_date.month,
-                    min(plantilla.dia_pago, ultimo_dia_prox),
-                )
-            else:
-                fecha_vencimiento = venc_este_mes
+            periodo_base = date(
+                periodo_base.year,
+                periodo_base.month,
+                1,
+            )
+
+            ultimo_dia_periodo = BillingCalendarService.ultimo_dia_mes(
+                periodo_base
+            ).day
+            fecha_vencimiento = date(
+                periodo_base.year,
+                periodo_base.month,
+                min(plantilla.dia_pago, ultimo_dia_periodo),
+            )
 
             dias_antes = plantilla.dias_antes_emision or 0
             fecha_generacion = fecha_vencimiento - timedelta(days=dias_antes)
 
             if not dia_objetivo and hoy < fecha_generacion:
+                reporte["omitidos_no_toca_emitir"] += 1
                 continue
 
             periodo = BillingCalendarService.calcular_mensualidad_calendario(
-                fecha_periodo=fecha_vencimiento,
+                fecha_periodo=periodo_base,
                 precio_mensual=plan.precio,
                 impuesto_porcentaje=plantilla.impuesto or 0,
             )
@@ -252,13 +249,25 @@ class BillingService:
             stmt_dup = select(FacturaModel).where(
                 and_(
                     FacturaModel.servicio_id == servicio.id,
-                    extract("month", FacturaModel.fecha_vencimiento)
-                    == fecha_vencimiento.month,
-                    extract("year", FacturaModel.fecha_vencimiento)
-                    == fecha_vencimiento.year,
+                    (
+                        and_(
+                            FacturaModel.periodo_desde == periodo.periodo_desde,
+                            FacturaModel.periodo_hasta == periodo.periodo_hasta,
+                        )
+                        |
+                        and_(
+                            extract("month", FacturaModel.fecha_vencimiento)
+                            == fecha_vencimiento.month,
+                            extract("year", FacturaModel.fecha_vencimiento)
+                            == fecha_vencimiento.year,
+                        )
+                    ),
                 )
             )
             if (await self.db.execute(stmt_dup)).scalars().first():
+                servicio.proxima_facturacion = periodo.siguiente_facturacion
+                cliente.proxima_factura = periodo.siguiente_facturacion
+                reporte["omitidos_factura_existente"] += 1
                 continue
 
             mes_actual_str = fecha_vencimiento.strftime("%B %Y").capitalize()
@@ -319,6 +328,7 @@ class BillingService:
 
         await self.db.commit()
         return reporte
+
 
     
 

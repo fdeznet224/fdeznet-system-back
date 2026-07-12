@@ -292,7 +292,7 @@ class FacturaModel(Base):
     ciclo_facturacion_snapshot = Column(String(20), nullable=True)
 
     fecha_pago_real = Column(DateTime, nullable=True)
-    mes_correspondiente = Column(String(20)) 
+    mes_correspondiente = Column(String(100)) 
     estado = Column(String(20), default="pendiente")
     
     fecha_promesa_pago = Column(Date, nullable=True)
