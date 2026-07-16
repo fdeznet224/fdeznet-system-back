@@ -64,204 +64,62 @@ class BillingService:
             "total_procesados": 0,
             "facturas_generadas": 0,
             "facturas_prorrateadas": 0,
+            "facturas_prepago": 0,
+            "facturas_postpago": 0,
             "mensajes_enviados": 0,
             "omitidos_sin_servicio": 0,
-            "omitidos_periodo_gratis": 0,
+            "omitidos_sin_proxima_facturacion": 0,
             "omitidos_modalidad_pendiente": 0,
-            "omitidos_prorrateo_no_vencido": 0,
             "omitidos_no_toca_emitir": 0,
             "omitidos_factura_existente": 0,
         }
 
         for cliente in clientes:
             reporte["total_procesados"] += 1
-
             plantilla = cliente.plantilla
             plan = cliente.plan
-
-            servicio = next(
-                (
-                    item
-                    for item in cliente.servicios
-                    if item.estado in {"activo", "suspendido"}
-                ),
-                None,
-            )
+            servicio = next((item for item in cliente.servicios if item.estado in {"activo", "suspendido"}), None)
 
             if servicio is None:
                 reporte["omitidos_sin_servicio"] += 1
                 continue
-
-            if (
-                servicio.fecha_inicio_cobro
-                and hoy < servicio.fecha_inicio_cobro
-            ):
-                reporte["omitidos_periodo_gratis"] += 1
+            if servicio.ciclo_facturacion == CicloFacturacion.aniversario:
+                reporte["omitidos_modalidad_pendiente"] += 1
+                continue
+            if servicio.proxima_facturacion is None:
+                reporte["omitidos_sin_proxima_facturacion"] += 1
                 continue
 
-            if (
-                servicio.tipo_facturacion == TipoFacturacion.postpago
-                or servicio.ciclo_facturacion == CicloFacturacion.aniversario
-            ):
+            tipo_snapshot = servicio.tipo_facturacion.value if hasattr(servicio.tipo_facturacion, "value") else str(servicio.tipo_facturacion)
+            ciclo_snapshot = servicio.ciclo_facturacion.value if hasattr(servicio.ciclo_facturacion, "value") else str(servicio.ciclo_facturacion)
+
+            if tipo_snapshot not in {"prepago", "postpago"}:
                 reporte["omitidos_modalidad_pendiente"] += 1
                 continue
 
-            tipo_snapshot = (
-                servicio.tipo_facturacion.value
-                if hasattr(servicio.tipo_facturacion, "value")
-                else str(servicio.tipo_facturacion)
+            dia_ciclo = servicio.dia_vencimiento or plantilla.dia_pago or 1
+            periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
+                periodo_desde=servicio.proxima_facturacion,
+                dia_ciclo=dia_ciclo,
+                precio_mensual=plan.precio,
+                impuesto_porcentaje=plantilla.impuesto or 0,
             )
-            ciclo_snapshot = (
-                servicio.ciclo_facturacion.value
-                if hasattr(servicio.ciclo_facturacion, "value")
-                else str(servicio.ciclo_facturacion)
+            fecha_vencimiento = BillingCalendarService.calcular_fecha_vencimiento(periodo, tipo_snapshot)
+            fecha_generacion = BillingCalendarService.calcular_fecha_generacion(
+                periodo,
+                tipo_snapshot,
+                plantilla.dias_antes_emision or 0,
             )
-
-            primer_prorrateo_pendiente = (
-                servicio.fecha_inicio_cobro is not None
-                and servicio.proxima_facturacion == servicio.fecha_inicio_cobro
-                and servicio.fecha_inicio_cobro.day != 1
-            )
-
-            if primer_prorrateo_pendiente:
-                if hoy < servicio.proxima_facturacion:
-                    reporte["omitidos_prorrateo_no_vencido"] += 1
-                    continue
-
-                periodo = BillingCalendarService.calcular_prorrateo_calendario(
-                    fecha_inicio_cobro=servicio.fecha_inicio_cobro,
-                    precio_mensual=plan.precio,
-                    impuesto_porcentaje=plantilla.impuesto or 0,
-                )
-
-                stmt_dup = select(FacturaModel).where(
-                    and_(
-                        FacturaModel.servicio_id == servicio.id,
-                        FacturaModel.periodo_desde == periodo.periodo_desde,
-                        FacturaModel.periodo_hasta == periodo.periodo_hasta,
-                    )
-                )
-                if (await self.db.execute(stmt_dup)).scalars().first():
-                    servicio.proxima_facturacion = periodo.siguiente_facturacion
-                    cliente.proxima_factura = periodo.siguiente_facturacion
-                    reporte["omitidos_factura_existente"] += 1
-                    continue
-
-                fecha_vencimiento = periodo.periodo_desde
-                mes_actual_str = (
-                    f"Prorrateo {periodo.periodo_desde.strftime('%d/%m/%Y')} "
-                    f"- {periodo.periodo_hasta.strftime('%d/%m/%Y')}"
-                )
-
-                nueva_factura = FacturaModel(
-                    cliente_id=cliente.id,
-                    servicio_id=servicio.id,
-                    plan_snapshot=plan.nombre,
-                    detalles=(
-                        f"Prorrateo Internet - {plan.nombre} "
-                        f"({periodo.dias_facturados} de "
-                        f"{periodo.dias_periodo} días)"
-                    ),
-                    monto=float(periodo.subtotal),
-                    impuesto=float(periodo.impuesto),
-                    total=float(periodo.total),
-                    saldo_pendiente=float(periodo.total),
-                    estado="pendiente",
-                    fecha_emision=hoy,
-                    fecha_vencimiento=fecha_vencimiento,
-                    fecha_limite_corte=(
-                        fecha_vencimiento
-                        + timedelta(days=plantilla.dias_tolerancia or 0)
-                    ),
-                    mes_correspondiente=mes_actual_str,
-                    periodo_desde=periodo.periodo_desde,
-                    periodo_hasta=periodo.periodo_hasta,
-                    dias_facturados=periodo.dias_facturados,
-                    dias_periodo=periodo.dias_periodo,
-                    precio_mensual_snapshot=float(periodo.precio_mensual),
-                    precio_diario=float(periodo.precio_diario),
-                    es_prorrateada=periodo.es_prorrateada,
-                    tipo_facturacion_snapshot=tipo_snapshot,
-                    ciclo_facturacion_snapshot=ciclo_snapshot,
-                )
-
-                self.db.add(nueva_factura)
-                await self.db.flush()
-
-                servicio.proxima_facturacion = periodo.siguiente_facturacion
-                cliente.proxima_factura = periodo.siguiente_facturacion
-
-                reporte["facturas_generadas"] += 1
-                reporte["facturas_prorrateadas"] += 1
-
-                if cliente.telefono:
-                    exito = await notificador.notificar(
-                        "nueva_factura",
-                        cliente.id,
-                        variables_extra={
-                            "monto": f"${periodo.total}",
-                            "folio": str(nueva_factura.id),
-                            "mes_actual": mes_actual_str,
-                        },
-                    )
-                    if exito:
-                        reporte["mensajes_enviados"] += 1
-
-                continue
-
-            # Ciclo normal calendario.
-            # Importante: se usa servicio.proxima_facturacion como inicio
-            # del siguiente ciclo pendiente. Antes se calculaba desde "hoy",
-            # por eso saltaba julio cuando la fecha actual ya iba en agosto
-            # o cuando el dia de pago del mes actual ya habia pasado.
-            periodo_base = servicio.proxima_facturacion
-            if periodo_base is None:
-                periodo_base = date(hoy.year, hoy.month, 1)
-
-            periodo_base = date(
-                periodo_base.year,
-                periodo_base.month,
-                1,
-            )
-
-            ultimo_dia_periodo = BillingCalendarService.ultimo_dia_mes(
-                periodo_base
-            ).day
-            fecha_vencimiento = date(
-                periodo_base.year,
-                periodo_base.month,
-                min(plantilla.dia_pago, ultimo_dia_periodo),
-            )
-
-            dias_antes = plantilla.dias_antes_emision or 0
-            fecha_generacion = fecha_vencimiento - timedelta(days=dias_antes)
 
             if not dia_objetivo and hoy < fecha_generacion:
                 reporte["omitidos_no_toca_emitir"] += 1
                 continue
 
-            periodo = BillingCalendarService.calcular_mensualidad_calendario(
-                fecha_periodo=periodo_base,
-                precio_mensual=plan.precio,
-                impuesto_porcentaje=plantilla.impuesto or 0,
-            )
-
             stmt_dup = select(FacturaModel).where(
                 and_(
                     FacturaModel.servicio_id == servicio.id,
-                    (
-                        and_(
-                            FacturaModel.periodo_desde == periodo.periodo_desde,
-                            FacturaModel.periodo_hasta == periodo.periodo_hasta,
-                        )
-                        |
-                        and_(
-                            extract("month", FacturaModel.fecha_vencimiento)
-                            == fecha_vencimiento.month,
-                            extract("year", FacturaModel.fecha_vencimiento)
-                            == fecha_vencimiento.year,
-                        )
-                    ),
+                    FacturaModel.periodo_desde == periodo.periodo_desde,
+                    FacturaModel.periodo_hasta == periodo.periodo_hasta,
                 )
             )
             if (await self.db.execute(stmt_dup)).scalars().first():
@@ -270,13 +128,21 @@ class BillingService:
                 reporte["omitidos_factura_existente"] += 1
                 continue
 
-            mes_actual_str = fecha_vencimiento.strftime("%B %Y").capitalize()
+            if periodo.es_prorrateada:
+                mes_actual_str = f"Prorrateo {periodo.periodo_desde.strftime('%d/%m/%Y')} - {periodo.periodo_hasta.strftime('%d/%m/%Y')}"
+                detalles = f"Prorrateo Internet - {plan.nombre} ({periodo.dias_facturados} de {periodo.dias_periodo} días)"
+            else:
+                if periodo.periodo_desde.day == 1:
+                    mes_actual_str = periodo.periodo_desde.strftime("%B %Y").capitalize()
+                else:
+                    mes_actual_str = f"Ciclo {periodo.periodo_desde.strftime('%d/%m/%Y')} - {periodo.periodo_hasta.strftime('%d/%m/%Y')}"
+                detalles = f"Servicio Internet - {plan.nombre}"
 
             nueva_factura = FacturaModel(
                 cliente_id=cliente.id,
                 servicio_id=servicio.id,
                 plan_snapshot=plan.nombre,
-                detalles=f"Servicio Internet - {plan.nombre}",
+                detalles=detalles,
                 monto=float(periodo.subtotal),
                 impuesto=float(periodo.impuesto),
                 total=float(periodo.total),
@@ -284,10 +150,7 @@ class BillingService:
                 estado="pendiente",
                 fecha_emision=hoy,
                 fecha_vencimiento=fecha_vencimiento,
-                fecha_limite_corte=(
-                    fecha_vencimiento
-                    + timedelta(days=plantilla.dias_tolerancia or 0)
-                ),
+                fecha_limite_corte=fecha_vencimiento + timedelta(days=plantilla.dias_tolerancia or 0),
                 mes_correspondiente=mes_actual_str,
                 periodo_desde=periodo.periodo_desde,
                 periodo_hasta=periodo.periodo_hasta,
@@ -299,28 +162,27 @@ class BillingService:
                 tipo_facturacion_snapshot=tipo_snapshot,
                 ciclo_facturacion_snapshot=ciclo_snapshot,
             )
-
             self.db.add(nueva_factura)
             await self.db.flush()
 
             servicio.proxima_facturacion = periodo.siguiente_facturacion
             cliente.proxima_factura = periodo.siguiente_facturacion
-
             reporte["facturas_generadas"] += 1
+            if periodo.es_prorrateada:
+                reporte["facturas_prorrateadas"] += 1
+            if tipo_snapshot == "postpago":
+                reporte["facturas_postpago"] += 1
+            else:
+                reporte["facturas_prepago"] += 1
 
             if cliente.telefono:
-                meses = [
-                    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-                    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
-                ]
-                mes_cobro = meses[fecha_vencimiento.month - 1]
                 exito = await notificador.notificar(
                     "nueva_factura",
                     cliente.id,
                     variables_extra={
                         "monto": f"${periodo.total}",
                         "folio": str(nueva_factura.id),
-                        "mes_actual": mes_cobro,
+                        "mes_actual": mes_actual_str,
                     },
                 )
                 if exito:
@@ -328,6 +190,7 @@ class BillingService:
 
         await self.db.commit()
         return reporte
+
 
 
     
@@ -580,3 +443,16 @@ class BillingService:
             query = query.where(ClienteModel.router_id.in_(ids_permitidos))
         query = query.order_by(FacturaModel.id.desc()).limit(200)
         return (await self.db.execute(query)).scalars().all()
+
+# FACTURACION_ISP_V2_DYNAMIC_PATCH
+# Sobrescribe en tiempo de importación los métodos críticos con la versión ISP v2:
+# - ciclos dinámicos por plantilla
+# - prepago/postpago
+# - corte automático con confirmación MikroTik
+# - eventos WhatsApp definidos con fallback a nombres antiguos
+try:
+    from src.application.services.billing_service_v2_patch import aplicar_facturacion_isp_v2
+    aplicar_facturacion_isp_v2(BillingService)
+except Exception as exc:
+    print(f"⚠️ No se pudo aplicar FACTURACION_ISP_V2_DYNAMIC_PATCH: {exc}")
+# /FACTURACION_ISP_V2_DYNAMIC_PATCH
