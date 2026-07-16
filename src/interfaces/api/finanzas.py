@@ -242,11 +242,18 @@ async def registrar_promesa(
     factura.es_promesa_activa = True
     
     reactivado = False
-    if cliente.estado == 'suspendido':
-        cliente.estado = 'activo'
-        # Reactivamos en MikroTik instantáneamente
+    # FACTURACION_ISP_V2_PROMISE_REACTIVATION
+    if cliente.estado == "suspendido":
         service = BillingService(db)
-        reactivado = await service._reactivar_en_mikrotik(cliente)
+        reactivado = await service._reactivar_en_mikrotik(
+            cliente
+        )
+        if reactivado:
+            cliente.estado = "activo"
+            await service._actualizar_estado_servicio_factura(
+                factura,
+                "activo",
+            )
 
     await db.commit()
 

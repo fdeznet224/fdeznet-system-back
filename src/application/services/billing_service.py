@@ -8,7 +8,8 @@ from sqlalchemy.orm import joinedload, selectinload
 # Modelos
 from src.infrastructure.models import (
     ClienteModel, FacturaModel, PagoModel, 
-    UsuarioModel, PlantillaFacturacionModel, PlanModel, RouterModel
+    UsuarioModel, PlantillaFacturacionModel, PlanModel, RouterModel,
+    ServicioModel,
 )
 
 # Servicios e Helpers
@@ -248,63 +249,159 @@ class BillingService:
     # ==========================================
     # 2. MOTOR DE CORTES AUTOMÁTICOS (CORREGIDO)
     # ==========================================
+
     async def procesar_cortes_automaticos(self):
+        # Corta morosos y sincroniza factura, cliente y servicio.
         hoy = date.today()
         notificador = NotificationService(self.db)
 
-        # 🔥 LA MAGIA: Usamos or_() para atrapar ambos casos
-        stmt = select(FacturaModel).options(
-            joinedload(FacturaModel.cliente).joinedload(ClienteModel.router)
-        ).where(
-            FacturaModel.estado == 'pendiente',
-            or_(
-                # CASO 1: Corte Normal (Llegó su fecha límite de corte y NO tiene prórroga)
-                and_(
-                    FacturaModel.fecha_limite_corte <= hoy,
-                    FacturaModel.es_promesa_activa == False
+        stmt = (
+            select(FacturaModel)
+            .options(
+                joinedload(FacturaModel.cliente).joinedload(
+                    ClienteModel.router
                 ),
-                # CASO 2: Promesa Rota (Tiene prórroga, pero la fecha de promesa ya pasó)
-                # NOTA: Usamos "< hoy" para cortarlo al día SIGUIENTE de su promesa
-                and_(
-                    FacturaModel.es_promesa_activa == True,
-                    FacturaModel.fecha_promesa_pago < hoy 
-                )
+                joinedload(FacturaModel.servicio),
+            )
+            .where(
+                FacturaModel.estado == "pendiente",
+                or_(
+                    and_(
+                        FacturaModel.fecha_limite_corte <= hoy,
+                        FacturaModel.es_promesa_activa.is_(False),
+                    ),
+                    and_(
+                        FacturaModel.es_promesa_activa.is_(True),
+                        FacturaModel.fecha_promesa_pago < hoy,
+                    ),
+                ),
             )
         )
-        
-        facturas_vencidas = (await self.db.execute(stmt)).scalars().all()
-        reporte = {"clientes_suspendidos": 0, "promesas_rotas": 0, "errores": 0}
 
-        for factura in facturas_vencidas:
+        facturas = (
+            await self.db.execute(stmt)
+        ).unique().scalars().all()
+
+        reporte = {
+            "clientes_suspendidos": 0,
+            "servicios_suspendidos": 0,
+            "facturas_vencidas": 0,
+            "promesas_rotas": 0,
+            "notificaciones_enviadas": 0,
+            "errores_mikrotik": 0,
+            "errores_notificacion": 0,
+            "omitidos_ya_suspendidos": 0,
+        }
+
+        for factura in facturas:
             cliente = factura.cliente
-            if cliente.estado == 'activo':
-                cliente.estado = 'suspendido'
-                factura.estado = 'vencida'
-                
-                # Si lo estamos cortando por romper la promesa, la desactivamos
-                if factura.es_promesa_activa:
+            promesa_rota = bool(factura.es_promesa_activa)
+
+            if cliente.estado == "suspendido":
+                actualizados = (
+                    await self._actualizar_estado_servicio_factura(
+                        factura,
+                        "suspendido",
+                    )
+                )
+                factura.estado = "vencida"
+                reporte["servicios_suspendidos"] += actualizados
+                reporte["facturas_vencidas"] += 1
+                reporte["omitidos_ya_suspendidos"] += 1
+
+                if promesa_rota:
                     factura.es_promesa_activa = False
                     reporte["promesas_rotas"] += 1
-                
-                try:
-                    mk = MikroTikService(cliente.router.ip_vpn, cliente.router.user_api, cliente.router.pass_api, cliente.router.port_api)
-                    mk.gestionar_corte_cliente(cliente.ip_asignada, suspender=True)
-                    if cliente.user_pppoe: mk.desconectar_cliente_activo(cliente.user_pppoe)
-                    
-                    reporte["clientes_suspendidos"] += 1
-                    
-                    # 👇 AVISO DE CORTE 👇
-                    await notificador.notificar("aviso_corte", cliente.id)
-                except Exception as e:
-                    reporte["errores"] += 1
-                    print(f"⚠️ Error al cortar en MikroTik al cliente {cliente.nombre}: {e}")
+                continue
+
+            if not cliente.router or not cliente.ip_asignada:
+                reporte["errores_mikrotik"] += 1
+                continue
+
+            try:
+                mk = MikroTikService(
+                    cliente.router.ip_vpn,
+                    cliente.router.user_api,
+                    cliente.router.pass_api,
+                    cliente.router.port_api,
+                )
+                resultado = mk.gestionar_corte_cliente(
+                    cliente.ip_asignada,
+                    suspender=True,
+                )
+
+                if resultado is False:
+                    raise RuntimeError(
+                        "MikroTik no confirmó la suspensión."
+                    )
+
+                if cliente.user_pppoe:
+                    mk.desconectar_cliente_activo(
+                        cliente.user_pppoe
+                    )
+            except Exception as exc:
+                reporte["errores_mikrotik"] += 1
+                print(
+                    "⚠️ Error al cortar al cliente "
+                    f"{cliente.id}: {exc}"
+                )
+                continue
+
+            cliente.estado = "suspendido"
+            actualizados = (
+                await self._actualizar_estado_servicio_factura(
+                    factura,
+                    "suspendido",
+                )
+            )
+            factura.estado = "vencida"
+
+            if promesa_rota:
+                factura.es_promesa_activa = False
+                reporte["promesas_rotas"] += 1
+
+            reporte["clientes_suspendidos"] += 1
+            reporte["servicios_suspendidos"] += actualizados
+            reporte["facturas_vencidas"] += 1
+
+            try:
+                variables = {
+                    "saldo_pendiente": (
+                        f"${float(factura.saldo_pendiente or 0):.2f}"
+                    ),
+                    "fecha_corte": (
+                        factura.fecha_limite_corte.strftime("%d/%m/%Y")
+                        if factura.fecha_limite_corte
+                        else "N/A"
+                    ),
+                    "folio": str(factura.id),
+                }
+
+                enviado = await notificador.notificar(
+                    "corte_ejecutado",
+                    cliente.id,
+                    variables_extra=variables,
+                )
+
+                if not enviado:
+                    enviado = await notificador.notificar(
+                        "aviso_corte",
+                        cliente.id,
+                        variables_extra=variables,
+                    )
+
+                if enviado:
+                    reporte["notificaciones_enviadas"] += 1
+            except Exception as exc:
+                reporte["errores_notificacion"] += 1
+                print(
+                    "⚠️ Corte confirmado, pero falló WhatsApp "
+                    f"para el cliente {cliente.id}: {exc}"
+                )
 
         await self.db.commit()
         return reporte
 
-    # ==========================================
-    # 3. REGISTRO DE PAGOS (CON PDF ADJUNTO)
-    # ==========================================
     async def registrar_pago_completo(self, factura_id: int, usuario_operador: UsuarioModel, metodo_pago: str, monto: float, referencia: str = None):
         factura = await self.db.get(FacturaModel, factura_id)
         if not factura: raise ValueError("Factura no encontrada")
@@ -365,9 +462,25 @@ class BillingService:
         self.db.add(nuevo_pago)
         
         # Reconexión automática SOLO si la factura quedó pagada por completo
-        if pago_completado and estado_previo == 'suspendido':
-            cliente.estado = 'activo'
-            reactivado = await self._reactivar_en_mikrotik(cliente)
+        # FACTURACION_ISP_V2_SAFE_REACTIVATION
+        if pago_completado and estado_previo == "suspendido":
+            await self.db.flush()
+            tiene_otra_deuda = (
+                await self._cliente_tiene_deuda_pendiente(
+                    cliente.id,
+                    excluir_factura_id=factura.id,
+                )
+            )
+            if not tiene_otra_deuda:
+                reactivado = await self._reactivar_en_mikrotik(
+                    cliente
+                )
+                if reactivado:
+                    cliente.estado = "activo"
+                    await self._actualizar_estado_servicio_factura(
+                        factura,
+                        "activo",
+                    )
 
         await self.db.commit() 
 
@@ -414,6 +527,71 @@ class BillingService:
     # ==========================================
     # HELPERS
     # ==========================================
+
+    # FACTURACION_ISP_V2_STATE_SYNC_HELPERS
+    async def _actualizar_estado_servicio_factura(
+        self,
+        factura,
+        estado: str,
+    ) -> int:
+        actualizados = 0
+
+        if getattr(factura, "servicio_id", None):
+            servicio = await self.db.get(
+                ServicioModel,
+                factura.servicio_id,
+            )
+
+            if (
+                servicio
+                and servicio.estado != "cancelado"
+                and servicio.estado != estado
+            ):
+                servicio.estado = estado
+                actualizados += 1
+
+            return actualizados
+
+        stmt = select(ServicioModel).where(
+            ServicioModel.cliente_id == factura.cliente_id,
+            ServicioModel.estado.in_(["activo", "suspendido"]),
+        )
+        servicios = (
+            await self.db.execute(stmt)
+        ).scalars().all()
+
+        for servicio in servicios:
+            if servicio.estado != estado:
+                servicio.estado = estado
+                actualizados += 1
+
+        return actualizados
+
+    async def _cliente_tiene_deuda_pendiente(
+        self,
+        cliente_id: int,
+        excluir_factura_id: int | None = None,
+    ) -> bool:
+        condiciones = [
+            FacturaModel.cliente_id == cliente_id,
+            FacturaModel.estado.in_(["pendiente", "vencida"]),
+            FacturaModel.saldo_pendiente > 0,
+        ]
+
+        if excluir_factura_id is not None:
+            condiciones.append(
+                FacturaModel.id != excluir_factura_id
+            )
+
+        stmt = select(func.count(FacturaModel.id)).where(
+            *condiciones
+        )
+        cantidad = (
+            await self.db.execute(stmt)
+        ).scalar_one()
+
+        return cantidad > 0
+
     async def _reactivar_en_mikrotik(self, cliente):
         if not cliente.router_id: return False
         try:

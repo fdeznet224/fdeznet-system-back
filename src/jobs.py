@@ -1,7 +1,7 @@
 import asyncio
 import requests
-from datetime import datetime
-from sqlalchemy import select
+from datetime import datetime, timedelta
+from sqlalchemy import select, func
 from src.infrastructure.database import SessionLocal
 from src.infrastructure.models import ConfiguracionSistema, RouterModel, ClienteModel, LogCronjobModel
 from src.infrastructure.mikrotik_service import MikroTikService
@@ -119,6 +119,27 @@ async def tarea_sincronizar_clientes():
 # ==========================================
 # 3. TAREA DE FACTURACIÓN Y CORTES
 # ==========================================
+
+# FACTURACION_ISP_V2_CUT_CRON_RECOVERY
+async def _corte_automatico_ejecutado_hoy(db) -> bool:
+    inicio = datetime.combine(
+        datetime.now().date(),
+        datetime.min.time(),
+    )
+    fin = inicio + timedelta(days=1)
+
+    stmt = select(func.count(LogCronjobModel.id)).where(
+        LogCronjobModel.origen == "CortesAutomaticos",
+        LogCronjobModel.fecha >= inicio,
+        LogCronjobModel.fecha < fin,
+    )
+    cantidad = (
+        await db.execute(stmt)
+    ).scalar_one()
+
+    return cantidad > 0
+
+
 async def tarea_cron_unificada():
     # Extrae la hora actual en formato de 24 horas (ej: "03", "06", "09")
     hora_actual = datetime.now().strftime("%H")
@@ -167,13 +188,25 @@ async def tarea_cron_unificada():
             # C. MOTOR DE CORTES AUTOMÁTICOS (Fecha límite superada)
             # ------------------------------------------------------
             if config.activar_corte_automatico:
-                if hora_actual == hora_corte:
-                    resultado_corte = await billing_service.procesar_cortes_automaticos()
-                    db.add(LogCronjobModel(
-                        nivel="INFO", 
-                        origen="Cortes", 
-                        mensaje=f"Cortes del día procesados: {resultado_corte}"
-                    ))
+                hora_programada = int(hora_corte)
+                hora_servidor = int(hora_actual)
+                if (
+                    hora_servidor >= hora_programada
+                    and not await _corte_automatico_ejecutado_hoy(db)
+                ):
+                    resultado_corte = (
+                        await billing_service.procesar_cortes_automaticos()
+                    )
+                    db.add(
+                        LogCronjobModel(
+                            nivel="INFO",
+                            origen="CortesAutomaticos",
+                            mensaje=(
+                                "Cortes del día procesados: "
+                                f"{resultado_corte}"
+                            ),
+                        )
+                    )
             
             await db.commit()
             
