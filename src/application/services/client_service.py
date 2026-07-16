@@ -234,6 +234,18 @@ class ClientService:
         elif cliente.ip_asignada:
             ip_para_mikrotik = cliente.ip_asignada
 
+
+        # FACTURACION_ISP_V2_IP_PPPOE_BACKEND_FIX
+        if ip_para_mikrotik is not None:
+            ip_para_mikrotik = str(ip_para_mikrotik).strip()
+
+            if ip_para_mikrotik in {"", "0.0.0.0", "None", "null"}:
+                ip_para_mikrotik = None
+                cliente.ip_asignada = None
+
+        if ip_para_mikrotik:
+            cliente.ip_asignada = ip_para_mikrotik
+
         # Credenciales PPPoE
         if datos_finales.user_pppoe: cliente.user_pppoe = datos_finales.user_pppoe
         if datos_finales.pass_pppoe: cliente.pass_pppoe = datos_finales.pass_pppoe
@@ -308,6 +320,26 @@ class ClientService:
 
         # Compatibilidad temporal con el motor anterior.
         cliente.proxima_factura = fechas_servicio.proxima_facturacion
+
+
+        tipo_seguridad_router = None
+
+        if cliente_rel.router:
+            tipo_seguridad_router = getattr(
+                cliente_rel.router.tipo_seguridad,
+                "value",
+                cliente_rel.router.tipo_seguridad,
+            )
+
+        if (
+            str(tipo_seguridad_router).lower() == "pppoe"
+            and not ip_para_mikrotik
+        ):
+            raise ValueError(
+                "Debes seleccionar una IP libre antes de activar "
+                "un cliente PPPoE. No se creará el usuario PPPoE "
+                "sin remote-address."
+            )
 
         # F. ACTIVACIÓN EN MIKROTIK 🚀
         try:
