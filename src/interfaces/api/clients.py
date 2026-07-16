@@ -559,3 +559,129 @@ async def cambiar_onu_cliente(cliente_id: int, req: CambioONURequest, db: AsyncS
         return {"status": "success", "message": mensaje}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# FACTURACION_ISP_V2_RESUMEN_COMERCIAL_ENDPOINT
+@router.get("/{cliente_id}/resumen-comercial")
+async def obtener_resumen_comercial_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Resumen comercial para el detalle del cliente.
+
+    Complementa /clientes/{id} con servicio vigente, factura actual,
+    fechas de corte y deuda.
+    """
+    from datetime import date, datetime
+    from decimal import Decimal
+    from sqlalchemy import text
+
+    def serializar(valor):
+        if isinstance(valor, (date, datetime)):
+            return valor.isoformat()
+        if isinstance(valor, Decimal):
+            return float(valor)
+        return valor
+
+    def fila_a_dict(fila):
+        if not fila:
+            return None
+        return {
+            key: serializar(value)
+            for key, value in dict(fila._mapping).items()
+        }
+
+    servicio_sql = text("""
+        SELECT
+            s.id,
+            s.cliente_id,
+            s.plan_id,
+            s.plantilla_id,
+            s.estado,
+            s.tipo_facturacion,
+            s.ciclo_facturacion,
+            s.fecha_instalacion,
+            s.fecha_activacion,
+            s.fecha_inicio_servicio,
+            s.fecha_fin_periodo_gratis,
+            s.fecha_inicio_cobro,
+            s.proxima_facturacion,
+            s.dia_vencimiento,
+            s.dias_tolerancia,
+            s.meses_gratis,
+            s.politica_prorrateo,
+            p.nombre AS plan_nombre,
+            p.precio AS plan_precio,
+            pf.nombre AS plantilla_nombre,
+            pf.dia_pago,
+            pf.dias_antes_emision,
+            pf.dias_tolerancia AS plantilla_dias_tolerancia,
+            pf.impuesto AS plantilla_impuesto
+        FROM servicios s
+        LEFT JOIN planes p ON p.id = s.plan_id
+        LEFT JOIN plantillas_facturacion pf ON pf.id = s.plantilla_id
+        WHERE s.cliente_id = :cliente_id
+        ORDER BY
+            CASE
+                WHEN s.estado = 'activo' THEN 0
+                WHEN s.estado = 'suspendido' THEN 1
+                ELSE 2
+            END,
+            s.id DESC
+        LIMIT 1
+    """)
+
+    factura_sql = text("""
+        SELECT
+            f.id,
+            f.cliente_id,
+            f.servicio_id,
+            f.periodo_desde,
+            f.periodo_hasta,
+            f.dias_facturados,
+            f.dias_periodo,
+            f.total,
+            f.saldo_pendiente,
+            f.estado,
+            f.es_prorrateada,
+            f.tipo_facturacion_snapshot,
+            f.ciclo_facturacion_snapshot,
+            f.mes_correspondiente,
+            f.fecha_emision,
+            f.fecha_vencimiento,
+            f.fecha_limite_corte
+        FROM facturas f
+        WHERE f.cliente_id = :cliente_id
+        ORDER BY
+            CASE
+                WHEN f.estado IN ('pendiente', 'vencida') THEN 0
+                ELSE 1
+            END,
+            CASE WHEN f.fecha_vencimiento IS NULL THEN 1 ELSE 0 END,
+            f.fecha_vencimiento ASC,
+            f.id DESC
+        LIMIT 1
+    """)
+
+    resumen_sql = text("""
+        SELECT
+            COALESCE(COUNT(f.id), 0) AS facturas_abiertas,
+            COALESCE(SUM(f.saldo_pendiente), 0) AS saldo_pendiente_total,
+            MIN(f.fecha_vencimiento) AS proximo_vencimiento,
+            MIN(f.fecha_limite_corte) AS proximo_corte
+        FROM facturas f
+        WHERE f.cliente_id = :cliente_id
+          AND f.estado IN ('pendiente', 'vencida')
+          AND f.saldo_pendiente > 0
+    """)
+
+    servicio = (await db.execute(servicio_sql, {"cliente_id": cliente_id})).first()
+    factura = (await db.execute(factura_sql, {"cliente_id": cliente_id})).first()
+    resumen = (await db.execute(resumen_sql, {"cliente_id": cliente_id})).first()
+
+    return {
+        "cliente_id": cliente_id,
+        "servicio_actual": fila_a_dict(servicio),
+        "factura_actual": fila_a_dict(factura),
+        "resumen_deuda": fila_a_dict(resumen),
+    }
