@@ -66,25 +66,47 @@ function iniciarMotor() {
             process.exit(1); 
         });
 
-        // 🔥 2. NUEVO: El Latido (Heartbeat) contra Desconexiones Silenciosas
-        // Cada 5 minutos (300,000 milisegundos) verificamos el estado real de la conexión
-        setInterval(async () => {
+        // 🔥 2. Heartbeat tolerante contra estados temporales de WhatsApp
+        // WhatsApp Web a veces devuelve null aunque siga conectado.
+        // Por eso NO reiniciamos en el primer fallo.
+        if (global.fdeznetHeartbeatTimer) {
+            clearInterval(global.fdeznetHeartbeatTimer);
+        }
+
+        let heartbeatFails = 0;
+
+        global.fdeznetHeartbeatTimer = setInterval(async () => {
             try {
-                // Le pedimos el estado directamente a la página web interna de WhatsApp
                 const state = await client.getState();
-                
-                // Si el estado no es CONNECTED, el socket está muerto
-                if (state !== 'CONNECTED') {
-                    console.error(`⚠️ Alerta: WhatsApp reporta estado anómalo (${state}). Forzando reinicio limpio...`);
+
+                if (state === 'CONNECTED') {
+                    heartbeatFails = 0;
+                    return;
+                }
+
+                if (state === null || state === undefined) {
+                    console.warn(`⚠️ Heartbeat temporal: WhatsApp devolvió ${state}. No se reinicia ni se borra sesión.`);
+                    return;
+                }
+
+                heartbeatFails += 1;
+                console.warn(`⚠️ Heartbeat WhatsApp estado=${state}. Fallo ${heartbeatFails}/3.`);
+
+                if (heartbeatFails >= 3) {
+                    console.error('☠️ WhatsApp no volvió a CONNECTED después de 3 intentos. Delegando reinicio a Systemd...');
                     process.exit(1);
                 }
             } catch (error) {
-                // Si getState() falla por un timeout, significa que la pestaña se congeló totalmente
-                console.error('☠️ FATAL: Falló el ping a WhatsApp (Socket colgado/congelado). Reiniciando...', error.message);
-                process.exit(1);
+                heartbeatFails += 1;
+                console.error(`⚠️ Falló ping a WhatsApp. Fallo ${heartbeatFails}/3:`, error.message);
+
+                if (heartbeatFails >= 3) {
+                    console.error('☠️ Heartbeat falló 3 veces seguidas. Reiniciando proceso...');
+                    process.exit(1);
+                }
             }
         }, 300000); 
-    });
+});
 
     client.on('auth_failure', async (msg) => {
         console.error('❌ FALLO DE AUTENTICACIÓN:', msg);
