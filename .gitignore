@@ -62,3 +62,17 @@ __pycache__/
 
 # Logs
 *.log
+
+# Python
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log

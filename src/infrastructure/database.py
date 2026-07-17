@@ -22,7 +22,7 @@ DATABASE_URL = f"mysql+asyncmy://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB
 engine = create_async_engine(
     DATABASE_URL,
     echo=(ENVIRONMENT == "development"), 
-    pool_pre_ping=True # Vital para que no se corte la conexión inactiva
+    pool_pre_ping=False # Vital para que no se corte la conexión inactiva
 )
 
 # 5. Fábrica de Sesiones
