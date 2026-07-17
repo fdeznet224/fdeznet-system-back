@@ -621,16 +621,3 @@ class BillingService:
             query = query.where(ClienteModel.router_id.in_(ids_permitidos))
         query = query.order_by(FacturaModel.id.desc()).limit(200)
         return (await self.db.execute(query)).scalars().all()
-
-# FACTURACION_ISP_V2_DYNAMIC_PATCH
-# Sobrescribe en tiempo de importación los métodos críticos con la versión ISP v2:
-# - ciclos dinámicos por plantilla
-# - prepago/postpago
-# - corte automático con confirmación MikroTik
-# - eventos WhatsApp definidos con fallback a nombres antiguos
-try:
-    from src.application.services.billing_service_v2_patch import aplicar_facturacion_isp_v2
-    aplicar_facturacion_isp_v2(BillingService)
-except Exception as exc:
-    print(f"⚠️ No se pudo aplicar FACTURACION_ISP_V2_DYNAMIC_PATCH: {exc}")
-# /FACTURACION_ISP_V2_DYNAMIC_PATCH
