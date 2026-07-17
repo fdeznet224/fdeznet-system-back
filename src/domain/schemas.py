@@ -160,8 +160,16 @@ class OLTBase(BaseModel):
     modelo: Optional[str] = None
     router_id: Optional[int] = None
 
+    # VSOL API JSON / Web API
+    tipo_integracion: Optional[str] = "snmp"  # snmp | vsol_api | auto
+    api_enabled: Optional[bool] = False
+    api_protocol: Optional[str] = "https"
+    api_port: Optional[int] = 443
+    api_user: Optional[str] = None
+    api_verify_ssl: Optional[bool] = False
+
 class OLTCreate(OLTBase):
-    pass
+    api_password: Optional[str] = None
 
 class OLTUpdate(BaseModel):
     nombre: Optional[str] = None
@@ -171,6 +179,15 @@ class OLTUpdate(BaseModel):
     modelo: Optional[str] = None
     router_id: Optional[int] = None
     is_active: Optional[bool] = None
+
+    # VSOL API JSON / Web API
+    tipo_integracion: Optional[str] = None
+    api_enabled: Optional[bool] = None
+    api_protocol: Optional[str] = None
+    api_port: Optional[int] = None
+    api_user: Optional[str] = None
+    api_password: Optional[str] = None
+    api_verify_ssl: Optional[bool] = None
 
 class OLTResponse(OLTBase):
     id: int

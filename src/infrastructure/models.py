@@ -170,6 +170,15 @@ class OLTModel(Base):
     comunidad = Column(String(50), default="public")
     tecnologia = Column(String(20), nullable=False)     # "GPON" o "EPON"
     modelo = Column(String(50))                         # "V1600GS", "V1601E02-DP", "HIOSO"
+
+    # VSOL API JSON / Web API
+    tipo_integracion = Column(String(20), default="snmp")  # snmp | vsol_api | auto
+    api_enabled = Column(Boolean, default=False)
+    api_protocol = Column(String(10), default="https")
+    api_port = Column(Integer, default=443)
+    api_user = Column(String(100), nullable=True)
+    api_password = Column(String(255), nullable=True)
+    api_verify_ssl = Column(Boolean, default=False)
     
     router_id = Column(Integer, ForeignKey("routers.id"), nullable=True) # A qué MikroTik está conectada
     is_active = Column(Boolean, default=True)
