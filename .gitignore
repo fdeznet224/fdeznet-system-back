@@ -48,3 +48,17 @@ __pycache__/
 
 # Respaldos locales
 backups/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
