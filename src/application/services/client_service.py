@@ -549,18 +549,15 @@ class ClientService:
     # ==========================================
     async def eliminar_cliente(self, cliente_id: int):
         """
-        Baja lógica segura del cliente.
+        Eliminación física del cliente.
 
-        No se eliminan facturas ni pagos para no romper historial financiero.
-        Se libera ONU, se intenta eliminar PPPoE de MikroTik y se marca el
-        cliente/servicio como eliminado.
+        Para baja comercial o suspensión se debe usar Cancelar servicio.
+        Esta acción elimina el registro del cliente de la plataforma y limpia
+        primero las tablas relacionadas para evitar errores de FK/cliente_id.
         """
         cliente = await self.db.get(ClienteModel, cliente_id)
         if not cliente:
             raise ValueError("Cliente no encontrado")
-
-        if cliente.estado == "eliminado":
-            return "Cliente ya estaba eliminado."
 
         # 1. Liberar ONU del inventario
         if cliente.onu_id:
@@ -585,29 +582,38 @@ class ClientService:
             except Exception as e:
                 print(f"⚠️ No se pudo eliminar PPPoE en MikroTik: {e}")
 
-        # 3. Marcar servicios como eliminados, sin romper cliente_id
+        # 3. Limpiar relaciones antes de borrar cliente
+        # Orden importante:
+        # pagos -> facturas -> servicios -> mensajes -> pagos_autovalidados -> cliente
         await self.db.execute(
-            update(ServicioModel)
-            .where(ServicioModel.cliente_id == cliente_id)
-            .values(
-                estado="eliminado",
-                updated_at=datetime.now(),
-            )
+            text("DELETE FROM pagos WHERE cliente_id = :cliente_id"),
+            {"cliente_id": cliente_id},
         )
 
-        # 4. Baja lógica del cliente
-        cliente.estado = "eliminado"
-        cliente.is_online = False
-        cliente.onu_id = None
-        cliente.ip_asignada = None
-        cliente.mac_address = None
-        cliente.user_pppoe = None
-        cliente.pass_pppoe = None
-        cliente.ultimo_cambio_estado = datetime.now()
+        await self.db.execute(
+            text("DELETE FROM facturas WHERE cliente_id = :cliente_id"),
+            {"cliente_id": cliente_id},
+        )
 
+        await self.db.execute(
+            text("DELETE FROM servicios WHERE cliente_id = :cliente_id"),
+            {"cliente_id": cliente_id},
+        )
+
+        await self.db.execute(
+            text("DELETE FROM mensajes_chat WHERE cliente_id = :cliente_id"),
+            {"cliente_id": cliente_id},
+        )
+
+        await self.db.execute(
+            text("DELETE FROM pagos_autovalidados WHERE cliente_id = :cliente_id"),
+            {"cliente_id": cliente_id},
+        )
+
+        await self.db.delete(cliente)
         await self.db.commit()
 
-        return "Cliente eliminado de forma segura y equipo liberado correctamente"
+        return "Cliente eliminado definitivamente y equipo liberado correctamente"
 
     # ==========================================
     # 5. PROMESA D EPAGO
