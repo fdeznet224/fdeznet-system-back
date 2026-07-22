@@ -264,14 +264,22 @@ class BillingService:
                 joinedload(FacturaModel.servicio),
             )
             .where(
-                FacturaModel.estado.in_(["pendiente", "promesa", "vencida"]),
                 FacturaModel.saldo_pendiente > 0,
                 or_(
                     and_(
+                        FacturaModel.estado == "pendiente",
                         FacturaModel.fecha_limite_corte <= hoy,
                         FacturaModel.es_promesa_activa.is_(False),
                     ),
                     and_(
+                        FacturaModel.estado.in_(["pendiente", "promesa"]),
+                        FacturaModel.es_promesa_activa.is_(True),
+                        FacturaModel.fecha_promesa_pago < hoy,
+                    ),
+                    # Compatibilidad con datos viejos:
+                    # solo procesa vencidas si todavía tienen promesa activa.
+                    and_(
+                        FacturaModel.estado == "vencida",
                         FacturaModel.es_promesa_activa.is_(True),
                         FacturaModel.fecha_promesa_pago < hoy,
                     ),
