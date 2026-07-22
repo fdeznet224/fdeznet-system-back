@@ -14,7 +14,8 @@ from src.infrastructure.models import (
     FacturaModel, 
     ClienteModel, 
     PagoModel, 
-    UsuarioModel
+    UsuarioModel,
+    ServicioModel,
 )
 
 # Servicios
@@ -36,6 +37,15 @@ class PromesaPagoRequest(BaseModel):
     factura_id: int
     nueva_fecha: date
     notas: Optional[str] = None
+
+
+class FacturaManualRequest(BaseModel):
+    cliente_id: int
+    concepto: str
+    monto: float
+    descripcion: Optional[str] = None
+    fecha_vencimiento: Optional[date] = None
+    afecta_corte: bool = False
 
 
 # ==========================================
@@ -146,6 +156,11 @@ async def get_listado_completo(
             "id": f.id,
             "estado": f.estado,
             "saldo_pendiente": f.saldo_pendiente,
+            "tipo_factura": getattr(f, "tipo_factura", "mensual"),
+            "concepto": getattr(f, "concepto", None),
+            "descripcion": getattr(f, "descripcion", None),
+            "afecta_corte": getattr(f, "afecta_corte", True),
+            "creada_manual": getattr(f, "creada_manual", False),
             "total": f.total,
             "fecha_emision": f.fecha_emision,
             "fecha_vencimiento": f.fecha_vencimiento,
@@ -225,6 +240,102 @@ async def registrar_cobro(
 
 
 # ==========================================
+# 3.5 FACTURA MANUAL / CARGO ADICIONAL
+# ==========================================
+@router.post("/factura-manual")
+async def crear_factura_manual(
+    data: FacturaManualRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    cliente = await db.get(ClienteModel, data.cliente_id)
+    if not cliente:
+        raise HTTPException(404, "Cliente no encontrado")
+
+    if cliente.estado == "eliminado":
+        raise HTTPException(400, "No se puede crear factura a un cliente eliminado")
+
+    if current_user.rol != "admin":
+        allowed_router_ids = [r.id for r in current_user.routers_asignados]
+        if cliente.router_id not in allowed_router_ids:
+            raise HTTPException(403, "No tienes permiso para facturar este cliente")
+
+    monto = round(float(data.monto or 0), 2)
+    if monto <= 0:
+        raise HTTPException(400, "El monto debe ser mayor a cero")
+
+    concepto = data.concepto.strip()
+    if not concepto:
+        raise HTTPException(400, "El concepto es obligatorio")
+
+    fecha_emision = date.today()
+    fecha_vencimiento = data.fecha_vencimiento or fecha_emision
+
+    res_servicio = await db.execute(
+        select(ServicioModel)
+        .where(ServicioModel.cliente_id == cliente.id)
+        .order_by(ServicioModel.id.desc())
+    )
+    servicio = res_servicio.scalars().first()
+
+    factura = FacturaModel(
+        cliente_id=cliente.id,
+        servicio_id=servicio.id if servicio else None,
+
+        plan_snapshot="Cargo manual",
+        detalles=data.descripcion or concepto,
+
+        monto=monto,
+        impuesto=0.0,
+        total=monto,
+        saldo_pendiente=monto,
+
+        fecha_emision=fecha_emision,
+        fecha_vencimiento=fecha_vencimiento,
+        fecha_limite_corte=fecha_vencimiento if data.afecta_corte else None,
+
+        mes_correspondiente=f"Cargo manual - {concepto}",
+        estado="pendiente",
+
+        periodo_desde=fecha_emision,
+        periodo_hasta=fecha_emision,
+        dias_facturados=1,
+        dias_periodo=1,
+        precio_mensual_snapshot=monto,
+        precio_diario=monto,
+        es_prorrateada=False,
+
+        tipo_factura="manual",
+        concepto=concepto,
+        descripcion=data.descripcion,
+        afecta_corte=data.afecta_corte,
+        creada_manual=True,
+    )
+
+    db.add(factura)
+    await db.commit()
+    await db.refresh(factura)
+
+    return {
+        "status": "ok",
+        "mensaje": "Factura manual creada correctamente",
+        "factura": {
+            "id": factura.id,
+            "cliente_id": cliente.id,
+            "cliente": cliente.nombre,
+            "tipo_factura": factura.tipo_factura,
+            "concepto": factura.concepto,
+            "descripcion": factura.descripcion,
+            "total": factura.total,
+            "saldo_pendiente": factura.saldo_pendiente,
+            "estado": factura.estado,
+            "afecta_corte": factura.afecta_corte,
+            "fecha_emision": factura.fecha_emision,
+            "fecha_vencimiento": factura.fecha_vencimiento,
+        },
+    }
+
+
 # 4. PROMESA DE PAGO
 # ==========================================
 @router.post("/promesa-pago")
@@ -246,7 +357,13 @@ async def registrar_promesa(
 
     factura.fecha_promesa_pago = data.nueva_fecha
     factura.es_promesa_activa = True
-    factura.estado = "promesa"
+
+    # La promesa no cambia el estado contable a "promesa".
+    # La factura sigue cobrable como pendiente o vencida.
+    if factura.fecha_vencimiento and factura.fecha_vencimiento < date.today():
+        factura.estado = "vencida"
+    elif factura.estado not in ["pendiente", "vencida"]:
+        factura.estado = "pendiente"
 
     reactivado = False
 
@@ -260,9 +377,7 @@ async def registrar_promesa(
                 factura,
                 "activo",
             )
-            # La factura debe seguir como promesa, no como activo/pagada.
-            factura.estado = "promesa"
-
+        
     await db.commit()
 
     return {

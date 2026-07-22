@@ -87,7 +87,7 @@ class DashboardService:
             select(FacturaModel.cliente_id)
             .join(ClienteModel, ClienteModel.id == FacturaModel.cliente_id)
             .where(
-                FacturaModel.estado.in_(["pendiente", "promesa", "vencida"]),
+                FacturaModel.estado.in_(["pendiente", "vencida"]),
                 FacturaModel.saldo_pendiente > 0,
                 ClienteModel.estado != "eliminado",
             )

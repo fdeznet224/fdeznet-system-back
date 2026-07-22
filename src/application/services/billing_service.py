@@ -257,6 +257,7 @@ class BillingService:
 
         stmt = (
             select(FacturaModel)
+            .join(ClienteModel, ClienteModel.id == FacturaModel.cliente_id)
             .options(
                 joinedload(FacturaModel.cliente).joinedload(
                     ClienteModel.router
@@ -264,22 +265,16 @@ class BillingService:
                 joinedload(FacturaModel.servicio),
             )
             .where(
+                FacturaModel.estado.in_(["pendiente", "vencida"]),
                 FacturaModel.saldo_pendiente > 0,
+                FacturaModel.afecta_corte.is_(True),
+                ClienteModel.estado != "eliminado",
                 or_(
                     and_(
-                        FacturaModel.estado == "pendiente",
                         FacturaModel.fecha_limite_corte <= hoy,
                         FacturaModel.es_promesa_activa.is_(False),
                     ),
                     and_(
-                        FacturaModel.estado.in_(["pendiente", "promesa"]),
-                        FacturaModel.es_promesa_activa.is_(True),
-                        FacturaModel.fecha_promesa_pago < hoy,
-                    ),
-                    # Compatibilidad con datos viejos:
-                    # solo procesa vencidas si todavía tienen promesa activa.
-                    and_(
-                        FacturaModel.estado == "vencida",
                         FacturaModel.es_promesa_activa.is_(True),
                         FacturaModel.fecha_promesa_pago < hoy,
                     ),

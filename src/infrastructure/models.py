@@ -306,6 +306,13 @@ class FacturaModel(Base):
     
     fecha_promesa_pago = Column(Date, nullable=True)
     es_promesa_activa = Column(Boolean, default=False)
+
+    # Clasificación comercial de la factura
+    tipo_factura = Column(String(30), default="mensual", server_default="mensual", nullable=False)
+    concepto = Column(String(150), nullable=True)
+    descripcion = Column(String(500), nullable=True)
+    afecta_corte = Column(Boolean, default=True, server_default="1", nullable=False)
+    creada_manual = Column(Boolean, default=False, server_default="0", nullable=False)
     
     cliente = relationship("ClienteModel", back_populates="facturas")
     servicio = relationship("ServicioModel",back_populates="facturas",)

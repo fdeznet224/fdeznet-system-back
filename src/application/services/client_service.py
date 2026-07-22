@@ -627,7 +627,7 @@ class ClientService:
         """
         stmt_f = select(FacturaModel).where(
             FacturaModel.cliente_id == cliente_id,
-            FacturaModel.estado.in_(["pendiente", "vencida", "promesa"]),
+            FacturaModel.estado.in_(["pendiente", "vencida"]),
             FacturaModel.saldo_pendiente > 0,
         ).order_by(FacturaModel.fecha_vencimiento.asc())
 
@@ -643,7 +643,13 @@ class ClientService:
 
         factura.es_promesa_activa = True
         factura.fecha_promesa_pago = fecha_promesa
-        factura.estado = "promesa"
+
+        # La promesa no cambia el estado contable a "promesa".
+        # La factura sigue siendo pendiente o vencida.
+        if factura.fecha_vencimiento and factura.fecha_vencimiento < date.today():
+            factura.estado = "vencida"
+        elif factura.estado not in ["pendiente", "vencida"]:
+            factura.estado = "pendiente"
 
         reactivado = False
 
