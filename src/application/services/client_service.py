@@ -229,7 +229,24 @@ class ClientService:
         # Gestión de IP
         ip_para_mikrotik = None
         if datos_finales.ip_asignada and datos_finales.ip_asignada != '0.0.0.0':
-            cliente.ip_asignada = datos_finales.ip_asignada
+            ip_limpia = str(datos_finales.ip_asignada).strip()
+
+            # Seguridad IPAM:
+            # No permitir que una IP asignada a otro cliente se use de nuevo.
+            stmt_ip = select(ClienteModel).where(
+                ClienteModel.ip_asignada == ip_limpia,
+                ClienteModel.id != cliente.id,
+                ClienteModel.estado != "eliminado",
+            )
+            res_ip = await self.db.execute(stmt_ip)
+            ocupante = res_ip.scalar_one_or_none()
+            if ocupante:
+                raise ValueError(
+                    f"La IP {ip_limpia} ya está asignada a otro cliente: "
+                    f"{ocupante.nombre} (ID {ocupante.id})"
+                )
+
+            cliente.ip_asignada = ip_limpia
             ip_para_mikrotik = cliente.ip_asignada
         elif cliente.ip_asignada:
             ip_para_mikrotik = cliente.ip_asignada
