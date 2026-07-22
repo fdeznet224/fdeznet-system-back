@@ -75,30 +75,53 @@ class DashboardService:
     # ==========================================
     async def obtener_metricas_red(self):
         """
-        Cruza información usando la columna is_online actualizada por el Cronjob.
-        ⚡ CARGA INSTANTÁNEA (Sin tocar MikroTik) ⚡
+        Métricas de red usando clientes.is_online.
+
+        Separa correctamente:
+        - clientes activos al día y online
+        - clientes activos al día pero offline
+        - clientes morosos online
+        - clientes morosos offline
         """
-        # 1. Quiénes deben dinero (Morosos)
-        stmt_morosos = select(FacturaModel.cliente_id).where(FacturaModel.estado == 'pendiente').distinct()
+        stmt_morosos = (
+            select(FacturaModel.cliente_id)
+            .join(ClienteModel, ClienteModel.id == FacturaModel.cliente_id)
+            .where(
+                FacturaModel.estado.in_(["pendiente", "promesa", "vencida"]),
+                FacturaModel.saldo_pendiente > 0,
+                ClienteModel.estado != "eliminado",
+            )
+            .distinct()
+        )
         ids_morosos = set((await self.db.execute(stmt_morosos)).scalars().all())
 
-        # 2. Quiénes deberían tener servicio (Activos en BD) + Su estado Online
-        stmt_clientes = select(ClienteModel.id, ClienteModel.is_online).where(ClienteModel.estado == 'activo')
+        stmt_clientes = (
+            select(ClienteModel.id, ClienteModel.is_online)
+            .where(ClienteModel.estado == "activo")
+        )
         clientes_activos = (await self.db.execute(stmt_clientes)).all()
 
         navegando_ok = 0
         morosos_online = 0
         falla_tecnica = 0
+        morosos_offline = 0
 
         for c_id, is_online in clientes_activos:
             es_moroso = c_id in ids_morosos
 
-            if is_online and not es_moroso:
-                navegando_ok += 1
-            elif is_online and es_moroso:
-                morosos_online += 1 # ⚠️ Alerta: Debe dinero pero sigue conectado
-            elif not is_online:
-                falla_tecnica += 1  # ⚠️ Alerta: Está al día pero no conecta (¿Cable roto/Sin luz?)
+            if es_moroso:
+                if is_online:
+                    morosos_online += 1
+                else:
+                    morosos_offline += 1
+            else:
+                if is_online:
+                    navegando_ok += 1
+                else:
+                    falla_tecnica += 1
+
+        total_online = navegando_ok + morosos_online
+        total_offline = falla_tecnica + morosos_offline
 
         return {
             "metricas": {
@@ -106,7 +129,13 @@ class DashboardService:
                 "navegando_ok": navegando_ok,
                 "falla_tecnica": falla_tecnica,
                 "morosos_online": morosos_online,
-                "morosos_offline": len(ids_morosos) - morosos_online
+                "morosos_offline": morosos_offline,
+
+                # Alias para compatibilidad con frontend/dashboard
+                "online": total_online,
+                "offline": total_offline,
+                "total_online": total_online,
+                "total_offline": total_offline,
             }
         }
 

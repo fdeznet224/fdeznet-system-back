@@ -548,100 +548,140 @@ class ClientService:
     # 5. ELIMINAR CLIENTE
     # ==========================================
     async def eliminar_cliente(self, cliente_id: int):
+        """
+        Baja lógica segura del cliente.
+
+        No se eliminan facturas ni pagos para no romper historial financiero.
+        Se libera ONU, se intenta eliminar PPPoE de MikroTik y se marca el
+        cliente/servicio como eliminado.
+        """
         cliente = await self.db.get(ClienteModel, cliente_id)
-        if not cliente: 
+        if not cliente:
             raise ValueError("Cliente no encontrado")
-        
-        # 🔥 PASO 1: LIBERAR LA ONU EN EL INVENTARIO ANTES DE BORRAR AL CLIENTE
+
+        if cliente.estado == "eliminado":
+            return "Cliente ya estaba eliminado."
+
+        # 1. Liberar ONU del inventario
         if cliente.onu_id:
             onu = await self.db.get(InventarioONUModel, cliente.onu_id)
             if onu:
-                onu.estado = 'DISPONIBLE'
+                onu.estado = "DISPONIBLE"
                 onu.tecnico_id = None
                 print(f"📦 ONU {onu.identificador} regresada a DISPONIBLE.")
 
-        # PASO 2: ELIMINAR DEL MIKROTIK
+        # 2. Eliminar PPPoE del MikroTik si existe
         if cliente.router_id and cliente.user_pppoe:
             try:
                 router = await self.db.get(RouterModel, cliente.router_id)
-                mk = MikroTikService(router.ip_vpn, router.user_api, router.pass_api, router.port_api)
-                mk.eliminar_pppoe_user(cliente.user_pppoe)
-            except: 
-                pass
+                if router:
+                    mk = MikroTikService(
+                        router.ip_vpn,
+                        router.user_api,
+                        router.pass_api,
+                        router.port_api,
+                    )
+                    mk.eliminar_pppoe_user(cliente.user_pppoe)
+            except Exception as e:
+                print(f"⚠️ No se pudo eliminar PPPoE en MikroTik: {e}")
 
-        # PASO 3: LIMPIEZA DE BASE DE DATOS (Cascada)
-        await self.db.execute(delete(PagoModel).where(PagoModel.cliente_id == cliente_id))
-        await self.db.execute(delete(FacturaModel).where(FacturaModel.cliente_id == cliente_id))
-        
-        # PASO 4: ELIMINAR AL CLIENTE
-        await self.db.delete(cliente)
-        
-        # Guardamos todos los cambios (Liberación de ONU y Borrados) de un solo golpe
+        # 3. Marcar servicios como eliminados, sin romper cliente_id
+        await self.db.execute(
+            update(ServicioModel)
+            .where(ServicioModel.cliente_id == cliente_id)
+            .values(
+                estado="eliminado",
+                updated_at=datetime.now(),
+            )
+        )
+
+        # 4. Baja lógica del cliente
+        cliente.estado = "eliminado"
+        cliente.is_online = False
+        cliente.onu_id = None
+        cliente.ip_asignada = None
+        cliente.mac_address = None
+        cliente.user_pppoe = None
+        cliente.pass_pppoe = None
+        cliente.ultimo_cambio_estado = datetime.now()
+
         await self.db.commit()
-        
-        return "Cliente eliminado y equipo liberado correctamente"
+
+        return "Cliente eliminado de forma segura y equipo liberado correctamente"
 
     # ==========================================
     # 5. PROMESA D EPAGO
     # ==========================================
     async def registrar_promesa_pago(self, cliente_id: int, fecha_promesa: date):
         """
-        Registra una promesa de pago y reactiva el servicio si es necesario.
+        Registra una promesa de pago sobre la deuda más antigua del cliente.
+
+        Funciona para facturas pendientes, vencidas o ya marcadas como promesa.
+        Si el cliente estaba suspendido, intenta reactivarlo y deja el servicio activo.
         """
-        # 1. Buscar factura pendiente más antigua
         stmt_f = select(FacturaModel).where(
             FacturaModel.cliente_id == cliente_id,
-            FacturaModel.estado == 'pendiente'
+            FacturaModel.estado.in_(["pendiente", "vencida", "promesa"]),
+            FacturaModel.saldo_pendiente > 0,
         ).order_by(FacturaModel.fecha_vencimiento.asc())
-        
+
         res_f = await self.db.execute(stmt_f)
         factura = res_f.scalars().first()
-        
-        if not factura:
-            raise ValueError("El cliente no tiene facturas pendientes para aplicar promesa.")
 
-        # 2. Aplicar promesa a la factura
+        if not factura:
+            raise ValueError("El cliente no tiene facturas con saldo pendiente para aplicar promesa.")
+
+        cliente = await self.db.get(ClienteModel, cliente_id)
+        if not cliente:
+            raise ValueError("Cliente no encontrado")
+
         factura.es_promesa_activa = True
         factura.fecha_promesa_pago = fecha_promesa
+        factura.estado = "promesa"
 
-        # 3. Reactivar cliente si está suspendido
-        cliente = await self.db.get(ClienteModel, cliente_id)
         reactivado = False
-        
-        if cliente.estado == 'suspendido':
-            cliente.estado = 'activo'
-            # Usamos la lógica que ya tienes en BillingService
+
+        if cliente.estado == "suspendido":
             from src.application.services.billing_service import BillingService
             b_service = BillingService(self.db)
+
             reactivado = await b_service._reactivar_en_mikrotik(cliente)
 
+            if reactivado:
+                cliente.estado = "activo"
+                await self.db.execute(
+                    update(ServicioModel)
+                    .where(ServicioModel.cliente_id == cliente.id)
+                    .values(
+                        estado="activo",
+                        updated_at=datetime.now(),
+                    )
+                )
+
         await self.db.commit()
-        
-        # 👇 NOTIFICACIÓN DE PROMESA SINCRONIZADA 👇
+
         if cliente.telefono:
             try:
                 notificador = NotificationService(self.db)
-                # Formateamos la fecha elegida
                 fecha_promesa_str = fecha_promesa.strftime("%d/%m/%Y")
-                
-                # Pasamos exactamente las variables que lee la plantilla 8
+
                 await notificador.notificar(
-                    tipo_evento="promesa_pago", 
-                    cliente_id=cliente.id, 
+                    tipo_evento="promesa_pago",
+                    cliente_id=cliente.id,
                     variables_extra={
-                        "fecha_limite_promesa": fecha_promesa_str,              # 🔥 Ajustado para la plantilla
-                        "monto_promesa": f"${factura.saldo_pendiente:.2f}"     # 🔥 Añadido para la plantilla
-                    }
+                        "fecha_limite_promesa": fecha_promesa_str,
+                        "monto_promesa": f"${factura.saldo_pendiente:.2f}",
+                    },
                 )
             except Exception as e:
                 print(f"⚠️ Error notificación promesa: {e}")
-        
+
         msg = f"Promesa exitosa hasta el {fecha_promesa}."
         if reactivado:
             msg += " 📡 Servicio reactivado en MikroTik."
-            
+
         return msg
-    
+
 
 # ==========================================
     # 8. REACTIVAR SERVICIO CANCELADO

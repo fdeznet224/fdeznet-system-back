@@ -234,26 +234,34 @@ async def registrar_promesa(
     current_user = Depends(get_current_user)
 ):
     factura = await db.get(FacturaModel, data.factura_id)
-    if not factura: raise HTTPException(404, "Factura no encontrada")
-    
+    if not factura:
+        raise HTTPException(404, "Factura no encontrada")
+
     cliente = await db.get(ClienteModel, factura.cliente_id)
+    if not cliente:
+        raise HTTPException(404, "Cliente no encontrado")
+
+    if float(factura.saldo_pendiente or 0) <= 0:
+        raise HTTPException(400, "La factura no tiene saldo pendiente")
 
     factura.fecha_promesa_pago = data.nueva_fecha
     factura.es_promesa_activa = True
-    
+    factura.estado = "promesa"
+
     reactivado = False
-    # FACTURACION_ISP_V2_PROMISE_REACTIVATION
+
     if cliente.estado == "suspendido":
         service = BillingService(db)
-        reactivado = await service._reactivar_en_mikrotik(
-            cliente
-        )
+        reactivado = await service._reactivar_en_mikrotik(cliente)
+
         if reactivado:
             cliente.estado = "activo"
             await service._actualizar_estado_servicio_factura(
                 factura,
                 "activo",
             )
+            # La factura debe seguir como promesa, no como activo/pagada.
+            factura.estado = "promesa"
 
     await db.commit()
 

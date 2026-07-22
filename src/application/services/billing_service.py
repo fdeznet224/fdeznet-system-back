@@ -264,7 +264,8 @@ class BillingService:
                 joinedload(FacturaModel.servicio),
             )
             .where(
-                FacturaModel.estado == "pendiente",
+                FacturaModel.estado.in_(["pendiente", "promesa", "vencida"]),
+                FacturaModel.saldo_pendiente > 0,
                 or_(
                     and_(
                         FacturaModel.fecha_limite_corte <= hoy,
