@@ -46,8 +46,9 @@ apt-get install -y nodejs
 
 # 2. CONFIGURAR MYSQL
 echo -e "${GREEN}[2/9] Configurando Base de Datos MySQL...${NC}"
-DB_PASS="fdeznet224" 
+DB_PASS="${DB_PASS:-$(openssl rand -hex 24)}"
 SECRET_KEY=$(openssl rand -hex 32)
+WEBHOOK_SECRET=$(openssl rand -hex 32)
 
 systemctl start mysql
 systemctl enable mysql
@@ -103,8 +104,16 @@ cd $APP_DIR/backend
 cat <<EOT > .env
 ENVIRONMENT=production
 DATABASE_URL=mysql+asyncmy://admin_isp:$DB_PASS@127.0.0.1/fdeznet_db
+DB_USER=admin_isp
+DB_PASSWORD=$DB_PASS
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_NAME=fdeznet_db
 SECRET_KEY=$SECRET_KEY
-SERVER_IP=$SERVER_IP
+WEBHOOK_SECRET=$WEBHOOK_SECRET
+CORS_ALLOWED_ORIGINS=http://$SERVER_IP
+VPN_SERVER_IP=$SERVER_IP
+WHATSAPP_BASE_URL=http://127.0.0.1:3000
 EOT
 
 python3 -m venv venv
@@ -114,8 +123,8 @@ python3 -m venv venv
 # 🚀 GENERACIÓN AUTOMÁTICA DE TABLAS (Si usas Alembic o un script init)
 # Si ejecutas las tablas directo desde Python, descomenta la siguiente línea:
 # ./venv/bin/python -c "from src.infrastructure.database import Base, engine; import asyncio; from src.infrastructure.models import *; asyncio.run(engine.begin().then(lambda conn: conn.run_sync(Base.metadata.create_all)))"
-# O si usas migraciones de Alembic normales:
-# ./venv/bin/alembic upgrade head || true
+# Aplicar migraciones antes de iniciar el servicio.
+./venv/bin/alembic upgrade head
 
 cat <<EOF > /etc/systemd/system/fdeznet-api.service
 [Unit]
@@ -140,6 +149,13 @@ systemctl enable fdeznet-api && systemctl start fdeznet-api
 echo -e "${GREEN}[6/9] Instalando Bot de WhatsApp...${NC}"
 cd $APP_DIR/backend/bot_whatsapp
 npm install --unsafe-perm
+
+cat <<EOF > .env
+PORT=3000
+PUBLIC_URL=http://127.0.0.1:3000
+API_BACKEND_URL=http://127.0.0.1:8000
+WEBHOOK_SECRET=$WEBHOOK_SECRET
+EOF
 
 cat <<EOF > /etc/systemd/system/fdeznet-bot.service
 [Unit]

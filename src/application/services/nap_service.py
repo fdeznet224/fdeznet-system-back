@@ -1,8 +1,9 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from src.infrastructure.models import CajaNapModel, ClienteModel
+from src.infrastructure.models import CajaNapModel, ClienteModel, PuertoNapModel
 from src.domain.schemas import CajaNapCreate
 from sqlalchemy.orm import selectinload
+from src.application.services.ftth_service import FTTHService
 
 class NapService:
     def __init__(self, db: AsyncSession):
@@ -18,9 +19,14 @@ class NapService:
         
         respuesta = []
         for caja in cajas:
-            stmt_count = select(func.count(ClienteModel.id)).where(ClienteModel.caja_nap_id == caja.id)
-            usados_res = await self.db.execute(stmt_count)
-            usados = usados_res.scalar() or 0
+            await FTTHService(self.db).sincronizar_puertos_nap(caja.id)
+            stmt_count = select(
+                func.sum(PuertoNapModel.estado == "ocupado"),
+                func.sum(PuertoNapModel.estado == "libre"),
+            ).where(PuertoNapModel.caja_nap_id == caja.id)
+            usados, libres = (await self.db.execute(stmt_count)).one()
+            usados = int(usados or 0)
+            libres = int(libres or 0)
             
             # 🔥 Mapeo manual 100% a prueba de fallos
             caja_dict = {
@@ -31,10 +37,11 @@ class NapService:
                 "capacidad": caja.capacidad,
                 "zona_id": caja.zona_id,
                 "puertos_usados": usados,
-                "puertos_libres": caja.capacidad - usados
+                "puertos_libres": libres,
             }
             respuesta.append(caja_dict)
-            
+
+        await self.db.commit()
         return respuesta
 
     async def crear_nap(self, datos: CajaNapCreate):
@@ -44,9 +51,13 @@ class NapService:
             ubicacion=datos.ubicacion,
             coordenadas=datos.coordenadas,
             capacidad=datos.capacidad,
-            zona_id=datos.zona_id
+            zona_id=datos.zona_id,
+            olt_id=datos.olt_id,
+            puerto_olt=datos.puerto_olt,
         )
         self.db.add(nueva_caja)
+        await self.db.flush()
+        await FTTHService(self.db).sincronizar_puertos_nap(nueva_caja.id)
         await self.db.commit()
         await self.db.refresh(nueva_caja)
         

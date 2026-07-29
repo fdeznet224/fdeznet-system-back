@@ -27,9 +27,9 @@ def limpiar_string_para_usuario(texto: str) -> str:
     return texto
 
 # Esta función también la necesitas para tu Repositorio (si la usaste en el código anterior)
-def generar_password_pppoe(longitud=6) -> str:
+def generar_password_pppoe(longitud=12) -> str:
     """
-    Genera una contraseña simple si se necesita.
+    Genera una contraseña aleatoria para evitar claves compartidas.
     """
     import secrets
     import string

@@ -1,26 +1,29 @@
-from typing import List, Optional
-from datetime import date, datetime, timedelta
+from decimal import Decimal
+from typing import Optional
+from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func, desc
-from sqlalchemy.orm import joinedload
-from pydantic import BaseModel
 from sqlalchemy import select, and_, or_, func, desc
+from sqlalchemy.orm import joinedload, selectinload
+from pydantic import BaseModel, Field
 
 # Infraestructura
 from src.infrastructure.database import get_db
-from src.infrastructure.auth import get_current_user
+from src.infrastructure.auth import get_current_user, role_required
 from src.infrastructure.models import (
     FacturaModel, 
     ClienteModel, 
     PagoModel, 
     UsuarioModel,
     ServicioModel,
+    PoliticaCobranzaModel,
+    ZonaModel,
+    RouterModel,
 )
 
 # Servicios
 from src.application.services.billing_service import BillingService
-from src.application.services.notification_service import NotificationService
+from src.application.services.finance_service import FinanceService
 
 router = APIRouter(prefix="/finanzas", tags=["Módulo Financiero"])
 
@@ -30,8 +33,9 @@ router = APIRouter(prefix="/finanzas", tags=["Módulo Financiero"])
 class CobroFullRequest(BaseModel):
     factura_id: int
     metodo_pago: str  # efectivo, transferencia, etc.
-    monto_recibido: float
+    monto_recibido: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     referencia: Optional[str] = None
+    clave_idempotencia: Optional[str] = Field(None, max_length=100)
 
 class PromesaPagoRequest(BaseModel):
     factura_id: int
@@ -42,10 +46,32 @@ class PromesaPagoRequest(BaseModel):
 class FacturaManualRequest(BaseModel):
     cliente_id: int
     concepto: str
-    monto: float
+    monto: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     descripcion: Optional[str] = None
     fecha_vencimiento: Optional[date] = None
     afecta_corte: bool = False
+
+
+class MotivoRequest(BaseModel):
+    motivo: str = Field(min_length=5, max_length=500)
+
+
+class DescuentoRequest(MotivoRequest):
+    monto: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+
+
+class PoliticaCobranzaRequest(BaseModel):
+    nombre: str = Field(min_length=3, max_length=100)
+    tipo_cliente: str = Field(min_length=3, max_length=30)
+    dias_max_promesa: int = Field(ge=1, le=60)
+    max_promesas_activas: int = Field(ge=0, le=10)
+    max_incumplidas_90_dias: int = Field(ge=0, le=20)
+    permite_reconexion: bool = True
+    activa: bool = True
+
+
+class AsignarPoliticaRequest(BaseModel):
+    politica_id: int
 
 
 # ==========================================
@@ -77,7 +103,7 @@ async def get_listado_completo(
             return {"items": [], "resumen": {"pagadas_cant": 0, "pagadas_total": 0, "pendientes_cant": 0, "pendientes_total": 0}}
         query = query.where(ClienteModel.router_id.in_(allowed_router_ids))
 
-    # 🔥 LA MAGIA: Solución al "Mes Fantasma" y filtro de Caja
+    # 🔥 Solución al "Mes Fantasma" y filtro de pagos
     if start_date and end_date and not cliente_id and not busqueda:
         if tipo_fecha == "vencimiento":
             query = query.where(and_(FacturaModel.fecha_vencimiento >= start_date, FacturaModel.fecha_vencimiento <= end_date))
@@ -183,7 +209,10 @@ async def get_listado_completo(
 # ==========================================
 
 @router.post("/generar-masivo")
-async def generar_masivo(db: AsyncSession = Depends(get_db)):
+async def generar_masivo(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
     """MODO AUTOMÁTICO (CRONJOB)"""
     service = BillingService(db)
     reporte = await service.generar_emision_masiva() 
@@ -193,7 +222,7 @@ async def generar_masivo(db: AsyncSession = Depends(get_db)):
 async def generar_facturas_manual(
     dia_pago: int, 
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor"]))
 ):
     """MODO MANUAL (FORZADO)"""
     service = BillingService(db)
@@ -204,7 +233,10 @@ async def generar_facturas_manual(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/ejecutar-cortes-emergencia")
-async def forzar_cortes_ahora(db: AsyncSession = Depends(get_db)):
+async def forzar_cortes_ahora(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
     """Botón de pánico para ejecutar cortes sin esperar al Cron"""
     service = BillingService(db)
     try:
@@ -215,13 +247,13 @@ async def forzar_cortes_ahora(db: AsyncSession = Depends(get_db)):
 
 
 # ==========================================
-# 3. REGISTRAR COBRO (Caja)
+# 3. REGISTRAR COBRO (liquidación por período)
 # ==========================================
 @router.post("/cobrar")
 async def registrar_cobro(
     data: CobroFullRequest,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor", "cajero"]))
 ):
     service = BillingService(db)
     try:
@@ -230,13 +262,87 @@ async def registrar_cobro(
             usuario_operador=current_user,
             metodo_pago=data.metodo_pago,
             monto=data.monto_recibido,
-            referencia=data.referencia
+            referencia=data.referencia,
+            clave_idempotencia=data.clave_idempotencia,
         )
         return resultado
-    except Exception as e:
-        # Esto te dirá en el log si el error fue el PDF, el WhatsApp o la Base de Datos
-        print(f"❌ ERROR EN COBRO: {str(e)}") 
-        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/pagos/{pago_id}/anular")
+async def anular_pago(
+    pago_id: int,
+    data: MotivoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    try:
+        pago, factura, cliente = await FinanceService(db).anular_pago(
+            pago_id,
+            current_user.id,
+            data.motivo,
+        )
+        return {
+            "status": "ok",
+            "pago_id": pago.id,
+            "estado": pago.estado,
+            "factura_id": factura.id,
+            "saldo_restaurado": factura.saldo_pendiente,
+            "saldo_a_favor": cliente.saldo_a_favor,
+        }
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/facturas/{factura_id}/aplicar-saldo-favor")
+async def aplicar_saldo_favor(
+    factura_id: int,
+    data: DescuentoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    try:
+        resultado = await BillingService(db).registrar_pago_completo(
+            factura_id=factura_id,
+            usuario_operador=current_user,
+            metodo_pago="saldo_favor",
+            monto=data.monto,
+            referencia=f"Saldo a favor: {data.motivo}",
+        )
+        return resultado
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/facturas/{factura_id}/descuento")
+async def aplicar_descuento(
+    factura_id: int,
+    data: DescuentoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    try:
+        registro, factura = await FinanceService(db).aplicar_descuento(
+            factura_id,
+            data.monto,
+            data.motivo,
+            current_user.id,
+        )
+        return {
+            "status": "ok",
+            "descuento_id": registro.id,
+            "factura_id": factura.id,
+            "descuento_total": factura.descuento_total,
+            "saldo_pendiente": factura.saldo_pendiente,
+            "estado": factura.estado,
+        }
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ==========================================
@@ -246,7 +352,7 @@ async def registrar_cobro(
 async def crear_factura_manual(
     data: FacturaManualRequest,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor", "cajero"]))
 ):
     cliente = await db.get(ClienteModel, data.cliente_id)
     if not cliente:
@@ -260,9 +366,7 @@ async def crear_factura_manual(
         if cliente.router_id not in allowed_router_ids:
             raise HTTPException(403, "No tienes permiso para facturar este cliente")
 
-    monto = round(float(data.monto or 0), 2)
-    if monto <= 0:
-        raise HTTPException(400, "El monto debe ser mayor a cero")
+    monto = FinanceService.dinero(data.monto)
 
     concepto = data.concepto.strip()
     if not concepto:
@@ -286,7 +390,7 @@ async def crear_factura_manual(
         detalles=data.descripcion or concepto,
 
         monto=monto,
-        impuesto=0.0,
+        impuesto=Decimal("0.00"),
         total=monto,
         saldo_pendiente=monto,
 
@@ -342,60 +446,141 @@ async def crear_factura_manual(
 async def registrar_promesa(
     data: PromesaPagoRequest,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor", "cajero"]))
 ):
-    factura = await db.get(FacturaModel, data.factura_id)
-    if not factura:
-        raise HTTPException(404, "Factura no encontrada")
-
-    cliente = await db.get(ClienteModel, factura.cliente_id)
-    if not cliente:
-        raise HTTPException(404, "Cliente no encontrado")
-
-    if float(factura.saldo_pendiente or 0) <= 0:
-        raise HTTPException(400, "La factura no tiene saldo pendiente")
-
-    factura.fecha_promesa_pago = data.nueva_fecha
-    factura.es_promesa_activa = True
-
-    # La promesa no cambia el estado contable a "promesa".
-    # La factura sigue cobrable como pendiente o vencida.
-    if factura.fecha_vencimiento and factura.fecha_vencimiento < date.today():
-        factura.estado = "vencida"
-    elif factura.estado not in ["pendiente", "vencida"]:
-        factura.estado = "pendiente"
-
-    reactivado = False
-
-    if cliente.estado == "suspendido":
-        service = BillingService(db)
-        reactivado = await service._reactivar_en_mikrotik(cliente)
-
-        if reactivado:
-            cliente.estado = "activo"
-            await service._actualizar_estado_servicio_factura(
-                factura,
-                "activo",
+    try:
+        promesa, factura, cliente, politica, reactivado = (
+            await BillingService(db).registrar_promesa_y_reactivar(
+                data.factura_id,
+                data.nueva_fecha,
+                current_user.id,
+                data.notas,
             )
-        
-    await db.commit()
+        )
+        return {
+            "status": "ok",
+            "promesa_id": promesa.id,
+            "mensaje": f"Promesa registrada hasta {data.nueva_fecha}",
+            "politica": politica.nombre,
+            "reactivado": reactivado,
+        }
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {
-        "status": "ok",
-        "mensaje": f"Promesa registrada hasta {data.nueva_fecha}",
-        "reactivado": reactivado
-    }
+
+@router.get("/politicas-cobranza")
+async def listar_politicas_cobranza(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    politicas = (
+        await db.execute(
+            select(PoliticaCobranzaModel).order_by(PoliticaCobranzaModel.nombre)
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": item.id,
+            "nombre": item.nombre,
+            "tipo_cliente": item.tipo_cliente,
+            "dias_max_promesa": item.dias_max_promesa,
+            "max_promesas_activas": item.max_promesas_activas,
+            "max_incumplidas_90_dias": item.max_incumplidas_90_dias,
+            "permite_reconexion": item.permite_reconexion,
+            "activa": item.activa,
+        }
+        for item in politicas
+    ]
+
+
+@router.post("/politicas-cobranza")
+async def crear_politica_cobranza(
+    data: PoliticaCobranzaRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    tipo = data.tipo_cliente.strip().lower()
+    existente = (
+        await db.execute(
+            select(PoliticaCobranzaModel).where(
+                or_(
+                    PoliticaCobranzaModel.nombre == data.nombre.strip(),
+                    PoliticaCobranzaModel.tipo_cliente == tipo,
+                )
+            )
+        )
+    ).scalar_one_or_none()
+    if existente:
+        raise HTTPException(
+            status_code=409,
+            detail="Ya existe una política con ese nombre o tipo de cliente",
+        )
+    politica = PoliticaCobranzaModel(
+        nombre=data.nombre.strip(),
+        tipo_cliente=tipo,
+        dias_max_promesa=data.dias_max_promesa,
+        max_promesas_activas=data.max_promesas_activas,
+        max_incumplidas_90_dias=data.max_incumplidas_90_dias,
+        permite_reconexion=data.permite_reconexion,
+        activa=data.activa,
+    )
+    db.add(politica)
+    await db.commit()
+    await db.refresh(politica)
+    return {"status": "ok", "politica_id": politica.id}
+
+
+@router.put("/politicas-cobranza/{politica_id}")
+async def actualizar_politica_cobranza(
+    politica_id: int,
+    data: PoliticaCobranzaRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    politica = await db.get(PoliticaCobranzaModel, politica_id)
+    if not politica:
+        raise HTTPException(status_code=404, detail="Política no encontrada")
+    politica.nombre = data.nombre.strip()
+    politica.tipo_cliente = data.tipo_cliente.strip().lower()
+    politica.dias_max_promesa = data.dias_max_promesa
+    politica.max_promesas_activas = data.max_promesas_activas
+    politica.max_incumplidas_90_dias = data.max_incumplidas_90_dias
+    politica.permite_reconexion = data.permite_reconexion
+    politica.activa = data.activa
+    await db.commit()
+    return {"status": "ok", "politica_id": politica.id}
+
+
+@router.put("/clientes/{cliente_id}/politica-cobranza")
+async def asignar_politica_cobranza(
+    cliente_id: int,
+    data: AsignarPoliticaRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    cliente = await db.get(ClienteModel, cliente_id)
+    politica = await db.get(PoliticaCobranzaModel, data.politica_id)
+    if not cliente or not politica:
+        raise HTTPException(status_code=404, detail="Cliente o política no encontrada")
+    if not politica.activa:
+        raise HTTPException(status_code=400, detail="La política está inactiva")
+    cliente.politica_cobranza_id = politica.id
+    cliente.tipo_cliente = politica.tipo_cliente
+    await db.commit()
+    return {"status": "ok", "cliente_id": cliente.id, "politica_id": politica.id}
 
 
 # ==========================================
-# 5. REPORTE DE CAJA Y GRÁFICAS
+# 5. REPORTE DE COBRANZA Y GRÁFICAS
 # ==========================================
 @router.get("/pagos-reporte")
-async def obtener_reporte_caja(
+async def obtener_reporte_cobranza(
     start_date: date,
     end_date: date,
     usuario_id: Optional[int] = Query(None),
     router_id: Optional[int] = Query(None),
+    zona_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
@@ -406,12 +591,17 @@ async def obtener_reporte_caja(
         PagoModel.fecha_pago,
         PagoModel.factura_id,
         ClienteModel.nombre.label("cliente_nombre"),
-        UsuarioModel.nombre_completo.label("usuario_nombre")
+        UsuarioModel.nombre_completo.label("usuario_nombre"),
+        ZonaModel.nombre.label("zona_nombre"),
+        RouterModel.nombre.label("router_nombre"),
     ).join(ClienteModel, PagoModel.cliente_id == ClienteModel.id)\
-     .outerjoin(UsuarioModel, PagoModel.usuario_id == UsuarioModel.id)
+     .outerjoin(UsuarioModel, PagoModel.usuario_id == UsuarioModel.id)\
+     .outerjoin(ZonaModel, ClienteModel.zona_id == ZonaModel.id)\
+     .outerjoin(RouterModel, ClienteModel.router_id == RouterModel.id)
 
     query = query.where(func.date(PagoModel.fecha_pago) >= start_date)
     query = query.where(func.date(PagoModel.fecha_pago) <= end_date)
+    query = query.where(PagoModel.estado == "aplicado")
 
     if current_user.rol != 'admin':
         query = query.where(PagoModel.usuario_id == current_user.id)
@@ -420,6 +610,8 @@ async def obtener_reporte_caja(
 
     if router_id:
         query = query.where(ClienteModel.router_id == router_id)
+    if zona_id:
+        query = query.where(ClienteModel.zona_id == zona_id)
 
     result = await db.execute(query.order_by(desc(PagoModel.id)))
     pagos = result.all()
@@ -435,8 +627,11 @@ async def obtener_reporte_caja(
                 "metodo": row.metodo_pago,
                 "fecha": row.fecha_pago,
                 "factura_id": row.factura_id,
+                "estado": "aplicado",
                 "cliente_nombre": row.cliente_nombre,
                 "usuario_nombre": row.usuario_nombre or "Sistema"
+                ,"zona_nombre": row.zona_nombre or "Sin zona"
+                ,"router_nombre": row.router_nombre or "Sin MikroTik"
             }
             for row in pagos
         ]
@@ -468,3 +663,104 @@ async def get_estadisticas(
     data = result.all()
     
     return [{"mes": int(row.mes), "total": float(row.total)} for row in data]
+
+
+@router.get("/cobranza/pendientes-diarios")
+async def pendientes_diarios(
+    fecha: Optional[date] = None,
+    zona_id: Optional[int] = None,
+    router_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    fecha = fecha or date.today()
+    query = (
+        select(FacturaModel)
+        .join(ClienteModel)
+        .options(joinedload(FacturaModel.cliente))
+        .where(
+            FacturaModel.estado.in_(["pendiente", "vencida"]),
+            FacturaModel.saldo_pendiente > 0,
+            or_(
+                FacturaModel.fecha_vencimiento <= fecha,
+                and_(
+                    FacturaModel.es_promesa_activa.is_(True),
+                    FacturaModel.fecha_promesa_pago <= fecha,
+                ),
+            ),
+        )
+    )
+    if current_user.rol != "admin":
+        permitidos = [router.id for router in current_user.routers_asignados]
+        if not permitidos:
+            return {"fecha": fecha, "total": Decimal("0.00"), "items": []}
+        query = query.where(ClienteModel.router_id.in_(permitidos))
+    if zona_id:
+        query = query.where(ClienteModel.zona_id == zona_id)
+    if router_id:
+        query = query.where(ClienteModel.router_id == router_id)
+
+    facturas = (
+        await db.execute(
+            query.order_by(
+                FacturaModel.fecha_vencimiento.asc(),
+                FacturaModel.saldo_pendiente.desc(),
+            )
+        )
+    ).scalars().all()
+    return {
+        "fecha": fecha,
+        "total": sum(
+            (Decimal(item.saldo_pendiente or 0) for item in facturas),
+            Decimal("0"),
+        ),
+        "items": [
+            {
+                "factura_id": item.id,
+                "cliente_id": item.cliente_id,
+                "cliente": item.cliente.nombre,
+                "telefono": item.cliente.telefono,
+                "direccion": item.cliente.direccion,
+                "saldo_pendiente": item.saldo_pendiente,
+                "fecha_vencimiento": item.fecha_vencimiento,
+                "promesa_activa": item.es_promesa_activa,
+                "fecha_promesa": item.fecha_promesa_pago,
+            }
+            for item in facturas
+        ],
+    }
+
+
+@router.get("/resumen-operativo")
+async def resumen_operativo(
+    start_date: date,
+    end_date: date,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    # Resumen de cobranza; no existe una caja física que conciliar.
+    deuda = (
+        await db.execute(
+            select(func.coalesce(func.sum(FacturaModel.saldo_pendiente), 0)).where(
+                FacturaModel.estado.in_(["pendiente", "vencida"])
+            )
+        )
+    ).scalar_one()
+    recuperado = (
+        await db.execute(
+            select(func.coalesce(func.sum(PagoModel.monto_aplicado), 0)).where(
+                func.date(PagoModel.fecha_pago) >= start_date,
+                func.date(PagoModel.fecha_pago) <= end_date,
+                PagoModel.estado == "aplicado",
+            )
+        )
+    ).scalar_one()
+    return {
+        "desde": start_date,
+        "hasta": end_date,
+        "ingresos": recuperado,
+        "egresos": Decimal("0"),
+        "neto": recuperado,
+        "cartera_vencida_y_pendiente": deuda,
+        "deuda_recuperada": recuperado,
+    }

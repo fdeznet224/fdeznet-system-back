@@ -7,7 +7,11 @@ async def registrar_log(db: AsyncSession, usuario_id: int, accion: str, detalle:
     """
     nuevo_log = LogActividadModel(
         usuario_id=usuario_id,
+        usuario_nombre=None,
         accion=accion,
+        metodo="SYSTEM",
+        ruta="internal",
+        estado_http=200,
         detalle=detalle,
         ip_cliente=ip
     )

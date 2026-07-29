@@ -10,9 +10,9 @@ class SNMPMonitorService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def _ejecutar_comando(self, cmd: str) -> str:
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
+    async def _ejecutar_comando(self, *args: str) -> str:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -21,13 +21,23 @@ class SNMPMonitorService:
         if stderr:
             err_msg = stderr.decode('utf-8').strip()
             if err_msg:
-                print(f"❌ [SISTEMA OS] Error ejecutando comando ({cmd}): {err_msg}")
+                print(
+                    "❌ [SISTEMA OS] Error ejecutando SNMP "
+                    f"({args[0]}): {err_msg}"
+                )
                 
         return stdout.decode('utf-8')
 
     async def _consulta_individual(self, ip: str, comm: str, oid: str) -> str:
-        cmd = f"/usr/bin/snmpget -v2c -c {comm} -On {ip} {oid}"
-        res = await self._ejecutar_comando(cmd)
+        res = await self._ejecutar_comando(
+            "/usr/bin/snmpget",
+            "-v2c",
+            "-c",
+            comm,
+            "-On",
+            ip,
+            oid,
+        )
         if "STRING:" in res.upper(): 
             return res.split('STRING:')[1].strip().replace('"', '')
         if "INTEGER:" in res.upper(): 
@@ -43,8 +53,15 @@ class SNMPMonitorService:
         tipo_tec = conf['TIPO']
         rama_walk = conf['RAMA_POTENCIA'] if tipo_tec == 'EPON' else conf['RAMA_IDS']
         
-        cmd_walk = f"/usr/bin/snmpwalk -v2c -c {comunidad} -On {ip} {rama_walk}"
-        res_walk = await self._ejecutar_comando(cmd_walk)
+        res_walk = await self._ejecutar_comando(
+            "/usr/bin/snmpwalk",
+            "-v2c",
+            "-c",
+            comunidad,
+            "-On",
+            ip,
+            rama_walk,
+        )
         
         reporte = []
         if not res_walk.strip(): return reporte

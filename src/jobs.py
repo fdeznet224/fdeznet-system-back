@@ -1,5 +1,6 @@
 import asyncio
 import requests
+import os
 from datetime import datetime, timedelta
 from sqlalchemy import select, func
 from src.infrastructure.database import SessionLocal
@@ -11,6 +12,7 @@ from src.application.services.billing_service import BillingService
 # 📱 NOTIFICACIÓN DE WHATSAPP (Asíncrona)
 # ==========================================
 async def enviar_alertas_whatsapp(mensaje, db):
+    numero = "desconocido"
     try:
         res = await db.execute(select(ConfiguracionSistema).where(ConfiguracionSistema.id == 1))
         config = res.scalar_one_or_none()
@@ -19,7 +21,13 @@ async def enviar_alertas_whatsapp(mensaje, db):
         lista_numeros = [n.strip() for n in config.telefonos_alerta.split(",") if n.strip()]
         for numero in lista_numeros:
             # Hacemos la petición al bot local
-            requests.post("http://127.0.0.1:3000/enviar-mensaje", json={"numero": numero, "mensaje": mensaje}, timeout=5)
+            requests.post(
+                os.getenv("WHATSAPP_BASE_URL", "http://127.0.0.1:3000")
+                + "/enviar-mensaje",
+                json={"numero": numero, "mensaje": mensaje},
+                headers={"X-Webhook-Secret": os.getenv("WEBHOOK_SECRET", "")},
+                timeout=5,
+            )
             
     except Exception as e:
         error_msg = f"Fallo al enviar WhatsApp al {numero}: El bot no responde o está apagado. Detalle: {str(e)}"
@@ -141,8 +149,8 @@ async def _corte_automatico_ejecutado_hoy(db) -> bool:
 
 
 async def tarea_cron_unificada():
-    # Extrae la hora actual en formato de 24 horas (ej: "03", "06", "09")
-    hora_actual = datetime.now().strftime("%H")
+    # Compara hora y minuto para respetar configuraciones como 06:30.
+    momento_actual = datetime.now().strftime("%H:%M")
     
     async with SessionLocal() as db:
         try:
@@ -151,15 +159,15 @@ async def tarea_cron_unificada():
             billing_service = BillingService(db)
 
             # Extraemos limpiamente solo el componente de la hora (de "03:00" nos deja "03")
-            hora_corte = config.hora_ejecucion_corte.split(":")[0] if config.hora_ejecucion_corte else "03"
-            hora_facturas = config.hora_generacion_facturas.split(":")[0] if config.hora_generacion_facturas else "06"
-            hora_mensajes = config.hora_recordatorios.split(":")[0] if config.hora_recordatorios else "09"
+            hora_corte = (config.hora_ejecucion_corte or "03:00")[:5]
+            hora_facturas = (config.hora_generacion_facturas or "06:00")[:5]
+            hora_mensajes = (config.hora_recordatorios or "09:00")[:5]
 
             # ------------------------------------------------------
             # A. GENERACIÓN DE FACTURAS AUTOMÁTICA (5 días antes)
             # ------------------------------------------------------
             if config.generar_facturas_automaticamente:
-                if hora_actual == hora_facturas:
+                if momento_actual == hora_facturas:
                     resultado = await billing_service.generar_emision_masiva()
                     db.add(LogCronjobModel(
                         nivel="INFO", 
@@ -171,7 +179,7 @@ async def tarea_cron_unificada():
             # B. RECORDATORIO DE PAGO URGENTE (1 día antes)
             # ------------------------------------------------------
             if config.activar_notificaciones:
-                if hora_actual == hora_mensajes:
+                if momento_actual == hora_mensajes:
                     # Lee directamente tu nueva columna de la BD
                     dias_urgente = config.recordatorio_2_dias or 0
                     
@@ -188,8 +196,8 @@ async def tarea_cron_unificada():
             # C. MOTOR DE CORTES AUTOMÁTICOS (Fecha límite superada)
             # ------------------------------------------------------
             if config.activar_corte_automatico:
-                hora_programada = int(hora_corte)
-                hora_servidor = int(hora_actual)
+                hora_programada = int(hora_corte.split(":")[0])
+                hora_servidor = int(momento_actual.split(":")[0])
                 if (
                     hora_servidor >= hora_programada
                     and not await _corte_automatico_ejecutado_hoy(db)

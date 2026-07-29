@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # Infraestructura y Auth
 from src.infrastructure.database import get_db
-from src.infrastructure.auth import get_current_user # 🔒 Seguridad: Requiere Login
+from src.infrastructure.auth import role_required
 
 # Servicio
 from src.application.services.dashboard_service import DashboardService
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/dashboard", tags=["Dashboard & Métricas"])
 @router.get("/home")
 async def get_dashboard_home(
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user=Depends(role_required(["admin"])),
 ):
     """
     Obtiene los KPIs principales para la pantalla de inicio:
@@ -31,7 +31,7 @@ async def get_dashboard_home(
 @router.get("/clientes-online-detalle")
 async def get_online_detalle(
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user=Depends(role_required(["admin", "supervisor"])),
 ):
     """
     Métricas de estado de red en tiempo real:
@@ -45,7 +45,7 @@ async def get_online_detalle(
 @router.get("/status-tabla-clientes")
 async def get_status_tabla_clientes(
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user=Depends(role_required(["admin", "supervisor"])),
 ):
     """
     Devuelve un mapa de estados (ID Cliente -> Estado) para pintar

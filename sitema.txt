@@ -1,0 +1,200 @@
+  ### 1. Configuración inicial
+
+  El administrador configura:
+
+  - Usuarios y roles.
+  - MikroTik, VPN y conexión remota.
+  - OLT, cajas NAP y puertos.
+  - Planes de Internet por MikroTik.
+  - Plantillas de facturación.
+  - Mensajes automáticos de WhatsApp.
+  - Reglas de cortes, promesas y reactivaciones.
+
+  La VPN permite que el backend se comunique con los MikroTik aunque estén en ubicaciones remotas.
+
+  ### 2. Creación de cliente y orden
+
+  El administrador o supervisor:
+
+  - Registra al cliente.
+  - Asigna zona y MikroTik.
+  - Selecciona un plan compatible con ese MikroTik.
+  - Puede elegir caja NAP y puerto disponibles.
+  - Puede dejar la instalación sin puerto para que el técnico lo asigne en campo.
+  - Captura coordenadas GPS y datos de contacto.
+  - Genera la orden de instalación.
+
+  ### 3. Instalación técnica
+
+  El técnico recibe la orden y verifica:
+
+  - Ubicación real del cliente.
+  - GPS.
+  - Caja NAP.
+  - Puerto libre.
+  - OLT relacionada.
+  - ONU disponible.
+
+  Después vincula la ONU con el cliente usando su serial, identificador o MAC, según la tecnología de la OLT.
+
+  El sistema puede mostrar:
+
+  - OLT.
+  - ONU.
+  - Serial/MAC.
+  - Caja NAP.
+  - Puerto.
+  - Estado del equipo.
+  - Potencia óptica.
+  - Lecturas de señal.
+  - Historial técnico.
+
+  El técnico configura:
+
+  - IP.
+  - Usuario y contraseña PPPoE.
+  - Plan contratado.
+  - Perfil MikroTik.
+  - Velocidad de subida y bajada.
+
+  Al finalizar, activa el servicio.
+
+  ### 4. Facturación automática
+
+  Al activar el cliente, el sistema usa su plantilla financiera:
+
+  - Determina si tiene meses gratis.
+  - Calcula la fecha normal de cobro.
+  - Genera prorrateo por los días iniciales.
+  - Genera las facturas mensuales.
+  - Aplica días de tolerancia.
+  - Envía recordatorios y avisos por WhatsApp.
+
+  Las facturas se relacionan con el cliente, servicio, plan y período correspondiente.
+
+  ### 5. Cobranza
+
+  El cobrador registra el pago de una factura mediante:
+
+  - Efectivo.
+  - Transferencia.
+  - Depósito.
+  - Tarjeta.
+  - Otros métodos configurados.
+
+  No existe apertura ni cierre de caja.
+
+  El administrador o supervisor consulta el corte seleccionando:
+
+  - Fecha inicial.
+  - Fecha final.
+  - Cobrador.
+  - Zona.
+  - MikroTik.
+
+  El sistema muestra:
+
+  - Total cobrado.
+  - Efectivo.
+  - Transferencias.
+  - Otros métodos.
+  - Cliente.
+  - Factura.
+  - Fecha.
+  - Usuario que cobró.
+
+  Las promesas de pago aparecen separadas y no se consideran dinero recibido.
+
+  ### 6. Promesas de pago
+
+  El cliente o cobrador puede registrar una promesa:
+
+  - Se guarda la fecha prometida.
+  - La factura sigue pendiente.
+  - No se suma al total cobrado.
+  - El sistema controla su vencimiento.
+  - Si la promesa se cumple, se aplica el pago.
+  - Si no se cumple, continúa el flujo normal de morosidad y corte.
+
+  ### 7. Cortes y reactivaciones
+
+  Cuando una factura supera su fecha límite:
+
+  - El sistema identifica al cliente como vencido.
+  - Ejecuta el corte según las reglas configuradas.
+  - Deshabilita PPPoE o aplica el corte correspondiente en MikroTik.
+  - Actualiza el estado del servicio.
+  - Puede enviar aviso por WhatsApp.
+
+  Cuando el cliente paga o cumple una condición válida:
+
+  - Se actualiza la factura.
+  - Se reactiva el servicio.
+  - Se habilita nuevamente MikroTik.
+  - Se notifica al cliente.
+
+  ### 8. Monitoreo de clientes
+
+  Desde las herramientas del cliente se puede consultar:
+
+  - Ping o diagnóstico de conexión PPPoE.
+  - Estado online/offline.
+  - IP actual.
+  - Tiempo activo.
+  - Tráfico en tiempo real.
+  - Velocidad de subida.
+  - Velocidad de bajada.
+  - Estado real en MikroTik.
+
+  El mapa muestra los clientes con coordenadas GPS y permite identificar su ubicación y estado operativo.
+
+  ### 9. WhatsApp y bot
+
+  El bot permite:
+
+  - Enviar recordatorios.
+  - Enviar avisos de corte.
+  - Enviar confirmaciones de pago.
+  - Recibir mensajes del cliente.
+  - Recibir comprobantes.
+  - Procesar comprobantes mediante OCR.
+  - Asociar el pago al cliente.
+  - Reactivar cuando el pago es validado.
+  - Consultar información básica del servicio.
+
+  Los mensajes utilizan las plantillas configuradas por el administrador.
+
+  ### 10. Baja temporal
+
+  Para viajes, cambio temporal o suspensión voluntaria:
+
+  - Se detienen nuevas facturas.
+  - Se conserva cualquier factura pendiente.
+  - Se deshabilita el acceso en MikroTik.
+  - Se libera IP, caja NAP y puerto.
+  - La ONU queda en POR_RECOGER.
+  - El técnico confirma el retiro.
+  - La ONU pasa a DISPONIBLE.
+  - El cliente puede reactivarse posteriormente.
+
+  ### 11. Eliminación definitiva
+
+  Si el cliente no regresa después del período definido:
+
+  - El administrador puede eliminarlo definitivamente.
+  - Se eliminan cliente, facturas, pagos, órdenes, bajas, promesas, mensajes e historial.
+  - Se libera la ONU.
+  - Se libera el puerto NAP.
+  - Se elimina el registro basura del sistema.
+
+  ### 12. Roles principales
+
+  - Administrador: controla todo el sistema, configuración, clientes, red, planes, cobranza, bajas y eliminación.
+  - Supervisor: administra operación, clientes, órdenes, cortes y cortes de cobranza según permisos.
+  - Cobrador: consulta adeudos, registra pagos, registra promesas y revisa su cobranza.
+  - Técnico: instala, configura ONU/OLT, NAP, PPPoE, GPS, diagnóstico y retiro de equipos.
+  - Cliente: recibe mensajes, consulta información, envía comprobantes y solicita atención.
+
+  En resumen, el núcleo del sistema es:
+
+  cliente → orden → instalación FTTH → activación MikroTik → facturación → cobranza → monitoreo → baja o reactivación.

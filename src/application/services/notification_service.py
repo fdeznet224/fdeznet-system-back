@@ -4,22 +4,56 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
-from src.infrastructure.models import PlantillaMensajeModel, ClienteModel
+from src.infrastructure.models import (
+    ClienteModel,
+    MensajeChatModel,
+    PlantillaMensajeModel,
+)
 from src.application.helpers.message_formatter import formatear_mensaje
 from src.infrastructure.whatsapp_client import whatsapp_queue
 
 logger = logging.getLogger(__name__)
 
+PLANTILLAS_OBLIGATORIAS = {
+    "promesa_pago": (
+        "✅ Hola {nombre}, registramos tu promesa de pago por "
+        "{monto_promesa} con fecha límite {fecha_limite_promesa}. "
+        "Si el saldo continúa pendiente, el servicio se suspenderá "
+        "al día siguiente."
+    ),
+}
+
+
 class NotificationService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def notificar(self, tipo_evento: str, cliente_id: int, variables_extra: dict = None, ruta_pdf: str = None):
+    async def notificar(
+        self,
+        tipo_evento: str,
+        cliente_id: int,
+        variables_extra: dict = None,
+        ruta_pdf: str = None,
+        clave_dedupe: str = None,
+    ):
         """
         MOTOR ÚNICO GLOBAL: Busca plantilla, extrae datos del cliente, 
         formatea y encola en WhatsApp (soporta texto y PDF).
         """
         
+        clave = (clave_dedupe or "").strip() or None
+        if clave:
+            existente = (
+                await self.db.execute(
+                    select(MensajeChatModel.id).where(
+                        MensajeChatModel.clave_dedupe == clave
+                    )
+                )
+            ).scalar_one_or_none()
+            if existente:
+                logger.info("Notificación duplicada omitida: %s", clave)
+                return False
+
         # 1. BUSCAR PLANTILLA
         stmt_p = select(PlantillaMensajeModel).where(
             PlantillaMensajeModel.tipo == tipo_evento,
@@ -27,9 +61,21 @@ class NotificationService:
         )
         plantilla = (await self.db.execute(stmt_p)).scalar_one_or_none()
 
-        if not plantilla:
+        texto_plantilla = (
+            plantilla.texto
+            if plantilla
+            else PLANTILLAS_OBLIGATORIAS.get(tipo_evento)
+        )
+
+        if not texto_plantilla:
             logger.warning(f"⚠️ Plantilla '{tipo_evento}' no encontrada o inactiva.")
             return False
+        if not plantilla:
+            logger.warning(
+                "Plantilla '%s' ausente o inactiva; se usó el mensaje "
+                "obligatorio del sistema.",
+                tipo_evento,
+            )
 
         # 2. BUSCAR CLIENTE CON TODA SU INFO (Cargamos todas las relaciones necesarias)
         stmt_c = select(ClienteModel).options(
@@ -116,14 +162,35 @@ class NotificationService:
         datos_finales = {**datos_base, **(variables_extra or {})}
 
         # 6. FORMATEAR MENSAJE
-        mensaje_formateado = formatear_mensaje(plantilla.texto, datos_finales)
+        mensaje_formateado = formatear_mensaje(
+            texto_plantilla,
+            datos_finales,
+        )
         
         # 7. ENCOLAR TAREA HACIA EL BOT DE WHATSAPP
+        registro = MensajeChatModel(
+            cliente_id=cliente.id,
+            telefono=whatsapp_queue.service._formatear_numero(cliente.telefono),
+            direccion="salida",
+            mensaje=mensaje_formateado,
+            tipo_mensaje="documento" if ruta_pdf else "texto",
+            tipo_evento=tipo_evento,
+            clave_dedupe=clave,
+            leido=True,
+            ack=0,
+        )
+        self.db.add(registro)
+        await self.db.flush()
+        # La salida queda persistida antes de entregarla al proceso asíncrono;
+        # así la clave anti-duplicado y los ACK sobreviven reinicios.
+        await self.db.commit()
+
         tarea = {
             "numero": cliente.telefono,
             "mensaje": mensaje_formateado,
             "ruta": ruta_pdf,
-            "intervalo": 0 
+            "intervalo": 0,
+            "mensaje_chat_id": registro.id,
         }
         
         await whatsapp_queue.agregar_tarea(tarea)

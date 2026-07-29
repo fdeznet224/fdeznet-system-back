@@ -11,9 +11,31 @@ const mime = require('mime-types');
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
 const BACKEND_URL = process.env.API_BACKEND_URL || 'http://127.0.0.1:8000';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
+
+if (!WEBHOOK_SECRET) {
+    throw new Error('WEBHOOK_SECRET es obligatorio para autenticar los webhooks');
+}
+
+const webhookHeaders = {
+    headers: { 'X-Webhook-Secret': WEBHOOK_SECRET }
+};
 
 const app = express();
 app.use(express.json());
+
+// El backend es el único consumidor del motor. Protegemos también el canal
+// de control local para que un proceso vecino no pueda enviar mensajes,
+// cerrar sesión o solicitar el QR sin el secreto compartido.
+app.use((req, res, next) => {
+    const rutasControladas = ['/status', '/init', '/logout', '/enviar-mensaje'];
+    if (!rutasControladas.includes(req.path)) return next();
+    const recibido = req.get('X-Webhook-Secret') || '';
+    if (recibido.length !== WEBHOOK_SECRET.length || recibido !== WEBHOOK_SECRET) {
+        return res.status(401).json({ error: 'No autorizado' });
+    }
+    return next();
+});
 
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
@@ -28,10 +50,6 @@ function iniciarMotor() {
     
     client = new Client({
         authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
-        webVersionCache: {
-            type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-        },
         puppeteer: { 
             headless: true, 
             args: [
@@ -41,8 +59,6 @@ function iniciarMotor() {
                 '--disable-gpu',
                 '--disable-dev-shm-usage',      // CRÍTICO: Evita caídas de memoria compartida en Linux
                 '--no-first-run',
-                '--no-zygote',
-                '--single-process',             // Reduce drásticamente el consumo de RAM de Chromium
                 '--disable-accelerated-2d-canvas'
             ] 
         }
@@ -179,13 +195,13 @@ function iniciarMotor() {
                 console.log("⚠️ No se pudo obtener el número real del contacto:", err.message);
             }
 
-            await axios.post(`${BACKEND_URL}/whatsapp/webhook/recibir`, { 
+            await axios.post(`${BACKEND_URL}/whatsapp/webhook/recibir`, {
                 telefono: numeroReal,       
                 telefono_raw: msg.from,     
                 mensaje: contenido,
                 mediaUrl: mediaUrl,
                 wa_id: msg.id.id
-            });
+            }, webhookHeaders);
 
         } catch (e) { 
             console.error("❌ Error Webhook Recibir:", e.message); 
@@ -194,10 +210,10 @@ function iniciarMotor() {
 
     client.on('message_ack', async (msg, ack) => {
         try { 
-            await axios.post(`${BACKEND_URL}/whatsapp/webhook/ack`, { 
+            await axios.post(`${BACKEND_URL}/whatsapp/webhook/ack`, {
                 wa_id: msg.id.id, 
                 ack 
-            }); 
+            }, webhookHeaders);
         } catch (e) { 
             console.error("❌ Error Webhook Ack:", e.message); 
         }

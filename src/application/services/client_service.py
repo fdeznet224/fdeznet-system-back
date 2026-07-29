@@ -1,8 +1,9 @@
 from datetime import date, timedelta, datetime
+from decimal import Decimal
 import random
 import string
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, text, and_
+from sqlalchemy import select, delete, text, and_, func
 from sqlalchemy.orm import joinedload, selectinload 
 from fastapi import BackgroundTasks, HTTPException
 import re
@@ -10,7 +11,6 @@ from src.application.services.olt_service import OLTService
 from src.application.services.billing_calendar_service import (
     BillingCalendarService,
 )
-from src.infrastructure.models import InventarioONUModel
 from sqlalchemy import select, update
 
 # Base de datos 
@@ -18,6 +18,7 @@ from src.infrastructure.database import SessionLocal as async_session
 
 # Modelos y Schemas
 from src.infrastructure.models import (
+    BajaServicioModel,
     ClienteModel,
     PagoModel,
     RouterModel,
@@ -27,6 +28,8 @@ from src.infrastructure.models import (
     ServicioModel,
     TipoFacturacion,
     CicloFacturacion,
+    HistorialEstadoOrdenModel,
+    OrdenServicioModel,
 )
 from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.infrastructure.repositories import ClienteRepository
@@ -37,6 +40,12 @@ from src.infrastructure.mikrotik_service import MikroTikService
 # 👇 Importamos el MEGA NOTIFICADOR 👇
 #from src.application.helpers.notification_manager import enviar_notificacion_automatica
 from src.application.services.notification_service import NotificationService
+from src.application.services.ftth_service import FTTHService
+from src.application.services.finance_service import FinanceService
+from src.application.services.ipam_service import IPAMService
+from src.application.services.access_control_service import (
+    verificar_instalacion_asignada,
+)
 
 class ClientService:
     def __init__(self, db: AsyncSession):
@@ -86,7 +95,12 @@ class ClientService:
     # ==========================================
     # 1. REGISTRAR CLIENTE (PASO 1: CREAR ORDEN)
     # ==========================================
-    async def registrar_cliente(self, datos: ClienteCreate, background_tasks: BackgroundTasks):
+    async def registrar_cliente(
+        self,
+        datos: ClienteCreate,
+        background_tasks: BackgroundTasks,
+        usuario_operador=None,
+    ):
         """
         Crea la orden en BD, cambia el estado del equipo en Inventario a 'INSTALADO'
         y genera un ID Hexadecimal Aleatorio.
@@ -109,14 +123,30 @@ class ClientService:
 
         # B. Manejo de IP
         ip_limpia = datos.ip_asignada.strip() if datos.ip_asignada else None
-        if not ip_limpia or ip_limpia == "0.0.0.0":
-            datos.ip_asignada = None 
+        if ip_limpia == "0.0.0.0":
+            ip_limpia = None
+
+        if datos.red_id:
+            # La reserva se realiza en el backend y bajo bloqueo de la red.
+            # Si el frontend no eligió una IP, toma automáticamente la primera.
+            datos.ip_asignada = await IPAMService(
+                self.db
+            ).reservar_para_cliente(
+                red_id=datos.red_id,
+                ip_solicitada=ip_limpia,
+                router_id=datos.router_id,
+            )
+        elif not ip_limpia:
+            datos.ip_asignada = None
         else:
-            stmt = select(ClienteModel).where(ClienteModel.ip_asignada == ip_limpia)
+            stmt = select(ClienteModel).where(
+                ClienteModel.ip_asignada == ip_limpia,
+            )
             existing = await self.db.execute(stmt)
             ocupante = existing.scalar_one_or_none()
             if ocupante:
                 raise ValueError(f"La IP {ip_limpia} ya la tiene: {ocupante.nombre}")
+            datos.ip_asignada = ip_limpia
 
         # D. Preparamos el objeto para la Base de Datos
         datos_dict = datos.dict(exclude={"cedula"}) if hasattr(datos, 'dict') else datos.model_dump(exclude={"cedula"})
@@ -139,16 +169,29 @@ class ClientService:
         try:
             await self.db.flush() 
             
-            # 🔥 MAGIA DEL INVENTARIO: Marcamos la ONU como INSTALADA
+            # Reservar la ONU hasta que el técnico complete la instalación.
             if nuevo_cliente.onu_id:
                 onu = await self.db.get(InventarioONUModel, nuevo_cliente.onu_id)
                 if onu:
                     if onu.estado != "DISPONIBLE":
                         raise ValueError(f"El equipo {onu.identificador} no está disponible (Estado actual: {onu.estado}).")
-                    
-                    onu.estado = 'INSTALADO'
+
+                    onu.estado = "RESERVADO"
                     if nuevo_cliente.tecnico_id:
                         onu.tecnico_id = nuevo_cliente.tecnico_id
+                    FTTHService(self.db).registrar_movimiento(
+                        onu=onu,
+                        cliente_id=nuevo_cliente.id,
+                        tecnico_id=(
+                            usuario_operador.id
+                            if usuario_operador
+                            else nuevo_cliente.tecnico_id
+                        ),
+                        tipo_movimiento="reserva",
+                        estado_anterior="DISPONIBLE",
+                        estado_nuevo="RESERVADO",
+                        motivo="Reservada para instalación pendiente",
+                    )
             
             # E. LÓGICA: HEXADECIMAL ALEATORIO
             caracteres_hex = "0123456789ABCDEF"
@@ -163,6 +206,35 @@ class ClientService:
 
             # Creamos el contrato/servicio pendiente del abonado.
             await self._obtener_o_crear_servicio(nuevo_cliente)
+            # La instalación deja de representarse únicamente como cliente.
+            estado_orden = (
+                "asignada" if nuevo_cliente.tecnico_id else "pendiente"
+            )
+            orden = OrdenServicioModel(
+                tipo="instalacion",
+                cliente_id=nuevo_cliente.id,
+                tecnico_id=nuevo_cliente.tecnico_id,
+                creado_por_id=(
+                    usuario_operador.id if usuario_operador else None
+                ),
+                prioridad="normal",
+                estado=estado_orden,
+                motivo="Nueva instalación",
+                descripcion="Orden creada al registrar el cliente",
+            )
+            self.db.add(orden)
+            await self.db.flush()
+            self.db.add(
+                HistorialEstadoOrdenModel(
+                    orden_id=orden.id,
+                    usuario_id=(
+                        usuario_operador.id if usuario_operador else None
+                    ),
+                    estado_anterior=None,
+                    estado_nuevo=estado_orden,
+                    comentario="Orden creada desde alta de cliente",
+                )
+            )
             # F. Guardamos permanentemente
             await self.db.commit()
             await self.db.refresh(nuevo_cliente)
@@ -181,13 +253,25 @@ class ClientService:
     # ==========================================
     # 2. ACTIVAR INSTALACIÓN (VERSION FINAL - VARIABLES SEGURAS)
     # ==========================================
-    async def activar_instalacion(self, cliente_id: int, datos_finales: InstalacionRequest):
+    async def activar_instalacion(
+        self,
+        cliente_id: int,
+        datos_finales: InstalacionRequest,
+        usuario_operador=None,
+        orden_id: int = None,
+    ):
         """
         Activa el servicio en Mikrotik. Si el técnico cambia la ONU, actualiza el inventario.
         """
         # A. Recuperar Cliente
         cliente = await self.db.get(ClienteModel, cliente_id)
         if not cliente: raise ValueError("Cliente no encontrado")
+        if usuario_operador is not None:
+            await verificar_instalacion_asignada(
+                self.db,
+                usuario_operador,
+                cliente_id,
+            )
 
         if datos_finales.cedula is not None:
             cliente.cedula = datos_finales.cedula
@@ -195,60 +279,110 @@ class ClientService:
         if hasattr(datos_finales, 'olt_id') and datos_finales.olt_id is not None:
             cliente.olt_id = datos_finales.olt_id
             
-        # 👇👇👇 NUEVA LÓGICA PARA ASIGNAR ONU DESDE INVENTARIO AL ACTIVAR 👇👇👇
+        operador_id = (
+            usuario_operador.id
+            if usuario_operador
+            else cliente.tecnico_id
+        )
+        if not operador_id:
+            raise ValueError("No se pudo identificar al operador de instalación")
+        ftth_service = FTTHService(self.db)
+
+        # Asignación transaccional con bloqueo y trazabilidad.
         if hasattr(datos_finales, 'onu_id') and datos_finales.onu_id is not None:
-            # Si el técnico asigna una ONU nueva al momento de activar
-            if cliente.onu_id != datos_finales.onu_id:
-                
-                # 1. Liberamos la ONU vieja si tenía una (La regresamos a BODEGA)
-                if cliente.onu_id:
-                    onu_vieja = await self.db.get(InventarioONUModel, cliente.onu_id)
-                    if onu_vieja: onu_vieja.estado = 'DISPONIBLE'
-                
-                # 2. Asignamos la nueva y la marcamos INSTALADA
-                onu_nueva = await self.db.get(InventarioONUModel, datos_finales.onu_id)
-                if not onu_nueva: raise ValueError("El equipo seleccionado no existe en Bodega.")
-                if onu_nueva.estado != "DISPONIBLE": raise ValueError("Ese equipo ya no está disponible.")
-                
-                onu_nueva.estado = 'INSTALADO'
-                if cliente.tecnico_id: onu_nueva.tecnico_id = cliente.tecnico_id
-                
-                cliente.onu_id = datos_finales.onu_id
-        # 👆👆👆 FIN NUEVA LÓGICA 👆👆👆
+            await ftth_service.asignar_onu(
+                cliente,
+                datos_finales.onu_id,
+                operador_id,
+                orden_id=orden_id,
+                motivo="Instalación de servicio",
+                potencia_dbm=(
+                    Decimal(str(datos_finales.potencia_optica_dbm))
+                    if datos_finales.potencia_optica_dbm is not None
+                    else None
+                ),
+            )
 
         # PROTECCIÓN CLAVE: Solo actualizar si el técnico lo envió
         if datos_finales.router_id is not None: cliente.router_id = datos_finales.router_id
         if datos_finales.plan_id is not None: cliente.plan_id = datos_finales.plan_id
         
         # INFRAESTRUCTURA FIBRA Y GPS
-        if datos_finales.caja_nap_id is not None: cliente.caja_nap_id = datos_finales.caja_nap_id
-        if datos_finales.puerto_nap is not None: cliente.puerto_nap = datos_finales.puerto_nap
+        caja_nap_id = datos_finales.caja_nap_id or cliente.caja_nap_id
+        puerto_nap = datos_finales.puerto_nap or cliente.puerto_nap
+        if bool(caja_nap_id) != bool(puerto_nap):
+            raise ValueError("Debes indicar la caja NAP y el puerto")
+        if caja_nap_id and puerto_nap:
+            await ftth_service.asignar_puerto(
+                cliente,
+                caja_nap_id,
+                puerto_nap,
+                operador_id,
+                orden_id=orden_id,
+                potencia_dbm=(
+                    Decimal(str(datos_finales.potencia_optica_dbm))
+                    if datos_finales.potencia_optica_dbm is not None
+                    else None
+                ),
+            )
         if datos_finales.latitud is not None: cliente.latitud = datos_finales.latitud
         if datos_finales.longitud is not None: cliente.longitud = datos_finales.longitud
+
+        if cliente.latitud is None or cliente.longitud is None:
+            raise ValueError(
+                "Debes capturar la ubicación GPS antes de activar "
+                "la instalación"
+            )
+        if not (-90 <= cliente.latitud <= 90) or not (
+            -180 <= cliente.longitud <= 180
+        ):
+            raise ValueError("Las coordenadas GPS no son válidas")
+        if cliente.latitud == 0 and cliente.longitud == 0:
+            raise ValueError(
+                "Las coordenadas 0,0 no son una ubicación válida "
+                "para el cliente"
+            )
         
         # Gestión de IP
         ip_para_mikrotik = None
         if datos_finales.ip_asignada and datos_finales.ip_asignada != '0.0.0.0':
             ip_limpia = str(datos_finales.ip_asignada).strip()
 
-            # Seguridad IPAM:
-            # No permitir que una IP asignada a otro cliente se use de nuevo.
-            stmt_ip = select(ClienteModel).where(
-                ClienteModel.ip_asignada == ip_limpia,
-                ClienteModel.id != cliente.id,
-                ClienteModel.estado != "eliminado",
-            )
-            res_ip = await self.db.execute(stmt_ip)
-            ocupante = res_ip.scalar_one_or_none()
-            if ocupante:
-                raise ValueError(
-                    f"La IP {ip_limpia} ya está asignada a otro cliente: "
-                    f"{ocupante.nombre} (ID {ocupante.id})"
+            if cliente.red_id:
+                ip_limpia = await IPAMService(
+                    self.db
+                ).reservar_para_cliente(
+                    red_id=cliente.red_id,
+                    ip_solicitada=ip_limpia,
+                    router_id=cliente.router_id,
+                    excluir_cliente_id=cliente.id,
                 )
+            else:
+                stmt_ip = select(ClienteModel).where(
+                    ClienteModel.ip_asignada == ip_limpia,
+                    ClienteModel.id != cliente.id,
+                    ClienteModel.estado != "eliminado",
+                )
+                res_ip = await self.db.execute(stmt_ip)
+                ocupante = res_ip.scalar_one_or_none()
+                if ocupante:
+                    raise ValueError(
+                        f"La IP {ip_limpia} ya está asignada a otro cliente: "
+                        f"{ocupante.nombre} (ID {ocupante.id})"
+                    )
 
             cliente.ip_asignada = ip_limpia
             ip_para_mikrotik = cliente.ip_asignada
         elif cliente.ip_asignada:
+            ip_para_mikrotik = cliente.ip_asignada
+        elif cliente.red_id:
+            cliente.ip_asignada = await IPAMService(
+                self.db
+            ).reservar_para_cliente(
+                red_id=cliente.red_id,
+                router_id=cliente.router_id,
+                excluir_cliente_id=cliente.id,
+            )
             ip_para_mikrotik = cliente.ip_asignada
 
 
@@ -266,6 +400,21 @@ class ClientService:
         # Credenciales PPPoE
         if datos_finales.user_pppoe: cliente.user_pppoe = datos_finales.user_pppoe
         if datos_finales.pass_pppoe: cliente.pass_pppoe = datos_finales.pass_pppoe
+
+        if datos_finales.potencia_optica_dbm is not None:
+            await ftth_service.registrar_lectura_optica(
+                cliente,
+                Decimal(str(datos_finales.potencia_optica_dbm)),
+                operador_id,
+                potencia_tx_dbm=(
+                    Decimal(str(datos_finales.potencia_tx_dbm))
+                    if datos_finales.potencia_tx_dbm is not None
+                    else None
+                ),
+                orden_id=orden_id,
+                origen="manual",
+                observaciones=datos_finales.observaciones_opticas,
+            )
 
         # E. Cargar Router y Plan para Mikrotik
         await self.db.flush()
@@ -499,66 +648,84 @@ class ClientService:
     # ==========================================
     async def cambiar_estado(self, cliente_id: int, nuevo_estado: str):
         cliente = await self.db.get(ClienteModel, cliente_id)
-        if not cliente: 
+        if not cliente:
             raise ValueError("Cliente no encontrado")
 
-        # 1. Actualizar estado en Base de Datos
         estado_limpio = nuevo_estado.lower().strip()
-        cliente.estado = estado_limpio
-        
-        await self.db.commit()
         await self.db.refresh(cliente, attribute_names=['router'])
 
-        if cliente.router:
-            # Instanciar el notificador unificado
-            notificador = NotificationService(self.db)
-            
-            try:
-                mk = MikroTikService(
-                    cliente.router.ip_vpn, 
-                    cliente.router.user_api, 
-                    cliente.router.pass_api, 
-                    cliente.router.port_api
+        if estado_limpio in {
+            "activo",
+            "suspendido",
+            "retirado",
+            "cortado",
+        }:
+            if not cliente.router or not cliente.ip_asignada:
+                raise ValueError(
+                    "El cliente necesita router e IP para sincronizar "
+                    "su estado con MikroTik"
                 )
 
+            mk = MikroTikService(
+                cliente.router.ip_vpn,
+                cliente.router.user_api,
+                cliente.router.pass_api,
+                cliente.router.port_api,
+            )
+
+            try:
                 if estado_limpio in ["suspendido", "retirado", "cortado"]:
-                    # --- LÓGICA MIKROTIK ---
-                    try:
-                        if cliente.user_pppoe:
-                            # ✅ USAMOS EL NOMBRE REAL DE TU FUNCIÓN: activar_desactivar_pppoe
-                            # disabled=True para suspender
-                            mk.activar_desactivar_pppoe(cliente.user_pppoe, disabled=True)
-                        else:
-                            # Fallback para IPs estáticas si usas Address-List
-                            mk.gestionar_corte_cliente(cliente.ip_asignada, suspender=True)
-                    except Exception as e_mk:
-                        print(f"⚠️ MikroTik no pudo procesar la suspensión: {e_mk}")
-
-                    # --- 🚀 WHATSAPP DE CORTE ---
-                    if cliente.telefono:
-                        await notificador.notificar("corte_servicio", cliente.id)
-                        print(f"✅ WhatsApp de SUSPENSIÓN encolado para {cliente.nombre}")
-                
+                    resultado = mk.gestionar_corte_cliente(
+                        cliente.ip_asignada,
+                        suspender=True,
+                    )
+                    if resultado is not True:
+                        raise RuntimeError(
+                            "MikroTik no confirmó la suspensión"
+                        )
+                    if cliente.user_pppoe:
+                        mk.desconectar_cliente_activo(
+                            cliente.user_pppoe,
+                        )
                 elif estado_limpio == "activo":
-                    # --- LÓGICA MIKROTIK ---
-                    try:
-                        if cliente.user_pppoe:
-                            # ✅ disabled=False para activar
-                            mk.activar_desactivar_pppoe(cliente.user_pppoe, disabled=False)
-                        else:
-                            mk.gestionar_corte_cliente(cliente.ip_asignada, suspender=False)
-                    except Exception as e_mk:
-                        print(f"⚠️ MikroTik no pudo procesar la activación: {e_mk}")
+                    resultado = mk.reactivar_cliente(
+                        cliente.ip_asignada,
+                        cliente.user_pppoe,
+                    )
+                    if resultado is not True:
+                        raise RuntimeError(
+                            "MikroTik no confirmó la reactivación"
+                        )
+            except Exception as exc:
+                await self.db.rollback()
+                raise ValueError(
+                    f"No se cambió el estado: {exc}"
+                ) from exc
 
-                    # --- 🚀 WHATSAPP DE RECONEXIÓN ---
-                    if cliente.telefono:
-                        await notificador.notificar("reconexion", cliente.id)
-                        print(f"✅ WhatsApp de RECONEXIÓN encolado para {cliente.nombre}")
-                            
-            except Exception as e:
-                # Captura errores de conexión al Router sin detener el sistema
-                print(f"❌ Error en el proceso de cambio de estado: {e}")
-                
+        cliente.estado = estado_limpio
+        await self.db.execute(
+            update(ServicioModel)
+            .where(
+                ServicioModel.cliente_id == cliente.id,
+                ServicioModel.estado != "cancelado",
+            )
+            .values(estado=estado_limpio)
+        )
+        await self.db.commit()
+
+        if cliente.telefono:
+            notificador = NotificationService(self.db)
+            if estado_limpio in ["suspendido", "retirado", "cortado"]:
+                await notificador.notificar(
+                    "corte_servicio",
+                    cliente.id,
+                )
+            elif estado_limpio == "activo":
+                await notificador.notificar(
+                    "reconexion",
+                    cliente.id,
+                )
+
         return f"Cliente {estado_limpio}"
 
     # ==========================================
@@ -599,9 +766,19 @@ class ClientService:
             except Exception as e:
                 print(f"⚠️ No se pudo eliminar PPPoE en MikroTik: {e}")
 
-        # 3. Limpiar relaciones antes de borrar cliente
-        # Orden importante:
-        # pagos -> facturas -> servicios -> mensajes -> pagos_autovalidados -> cliente
+        # 3. Eliminación definitiva: se borran los datos del cliente y sus
+        # historiales. La baja de servicio queda como estado reversible;
+        # este endpoint es la acción explícita para purgar un registro.
+        await self.db.execute(text("DELETE FROM bajas_servicio WHERE cliente_id = :cliente_id"), {"cliente_id": cliente_id})
+        await self.db.execute(text("DELETE FROM promesas_pago_historial WHERE cliente_id = :cliente_id"), {"cliente_id": cliente_id})
+        await self.db.execute(text("DELETE FROM diagnosticos_soporte WHERE cliente_id = :cliente_id"), {"cliente_id": cliente_id})
+        await self.db.execute(text("DELETE FROM lecturas_opticas WHERE cliente_id = :cliente_id"), {"cliente_id": cliente_id})
+        await self.db.execute(text("DELETE FROM ordenes_servicio WHERE cliente_id = :cliente_id"), {"cliente_id": cliente_id})
+        await self.db.execute(text("DELETE FROM pagos_autovalidados WHERE cliente_id = :cliente_id"), {"cliente_id": cliente_id})
+        await self.db.execute(
+            text("DELETE FROM descuentos_factura WHERE factura_id IN (SELECT id FROM facturas WHERE cliente_id = :cliente_id)"),
+            {"cliente_id": cliente_id},
+        )
         await self.db.execute(
             text("DELETE FROM pagos WHERE cliente_id = :cliente_id"),
             {"cliente_id": cliente_id},
@@ -635,7 +812,12 @@ class ClientService:
     # ==========================================
     # 5. PROMESA D EPAGO
     # ==========================================
-    async def registrar_promesa_pago(self, cliente_id: int, fecha_promesa: date):
+    async def registrar_promesa_pago(
+        self,
+        cliente_id: int,
+        fecha_promesa: date,
+        usuario_id: int | None = None,
+    ):
         """
         Registra una promesa de pago sobre la deuda más antigua del cliente.
 
@@ -658,113 +840,21 @@ class ClientService:
         if not cliente:
             raise ValueError("Cliente no encontrado")
 
-        factura.es_promesa_activa = True
-        factura.fecha_promesa_pago = fecha_promesa
+        from src.application.services.billing_service import BillingService
 
-        # La promesa no cambia el estado contable a "promesa".
-        # La factura sigue siendo pendiente o vencida.
-        if factura.fecha_vencimiento and factura.fecha_vencimiento < date.today():
-            factura.estado = "vencida"
-        elif factura.estado not in ["pendiente", "vencida"]:
-            factura.estado = "pendiente"
-
-        reactivado = False
-
-        if cliente.estado == "suspendido":
-            from src.application.services.billing_service import BillingService
-            b_service = BillingService(self.db)
-
-            reactivado = await b_service._reactivar_en_mikrotik(cliente)
-
-            if reactivado:
-                cliente.estado = "activo"
-                await self.db.execute(
-                    update(ServicioModel)
-                    .where(ServicioModel.cliente_id == cliente.id)
-                    .values(
-                        estado="activo",
-                        updated_at=datetime.now(),
-                    )
-                )
-
-        await self.db.commit()
-
-        if cliente.telefono:
-            try:
-                notificador = NotificationService(self.db)
-                fecha_promesa_str = fecha_promesa.strftime("%d/%m/%Y")
-
-                await notificador.notificar(
-                    tipo_evento="promesa_pago",
-                    cliente_id=cliente.id,
-                    variables_extra={
-                        "fecha_limite_promesa": fecha_promesa_str,
-                        "monto_promesa": f"${factura.saldo_pendiente:.2f}",
-                    },
-                )
-            except Exception as e:
-                print(f"⚠️ Error notificación promesa: {e}")
+        promesa, factura, cliente, politica, reactivado = (
+            await BillingService(self.db).registrar_promesa_y_reactivar(
+                factura.id,
+                fecha_promesa,
+                usuario_id,
+            )
+        )
 
         msg = f"Promesa exitosa hasta el {fecha_promesa}."
         if reactivado:
             msg += " 📡 Servicio reactivado en MikroTik."
 
         return msg
-
-
-# ==========================================
-    # 8. REACTIVAR SERVICIO CANCELADO
-    # ==========================================
-    async def reactivar_servicio(self, cliente_id: int):
-        """
-        Toma un cliente en estado 'cancelado', lo devuelve a 'activo' 
-        y vuelve a crear su usuario PPPoE en el MikroTik.
-        """
-        # 1. Buscamos al cliente con sus relaciones necesarias
-        stmt = select(ClienteModel).options(
-            selectinload(ClienteModel.router), 
-            selectinload(ClienteModel.plan)
-        ).where(ClienteModel.id == cliente_id)
-        
-        cliente = (await self.db.execute(stmt)).scalar_one_or_none()
-        
-        if not cliente:
-            raise ValueError("Cliente no encontrado")
-            
-        if cliente.estado != 'cancelado':
-            raise ValueError("El cliente no está cancelado, no se puede reactivar.")
-
-        # 2. Conectamos al MikroTik y creamos el usuario PPPoE de nuevo
-        if cliente.router and cliente.plan and cliente.user_pppoe and cliente.pass_pppoe:
-            try:
-                mk = MikroTikService(
-                    cliente.router.ip_vpn, 
-                    cliente.router.user_api, 
-                    cliente.router.pass_api, 
-                    cliente.router.port_api
-                )
-                
-                cedula_str = cliente.cedula if cliente.cedula else "S/A"
-                comentario_estandar = f"{cliente.nombre} | ID:{cedula_str}"
-                
-                # Usamos el mismo método que en la instalación para asegurar que todo quede idéntico
-                mk.crear_actualizar_pppoe(
-                    user=cliente.user_pppoe, 
-                    password=cliente.pass_pppoe, 
-                    profile=cliente.plan.nombre, 
-                    remote_address=cliente.ip_asignada,
-                    comment=comentario_estandar
-                )
-            except Exception as e:
-                raise ValueError(f"Error al conectar con MikroTik durante reactivación: {e}")
-        else:
-            print(f"⚠️ Aviso: Cliente {cliente_id} reactivado en BD, pero le falta Router, Plan o PPPoE para MikroTik.")
-
-        # 3. Lo marcamos como activo en la base de datos
-        cliente.estado = 'activo'
-        await self.db.commit()
-        
-        return "Servicio reactivado y conectado al MikroTik exitosamente."
 
 
     # ==========================================
@@ -854,131 +944,41 @@ class ClientService:
             profile=cliente.plan.nombre, remote_address=cliente.ip_asignada,
             comment=f"{cliente.nombre} | ID:{cedula_str}"
         )
-
-
-
-    # ==========================================
-    # GESTIÓN DE BAJAS E INVENTARIO DE ONUS
-    # ==========================================
-
-    async def procesar_baja_servicio(self, cliente_id: int):
-        stmt = select(ClienteModel).options(selectinload(ClienteModel.router)).where(ClienteModel.id == cliente_id)
-        cliente = (await self.db.execute(stmt)).scalar_one_or_none()
-        
-        if not cliente:
-            raise ValueError("Cliente no encontrado")
-
-        if cliente.router and cliente.user_pppoe:
-            try:
-                mk = MikroTikService(
-                    cliente.router.ip_vpn, 
-                    cliente.router.user_api, 
-                    cliente.router.pass_api, 
-                    cliente.router.port_api
-                )
-                mk.eliminar_pppoe_user(cliente.user_pppoe)
-            except Exception as e:
-                print(f"⚠️ Aviso: No se pudo conectar a MikroTik al dar de baja: {e}")
-
-        cliente.estado = 'cancelado'
-        
-        if cliente.onu_id:
-            onu = await self.db.get(InventarioONUModel, cliente.onu_id)
-            if onu:
-                onu.estado = 'POR_RECOGER' 
-                await self.db.commit()
-                return f"Servicio cancelado. La ONU {onu.identificador} está pendiente de recolección."
-
-        await self.db.commit()
-        return "Servicio cancelado. (Este cliente no tenía un equipo de bodega asignado)."
-
-    # 🔥 CORRECCIÓN DEL NULL: Ahora recibe inventario_id en lugar de cliente_id 🔥
-    async def confirmar_retiro_tecnico(self, inventario_id: int):
-        onu = await self.db.get(InventarioONUModel, inventario_id)
-        if not onu:
-            raise ValueError("Este equipo no existe en el inventario.")
-
-        if onu.estado != 'POR_RECOGER':
-            raise ValueError("Este equipo no está marcado para recolección.")
-
-        serial_recuperado = onu.identificador
-
-        # 1. Regresamos la ONU a Bodega
-        onu.estado = 'DISPONIBLE'
-        onu.tecnico_id = None 
-        
-        # 2. Buscamos si algún cliente tenía esta ONU asignada y lo liberamos
-        from sqlalchemy import select
-        stmt = select(ClienteModel).where(ClienteModel.onu_id == inventario_id)
-        cliente = (await self.db.execute(stmt)).scalar_one_or_none()
-        
-        if cliente:
-            cliente.onu_id = None             
-            cliente.caja_nap_id = None        
-            cliente.puerto_nap = None         
-            cliente.ip_asignada = None        
-        
-        await self.db.commit()
-        return f"¡Éxito! ONU {serial_recuperado} ingresada a stock."
-
-    async def asignar_tecnico_retiro(self, inventario_id: int, tecnico_id: int):
-        # Buscamos la ONU directo en el inventario
-        onu = await self.db.get(InventarioONUModel, inventario_id)
-        if not onu or onu.estado != 'POR_RECOGER':
-            raise ValueError("Esta ONU no tiene un retiro pendiente o no existe.")
-
-        onu.tecnico_id = tecnico_id 
-        await self.db.commit()
-        
-        return f"Retiro asignado al técnico ID: {tecnico_id}"
-
     # 🔥 NUEVA FUNCIÓN: SWAP DE ONU POR FALLA 🔥
-    async def procesar_cambio_onu(self, cliente_id: int, nuevo_inventario_id: int, estado_vieja_onu: str):
+    async def procesar_cambio_onu(
+        self,
+        cliente_id: int,
+        nuevo_inventario_id: int,
+        estado_vieja_onu: str,
+        usuario_operador=None,
+        orden_id: int = None,
+    ):
         # 1. Validaciones iniciales
         cliente = await self.db.get(ClienteModel, cliente_id)
         if not cliente:
             raise ValueError("Cliente no encontrado")
 
-        onu_nueva = await self.db.get(InventarioONUModel, nuevo_inventario_id)
-        if not onu_nueva or onu_nueva.estado != 'DISPONIBLE':
-            raise ValueError("La nueva ONU no existe o no está DISPONIBLE.")
-
         estado_limpio = estado_vieja_onu.upper().strip()
         if estado_limpio in ["DAÑADA", "DANADA", "DAÑADO", "DANADO", "CON_FALLA", "FALLA"]:
             estado_limpio = "CON_FALLA"
 
-        # ==========================================
-        # PASO 1: LIBERAR LA ONU VIEJA (Fuerza Bruta)
-        # ==========================================
-        if cliente.onu_id:
-            await self.db.execute(
-                update(InventarioONUModel)
-                .where(InventarioONUModel.id == cliente.onu_id)
-                .values(estado=estado_limpio, tecnico_id=None)
-            )
-
-        # ==========================================
-        # PASO 2: ASIGNAR LA NUEVA ONU AL CLIENTE
-        # ==========================================
-        await self.db.execute(
-            update(InventarioONUModel)
-            .where(InventarioONUModel.id == nuevo_inventario_id)
-            .values(estado='INSTALADO', tecnico_id=cliente.tecnico_id)
+        operador_id = (
+            usuario_operador.id
+            if usuario_operador
+            else cliente.tecnico_id
         )
+        if not operador_id:
+            raise ValueError("No se pudo identificar al operador del cambio")
 
-        # ==========================================
-        # PASO 3: ACTUALIZAR EL PERFIL DEL CLIENTE
-        # ==========================================
-        await self.db.execute(
-            update(ClienteModel)
-            .where(ClienteModel.id == cliente_id)
-            .values(
-                onu_id=nuevo_inventario_id,
-                mac_address=onu_nueva.identificador
-            )
+        onu_nueva = await FTTHService(self.db).asignar_onu(
+            cliente,
+            nuevo_inventario_id,
+            operador_id,
+            orden_id=orden_id,
+            motivo="Cambio de ONU",
+            estado_onu_anterior=estado_limpio,
+            condicion_onu_anterior=estado_limpio,
         )
-
-        # Confirmamos los cambios directamente en el disco duro de la BD
         await self.db.commit()
-        
+
         return f"Cambio exitoso. Nueva ONU asignada: {onu_nueva.identificador}."

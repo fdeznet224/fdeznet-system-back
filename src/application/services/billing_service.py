@@ -27,6 +27,7 @@ from src.infrastructure.models import (
 from src.application.services.billing_calendar_service import (
     BillingCalendarService,
 )
+from src.application.services.finance_service import FinanceService
 
 class BillingService:
     def __init__(self, db: AsyncSession):
@@ -144,10 +145,10 @@ class BillingService:
                 servicio_id=servicio.id,
                 plan_snapshot=plan.nombre,
                 detalles=detalles,
-                monto=float(periodo.subtotal),
-                impuesto=float(periodo.impuesto),
-                total=float(periodo.total),
-                saldo_pendiente=float(periodo.total),
+                monto=periodo.subtotal,
+                impuesto=periodo.impuesto,
+                total=periodo.total,
+                saldo_pendiente=periodo.total,
                 estado="pendiente",
                 fecha_emision=hoy,
                 fecha_vencimiento=fecha_vencimiento,
@@ -157,8 +158,8 @@ class BillingService:
                 periodo_hasta=periodo.periodo_hasta,
                 dias_facturados=periodo.dias_facturados,
                 dias_periodo=periodo.dias_periodo,
-                precio_mensual_snapshot=float(periodo.precio_mensual),
-                precio_diario=float(periodo.precio_diario),
+                precio_mensual_snapshot=periodo.precio_mensual,
+                precio_diario=periodo.precio_diario,
                 es_prorrateada=periodo.es_prorrateada,
                 tipo_facturacion_snapshot=tipo_snapshot,
                 ciclo_facturacion_snapshot=ciclo_snapshot,
@@ -185,6 +186,7 @@ class BillingService:
                         "folio": str(nueva_factura.id),
                         "mes_actual": mes_actual_str,
                     },
+                    clave_dedupe=f"factura:{nueva_factura.id}:emitida",
                 )
                 if exito:
                     reporte["mensajes_enviados"] += 1
@@ -237,7 +239,11 @@ class BillingService:
                     # se encarga de inyectar el {precio}, {dia_corte}, etc.
                     await notificador.notificar(
                         tipo_evento="recordatorio_pago", 
-                        cliente_id=cliente.id
+                        cliente_id=cliente.id,
+                        clave_dedupe=(
+                            f"factura:{factura.id}:recordatorio:"
+                            f"{hoy.isoformat()}:{dias_aviso_urgente}"
+                        ),
                     )
                     reporte["aviso_urgente_enviados"] += 1
                 except Exception as e:
@@ -299,24 +305,14 @@ class BillingService:
 
         for factura in facturas:
             cliente = factura.cliente
+            estado_previo = cliente.estado
             promesa_rota = bool(factura.es_promesa_activa)
-
-            if cliente.estado == "suspendido":
-                actualizados = (
-                    await self._actualizar_estado_servicio_factura(
-                        factura,
-                        "suspendido",
-                    )
+            if promesa_rota:
+                factura.es_promesa_activa = False
+                await FinanceService(self.db).marcar_promesa_incumplida(
+                    factura.id
                 )
-                factura.estado = "vencida"
-                reporte["servicios_suspendidos"] += actualizados
-                reporte["facturas_vencidas"] += 1
-                reporte["omitidos_ya_suspendidos"] += 1
-
-                if promesa_rota:
-                    factura.es_promesa_activa = False
-                    reporte["promesas_rotas"] += 1
-                continue
+                reporte["promesas_rotas"] += 1
 
             if not cliente.router or not cliente.ip_asignada:
                 reporte["errores_mikrotik"] += 1
@@ -334,7 +330,7 @@ class BillingService:
                     suspender=True,
                 )
 
-                if resultado is False:
+                if resultado is not True:
                     raise RuntimeError(
                         "MikroTik no confirmó la suspensión."
                     )
@@ -360,13 +356,16 @@ class BillingService:
             )
             factura.estado = "vencida"
 
-            if promesa_rota:
-                factura.es_promesa_activa = False
-                reporte["promesas_rotas"] += 1
-
             reporte["clientes_suspendidos"] += 1
             reporte["servicios_suspendidos"] += actualizados
             reporte["facturas_vencidas"] += 1
+
+            if estado_previo == "suspendido":
+                # Reconciliar también los clientes que la BD ya marcaba
+                # suspendidos repara entradas faltantes en el address-list.
+                reporte["clientes_suspendidos"] -= 1
+                reporte["omitidos_ya_suspendidos"] += 1
+                continue
 
             try:
                 variables = {
@@ -385,6 +384,10 @@ class BillingService:
                     "corte_ejecutado",
                     cliente.id,
                     variables_extra=variables,
+                    clave_dedupe=(
+                        f"factura:{factura.id}:corte:"
+                        f"{hoy.isoformat()}:ejecutado"
+                    ),
                 )
 
                 if not enviado:
@@ -392,6 +395,10 @@ class BillingService:
                         "aviso_corte",
                         cliente.id,
                         variables_extra=variables,
+                        clave_dedupe=(
+                            f"factura:{factura.id}:corte:"
+                            f"{hoy.isoformat()}:aviso"
+                        ),
                     )
 
                 if enviado:
@@ -406,64 +413,43 @@ class BillingService:
         await self.db.commit()
         return reporte
 
-    async def registrar_pago_completo(self, factura_id: int, usuario_operador: UsuarioModel, metodo_pago: str, monto: float, referencia: str = None):
-        factura = await self.db.get(FacturaModel, factura_id)
-        if not factura: raise ValueError("Factura no encontrada")
-        if monto <= 0: raise ValueError("El monto debe ser mayor a cero.")
-        
-        # Necesitamos cargar el cliente con sus planes para el PDF
+    async def registrar_pago_completo(
+        self,
+        factura_id: int,
+        usuario_operador: UsuarioModel,
+        metodo_pago: str,
+        monto,
+        referencia: str = None,
+        clave_idempotencia: str = None,
+    ):
+        finanzas = FinanceService(self.db)
+        nuevo_pago, factura, cliente, repetido = await finanzas.registrar_pago(
+            factura_id=factura_id,
+            usuario_id=usuario_operador.id,
+            metodo_pago=metodo_pago,
+            monto=monto,
+            referencia=referencia,
+            clave_idempotencia=clave_idempotencia,
+        )
+        if repetido:
+            return {
+                "status": "ok",
+                "idempotente": True,
+                "pago_id": nuevo_pago.id,
+                "factura_liquidada": factura.saldo_pendiente == 0,
+                "saldo_pendiente": factura.saldo_pendiente,
+            }
+
         stmt_c = select(ClienteModel).options(
             selectinload(ClienteModel.plan),
             selectinload(ClienteModel.plantilla),
-            joinedload(ClienteModel.router)
-        ).where(ClienteModel.id == factura.cliente_id)
+            joinedload(ClienteModel.router),
+        ).where(ClienteModel.id == cliente.id)
         cliente = (await self.db.execute(stmt_c)).scalar_one()
 
-        deuda_actual = factura.saldo_pendiente
         estado_previo = cliente.estado
         reactivado = False
-        pago_completado = False # Bandera para saber si se envía el PDF o solo un aviso de abono
-
-        # =======================================================
-        # LÓGICA DE COBRO: PARCIAL, EXACTO O SOBRANTE
-        # =======================================================
-        if monto < deuda_actual:
-            # A) ABONO PARCIAL
-            factura.saldo_pendiente -= monto
-            factura.estado = 'vencida' if factura.fecha_vencimiento < datetime.now().date() else 'pendiente'
-            pago_completado = False
-
-        elif monto == deuda_actual:
-            # B) PAGO EXACTO
-            factura.saldo_pendiente = 0.0
-            factura.estado = 'pagada'
-            factura.fecha_pago_real = datetime.now()
-            factura.es_promesa_activa = False
-            pago_completado = True
-
-        else:
-            # C) PAGA DE MÁS (Genera Saldo a Favor)
-            sobrante = monto - deuda_actual
-            
-            factura.saldo_pendiente = 0.0
-            factura.estado = 'pagada'
-            factura.fecha_pago_real = datetime.now()
-            factura.es_promesa_activa = False
-            pago_completado = True
-
-            # Acumulamos el dinero extra en el perfil del cliente
-            if cliente.saldo_a_favor is None:
-                cliente.saldo_a_favor = 0.0
-            cliente.saldo_a_favor += sobrante
-
-        # Registramos el movimiento en la caja (historial de pagos)
-        nuevo_pago = PagoModel(
-            cliente_id=cliente.id, factura_id=factura.id, 
-            usuario_id=usuario_operador.id, monto_total=monto, # Se registra lo que dio el cliente físicamente
-            metodo_pago=metodo_pago, referencia=referencia,
-            fecha_pago=datetime.now()
-        )
-        self.db.add(nuevo_pago)
+        pago_completado = nuevo_pago.saldo_posterior == 0
         
         # Reconexión automática SOLO si la factura quedó pagada por completo
         # FACTURACION_ISP_V2_SAFE_REACTIVATION
@@ -486,31 +472,42 @@ class BillingService:
                         "activo",
                     )
 
-        await self.db.commit() 
+        await self.db.commit()
 
         # 👇 🚀 LOGICA DE WHATSAPP 👇
         if cliente.telefono:
             try:
                 notificador = NotificationService(self.db)
+
+                if reactivado:
+                    await notificador.notificar(
+                        tipo_evento="reconexion",
+                        cliente_id=cliente.id,
+                        clave_dedupe=f"pago:{nuevo_pago.id}:reconexion",
+                    )
                 
                 if pago_completado:
                     # Si liquidó, se le manda su PDF
                     prox_venc = (factura.fecha_vencimiento + relativedelta(months=1)).strftime("%d/%m/%Y")
                     ruta_pdf = await generar_recibo_pdf(
                         nombre_cliente=cliente.nombre,
-                        monto=monto, # Se refleja el pago total
+                        monto=nuevo_pago.monto_total,
                         concepto=f"MENSUALIDAD INTERNET - {factura.plan_snapshot}",
                         fecha_pago=nuevo_pago.fecha_pago,
                         folio=factura.id,
                         nueva_fecha_vencimiento=prox_venc,
                         telefono_cliente=cliente.telefono,
-                        metodo_pago=metodo_pago
+                        metodo_pago=nuevo_pago.metodo_pago,
                     )
                     await notificador.notificar(
                         tipo_evento="pago_recibido", 
                         cliente_id=cliente.id,
-                        variables_extra={"monto_pagado": f"${monto}", "referencia": referencia or "N/A"},
-                        ruta_pdf=ruta_pdf
+                        variables_extra={
+                            "monto_pagado": f"${nuevo_pago.monto_total:.2f}",
+                            "referencia": referencia or "N/A",
+                        },
+                        ruta_pdf=ruta_pdf,
+                        clave_dedupe=f"pago:{nuevo_pago.id}:recibo",
                     )
                 else:
                     # Si solo abonó una parte, se manda este aviso sencillo sin PDF
@@ -518,15 +515,24 @@ class BillingService:
                         tipo_evento="abono_recibido", # 👈 Aquí hace match con la BD
                         cliente_id=cliente.id,
                         variables_extra={
-                            "monto_pagado": f"${monto}", 
+                            "monto_pagado": f"${nuevo_pago.monto_total:.2f}",
                             "referencia": f"Abono parcial registrado. (Resta por pagar: ${factura.saldo_pendiente})"
-                        }
+                        },
+                        clave_dedupe=f"pago:{nuevo_pago.id}:abono",
                     )
                 
             except Exception as e:
                 print(f"⚠️ Error al notificar pago: {e}")
 
-        return {"status": "ok", "factura_liquidada": pago_completado, "reactivado": reactivado}
+        return {
+            "status": "ok",
+            "idempotente": False,
+            "pago_id": nuevo_pago.id,
+            "factura_liquidada": pago_completado,
+            "saldo_pendiente": factura.saldo_pendiente,
+            "saldo_a_favor": cliente.saldo_a_favor,
+            "reactivado": reactivado,
+        }
 
     # ==========================================
     # HELPERS
@@ -597,20 +603,91 @@ class BillingService:
         return cantidad > 0
 
     async def _reactivar_en_mikrotik(self, cliente):
-        if not cliente.router_id: return False
+        if not cliente.router_id or not cliente.ip_asignada:
+            return False
         try:
             router = await self.db.get(RouterModel, cliente.router_id)
-            if not router or not router.is_active: return False
-            mk = MikroTikService(router.ip_vpn, router.user_api, router.pass_api, router.port_api)
-            mk.gestionar_corte_cliente(cliente.ip_asignada, suspender=False)
-            
-            # 👇 NOTIFICACIÓN RECONEXIÓN 👇
-            notificador = NotificationService(self.db)
-            await notificador.notificar("reconexion", cliente.id)
-            return True
+            if not router or not router.is_active:
+                return False
+            mk = MikroTikService(
+                router.ip_vpn,
+                router.user_api,
+                router.pass_api,
+                router.port_api,
+            )
+            return (
+                mk.reactivar_cliente(
+                    cliente.ip_asignada,
+                    cliente.user_pppoe,
+                )
+                is True
+            )
         except Exception as e:
             print(f"⚠️ Error reactivando en MK: {e}")
             return False
+
+    async def registrar_promesa_y_reactivar(
+        self,
+        factura_id: int,
+        fecha_promesa: date,
+        usuario_id: int | None,
+        notas: str | None = None,
+        enviar_notificaciones: bool = True,
+    ):
+        """Registra una promesa con el mismo flujo para todos los canales."""
+        promesa, factura, cliente, politica = (
+            await FinanceService(self.db).registrar_promesa(
+                factura_id,
+                fecha_promesa,
+                usuario_id,
+                notas,
+            )
+        )
+
+        reactivado = False
+        if cliente.estado == "suspendido" and politica.permite_reconexion:
+            reactivado = await self._reactivar_en_mikrotik(cliente)
+            if not reactivado:
+                raise ValueError(
+                    "MikroTik no confirmó la reactivación; "
+                    "la promesa no fue guardada."
+                )
+
+            cliente.estado = "activo"
+            await self._actualizar_estado_servicio_factura(
+                factura,
+                "activo",
+            )
+
+        await self.db.commit()
+
+        if enviar_notificaciones and cliente.telefono:
+            notificador = NotificationService(self.db)
+            fecha_promesa_str = fecha_promesa.strftime("%d/%m/%Y")
+
+            try:
+                if reactivado:
+                    await notificador.notificar(
+                        tipo_evento="reconexion",
+                        cliente_id=cliente.id,
+                        clave_dedupe=f"promesa:{promesa.id}:reconexion",
+                    )
+
+                await notificador.notificar(
+                    tipo_evento="promesa_pago",
+                    cliente_id=cliente.id,
+                    variables_extra={
+                        "fecha_limite_promesa": fecha_promesa_str,
+                        "monto_promesa": (
+                            f"${float(factura.saldo_pendiente or 0):.2f}"
+                        ),
+                    },
+                    clave_dedupe=f"promesa:{promesa.id}:confirmacion",
+                )
+            except Exception as exc:
+                print(f"⚠️ Error notificación promesa: {exc}")
+
+        return promesa, factura, cliente, politica, reactivado
 
     async def listar_facturas_por_permisos(self, usuario_id_solicitante: int, cliente_id: Optional[int] = None, router_id: Optional[int] = None):
         # ... (Tu código de permisos se mantiene igual) ...

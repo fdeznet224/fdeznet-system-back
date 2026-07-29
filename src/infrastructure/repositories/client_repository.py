@@ -6,7 +6,7 @@ from typing import Optional
 
 from src.infrastructure.models import ClienteModel, ConfiguracionModel
 from src.domain.schemas import ClienteCreate
-from src.utils.text_tools import limpiar_string_para_usuario
+from src.utils.text_tools import generar_password_pppoe, limpiar_string_para_usuario
 
 class ClienteRepository:
     def __init__(self, db: AsyncSession):
@@ -57,7 +57,11 @@ class ClienteRepository:
             stmt = select(ConfiguracionModel).where(ConfiguracionModel.clave == 'pppoe_password_default')
             res = await self.db.execute(stmt)
             config_db = res.scalar()
-            datos.pass_pppoe = config_db.valor if config_db else "12345"
+            datos.pass_pppoe = (
+                config_db.valor
+                if config_db and config_db.valor
+                else generar_password_pppoe()
+            )
 
         # 3. CREACIÓN (Soporta todos los campos nuevos como cedula, caja_nap_id)
         nuevo_cliente = ClienteModel(**datos.dict())
