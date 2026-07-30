@@ -5,6 +5,7 @@ from src.infrastructure.models import (
     ClienteModel,
     InventarioONUModel,
     OrdenServicioModel,
+    ServicioModel,
     UsuarioModel,
 )
 
@@ -31,8 +32,18 @@ def filtro_clientes_del_tecnico(tecnico_id: int):
     onu_para_retiro = ClienteModel.onu_asignada.has(
         InventarioONUModel.tecnico_id == tecnico_id
     )
+    servicio_asignado = (
+        select(ServicioModel.id)
+        .where(
+            ServicioModel.cliente_id == ClienteModel.id,
+            ServicioModel.tecnico_id == tecnico_id,
+            ServicioModel.estado != "cancelado",
+        )
+        .exists()
+    )
     return or_(
         ClienteModel.tecnico_id == tecnico_id,
+        servicio_asignado,
         orden_asignada,
         onu_para_retiro,
     )

@@ -159,6 +159,10 @@ class CajaNapResponse(CajaNapBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    zona_nombre: Optional[str] = None
+    olt_nombre: Optional[str] = None
+    router_id: Optional[int] = None
+    router_nombre: Optional[str] = None
     puertos_usados: int = 0
     puertos_libres: int = 0
 
@@ -377,6 +381,131 @@ class InstalacionRequest(BaseModel):
     potencia_optica_dbm: Optional[float] = Field(default=None, ge=-50, le=10)
     potencia_tx_dbm: Optional[float] = Field(default=None, ge=-50, le=20)
     observaciones_opticas: Optional[str] = Field(default=None, max_length=500)
+
+
+# ==========================================
+# 10.5 SERVICIOS / CONTRATOS POR DOMICILIO
+# ==========================================
+class ServicioCreate(BaseModel):
+    cliente_id: int
+    alias: str = Field(default="Principal", min_length=2, max_length=100)
+    direccion: str = Field(min_length=5, max_length=255)
+    latitud: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitud: Optional[float] = Field(default=None, ge=-180, le=180)
+    router_id: Optional[int] = None
+    plan_id: Optional[int] = None
+    plantilla_id: Optional[int] = None
+    zona_id: Optional[int] = None
+    red_id: Optional[int] = None
+    tecnico_id: Optional[int] = None
+    tipo_facturacion: TipoFacturacionEnum = TipoFacturacionEnum.prepago
+    ciclo_facturacion: CicloFacturacionEnum = CicloFacturacionEnum.calendario
+    meses_gratis: int = Field(default=0, ge=0, le=12)
+    crear_orden: bool = True
+
+
+class ServicioUpdate(BaseModel):
+    alias: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    direccion: Optional[str] = Field(default=None, min_length=5, max_length=255)
+    latitud: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitud: Optional[float] = Field(default=None, ge=-180, le=180)
+    router_id: Optional[int] = None
+    plan_id: Optional[int] = None
+    plantilla_id: Optional[int] = None
+    zona_id: Optional[int] = None
+    red_id: Optional[int] = None
+    tecnico_id: Optional[int] = None
+    tipo_facturacion: Optional[TipoFacturacionEnum] = None
+    ciclo_facturacion: Optional[CicloFacturacionEnum] = None
+    meses_gratis: Optional[int] = Field(default=None, ge=0, le=12)
+
+
+class ServicioActivacion(BaseModel):
+    router_id: Optional[int] = None
+    plan_id: Optional[int] = None
+    plantilla_id: Optional[int] = None
+    zona_id: Optional[int] = None
+    red_id: Optional[int] = None
+    olt_id: Optional[int] = None
+    caja_nap_id: Optional[int] = None
+    puerto_nap: Optional[int] = None
+    onu_id: Optional[int] = None
+    tecnico_id: Optional[int] = None
+    ip_asignada: Optional[str] = None
+    mac_address: Optional[str] = None
+    user_pppoe: str = Field(min_length=1, max_length=50)
+    pass_pppoe: str = Field(min_length=3, max_length=100)
+    fecha_instalacion: Optional[date] = None
+    fecha_activacion: Optional[date] = None
+    tipo_facturacion: TipoFacturacionEnum = TipoFacturacionEnum.prepago
+    ciclo_facturacion: CicloFacturacionEnum = CicloFacturacionEnum.calendario
+    meses_gratis: int = Field(default=0, ge=0, le=12)
+
+
+class ServicioEstadoUpdate(BaseModel):
+    estado: str = Field(pattern="^(activo|suspendido)$")
+
+
+class ServicioPlanUpdate(BaseModel):
+    plan_id: int = Field(gt=0)
+
+
+class ServicioPlanCatalogo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    nombre: str
+    precio: Decimal
+    router_id: Optional[int] = None
+
+
+class ServicioRouterCatalogo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    nombre: str
+
+
+class ServicioResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    cliente_id: int
+    alias: str
+    direccion: Optional[str] = None
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+    router_id: Optional[int] = None
+    plan_id: Optional[int] = None
+    plantilla_id: Optional[int] = None
+    zona_id: Optional[int] = None
+    red_id: Optional[int] = None
+    olt_id: Optional[int] = None
+    caja_nap_id: Optional[int] = None
+    puerto_nap: Optional[int] = None
+    tecnico_id: Optional[int] = None
+    onu_id: Optional[int] = None
+    ip_asignada: Optional[str] = None
+    mac_address: Optional[str] = None
+    user_pppoe: Optional[str] = None
+    is_online: bool = False
+    estado: str
+    tipo_facturacion: TipoFacturacionEnum
+    ciclo_facturacion: CicloFacturacionEnum
+    fecha_instalacion: Optional[date] = None
+    fecha_activacion: Optional[date] = None
+    fecha_inicio_cobro: Optional[date] = None
+    proxima_facturacion: Optional[date] = None
+    meses_gratis: int
+    created_at: datetime
+    plan: Optional[ServicioPlanCatalogo] = None
+    router: Optional[ServicioRouterCatalogo] = None
+
+
+class ServicioPlanUpdateResponse(BaseModel):
+    servicio: ServicioResponse
+    mikrotik_sincronizado: Optional[bool] = None
+    mensaje: str
 
 # ==========================================
 # 11. FACTURAS

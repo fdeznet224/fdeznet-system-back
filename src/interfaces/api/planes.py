@@ -34,7 +34,6 @@ async def listar_planes(
     return await repo.get_all_planes()
 
 @router.get("/router/{router_id}", response_model=List[PlanResponse])
-@cache(expire=300) # 🔥 3. Guardamos la lista filtrada por router por 5 minutos
 async def listar_planes_por_router(
     router_id: int,
     db: AsyncSession = Depends(get_db),

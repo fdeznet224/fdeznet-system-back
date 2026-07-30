@@ -25,11 +25,14 @@ from src.infrastructure.models import (
     FacturaModel,
     CajaNapModel,
     InventarioONUModel,
+    OLTModel,
+    PlanModel,
     ServicioModel,
     TipoFacturacion,
     CicloFacturacion,
     HistorialEstadoOrdenModel,
     OrdenServicioModel,
+    PuertoNapModel,
 )
 from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.infrastructure.repositories import ClienteRepository
@@ -64,7 +67,7 @@ class ClientService:
                 ServicioModel.cliente_id == cliente.id,
                 ServicioModel.estado != "cancelado",
             )
-            .order_by(ServicioModel.id.desc())
+            .order_by(ServicioModel.id.asc())
         )
 
         resultado = await self.db.execute(stmt)
@@ -74,8 +77,26 @@ class ClientService:
 
         servicio = ServicioModel(
             cliente_id=cliente.id,
+            alias="Principal",
+            direccion=cliente.direccion,
+            latitud=cliente.latitud,
+            longitud=cliente.longitud,
+            router_id=cliente.router_id,
             plan_id=cliente.plan_id,
             plantilla_id=cliente.plantilla_id,
+            zona_id=cliente.zona_id,
+            red_id=cliente.red_id,
+            olt_id=cliente.olt_id,
+            caja_nap_id=cliente.caja_nap_id,
+            puerto_nap=cliente.puerto_nap,
+            tecnico_id=cliente.tecnico_id,
+            onu_id=cliente.onu_id,
+            ip_asignada=cliente.ip_asignada,
+            mac_address=cliente.mac_address,
+            user_pppoe=cliente.user_pppoe,
+            pass_pppoe=cliente.pass_pppoe,
+            is_online=cliente.is_online,
+            ultimo_cambio_estado=cliente.ultimo_cambio_estado,
             tipo_facturacion=TipoFacturacion.prepago,
             ciclo_facturacion=CicloFacturacion.calendario,
             meses_gratis=1,
@@ -111,6 +132,76 @@ class ClientService:
 
         if datos.nombre:
             datos.nombre = datos.nombre.strip()
+        if datos.telefono:
+            datos.telefono = datos.telefono.strip()
+
+        plan = (
+            await self.db.get(PlanModel, datos.plan_id)
+            if datos.plan_id
+            else None
+        )
+        if datos.plan_id and not plan:
+            raise ValueError("El plan seleccionado no existe")
+        if plan and datos.router_id and plan.router_id != datos.router_id:
+            raise ValueError(
+                "El plan seleccionado no pertenece al router indicado"
+            )
+
+        olt = (
+            await self.db.get(OLTModel, datos.olt_id)
+            if datos.olt_id
+            else None
+        )
+        if datos.olt_id and not olt:
+            raise ValueError("La OLT seleccionada no existe")
+        if olt and datos.router_id and olt.router_id != datos.router_id:
+            raise ValueError(
+                "La OLT seleccionada no pertenece al router indicado"
+            )
+
+        caja = (
+            await self.db.get(CajaNapModel, datos.caja_nap_id)
+            if datos.caja_nap_id
+            else None
+        )
+        if datos.caja_nap_id and not caja:
+            raise ValueError("La caja NAP seleccionada no existe")
+        if caja and datos.zona_id and caja.zona_id != datos.zona_id:
+            raise ValueError(
+                "La caja NAP seleccionada no pertenece a la zona indicada"
+            )
+        if caja and datos.olt_id and caja.olt_id:
+            if caja.olt_id != datos.olt_id:
+                raise ValueError(
+                    "La caja NAP seleccionada no pertenece a la OLT indicada"
+                )
+        if caja and caja.olt_id and datos.router_id:
+            olt_caja = await self.db.get(OLTModel, caja.olt_id)
+            if olt_caja and olt_caja.router_id != datos.router_id:
+                raise ValueError(
+                    "La caja NAP seleccionada no pertenece al router indicado"
+                )
+
+        # Un abonado con otra vivienda conserva el mismo cliente y recibe
+        # un servicio adicional. Evitamos repetir por accidente una misma
+        # alta cuando el frontend reintenta una solicitud ya confirmada.
+        if datos.nombre and datos.telefono:
+            cliente_duplicado = (
+                await self.db.execute(
+                    select(ClienteModel).where(
+                        func.lower(func.trim(ClienteModel.nombre))
+                        == datos.nombre.casefold(),
+                        ClienteModel.telefono == datos.telefono,
+                    )
+                )
+            ).scalar_one_or_none()
+            if cliente_duplicado:
+                raise ValueError(
+                    f"Ya existe el cliente {cliente_duplicado.nombre} "
+                    f"(ID {cliente_duplicado.id}) con este teléfono. "
+                    "Si es otro domicilio, agrega un servicio al cliente "
+                    "existente."
+                )
 
         # A. Generar Credenciales Automáticas
         if not datos.user_pppoe and datos.nombre:
@@ -149,7 +240,11 @@ class ClientService:
             datos.ip_asignada = ip_limpia
 
         # D. Preparamos el objeto para la Base de Datos
-        datos_dict = datos.dict(exclude={"cedula"}) if hasattr(datos, 'dict') else datos.model_dump(exclude={"cedula"})
+        datos_dict = (
+            datos.model_dump(exclude={"cedula"})
+            if hasattr(datos, "model_dump")
+            else datos.dict(exclude={"cedula"})
+        )
         
         # Convertir 0 o "" a None en llaves foráneas
         for fk in ["olt_id", "onu_id", "router_id", "plan_id", "zona_id", "plantilla_id", "caja_nap_id", "tecnico_id", "red_id"]:
@@ -157,6 +252,59 @@ class ClientService:
                 datos_dict[fk] = None
 
         datos_dict['estado'] = "pendiente_instalacion"
+
+        onu_reservada = None
+        try:
+            if datos_dict.get("onu_id"):
+                onu_reservada = (
+                    await self.db.execute(
+                        select(InventarioONUModel)
+                        .where(
+                            InventarioONUModel.id == datos_dict["onu_id"]
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if not onu_reservada:
+                    raise ValueError("La ONU seleccionada no existe")
+
+                cliente_ocupante = (
+                    await self.db.execute(
+                        select(ClienteModel).where(
+                            ClienteModel.onu_id == onu_reservada.id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if cliente_ocupante:
+                    raise ValueError(
+                        f"La ONU {onu_reservada.identificador} ya está "
+                        f"asignada a {cliente_ocupante.nombre} "
+                        f"(cliente {cliente_ocupante.id})"
+                    )
+
+                servicio_ocupante = (
+                    await self.db.execute(
+                        select(ServicioModel).where(
+                            ServicioModel.onu_id == onu_reservada.id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if servicio_ocupante:
+                    raise ValueError(
+                        f"La ONU {onu_reservada.identificador} ya está "
+                        f"asignada al servicio {servicio_ocupante.id}"
+                    )
+
+                if onu_reservada.estado != "DISPONIBLE":
+                    raise ValueError(
+                        f"El equipo {onu_reservada.identificador} no está "
+                        f"disponible (estado {onu_reservada.estado})"
+                    )
+        except Exception:
+            # IPAM puede haber tomado un bloqueo antes de validar la ONU.
+            # Se libera toda la transacción si la selección es inválida.
+            await self.db.rollback()
+            raise
 
         # 🔥 AQUÍ ESTÁ EL ESCUDO: Quitamos la basura virtual antes de guardar 🔥
         datos_dict.pop("identificador_onu", None)
@@ -171,11 +319,8 @@ class ClientService:
             
             # Reservar la ONU hasta que el técnico complete la instalación.
             if nuevo_cliente.onu_id:
-                onu = await self.db.get(InventarioONUModel, nuevo_cliente.onu_id)
+                onu = onu_reservada
                 if onu:
-                    if onu.estado != "DISPONIBLE":
-                        raise ValueError(f"El equipo {onu.identificador} no está disponible (Estado actual: {onu.estado}).")
-
                     onu.estado = "RESERVADO"
                     if nuevo_cliente.tecnico_id:
                         onu.tecnico_id = nuevo_cliente.tecnico_id
@@ -205,7 +350,9 @@ class ClientService:
             nuevo_cliente.cedula = codigo_hex
 
             # Creamos el contrato/servicio pendiente del abonado.
-            await self._obtener_o_crear_servicio(nuevo_cliente)
+            servicio_principal = await self._obtener_o_crear_servicio(
+                nuevo_cliente
+            )
             # La instalación deja de representarse únicamente como cliente.
             estado_orden = (
                 "asignada" if nuevo_cliente.tecnico_id else "pendiente"
@@ -213,6 +360,7 @@ class ClientService:
             orden = OrdenServicioModel(
                 tipo="instalacion",
                 cliente_id=nuevo_cliente.id,
+                servicio_id=servicio_principal.id,
                 tecnico_id=nuevo_cliente.tecnico_id,
                 creado_por_id=(
                     usuario_operador.id if usuario_operador else None
@@ -244,7 +392,28 @@ class ClientService:
         except IntegrityError as e:
             await self.db.rollback()
             print(f"Error de Integridad DB: {e}")
-            raise ValueError("No se pudo registrar: Hay un dato duplicado en el sistema (IP ocupada).")
+            detalle = str(getattr(e, "orig", e))
+            if "uq_clientes_onu_id" in detalle:
+                mensaje = (
+                    "La ONU seleccionada ya fue asignada a otro cliente. "
+                    "Actualiza el inventario y elige otra."
+                )
+            elif "uq_clientes_nap_puerto" in detalle:
+                mensaje = (
+                    "El puerto NAP seleccionado ya está ocupado por "
+                    "otro cliente."
+                )
+            elif "ip_asignada" in detalle:
+                mensaje = "La IP seleccionada ya está ocupada."
+            else:
+                mensaje = (
+                    "No se pudo registrar porque uno de los datos "
+                    "seleccionados ya está en uso."
+                )
+            raise ValueError(mensaje) from e
+        except ValueError:
+            await self.db.rollback()
+            raise
         except Exception as e:
             await self.db.rollback()
             print(f"Error DB Registrar: {e}")
@@ -288,6 +457,43 @@ class ClientService:
             raise ValueError("No se pudo identificar al operador de instalación")
         ftth_service = FTTHService(self.db)
 
+        orden_instalacion = None
+        if orden_id is not None:
+            orden_instalacion = await self.db.get(
+                OrdenServicioModel,
+                orden_id,
+            )
+            if (
+                not orden_instalacion
+                or orden_instalacion.cliente_id != cliente.id
+                or orden_instalacion.tipo != "instalacion"
+            ):
+                raise ValueError(
+                    "La orden indicada no corresponde a esta instalación"
+                )
+        else:
+            orden_instalacion = (
+                await self.db.execute(
+                    select(OrdenServicioModel)
+                    .where(
+                        OrdenServicioModel.cliente_id == cliente.id,
+                        OrdenServicioModel.tipo == "instalacion",
+                        OrdenServicioModel.estado.in_(
+                            {
+                                "pendiente",
+                                "asignada",
+                                "en_camino",
+                                "trabajando",
+                            }
+                        ),
+                    )
+                    .order_by(OrdenServicioModel.id.desc())
+                    .with_for_update()
+                )
+            ).scalars().first()
+            if orden_instalacion:
+                orden_id = orden_instalacion.id
+
         # Asignación transaccional con bloqueo y trazabilidad.
         if hasattr(datos_finales, 'onu_id') and datos_finales.onu_id is not None:
             await ftth_service.asignar_onu(
@@ -306,10 +512,55 @@ class ClientService:
         # PROTECCIÓN CLAVE: Solo actualizar si el técnico lo envió
         if datos_finales.router_id is not None: cliente.router_id = datos_finales.router_id
         if datos_finales.plan_id is not None: cliente.plan_id = datos_finales.plan_id
+
+        plan = (
+            await self.db.get(PlanModel, cliente.plan_id)
+            if cliente.plan_id
+            else None
+        )
+        if cliente.plan_id and not plan:
+            raise ValueError("El plan seleccionado no existe")
+        if plan and cliente.router_id and plan.router_id != cliente.router_id:
+            raise ValueError(
+                "El plan seleccionado no pertenece al router indicado"
+            )
+        olt = (
+            await self.db.get(OLTModel, cliente.olt_id)
+            if cliente.olt_id
+            else None
+        )
+        if cliente.olt_id and not olt:
+            raise ValueError("La OLT seleccionada no existe")
+        if olt and cliente.router_id and olt.router_id != cliente.router_id:
+            raise ValueError(
+                "La OLT seleccionada no pertenece al router indicado"
+            )
         
         # INFRAESTRUCTURA FIBRA Y GPS
         caja_nap_id = datos_finales.caja_nap_id or cliente.caja_nap_id
         puerto_nap = datos_finales.puerto_nap or cliente.puerto_nap
+        caja = (
+            await self.db.get(CajaNapModel, caja_nap_id)
+            if caja_nap_id
+            else None
+        )
+        if caja_nap_id and not caja:
+            raise ValueError("La caja NAP seleccionada no existe")
+        if caja and cliente.zona_id and caja.zona_id != cliente.zona_id:
+            raise ValueError(
+                "La caja NAP seleccionada no pertenece a la zona indicada"
+            )
+        if caja and cliente.olt_id and caja.olt_id:
+            if caja.olt_id != cliente.olt_id:
+                raise ValueError(
+                    "La caja NAP seleccionada no pertenece a la OLT indicada"
+                )
+        if caja and caja.olt_id and cliente.router_id:
+            olt_caja = await self.db.get(OLTModel, caja.olt_id)
+            if olt_caja and olt_caja.router_id != cliente.router_id:
+                raise ValueError(
+                    "La caja NAP seleccionada no pertenece al router indicado"
+                )
         if bool(caja_nap_id) != bool(puerto_nap):
             raise ValueError("Debes indicar la caja NAP y el puerto")
         if caja_nap_id and puerto_nap:
@@ -462,6 +713,23 @@ class ClientService:
 
         servicio.plan_id = cliente.plan_id
         servicio.plantilla_id = cliente.plantilla_id
+        servicio.alias = servicio.alias or "Principal"
+        servicio.direccion = cliente.direccion
+        servicio.latitud = cliente.latitud
+        servicio.longitud = cliente.longitud
+        servicio.router_id = cliente.router_id
+        servicio.zona_id = cliente.zona_id
+        servicio.red_id = cliente.red_id
+        servicio.olt_id = cliente.olt_id
+        servicio.caja_nap_id = cliente.caja_nap_id
+        servicio.puerto_nap = cliente.puerto_nap
+        servicio.tecnico_id = cliente.tecnico_id
+        servicio.onu_id = cliente.onu_id
+        servicio.ip_asignada = cliente.ip_asignada
+        servicio.mac_address = cliente.mac_address
+        servicio.user_pppoe = cliente.user_pppoe
+        servicio.pass_pppoe = cliente.pass_pppoe
+        servicio.is_online = cliente.is_online
         servicio.tipo_facturacion = tipo_facturacion
         servicio.ciclo_facturacion = ciclo_facturacion
         servicio.fecha_instalacion = fechas_servicio.fecha_instalacion
@@ -474,6 +742,40 @@ class ClientService:
         servicio.proxima_facturacion = fechas_servicio.proxima_facturacion
         servicio.meses_gratis = datos_finales.meses_gratis
         servicio.estado = "activo"
+
+        if orden_instalacion:
+            estado_anterior_orden = orden_instalacion.estado
+            orden_instalacion.servicio_id = servicio.id
+            orden_instalacion.estado = "terminada"
+            orden_instalacion.fecha_inicio = (
+                orden_instalacion.fecha_inicio or datetime.now()
+            )
+            orden_instalacion.fecha_finalizacion = datetime.now()
+            orden_instalacion.version += 1
+            self.db.add(
+                HistorialEstadoOrdenModel(
+                    orden_id=orden_instalacion.id,
+                    usuario_id=operador_id,
+                    estado_anterior=estado_anterior_orden,
+                    estado_nuevo="terminada",
+                    comentario=(
+                        "Instalación completada mediante activación directa"
+                    ),
+                )
+            )
+        if servicio.caja_nap_id and servicio.puerto_nap:
+            puerto = (
+                await self.db.execute(
+                    select(PuertoNapModel).where(
+                        PuertoNapModel.cliente_id == cliente.id,
+                        PuertoNapModel.caja_nap_id
+                        == servicio.caja_nap_id,
+                        PuertoNapModel.numero == servicio.puerto_nap,
+                    )
+                )
+            ).scalar_one_or_none()
+            if puerto:
+                puerto.servicio_id = servicio.id
 
         if cliente_rel.plantilla:
             servicio.dia_vencimiento = cliente_rel.plantilla.dia_pago
@@ -553,9 +855,6 @@ class ClientService:
     # ==========================================
     async def editar_cliente(self, cliente_id: int, datos: ClienteCreate):
         from sqlalchemy import select, update
-        from sqlalchemy.orm import selectinload
-        from src.infrastructure.models import ClienteModel, InventarioONUModel
-    
         # 1. Buscar el cliente en la base de datos
         stmt = select(ClienteModel).where(ClienteModel.id == cliente_id)
         cliente_db = (await self.db.execute(stmt)).scalar_one_or_none()
@@ -575,7 +874,93 @@ class ClientService:
             if campo in update_data:
                 if update_data[campo] in [0, "0", ""]:
                     update_data[campo] = None
-    
+
+        router_objetivo = update_data.get(
+            "router_id",
+            cliente_db.router_id,
+        )
+        plan_objetivo = update_data.get("plan_id", cliente_db.plan_id)
+        zona_objetivo = update_data.get("zona_id", cliente_db.zona_id)
+        olt_objetivo = update_data.get("olt_id", cliente_db.olt_id)
+        nap_objetiva = update_data.get(
+            "caja_nap_id",
+            cliente_db.caja_nap_id,
+        )
+
+        tiene_servicios = (
+            await self.db.execute(
+                select(func.count(ServicioModel.id)).where(
+                    ServicioModel.cliente_id == cliente_id,
+                    ServicioModel.estado != "cancelado",
+                )
+            )
+        ).scalar_one() > 0
+        if (
+            tiene_servicios
+            and "plan_id" in update_data
+            and plan_objetivo != cliente_db.plan_id
+        ):
+            raise ValueError(
+                "El plan pertenece a cada contrato. Cámbialo desde la "
+                "pestaña Servicios y selecciona el domicilio correcto."
+            )
+        if (
+            tiene_servicios
+            and "router_id" in update_data
+            and router_objetivo != cliente_db.router_id
+        ):
+            raise ValueError(
+                "El router pertenece a cada contrato. Realiza el cambio "
+                "desde el servicio o mediante una migración técnica."
+            )
+
+        plan = (
+            await self.db.get(PlanModel, plan_objetivo)
+            if plan_objetivo
+            else None
+        )
+        if plan_objetivo and not plan:
+            raise ValueError("El plan seleccionado no existe")
+        if plan and router_objetivo and plan.router_id != router_objetivo:
+            raise ValueError(
+                "El plan seleccionado no pertenece al router indicado"
+            )
+
+        olt = (
+            await self.db.get(OLTModel, olt_objetivo)
+            if olt_objetivo
+            else None
+        )
+        if olt_objetivo and not olt:
+            raise ValueError("La OLT seleccionada no existe")
+        if olt and router_objetivo and olt.router_id != router_objetivo:
+            raise ValueError(
+                "La OLT seleccionada no pertenece al router indicado"
+            )
+
+        caja = (
+            await self.db.get(CajaNapModel, nap_objetiva)
+            if nap_objetiva
+            else None
+        )
+        if nap_objetiva and not caja:
+            raise ValueError("La caja NAP seleccionada no existe")
+        if caja and zona_objetivo and caja.zona_id != zona_objetivo:
+            raise ValueError(
+                "La caja NAP seleccionada no pertenece a la zona indicada"
+            )
+        if caja and olt_objetivo and caja.olt_id:
+            if caja.olt_id != olt_objetivo:
+                raise ValueError(
+                    "La caja NAP seleccionada no pertenece a la OLT indicada"
+                )
+        if caja and caja.olt_id and router_objetivo:
+            olt_caja = await self.db.get(OLTModel, caja.olt_id)
+            if olt_caja and olt_caja.router_id != router_objetivo:
+                raise ValueError(
+                    "La caja NAP seleccionada no pertenece al router indicado"
+                )
+
         # 🔥 4. LÓGICA DE VINCULACIÓN DE HARDWARE BLINDADA 🔥
         sn_texto = update_data.get("identificador_onu") or update_data.get("mac_address")
     
@@ -650,6 +1035,19 @@ class ClientService:
         cliente = await self.db.get(ClienteModel, cliente_id)
         if not cliente:
             raise ValueError("Cliente no encontrado")
+        cantidad_servicios = (
+            await self.db.execute(
+                select(func.count(ServicioModel.id)).where(
+                    ServicioModel.cliente_id == cliente_id,
+                    ServicioModel.estado != "cancelado",
+                )
+            )
+        ).scalar_one()
+        if cantidad_servicios > 1:
+            raise ValueError(
+                "El cliente tiene varios servicios; cambia el estado "
+                "por servicio_id para no afectar otros domicilios"
+            )
 
         estado_limpio = nuevo_estado.lower().strip()
         await self.db.refresh(cliente, attribute_names=['router'])

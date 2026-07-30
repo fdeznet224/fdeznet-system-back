@@ -6,7 +6,13 @@ from fastapi import HTTPException
 from sqlalchemy.orm import joinedload
 
 # Modelos y Schemas
-from src.infrastructure.models import RouterModel, ClienteModel, RedModel, PlanModel
+from src.infrastructure.models import (
+    RouterModel,
+    ClienteModel,
+    RedModel,
+    PlanModel,
+    ServicioModel,
+)
 from src.domain.schemas import RouterCreate, RedCreate
 from src.infrastructure.mikrotik_service import MikroTikService
 
@@ -33,6 +39,35 @@ class NetworkService:
         r = cliente.router
         mk = MikroTikService(r.ip_vpn, r.user_api, r.pass_api, r.port_api)
         return mk, cliente
+
+    async def _get_mk_session_servicio(self, servicio_id: int):
+        stmt = (
+            select(ServicioModel)
+            .options(
+                joinedload(ServicioModel.router),
+                joinedload(ServicioModel.cliente),
+            )
+            .where(ServicioModel.id == servicio_id)
+        )
+        servicio = (await self.db.execute(stmt)).scalar_one_or_none()
+        if not servicio:
+            raise HTTPException(
+                status_code=404,
+                detail="Servicio no encontrado",
+            )
+        if not servicio.router:
+            raise HTTPException(
+                status_code=404,
+                detail="El servicio no tiene un router asignado",
+            )
+        router = servicio.router
+        mk = MikroTikService(
+            router.ip_vpn,
+            router.user_api,
+            router.pass_api,
+            router.port_api,
+        )
+        return mk, servicio
 
     # ==========================================
     # 1. GESTIÓN DE ROUTERS
@@ -108,12 +143,19 @@ class NetworkService:
             raise ValueError(f"Error al editar la red: {str(e)}")
 
     async def eliminar_red(self, red_id: int):
-        stmt = select(func.count(ClienteModel.id)).where(ClienteModel.red_id == red_id)
+        stmt = select(func.count(ServicioModel.id)).where(
+            ServicioModel.red_id == red_id,
+            ServicioModel.estado != "cancelado",
+        )
         result = await self.db.execute(stmt)
-        clientes_activos = result.scalar()
+        servicios_activos = result.scalar()
 
-        if clientes_activos > 0:
-            raise ValueError(f"No se puede eliminar: Hay {clientes_activos} clientes asignados a esta red. Muévelos primero.")
+        if servicios_activos > 0:
+            raise ValueError(
+                "No se puede eliminar: Hay "
+                f"{servicios_activos} servicios asignados a esta red. "
+                "Muévelos primero."
+            )
 
         red_db = await self.db.get(RedModel, red_id)
         if not red_db:
@@ -176,34 +218,54 @@ class NetworkService:
             # ---------------------------------------------------------
             # PASO C: SINCRONIZAR CLIENTES (Secrets PPPoE)
             # ---------------------------------------------------------
-            stmt_clientes = select(ClienteModel).options(joinedload(ClienteModel.plan)).where(ClienteModel.router_id == router_id)
-            result = await self.db.execute(stmt_clientes)
-            clientes = result.scalars().all()
+            stmt_servicios = (
+                select(ServicioModel)
+                .options(
+                    joinedload(ServicioModel.plan),
+                    joinedload(ServicioModel.cliente),
+                )
+                .where(
+                    ServicioModel.router_id == router_id,
+                    ServicioModel.estado != "cancelado",
+                )
+            )
+            result = await self.db.execute(stmt_servicios)
+            servicios = result.scalars().all()
 
-            contador_clientes = 0
+            contador_servicios = 0
 
-            for cliente in clientes:
-                if not cliente.plan or not cliente.user_pppoe: continue
+            for servicio in servicios:
+                if not servicio.plan or not servicio.user_pppoe:
+                    continue
 
+                cliente = servicio.cliente
                 cedula_str = cliente.cedula if cliente.cedula else "S/A"
-                comentario_estandar = f"{cliente.nombre} | SN:{cedula_str} | ID:{cliente.id}"
+                comentario_estandar = (
+                    f"{cliente.nombre} | Servicio:{servicio.id} "
+                    f"{servicio.alias} | SN:{cedula_str}"
+                )
 
                 # 1. Configuración Técnica PPPoE
                 mk.crear_actualizar_pppoe(
-                    user=cliente.user_pppoe,
-                    password=cliente.pass_pppoe,
-                    profile=cliente.plan.nombre,
-                    remote_address=cliente.ip_asignada,
+                    user=servicio.user_pppoe,
+                    password=servicio.pass_pppoe,
+                    profile=servicio.plan.nombre,
+                    remote_address=servicio.ip_asignada,
                     comment=comentario_estandar
                 )
 
                 # 2. Estado (Corte vs Activo usando la nueva función unificada)
-                suspender = True if cliente.estado != 'activo' else False
-                mk.gestionar_corte_cliente(cliente.ip_asignada, suspender=suspender)
+                suspender = servicio.estado != "activo"
+                mk.gestionar_corte_cliente(
+                    servicio.ip_asignada,
+                    suspender=suspender,
+                )
 
-                contador_clientes += 1
+                contador_servicios += 1
             
-            log_acciones.append(f"{contador_clientes} ONUs/Clientes sincronizados.")
+            log_acciones.append(
+                f"{contador_servicios} servicios sincronizados."
+            )
             return f"Sincronización Exitosa: {', '.join(log_acciones)}"
 
         except Exception as e:
@@ -281,3 +343,78 @@ class NetworkService:
     async def ping_cliente(self, cliente_id: int):
         mk, cliente = await self._get_mk_session(cliente_id)
         return mk.ping_desde_router(cliente.ip_asignada)
+
+    async def obtener_estado_tecnico_servicio(self, servicio_id: int):
+        mk, servicio = await self._get_mk_session_servicio(servicio_id)
+        info = {
+            "cliente": servicio.cliente.nombre,
+            "cliente_id": servicio.cliente_id,
+            "servicio_id": servicio.id,
+            "servicio": servicio.alias,
+            "direccion": servicio.direccion,
+            "ip": servicio.ip_asignada,
+            "online": False,
+            "router_nombre": servicio.router.nombre,
+            "tecnologia": "FTTH/PPPoE",
+            "consumo": None,
+            "detalles": {},
+        }
+        if servicio.user_pppoe:
+            sesion = mk.obtener_info_sesion(servicio.user_pppoe)
+            if sesion and sesion.get("online"):
+                info["online"] = True
+                info["detalles"] = {
+                    "uptime": sesion.get("uptime"),
+                    "mac_onu": sesion.get("mac_onu"),
+                    "ip_actual": sesion.get("ip"),
+                }
+            consumo = mk.obtener_consumo_interfaz_pppoe(
+                servicio.user_pppoe
+            )
+            if consumo:
+                info["consumo"] = consumo
+        return info
+
+    async def verificar_conexion_servicio(self, servicio_id: int):
+        mk, servicio = await self._get_mk_session_servicio(servicio_id)
+        sesion = (
+            mk.obtener_info_sesion(servicio.user_pppoe)
+            if servicio.user_pppoe
+            else None
+        )
+        online = bool(sesion and sesion.get("online"))
+        return {
+            "servicio_id": servicio.id,
+            "online": online,
+            "metodo": "PPPoE",
+            "datos": (
+                {
+                    "uptime": sesion.get("uptime", "0s"),
+                    "ip_actual": sesion.get("ip"),
+                    "mac_onu": sesion.get("mac_onu"),
+                }
+                if online
+                else {}
+            ),
+        }
+
+    async def verificar_trafico_servicio(self, servicio_id: int):
+        mk, servicio = await self._get_mk_session_servicio(servicio_id)
+        consumo = (
+            mk.obtener_consumo_interfaz_pppoe(servicio.user_pppoe)
+            if servicio.user_pppoe
+            else None
+        ) or {}
+        return {
+            "servicio_id": servicio.id,
+            "velocidad_subida": consumo.get("up_bps", 0),
+            "velocidad_bajada": consumo.get("down_bps", 0),
+            "total_subida": 0,
+            "total_bajada": 0,
+        }
+
+    async def ping_servicio(self, servicio_id: int):
+        mk, servicio = await self._get_mk_session_servicio(servicio_id)
+        if not servicio.ip_asignada:
+            raise ValueError("El servicio no tiene IP asignada")
+        return mk.ping_desde_router(servicio.ip_asignada)

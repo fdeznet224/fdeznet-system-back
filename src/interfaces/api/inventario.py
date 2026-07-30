@@ -3,9 +3,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 from pydantic import BaseModel
 
-# 🔥 1. IMPORTAMOS EL CACHÉ
-from fastapi_cache.decorator import cache
-
 from src.domain.schemas import ONURetorno
 from src.infrastructure.database import get_db
 # 👇 Importamos nuestro nuevo servicio
@@ -62,10 +59,9 @@ async def eliminar_onu(
 
 
 # ==========================================
-# CATÁLOGO DE INVENTARIO (CON CACHÉ)
+# CATÁLOGO DE INVENTARIO
 # ==========================================
 @router.get("/", response_model=List[ONURetorno])
-@cache(expire=300) # 🔥 Guardamos el inventario por 5 minutos
 async def obtener_inventario(
     estado: str = None,
     db: AsyncSession = Depends(get_db),

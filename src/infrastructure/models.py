@@ -380,6 +380,12 @@ class OrdenServicioModel(Base):
         nullable=True,
         index=True,
     )
+    servicio_id = Column(
+        Integer,
+        ForeignKey("servicios.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # Sugerencia de infraestructura para la orden. No reserva el puerto;
     # la asignación definitiva ocurre al confirmar la instalación.
     caja_nap_sugerida_id = Column(
@@ -441,6 +447,11 @@ class OrdenServicioModel(Base):
         back_populates="ordenes_servicio",
         foreign_keys=[cliente_id],
     )
+    servicio = relationship(
+        "ServicioModel",
+        back_populates="ordenes",
+        foreign_keys=[servicio_id],
+    )
     tecnico = relationship("UsuarioModel", foreign_keys=[tecnico_id])
     creado_por = relationship("UsuarioModel", foreign_keys=[creado_por_id])
     historial = relationship(
@@ -488,6 +499,12 @@ class DiagnosticoSoporteModel(Base):
         nullable=True,
         index=True,
     )
+    servicio_id = Column(
+        Integer,
+        ForeignKey("servicios.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     ejecutado_por_id = Column(
         Integer,
         ForeignKey("usuarios.id", ondelete="SET NULL"),
@@ -523,6 +540,7 @@ class DiagnosticoSoporteModel(Base):
 
     orden = relationship("OrdenServicioModel", back_populates="diagnosticos_soporte")
     cliente = relationship("ClienteModel")
+    servicio = relationship("ServicioModel")
     ejecutado_por = relationship("UsuarioModel")
 
 
@@ -609,7 +627,7 @@ class PuertoNapModel(Base):
     __tablename__ = "puertos_nap"
     __table_args__ = (
         UniqueConstraint("caja_nap_id", "numero", name="uq_puertos_nap_caja_numero"),
-        UniqueConstraint("cliente_id", name="uq_puertos_nap_cliente_id"),
+        UniqueConstraint("servicio_id", name="uq_puertos_nap_servicio_id"),
         Index("ix_puertos_nap_caja_estado", "caja_nap_id", "estado"),
     )
 
@@ -625,6 +643,13 @@ class PuertoNapModel(Base):
         Integer,
         ForeignKey("clientes.id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
+    )
+    servicio_id = Column(
+        Integer,
+        ForeignKey("servicios.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     orden_id = Column(
         Integer,
@@ -656,6 +681,11 @@ class PuertoNapModel(Base):
         back_populates="puerto_ftth",
         foreign_keys=[cliente_id],
     )
+    servicio = relationship(
+        "ServicioModel",
+        back_populates="puerto_ftth",
+        foreign_keys=[servicio_id],
+    )
     orden = relationship("OrdenServicioModel")
     actualizado_por = relationship("UsuarioModel")
 
@@ -676,6 +706,12 @@ class HistorialEquipoModel(Base):
         Integer,
         ForeignKey("clientes.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    servicio_id = Column(
+        Integer,
+        ForeignKey("servicios.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     tecnico_id = Column(
         Integer,
@@ -701,6 +737,7 @@ class HistorialEquipoModel(Base):
 
     onu = relationship("InventarioONUModel", back_populates="movimientos")
     cliente = relationship("ClienteModel")
+    servicio = relationship("ServicioModel")
     tecnico = relationship("UsuarioModel")
     orden = relationship("OrdenServicioModel")
 
@@ -717,6 +754,12 @@ class LecturaOpticaModel(Base):
         Integer,
         ForeignKey("clientes.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    servicio_id = Column(
+        Integer,
+        ForeignKey("servicios.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     onu_id = Column(
         Integer,
@@ -744,6 +787,7 @@ class LecturaOpticaModel(Base):
     )
 
     cliente = relationship("ClienteModel")
+    servicio = relationship("ServicioModel")
     onu = relationship("InventarioONUModel")
     orden = relationship("OrdenServicioModel")
     tecnico = relationship("UsuarioModel")
@@ -848,6 +892,20 @@ class ServicioModel(Base):
             "ix_servicios_proxima_facturacion",
             "proxima_facturacion",
         ),
+        Index(
+            "ix_servicios_router_estado",
+            "router_id",
+            "estado",
+        ),
+        UniqueConstraint(
+            "onu_id",
+            name="uq_servicios_onu_id",
+        ),
+        UniqueConstraint(
+            "caja_nap_id",
+            "puerto_nap",
+            name="uq_servicios_nap_puerto",
+        ),
     )
 
     id = Column(
@@ -861,6 +919,76 @@ class ServicioModel(Base):
         ForeignKey("clientes.id"),
         nullable=False,
         index=True,
+    )
+
+    alias = Column(
+        String(100),
+        nullable=False,
+        default="Principal",
+        server_default="Principal",
+    )
+    direccion = Column(String(255), nullable=True)
+    latitud = Column(Float, nullable=True)
+    longitud = Column(Float, nullable=True)
+
+    router_id = Column(
+        Integer,
+        ForeignKey("routers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    zona_id = Column(
+        Integer,
+        ForeignKey("zonas.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    red_id = Column(
+        Integer,
+        ForeignKey("redes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    olt_id = Column(
+        Integer,
+        ForeignKey("olts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    caja_nap_id = Column(
+        Integer,
+        ForeignKey("cajas_nap.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    puerto_nap = Column(Integer, nullable=True)
+    tecnico_id = Column(
+        Integer,
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    onu_id = Column(
+        Integer,
+        ForeignKey("inventario_onus.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    ip_asignada = Column(String(20), nullable=True, unique=True)
+    mac_address = Column(String(20), nullable=True)
+    user_pppoe = Column(String(50), nullable=True, index=True)
+    pass_pppoe = Column(String(100), nullable=True)
+    is_online = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+    )
+    ultimo_cambio_estado = Column(
+        DateTime,
+        default=func.now(),
+        onupdate=func.now(),
     )
 
     plan_id = Column(
@@ -986,6 +1114,25 @@ class ServicioModel(Base):
 
     plantilla = relationship(
         "PlantillaFacturacionModel",
+    )
+
+    router = relationship("RouterModel")
+    zona = relationship("ZonaModel")
+    red = relationship("RedModel")
+    olt = relationship("OLTModel")
+    caja_nap = relationship("CajaNapModel")
+    tecnico = relationship("UsuarioModel", foreign_keys=[tecnico_id])
+    onu = relationship("InventarioONUModel", foreign_keys=[onu_id])
+    puerto_ftth = relationship(
+        "PuertoNapModel",
+        back_populates="servicio",
+        uselist=False,
+        foreign_keys="PuertoNapModel.servicio_id",
+    )
+    ordenes = relationship(
+        "OrdenServicioModel",
+        back_populates="servicio",
+        foreign_keys="OrdenServicioModel.servicio_id",
     )
 
     facturas = relationship(
@@ -1360,6 +1507,19 @@ class LogCronjobModel(Base):
 
 class MensajeChatModel(Base):
     __tablename__ = "mensajes_chat"
+    __table_args__ = (
+        Index(
+            "ix_mensajes_salida_estado_proximo",
+            "direccion",
+            "estado_envio",
+            "proximo_intento_en",
+        ),
+        Index(
+            "ix_mensajes_salida_fecha",
+            "direccion",
+            "fecha",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=True) 
@@ -1375,8 +1535,55 @@ class MensajeChatModel(Base):
     # 👇 NUEVAS COLUMNAS PARA RASTREAR ESTADO DE WHATSAPP 👇
     wa_id = Column(String(100), nullable=True, index=True) # ID interno del mensaje de WhatsApp
     ack = Column(Integer, default=0) # 0=Pendiente, 1=Enviado, 2=Entregado, 3=Visto
+    estado_envio = Column(
+        String(20),
+        nullable=False,
+        default="pendiente",
+        server_default="pendiente",
+    )
+    intentos = Column(Integer, nullable=False, default=0, server_default="0")
+    max_intentos = Column(
+        Integer,
+        nullable=False,
+        default=5,
+        server_default="5",
+    )
+    ultimo_error = Column(Text, nullable=True)
+    ultima_tentativa_en = Column(DateTime(timezone=True), nullable=True)
+    proximo_intento_en = Column(DateTime(timezone=True), nullable=True)
+    bloqueado_hasta = Column(DateTime(timezone=True), nullable=True)
+    enviado_en = Column(DateTime(timezone=True), nullable=True)
+    entregado_en = Column(DateTime(timezone=True), nullable=True)
+    leido_en = Column(DateTime(timezone=True), nullable=True)
+    ruta_archivo = Column(String(500), nullable=True)
+    lote_id = Column(String(36), nullable=True, index=True)
+    reintentos_manuales = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    creado_por_id = Column(
+        Integer,
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    ultimo_reintento_por_id = Column(
+        Integer,
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     cliente = relationship("ClienteModel", backref="historial_chat")
+    creado_por = relationship(
+        "UsuarioModel",
+        foreign_keys=[creado_por_id],
+    )
+    ultimo_reintento_por = relationship(
+        "UsuarioModel",
+        foreign_keys=[ultimo_reintento_por_id],
+    )
 
 
 

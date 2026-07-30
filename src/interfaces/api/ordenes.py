@@ -58,6 +58,7 @@ class OrdenCrear(BaseModel):
         pattern=r"^(instalacion|reparacion|cambio_domicilio|cambio_onu|retiro)$"
     )
     cliente_id: Optional[int] = None
+    servicio_id: Optional[int] = Field(default=None, gt=0)
     caja_nap_sugerida_id: Optional[int] = None
     puerto_nap_sugerido: Optional[int] = Field(default=None, ge=1, le=128)
     prospecto_nombre: Optional[str] = Field(default=None, max_length=150)
@@ -129,6 +130,17 @@ def serializar_orden(orden):
         "id": orden.id,
         "tipo": orden.tipo,
         "cliente_id": orden.cliente_id,
+        "servicio_id": orden.servicio_id,
+        "servicio": (
+            {
+                "id": orden.servicio.id,
+                "alias": orden.servicio.alias,
+                "direccion": orden.servicio.direccion,
+                "estado": orden.servicio.estado,
+            }
+            if orden.servicio
+            else None
+        ),
         "caja_nap_sugerida_id": orden.caja_nap_sugerida_id,
         "puerto_nap_sugerido": orden.puerto_nap_sugerido,
         "cliente": (

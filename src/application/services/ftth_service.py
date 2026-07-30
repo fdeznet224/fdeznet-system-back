@@ -11,6 +11,7 @@ from src.infrastructure.models import (
     InventarioONUModel,
     LecturaOpticaModel,
     PuertoNapModel,
+    ServicioModel,
 )
 
 
@@ -145,6 +146,68 @@ class FTTHService:
         await self.db.flush()
         return puerto
 
+    async def asignar_puerto_servicio(
+        self,
+        servicio: ServicioModel,
+        caja_nap_id: int,
+        numero: int,
+        usuario_id: int,
+        orden_id: Optional[int] = None,
+        potencia_dbm: Optional[Decimal] = None,
+    ):
+        """Ocupa un puerto para un contrato, permitiendo varios por cliente."""
+        puerto = await self._obtener_puerto_bloqueado(caja_nap_id, numero)
+        if puerto.estado == "danado":
+            raise ValueError("El puerto NAP está marcado como dañado")
+        if (
+            puerto.estado == "reservado"
+            and puerto.orden_id
+            and puerto.orden_id != orden_id
+        ):
+            raise ValueError("El puerto NAP está reservado para otra orden")
+        if puerto.servicio_id and puerto.servicio_id != servicio.id:
+            raise ValueError("El puerto NAP ya pertenece a otro servicio")
+
+        ocupante = (
+            await self.db.execute(
+                select(ServicioModel).where(
+                    ServicioModel.caja_nap_id == caja_nap_id,
+                    ServicioModel.puerto_nap == numero,
+                    ServicioModel.id != servicio.id,
+                    ServicioModel.estado != "cancelado",
+                )
+            )
+        ).scalar_one_or_none()
+        if ocupante:
+            raise ValueError(
+                f"El puerto NAP ya pertenece al servicio {ocupante.id}"
+            )
+
+        puerto_anterior = (
+            await self.db.execute(
+                select(PuertoNapModel)
+                .where(
+                    PuertoNapModel.servicio_id == servicio.id,
+                    PuertoNapModel.id != puerto.id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if puerto_anterior:
+            self._liberar_registro_puerto(puerto_anterior, usuario_id)
+
+        puerto.estado = "ocupado"
+        puerto.cliente_id = servicio.cliente_id
+        puerto.servicio_id = servicio.id
+        puerto.orden_id = orden_id
+        puerto.actualizado_por_id = usuario_id
+        if potencia_dbm is not None:
+            puerto.potencia_instalacion_dbm = potencia_dbm
+        servicio.caja_nap_id = caja_nap_id
+        servicio.puerto_nap = numero
+        await self.db.flush()
+        return puerto
+
     async def liberar_puerto(
         self,
         cliente: ClienteModel,
@@ -162,6 +225,24 @@ class FTTHService:
 
         cliente.caja_nap_id = None
         cliente.puerto_nap = None
+        await self.db.flush()
+
+    async def liberar_puerto_servicio(
+        self,
+        servicio: ServicioModel,
+        usuario_id: int,
+    ):
+        puerto = (
+            await self.db.execute(
+                select(PuertoNapModel)
+                .where(PuertoNapModel.servicio_id == servicio.id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if puerto:
+            self._liberar_registro_puerto(puerto, usuario_id)
+        servicio.caja_nap_id = None
+        servicio.puerto_nap = None
         await self.db.flush()
 
     async def asignar_onu(
@@ -240,12 +321,91 @@ class FTTHService:
         await self.db.flush()
         return onu_nueva
 
+    async def asignar_onu_servicio(
+        self,
+        servicio: ServicioModel,
+        onu_id: int,
+        usuario_id: int,
+        orden_id: Optional[int] = None,
+        motivo: str = "Asignación a servicio",
+        potencia_dbm: Optional[Decimal] = None,
+    ):
+        onu_nueva = (
+            await self.db.execute(
+                select(InventarioONUModel)
+                .where(InventarioONUModel.id == onu_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not onu_nueva:
+            raise ValueError("La ONU seleccionada no existe")
+
+        ocupante = (
+            await self.db.execute(
+                select(ServicioModel).where(
+                    ServicioModel.onu_id == onu_id,
+                    ServicioModel.id != servicio.id,
+                    ServicioModel.estado != "cancelado",
+                )
+            )
+        ).scalar_one_or_none()
+        if ocupante:
+            raise ValueError(
+                f"La ONU ya pertenece al servicio {ocupante.id}"
+            )
+        if servicio.onu_id != onu_id and onu_nueva.estado != "DISPONIBLE":
+            raise ValueError(
+                f"La ONU no está disponible (estado {onu_nueva.estado})"
+            )
+
+        if servicio.onu_id and servicio.onu_id != onu_id:
+            onu_anterior = await self.db.get(
+                InventarioONUModel,
+                servicio.onu_id,
+            )
+            if onu_anterior:
+                estado_anterior = onu_anterior.estado
+                onu_anterior.estado = "DISPONIBLE"
+                onu_anterior.tecnico_id = None
+                self.registrar_movimiento(
+                    onu=onu_anterior,
+                    cliente_id=servicio.cliente_id,
+                    servicio_id=servicio.id,
+                    tecnico_id=usuario_id,
+                    orden_id=orden_id,
+                    tipo_movimiento="desasignacion",
+                    estado_anterior=estado_anterior,
+                    estado_nuevo="DISPONIBLE",
+                    motivo="Reemplazada durante asignación",
+                )
+
+        estado_anterior = onu_nueva.estado
+        onu_nueva.estado = "INSTALADO"
+        onu_nueva.tecnico_id = usuario_id
+        servicio.onu_id = onu_nueva.id
+        servicio.mac_address = onu_nueva.identificador
+        self.registrar_movimiento(
+            onu=onu_nueva,
+            cliente_id=servicio.cliente_id,
+            servicio_id=servicio.id,
+            tecnico_id=usuario_id,
+            orden_id=orden_id,
+            tipo_movimiento="instalacion",
+            estado_anterior=estado_anterior,
+            estado_nuevo="INSTALADO",
+            motivo=motivo,
+            potencia_dbm=potencia_dbm,
+        )
+        await self.db.flush()
+        return onu_nueva
+
     def registrar_movimiento(
         self,
         onu: InventarioONUModel,
         tipo_movimiento: str,
         estado_nuevo: str,
         cliente_id: Optional[int] = None,
+        servicio_id: Optional[int] = None,
         tecnico_id: Optional[int] = None,
         orden_id: Optional[int] = None,
         estado_anterior: Optional[str] = None,
@@ -257,6 +417,7 @@ class FTTHService:
             HistorialEquipoModel(
                 onu_id=onu.id,
                 cliente_id=cliente_id,
+                servicio_id=servicio_id,
                 tecnico_id=tecnico_id,
                 orden_id=orden_id,
                 tipo_movimiento=tipo_movimiento,
@@ -295,6 +456,33 @@ class FTTHService:
         await self.db.flush()
         return lectura
 
+    async def registrar_lectura_optica_servicio(
+        self,
+        servicio: ServicioModel,
+        potencia_rx_dbm: Decimal,
+        tecnico_id: int,
+        potencia_tx_dbm: Optional[Decimal] = None,
+        orden_id: Optional[int] = None,
+        origen: str = "manual",
+        observaciones: Optional[str] = None,
+    ):
+        if potencia_rx_dbm < Decimal("-50") or potencia_rx_dbm > Decimal("10"):
+            raise ValueError("La potencia RX debe estar entre -50 y 10 dBm")
+        lectura = LecturaOpticaModel(
+            cliente_id=servicio.cliente_id,
+            servicio_id=servicio.id,
+            onu_id=servicio.onu_id,
+            orden_id=orden_id,
+            tecnico_id=tecnico_id,
+            potencia_rx_dbm=potencia_rx_dbm,
+            potencia_tx_dbm=potencia_tx_dbm,
+            origen=origen,
+            observaciones=observaciones,
+        )
+        self.db.add(lectura)
+        await self.db.flush()
+        return lectura
+
     async def _obtener_puerto_bloqueado(self, caja_nap_id: int, numero: int):
         caja = await self.db.get(CajaNapModel, caja_nap_id)
         if not caja:
@@ -321,6 +509,7 @@ class FTTHService:
     def _liberar_registro_puerto(puerto: PuertoNapModel, usuario_id: int):
         puerto.estado = "libre"
         puerto.cliente_id = None
+        puerto.servicio_id = None
         puerto.orden_id = None
         puerto.potencia_instalacion_dbm = None
         puerto.actualizado_por_id = usuario_id

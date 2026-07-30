@@ -13,6 +13,8 @@ from src.infrastructure.models import (
     HistorialEstadoOrdenModel,
     InventarioONUModel,
     OrdenServicioModel,
+    PlanModel,
+    RouterModel,
     ServicioModel,
     UsuarioModel,
 )
@@ -40,6 +42,7 @@ class BajaService:
         tecnico_id: Optional[int] = None,
         fecha_programada: Optional[datetime] = None,
         observaciones: Optional[str] = None,
+        servicio_id: Optional[int] = None,
     ) -> BajaServicioModel:
         motivo = (motivo or "").strip()
         if len(motivo) < 5:
@@ -56,37 +59,59 @@ class BajaService:
         if not cliente:
             raise ValueError("Cliente no encontrado")
 
-        existente = await self._baja_abierta(cliente.id)
-        if existente:
-            return existente
-        if cliente.estado in {"cancelado", "eliminado"}:
-            raise ValueError("El cliente ya se encuentra cancelado")
-
         tecnico = await self._validar_tecnico(tecnico_id)
-        servicio = (
+        servicios = (
             await self.db.execute(
                 select(ServicioModel)
                 .where(
                     ServicioModel.cliente_id == cliente.id,
                     ServicioModel.estado != "cancelado",
                 )
-                .order_by(ServicioModel.id.desc())
+                .order_by(ServicioModel.id)
                 .with_for_update()
             )
-        ).scalars().first()
-        caja_nap_id = cliente.caja_nap_id
-        puerto_nap = cliente.puerto_nap
+        ).scalars().all()
+        if servicio_id:
+            servicio = next(
+                (item for item in servicios if item.id == servicio_id),
+                None,
+            )
+            if not servicio:
+                raise ValueError("El servicio no pertenece al cliente")
+        elif len(servicios) == 1:
+            servicio = servicios[0]
+        elif len(servicios) > 1:
+            raise ValueError(
+                "Indica servicio_id porque el cliente tiene "
+                "varios domicilios"
+            )
+        else:
+            raise ValueError("El cliente no tiene servicios vigentes")
+
+        existente = await self._baja_abierta(
+            cliente.id,
+            servicio.id,
+        )
+        if existente:
+            return existente
+
+        caja_nap_id = servicio.caja_nap_id
+        puerto_nap = servicio.puerto_nap
         onu = None
-        if cliente.onu_id:
+        if servicio.onu_id:
             onu = (
                 await self.db.execute(
                     select(InventarioONUModel)
-                    .where(InventarioONUModel.id == cliente.onu_id)
+                    .where(InventarioONUModel.id == servicio.onu_id)
                     .with_for_update()
                 )
             ).scalar_one_or_none()
 
-        await self._cancelar_ordenes_abiertas(cliente.id, usuario.id)
+        await self._cancelar_ordenes_abiertas(
+            cliente.id,
+            usuario.id,
+            servicio.id,
+        )
 
         orden = None
         if onu:
@@ -96,6 +121,7 @@ class BajaService:
                     select(OrdenServicioModel)
                     .where(
                         OrdenServicioModel.cliente_id == cliente.id,
+                        OrdenServicioModel.servicio_id == servicio.id,
                         OrdenServicioModel.tipo == "retiro",
                         OrdenServicioModel.estado.notin_(
                             ["terminada", "cancelada"]
@@ -130,6 +156,7 @@ class BajaService:
                 orden = OrdenServicioModel(
                     tipo="retiro",
                     cliente_id=cliente.id,
+                    servicio_id=servicio.id,
                     tecnico_id=tecnico.id if tecnico else None,
                     creado_por_id=usuario.id,
                     prioridad="alta",
@@ -160,6 +187,7 @@ class BajaService:
             FTTHService(self.db).registrar_movimiento(
                 onu=onu,
                 cliente_id=cliente.id,
+                servicio_id=servicio.id,
                 tecnico_id=usuario.id,
                 orden_id=orden.id,
                 tipo_movimiento="retiro_pendiente",
@@ -179,7 +207,7 @@ class BajaService:
             motivo=motivo,
             observaciones=(observaciones or "").strip() or None,
             mikrotik_estado="pendiente",
-            ip_snapshot=cliente.ip_asignada,
+            ip_snapshot=servicio.ip_asignada,
             caja_nap_id_snapshot=caja_nap_id,
             puerto_nap_snapshot=puerto_nap,
             servicio_estado_snapshot=servicio.estado if servicio else None,
@@ -189,12 +217,14 @@ class BajaService:
         )
         self.db.add(baja)
 
-        cliente.estado = "cancelado"
-        cliente.proxima_factura = None
-        if servicio:
-            servicio.estado = "cancelado"
-            servicio.proxima_facturacion = None
-        await FTTHService(self.db).liberar_puerto(cliente, usuario.id)
+        servicio.estado = "cancelado"
+        servicio.proxima_facturacion = None
+        await FTTHService(self.db).liberar_puerto_servicio(
+            servicio,
+            usuario.id,
+        )
+        await self._sincronizar_estado_cliente(cliente)
+        await self._sincronizar_legacy_si_principal(servicio, cliente)
         await self.db.commit()
 
         await self.sincronizar_mikrotik(baja.id)
@@ -331,6 +361,7 @@ class BajaService:
         FTTHService(self.db).registrar_movimiento(
             onu=onu,
             cliente_id=baja.cliente_id,
+            servicio_id=baja.servicio_id,
             tecnico_id=usuario.id,
             orden_id=baja.orden_retiro_id,
             tipo_movimiento=(
@@ -344,10 +375,17 @@ class BajaService:
             motivo=(observaciones or "Cierre de retiro por baja"),
         )
 
+        servicio = (
+            await self.db.get(ServicioModel, baja.servicio_id)
+            if baja.servicio_id
+            else None
+        )
+        if servicio and servicio.onu_id == onu.id:
+            servicio.onu_id = None
+            servicio.mac_address = None
         if cliente and cliente.onu_id == onu.id:
             cliente.onu_id = None
             cliente.mac_address = None
-            cliente.ip_asignada = None
 
         await self._cerrar_orden_retiro(
             baja,
@@ -389,7 +427,7 @@ class BajaService:
             if baja.servicio_id
             else None
         )
-        if not cliente or not onu or cliente.onu_id != onu.id:
+        if not cliente or not onu:
             raise ValueError(
                 "El equipo ya fue desvinculado; crea una nueva instalación"
             )
@@ -397,10 +435,14 @@ class BajaService:
             raise ValueError("La ONU ya no está disponible para reactivación")
         if not servicio:
             raise ValueError("No existe el servicio original para reactivar")
+        if servicio.onu_id != onu.id:
+            raise ValueError(
+                "El equipo ya fue desvinculado; crea una nueva instalación"
+            )
 
         if baja.caja_nap_id_snapshot and baja.puerto_nap_snapshot:
-            await FTTHService(self.db).asignar_puerto(
-                cliente=cliente,
+            await FTTHService(self.db).asignar_puerto_servicio(
+                servicio=servicio,
                 caja_nap_id=baja.caja_nap_id_snapshot,
                 numero=baja.puerto_nap_snapshot,
                 usuario_id=usuario.id,
@@ -411,6 +453,7 @@ class BajaService:
         FTTHService(self.db).registrar_movimiento(
             onu=onu,
             cliente_id=cliente.id,
+            servicio_id=servicio.id,
             tecnico_id=usuario.id,
             orden_id=baja.orden_retiro_id,
             tipo_movimiento="reactivacion_baja",
@@ -419,14 +462,14 @@ class BajaService:
             motivo="Baja revertida antes de recuperar el equipo",
         )
 
-        cliente.estado = "activo"
-        cliente.ip_asignada = baja.ip_snapshot
-        cliente.proxima_factura = baja.proxima_facturacion_snapshot
         servicio.estado = "activo"
+        servicio.ip_asignada = baja.ip_snapshot
         servicio.proxima_facturacion = baja.proxima_facturacion_snapshot
         baja.estado = "cancelada"
         baja.cancelada_en = datetime.now()
         await self._cancelar_orden_retiro(baja, usuario.id)
+        await self._sincronizar_estado_cliente(cliente)
+        await self._sincronizar_legacy_si_principal(servicio, cliente)
         await self.db.commit()
 
         await self.sincronizar_mikrotik(baja.id)
@@ -435,9 +478,16 @@ class BajaService:
     async def sincronizar_mikrotik(self, baja_id: int):
         baja = await self.obtener(baja_id)
         cliente = baja.cliente
+        servicio = baja.servicio
+        objetivo = servicio or cliente
         activar = baja.estado == "cancelada"
-        if not cliente.router or (
-            not cliente.user_pppoe and not cliente.ip_asignada
+        router = (
+            await self.db.get(RouterModel, objetivo.router_id)
+            if objetivo.router_id
+            else None
+        )
+        if not router or (
+            not objetivo.user_pppoe and not objetivo.ip_asignada
         ):
             baja.mikrotik_estado = "no_aplica"
             baja.mikrotik_error = None
@@ -446,35 +496,41 @@ class BajaService:
 
         try:
             mk = MikroTikService(
-                cliente.router.ip_vpn,
-                cliente.router.user_api,
-                cliente.router.pass_api,
-                cliente.router.port_api,
+                router.ip_vpn,
+                router.user_api,
+                router.pass_api,
+                router.port_api,
             )
-            if activar and cliente.user_pppoe:
-                if not cliente.plan or not cliente.pass_pppoe:
+            if activar and objetivo.user_pppoe:
+                plan = (
+                    await self.db.get(PlanModel, objetivo.plan_id)
+                    if objetivo.plan_id
+                    else None
+                )
+                if not plan or not objetivo.pass_pppoe:
                     raise ValueError(
                         "Faltan plan o credenciales PPPoE para reactivar"
                     )
                 mk.crear_actualizar_pppoe(
-                    user=cliente.user_pppoe,
-                    password=cliente.pass_pppoe,
-                    profile=cliente.plan.nombre,
-                    remote_address=cliente.ip_asignada,
+                    user=objetivo.user_pppoe,
+                    password=objetivo.pass_pppoe,
+                    profile=plan.nombre,
+                    remote_address=objetivo.ip_asignada,
                     comment=(
-                        f"{cliente.nombre} | ID:{cliente.cedula or 'S/A'}"
+                        f"{cliente.nombre} | Servicio:"
+                        f"{servicio.id if servicio else 'legacy'}"
                     ),
                 )
                 baja.mikrotik_estado = "reactivado"
             elif activar:
                 mk.gestionar_corte_cliente(
-                    cliente.ip_asignada,
+                    objetivo.ip_asignada,
                     suspender=False,
                 )
                 baja.mikrotik_estado = "reactivado"
-            elif cliente.user_pppoe:
+            elif objetivo.user_pppoe:
                 encontrado = mk.activar_desactivar_pppoe(
-                    cliente.user_pppoe,
+                    objetivo.user_pppoe,
                     disabled=True,
                 )
                 baja.mikrotik_estado = (
@@ -482,7 +538,7 @@ class BajaService:
                 )
             else:
                 mk.gestionar_corte_cliente(
-                    cliente.ip_asignada,
+                    objetivo.ip_asignada,
                     suspender=True,
                 )
                 baja.mikrotik_estado = "deshabilitado"
@@ -499,14 +555,23 @@ class BajaService:
             raise ValueError("Condición de equipo inválida")
         return ESTADO_INVENTARIO_POR_CONDICION[condicion]
 
-    async def _baja_abierta(self, cliente_id: int):
+    async def _baja_abierta(
+        self,
+        cliente_id: int,
+        servicio_id: Optional[int] = None,
+    ):
+        condiciones = [
+            BajaServicioModel.cliente_id == cliente_id,
+            BajaServicioModel.estado.in_(ESTADOS_BAJA_ABIERTA),
+        ]
+        if servicio_id:
+            condiciones.append(
+                BajaServicioModel.servicio_id == servicio_id
+            )
         return (
             await self.db.execute(
                 select(BajaServicioModel)
-                .where(
-                    BajaServicioModel.cliente_id == cliente_id,
-                    BajaServicioModel.estado.in_(ESTADOS_BAJA_ABIERTA),
-                )
+                .where(*condiciones)
                 .order_by(BajaServicioModel.id.desc())
             )
         ).scalars().first()
@@ -531,21 +596,70 @@ class BajaService:
             raise ValueError("El técnico no existe o no está activo")
         return tecnico
 
+    async def _sincronizar_estado_cliente(self, cliente: ClienteModel):
+        estados = (
+            await self.db.execute(
+                select(ServicioModel.estado).where(
+                    ServicioModel.cliente_id == cliente.id,
+                    ServicioModel.estado != "cancelado",
+                )
+            )
+        ).scalars().all()
+        if "activo" in estados:
+            cliente.estado = "activo"
+        elif "suspendido" in estados:
+            cliente.estado = "suspendido"
+        elif "pendiente_instalacion" in estados:
+            cliente.estado = "pendiente_instalacion"
+        else:
+            cliente.estado = "cancelado"
+
+    async def _sincronizar_legacy_si_principal(
+        self,
+        servicio: ServicioModel,
+        cliente: ClienteModel,
+    ):
+        principal_id = (
+            await self.db.execute(
+                select(ServicioModel.id)
+                .where(ServicioModel.cliente_id == cliente.id)
+                .order_by(ServicioModel.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if principal_id != servicio.id:
+            return
+        for campo in (
+            "caja_nap_id",
+            "puerto_nap",
+            "onu_id",
+            "mac_address",
+            "ip_asignada",
+        ):
+            setattr(cliente, campo, getattr(servicio, campo))
+        cliente.proxima_factura = servicio.proxima_facturacion
+
     async def _cancelar_ordenes_abiertas(
         self,
         cliente_id: int,
         usuario_id: int,
+        servicio_id: Optional[int] = None,
     ):
+        condiciones = [
+            OrdenServicioModel.cliente_id == cliente_id,
+            OrdenServicioModel.tipo != "retiro",
+            OrdenServicioModel.estado.notin_(
+                ["terminada", "cancelada"]
+            ),
+        ]
+        if servicio_id:
+            condiciones.append(
+                OrdenServicioModel.servicio_id == servicio_id
+            )
         ordenes = (
             await self.db.execute(
                 select(OrdenServicioModel)
-                .where(
-                    OrdenServicioModel.cliente_id == cliente_id,
-                    OrdenServicioModel.tipo != "retiro",
-                    OrdenServicioModel.estado.notin_(
-                        ["terminada", "cancelada"]
-                    ),
-                )
+                .where(*condiciones)
                 .with_for_update()
             )
         ).scalars().all()
@@ -632,6 +746,7 @@ class BajaService:
             selectinload(BajaServicioModel.cliente).selectinload(
                 ClienteModel.plan
             ),
+            selectinload(BajaServicioModel.servicio),
             selectinload(BajaServicioModel.onu),
             selectinload(BajaServicioModel.orden_retiro),
             selectinload(BajaServicioModel.tecnico),

@@ -204,17 +204,33 @@ class SNMPMonitorService:
         
         if not cliente:
             raise ValueError("Cliente no encontrado.")
-            
-        sn_cliente = cliente.onu_asignada.identificador if cliente.onu_asignada else None
-        
-        if not cliente.olt_id or not sn_cliente:
-            raise ValueError("Al cliente le falta OLT o Identificador de ONU (SN).")
+        return await self.monitorear_objetivo(cliente)
 
-        olt = await self.db.get(OLTModel, cliente.olt_id)
+    async def monitorear_objetivo(self, objetivo):
+        """Consulta la ONU del cliente legado o de un servicio concreto."""
+        onu = getattr(objetivo, "onu", None) or getattr(
+            objetivo,
+            "onu_asignada",
+            None,
+        )
+        sn_cliente = onu.identificador if onu else None
+        if not objetivo.olt_id or not sn_cliente:
+            raise ValueError(
+                "Al servicio le falta OLT o Identificador de ONU (SN)."
+            )
+        olt = await self.db.get(OLTModel, objetivo.olt_id)
+        if not olt:
+            raise ValueError("La OLT asignada no existe.")
         
         onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
 
         id_buscado = sn_cliente.upper().strip()
+        cliente = getattr(objetivo, "cliente", None) or objetivo
+        servicio_id = (
+            objetivo.id
+            if getattr(objetivo, "cliente_id", None) is not None
+            else None
+        )
         
         for onu in onus_fisicas:
             if onu["identificador"] == id_buscado:
@@ -232,6 +248,7 @@ class SNMPMonitorService:
 
                 return {
                     "cliente_id": cliente.id,
+                    "servicio_id": servicio_id,
                     "nombre": cliente.nombre,
                     "identificador": id_buscado,
                     "potencia": f"{onu['potencia']} dBm",
@@ -242,6 +259,7 @@ class SNMPMonitorService:
 
         return {
             "cliente_id": cliente.id,
+            "servicio_id": servicio_id,
             "nombre": cliente.nombre,
             "identificador": id_buscado,
             "potencia": "LOS / Sin señal",

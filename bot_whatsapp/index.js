@@ -44,6 +44,17 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 let client = null; 
 let isReady = false;
 let lastQR = null;
+const backendIdPorWaId = new Map();
+const enviosCompletados = new Map();
+const enviosEnCurso = new Map();
+const TTL_IDEMPOTENCIA_MS = 24 * 60 * 60 * 1000;
+
+setInterval(() => {
+    const limite = Date.now() - TTL_IDEMPOTENCIA_MS;
+    for (const [clave, valor] of enviosCompletados.entries()) {
+        if (valor.fecha < limite) enviosCompletados.delete(clave);
+    }
+}, 60 * 60 * 1000).unref();
 
 function iniciarMotor() {
     console.log('⚡ Iniciando motor de WhatsApp con optimización de memoria...');
@@ -210,10 +221,13 @@ function iniciarMotor() {
 
     client.on('message_ack', async (msg, ack) => {
         try { 
+            const mensajeChatId = backendIdPorWaId.get(msg.id.id) || null;
             await axios.post(`${BACKEND_URL}/whatsapp/webhook/ack`, {
                 wa_id: msg.id.id, 
-                ack 
+                ack,
+                mensaje_chat_id: mensajeChatId
             }, webhookHeaders);
+            if (ack >= 3) backendIdPorWaId.delete(msg.id.id);
         } catch (e) { 
             console.error("❌ Error Webhook Ack:", e.message); 
         }
@@ -262,24 +276,68 @@ app.post('/logout', async (req, res) => {
 });
 
 app.post('/enviar-mensaje', async (req, res) => {
-    const { numero, mensaje, ruta } = req.body; 
+    const { numero, mensaje, ruta, mensaje_chat_id: mensajeChatId } = req.body;
 
     if (!client || !isReady) return res.status(503).json({ error: 'WhatsApp no conectado' });
 
-    try {
-        const chatId = numero.includes('@') ? numero : `${numero}@c.us`;
-        let response;
+    const claveIdempotencia = mensajeChatId ? String(mensajeChatId) : null;
+    if (claveIdempotencia && enviosCompletados.has(claveIdempotencia)) {
+        return res.json(enviosCompletados.get(claveIdempotencia).resultado);
+    }
 
-        if (ruta && fs.existsSync(ruta)) {
-            const media = MessageMedia.fromFilePath(ruta);
-            response = await client.sendMessage(chatId, media, { caption: mensaje });
-        } else {
-            response = await client.sendMessage(chatId, mensaje);
+    try {
+        let promesaEnvio = (
+            claveIdempotencia
+            ? enviosEnCurso.get(claveIdempotencia)
+            : null
+        );
+        if (!promesaEnvio) {
+            promesaEnvio = (async () => {
+                const chatId = numero.includes('@') ? numero : `${numero}@c.us`;
+                let response;
+
+                if (ruta) {
+                    if (!fs.existsSync(ruta)) {
+                        const error = new Error('El archivo adjunto ya no existe');
+                        error.statusCode = 400;
+                        throw error;
+                    }
+                    const media = MessageMedia.fromFilePath(ruta);
+                    response = await client.sendMessage(
+                        chatId,
+                        media,
+                        { caption: mensaje }
+                    );
+                } else {
+                    response = await client.sendMessage(chatId, mensaje);
+                }
+                const resultado = {
+                    status: 'sent',
+                    wa_id: response.id.id,
+                    mensaje_chat_id: mensajeChatId || null
+                };
+                if (mensajeChatId) {
+                    backendIdPorWaId.set(response.id.id, Number(mensajeChatId));
+                }
+                return resultado;
+            })();
+            if (claveIdempotencia) {
+                enviosEnCurso.set(claveIdempotencia, promesaEnvio);
+            }
         }
 
-        res.json({ status: 'sent', wa_id: response.id.id });
+        const resultado = await promesaEnvio;
+        if (claveIdempotencia) {
+            enviosCompletados.set(
+                claveIdempotencia,
+                { resultado, fecha: Date.now() }
+            );
+        }
+        res.json(resultado);
     } catch (e) { 
-        res.status(500).json({ error: e.message }); 
+        res.status(e.statusCode || 500).json({ error: e.message });
+    } finally {
+        if (claveIdempotencia) enviosEnCurso.delete(claveIdempotencia);
     }
 });
 

@@ -41,26 +41,30 @@ class BillingService:
         notificador = NotificationService(self.db)
 
         stmt = (
-            select(ClienteModel)
+            select(ServicioModel)
             .options(
-                selectinload(ClienteModel.plantilla),
-                selectinload(ClienteModel.plan),
-                selectinload(ClienteModel.servicios),
+                selectinload(ServicioModel.cliente),
+                selectinload(ServicioModel.plantilla),
+                selectinload(ServicioModel.plan),
             )
             .where(
-                ClienteModel.estado.in_(["activo", "suspendido"]),
-                ClienteModel.plantilla_id.isnot(None),
-                ClienteModel.plan_id.isnot(None),
+                ServicioModel.estado.in_(["activo", "suspendido"]),
+                ServicioModel.plantilla_id.isnot(None),
+                ServicioModel.plan_id.isnot(None),
             )
         )
 
         if dia_objetivo:
-            stmt = stmt.join(PlantillaFacturacionModel).where(
+            stmt = stmt.join(
+                PlantillaFacturacionModel,
+                PlantillaFacturacionModel.id
+                == ServicioModel.plantilla_id,
+            ).where(
                 PlantillaFacturacionModel.dia_pago == dia_objetivo
             )
 
         result = await self.db.execute(stmt)
-        clientes = result.scalars().all()
+        servicios = result.scalars().all()
 
         reporte = {
             "total_procesados": 0,
@@ -76,15 +80,11 @@ class BillingService:
             "omitidos_factura_existente": 0,
         }
 
-        for cliente in clientes:
+        for servicio in servicios:
             reporte["total_procesados"] += 1
-            plantilla = cliente.plantilla
-            plan = cliente.plan
-            servicio = next((item for item in cliente.servicios if item.estado in {"activo", "suspendido"}), None)
-
-            if servicio is None:
-                reporte["omitidos_sin_servicio"] += 1
-                continue
+            cliente = servicio.cliente
+            plantilla = servicio.plantilla
+            plan = servicio.plan
             if servicio.ciclo_facturacion == CicloFacturacion.aniversario:
                 reporte["omitidos_modalidad_pendiente"] += 1
                 continue
@@ -126,19 +126,27 @@ class BillingService:
             )
             if (await self.db.execute(stmt_dup)).scalars().first():
                 servicio.proxima_facturacion = periodo.siguiente_facturacion
-                cliente.proxima_factura = periodo.siguiente_facturacion
                 reporte["omitidos_factura_existente"] += 1
                 continue
 
             if periodo.es_prorrateada:
                 mes_actual_str = f"Prorrateo {periodo.periodo_desde.strftime('%d/%m/%Y')} - {periodo.periodo_hasta.strftime('%d/%m/%Y')}"
-                detalles = f"Prorrateo Internet - {plan.nombre} ({periodo.dias_facturados} de {periodo.dias_periodo} días)"
+                detalles = (
+                    f"Prorrateo Internet - {plan.nombre} "
+                    f"({servicio.alias}: {servicio.direccion or 'Sin dirección'}) "
+                    f"({periodo.dias_facturados} de "
+                    f"{periodo.dias_periodo} días)"
+                )
             else:
                 if periodo.periodo_desde.day == 1:
                     mes_actual_str = periodo.periodo_desde.strftime("%B %Y").capitalize()
                 else:
                     mes_actual_str = f"Ciclo {periodo.periodo_desde.strftime('%d/%m/%Y')} - {periodo.periodo_hasta.strftime('%d/%m/%Y')}"
-                detalles = f"Servicio Internet - {plan.nombre}"
+                detalles = (
+                    f"Servicio Internet - {plan.nombre} "
+                    f"({servicio.alias}: "
+                    f"{servicio.direccion or 'Sin dirección'})"
+                )
 
             nueva_factura = FacturaModel(
                 cliente_id=cliente.id,
@@ -168,7 +176,6 @@ class BillingService:
             await self.db.flush()
 
             servicio.proxima_facturacion = periodo.siguiente_facturacion
-            cliente.proxima_factura = periodo.siguiente_facturacion
             reporte["facturas_generadas"] += 1
             if periodo.es_prorrateada:
                 reporte["facturas_prorrateadas"] += 1
@@ -268,7 +275,9 @@ class BillingService:
                 joinedload(FacturaModel.cliente).joinedload(
                     ClienteModel.router
                 ),
-                joinedload(FacturaModel.servicio),
+                joinedload(FacturaModel.servicio).joinedload(
+                    ServicioModel.router
+                ),
             )
             .where(
                 FacturaModel.estado.in_(["pendiente", "vencida"]),
@@ -302,10 +311,13 @@ class BillingService:
             "errores_notificacion": 0,
             "omitidos_ya_suspendidos": 0,
         }
+        clientes_suspendidos = set()
 
         for factura in facturas:
             cliente = factura.cliente
-            estado_previo = cliente.estado
+            servicio = factura.servicio
+            objetivo = servicio or cliente
+            estado_previo = objetivo.estado
             promesa_rota = bool(factura.es_promesa_activa)
             if promesa_rota:
                 factura.es_promesa_activa = False
@@ -314,19 +326,19 @@ class BillingService:
                 )
                 reporte["promesas_rotas"] += 1
 
-            if not cliente.router or not cliente.ip_asignada:
+            if not objetivo.router or not objetivo.ip_asignada:
                 reporte["errores_mikrotik"] += 1
                 continue
 
             try:
                 mk = MikroTikService(
-                    cliente.router.ip_vpn,
-                    cliente.router.user_api,
-                    cliente.router.pass_api,
-                    cliente.router.port_api,
+                    objetivo.router.ip_vpn,
+                    objetivo.router.user_api,
+                    objetivo.router.pass_api,
+                    objetivo.router.port_api,
                 )
                 resultado = mk.gestionar_corte_cliente(
-                    cliente.ip_asignada,
+                    objetivo.ip_asignada,
                     suspender=True,
                 )
 
@@ -335,9 +347,9 @@ class BillingService:
                         "MikroTik no confirmó la suspensión."
                     )
 
-                if cliente.user_pppoe:
+                if objetivo.user_pppoe:
                     mk.desconectar_cliente_activo(
-                        cliente.user_pppoe
+                        objetivo.user_pppoe
                     )
             except Exception as exc:
                 reporte["errores_mikrotik"] += 1
@@ -347,23 +359,22 @@ class BillingService:
                 )
                 continue
 
-            cliente.estado = "suspendido"
             actualizados = (
                 await self._actualizar_estado_servicio_factura(
                     factura,
                     "suspendido",
                 )
             )
+            await self._sincronizar_estado_cliente(cliente.id)
             factura.estado = "vencida"
 
-            reporte["clientes_suspendidos"] += 1
+            clientes_suspendidos.add(cliente.id)
             reporte["servicios_suspendidos"] += actualizados
             reporte["facturas_vencidas"] += 1
 
             if estado_previo == "suspendido":
                 # Reconciliar también los clientes que la BD ya marcaba
                 # suspendidos repara entradas faltantes en el address-list.
-                reporte["clientes_suspendidos"] -= 1
                 reporte["omitidos_ya_suspendidos"] += 1
                 continue
 
@@ -410,6 +421,7 @@ class BillingService:
                     f"para el cliente {cliente.id}: {exc}"
                 )
 
+        reporte["clientes_suspendidos"] = len(clientes_suspendidos)
         await self.db.commit()
         return reporte
 
@@ -447,7 +459,13 @@ class BillingService:
         ).where(ClienteModel.id == cliente.id)
         cliente = (await self.db.execute(stmt_c)).scalar_one()
 
-        estado_previo = cliente.estado
+        servicio = (
+            await self.db.get(ServicioModel, factura.servicio_id)
+            if factura.servicio_id
+            else None
+        )
+        objetivo = servicio or cliente
+        estado_previo = objetivo.estado
         reactivado = False
         pago_completado = nuevo_pago.saldo_posterior == 0
         
@@ -456,21 +474,21 @@ class BillingService:
         if pago_completado and estado_previo == "suspendido":
             await self.db.flush()
             tiene_otra_deuda = (
-                await self._cliente_tiene_deuda_pendiente(
-                    cliente.id,
+                await self._servicio_tiene_deuda_pendiente(
+                    factura,
                     excluir_factura_id=factura.id,
                 )
             )
             if not tiene_otra_deuda:
                 reactivado = await self._reactivar_en_mikrotik(
-                    cliente
+                    objetivo
                 )
                 if reactivado:
-                    cliente.estado = "activo"
                     await self._actualizar_estado_servicio_factura(
                         factura,
                         "activo",
                     )
+                    await self._sincronizar_estado_cliente(cliente.id)
 
         await self.db.commit()
 
@@ -602,6 +620,51 @@ class BillingService:
 
         return cantidad > 0
 
+    async def _servicio_tiene_deuda_pendiente(
+        self,
+        factura,
+        excluir_factura_id: int | None = None,
+    ) -> bool:
+        condiciones = [
+            FacturaModel.estado.in_(["pendiente", "vencida"]),
+            FacturaModel.saldo_pendiente > 0,
+        ]
+        if factura.servicio_id:
+            condiciones.append(
+                FacturaModel.servicio_id == factura.servicio_id
+            )
+        else:
+            condiciones.append(
+                FacturaModel.cliente_id == factura.cliente_id
+            )
+        if excluir_factura_id is not None:
+            condiciones.append(FacturaModel.id != excluir_factura_id)
+        cantidad = (
+            await self.db.execute(
+                select(func.count(FacturaModel.id)).where(*condiciones)
+            )
+        ).scalar_one()
+        return cantidad > 0
+
+    async def _sincronizar_estado_cliente(self, cliente_id: int):
+        cliente = await self.db.get(ClienteModel, cliente_id)
+        estados = (
+            await self.db.execute(
+                select(ServicioModel.estado).where(
+                    ServicioModel.cliente_id == cliente_id,
+                    ServicioModel.estado != "cancelado",
+                )
+            )
+        ).scalars().all()
+        if "activo" in estados:
+            cliente.estado = "activo"
+        elif "suspendido" in estados:
+            cliente.estado = "suspendido"
+        elif "pendiente_instalacion" in estados:
+            cliente.estado = "pendiente_instalacion"
+        else:
+            cliente.estado = "cancelado"
+
     async def _reactivar_en_mikrotik(self, cliente):
         if not cliente.router_id or not cliente.ip_asignada:
             return False
@@ -645,19 +708,25 @@ class BillingService:
         )
 
         reactivado = False
-        if cliente.estado == "suspendido" and politica.permite_reconexion:
-            reactivado = await self._reactivar_en_mikrotik(cliente)
+        servicio = (
+            await self.db.get(ServicioModel, factura.servicio_id)
+            if factura.servicio_id
+            else None
+        )
+        objetivo = servicio or cliente
+        if objetivo.estado == "suspendido" and politica.permite_reconexion:
+            reactivado = await self._reactivar_en_mikrotik(objetivo)
             if not reactivado:
                 raise ValueError(
                     "MikroTik no confirmó la reactivación; "
                     "la promesa no fue guardada."
                 )
 
-            cliente.estado = "activo"
             await self._actualizar_estado_servicio_factura(
                 factura,
                 "activo",
             )
+            await self._sincronizar_estado_cliente(cliente.id)
 
         await self.db.commit()
 
@@ -693,12 +762,44 @@ class BillingService:
         # ... (Tu código de permisos se mantiene igual) ...
         stmt_user = select(UsuarioModel).options(selectinload(UsuarioModel.routers_asignados)).where(UsuarioModel.id == usuario_id_solicitante)
         usuario = (await self.db.execute(stmt_user)).scalar_one()
-        query = select(FacturaModel).join(ClienteModel).options(joinedload(FacturaModel.cliente).joinedload(ClienteModel.router))
+        query = (
+            select(FacturaModel)
+            .join(ClienteModel)
+            .outerjoin(
+                ServicioModel,
+                ServicioModel.id == FacturaModel.servicio_id,
+            )
+            .options(
+                joinedload(FacturaModel.cliente).joinedload(
+                    ClienteModel.router
+                ),
+                joinedload(FacturaModel.servicio).joinedload(
+                    ServicioModel.router
+                ),
+            )
+        )
         if cliente_id: query = query.where(FacturaModel.cliente_id == cliente_id)
-        if router_id: query = query.where(ClienteModel.router_id == router_id)
+        if router_id:
+            query = query.where(
+                or_(
+                    ServicioModel.router_id == router_id,
+                    and_(
+                        FacturaModel.servicio_id.is_(None),
+                        ClienteModel.router_id == router_id,
+                    ),
+                )
+            )
         if usuario.rol != 'admin':
             ids_permitidos = [r.id for r in usuario.routers_asignados]
             if not ids_permitidos: return [] 
-            query = query.where(ClienteModel.router_id.in_(ids_permitidos))
+            query = query.where(
+                or_(
+                    ServicioModel.router_id.in_(ids_permitidos),
+                    and_(
+                        FacturaModel.servicio_id.is_(None),
+                        ClienteModel.router_id.in_(ids_permitidos),
+                    ),
+                )
+            )
         query = query.order_by(FacturaModel.id.desc()).limit(200)
         return (await self.db.execute(query)).scalars().all()

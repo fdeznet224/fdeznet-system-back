@@ -1,7 +1,11 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload # 👈 Nueva importación necesaria
-from src.infrastructure.models import ClienteModel, InventarioONUModel
+from src.infrastructure.models import (
+    ClienteModel,
+    InventarioONUModel,
+    ServicioModel,
+)
 from src.application.services.ftth_service import FTTHService
 
 class InventarioService:
@@ -55,6 +59,28 @@ class InventarioService:
         
         if estado:
             stmt = stmt.where(InventarioONUModel.estado == estado.upper())
+            if estado.strip().upper() == "DISPONIBLE":
+                # El estado del inventario puede quedar desactualizado en datos
+                # heredados. Una referencia real siempre tiene prioridad y el
+                # equipo no debe volver a ofrecerse para otra instalación.
+                cliente_ocupante = (
+                    select(ClienteModel.id)
+                    .where(
+                        ClienteModel.onu_id == InventarioONUModel.id
+                    )
+                    .exists()
+                )
+                servicio_ocupante = (
+                    select(ServicioModel.id)
+                    .where(
+                        ServicioModel.onu_id == InventarioONUModel.id
+                    )
+                    .exists()
+                )
+                stmt = stmt.where(
+                    ~cliente_ocupante,
+                    ~servicio_ocupante,
+                )
             
         resultado = await self.db.execute(stmt)
         equipos = resultado.scalars().all()

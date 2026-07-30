@@ -19,6 +19,7 @@ from src.infrastructure.models import (
     ClienteModel,
     ConfiguracionModel,
     FacturaModel,
+    MensajeChatModel,
 )
 
 
@@ -68,6 +69,7 @@ class ClientePortalResponse(BaseModel):
     onu_id: Optional[int] = None
     caja_nap_id: Optional[int] = None
     plan_id: Optional[int] = None       # Agregado por si el front lo necesita en el POST
+    zona_id: Optional[int] = None
     
     router_nombre: str       
     estado: str              
@@ -195,6 +197,7 @@ async def obtener_datos_portal(
         "caja_nap_id": cliente.caja_nap_id,
         "plan_id": cliente.plan_id,
         "router_id": cliente.router_id, 
+        "zona_id": cliente.zona_id,
         
         # Datos visuales que ya tenías
         "identificador_onu": id_onu, 
@@ -413,15 +416,18 @@ async def completar_instalacion(
         return {
             "status": "success", 
             "message": "¡Servicio activado correctamente en el Router!", 
-            "cliente": cliente_activado.nombre
+            "cliente": cliente_activado,
         }
     
     except PermissionError as error:
+        await db.rollback()
         raise HTTPException(status_code=403, detail=str(error)) from error
     except ValueError as ve:
+        await db.rollback()
         raise HTTPException(status_code=409, detail=str(ve)) 
         
     except Exception as e:
+        await db.rollback()
         print(f"Error activando: {e}")
         raise HTTPException(status_code=500, detail=f"Error en activación: {str(e)}")
 
@@ -437,7 +443,7 @@ async def editar_cliente(
     try:
         return await service.editar_cliente(cliente_id, datos)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.delete("/{cliente_id}")
@@ -486,14 +492,32 @@ async def enviar_mensaje_directo(
         raise HTTPException(status_code=404, detail="Cliente o teléfono no encontrado")
     
     try:
-        await whatsapp_queue.agregar_tarea({
-            "numero": cliente.telefono,
-            "mensaje": datos.mensaje,
-            "intervalo": 2  
-        })
+        registro = MensajeChatModel(
+            cliente_id=cliente.id,
+            telefono=whatsapp_queue.service._formatear_numero(
+                cliente.telefono
+            ),
+            direccion="salida",
+            mensaje=datos.mensaje,
+            tipo_mensaje="texto",
+            tipo_evento="mensaje_manual",
+            leido=True,
+            ack=0,
+            estado_envio="pendiente",
+            creado_por_id=current_user.id,
+        )
+        db.add(registro)
+        await db.commit()
+        await whatsapp_queue.agregar_tarea(
+            {
+                "mensaje_chat_id": registro.id,
+                "intervalo": 2,
+            }
+        )
 
         return {
-            "status": "enviando", 
+            "status": "encolado",
+            "mensaje_id": registro.id,
             "cliente": cliente.nombre,
             "destino": cliente.telefono
         }

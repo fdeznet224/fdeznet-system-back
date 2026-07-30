@@ -3,7 +3,7 @@ import ipaddress
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.infrastructure.models import ClienteModel, RedModel
+from src.infrastructure.models import ClienteModel, RedModel, ServicioModel
 
 
 class IPAMService:
@@ -37,14 +37,29 @@ class IPAMService:
     async def _ips_ocupadas(
         self,
         excluir_cliente_id: int | None = None,
+        excluir_servicio_id: int | None = None,
     ) -> set[str]:
-        stmt = select(ClienteModel.ip_asignada).where(
+        stmt_clientes = select(ClienteModel.ip_asignada).where(
             ClienteModel.ip_asignada.isnot(None),
         )
         if excluir_cliente_id is not None:
-            stmt = stmt.where(ClienteModel.id != excluir_cliente_id)
+            stmt_clientes = stmt_clientes.where(
+                ClienteModel.id != excluir_cliente_id
+            )
 
-        valores = (await self.db.execute(stmt)).scalars().all()
+        stmt_servicios = select(ServicioModel.ip_asignada).where(
+            ServicioModel.ip_asignada.isnot(None),
+            ServicioModel.estado != "cancelado",
+        )
+        if excluir_servicio_id is not None:
+            stmt_servicios = stmt_servicios.where(
+                ServicioModel.id != excluir_servicio_id
+            )
+
+        valores = [
+            *(await self.db.execute(stmt_clientes)).scalars().all(),
+            *(await self.db.execute(stmt_servicios)).scalars().all(),
+        ]
         ocupadas: set[str] = set()
         for valor in valores:
             if not valor:
@@ -61,9 +76,13 @@ class IPAMService:
         red: RedModel,
         limite: int = 254,
         excluir_cliente_id: int | None = None,
+        excluir_servicio_id: int | None = None,
     ) -> list[str]:
         network = self._red_ipv4(red)
-        ocupadas = await self._ips_ocupadas(excluir_cliente_id)
+        ocupadas = await self._ips_ocupadas(
+            excluir_cliente_id,
+            excluir_servicio_id,
+        )
 
         if red.gateway:
             ocupadas.add(self._normalizar_ip(red.gateway))
@@ -84,6 +103,7 @@ class IPAMService:
         ip_solicitada: str | None = None,
         router_id: int | None = None,
         excluir_cliente_id: int | None = None,
+        excluir_servicio_id: int | None = None,
     ) -> str:
         # Serializa las asignaciones concurrentes de una misma red.
         red = (
@@ -102,7 +122,10 @@ class IPAMService:
             )
 
         network = self._red_ipv4(red)
-        ocupadas = await self._ips_ocupadas(excluir_cliente_id)
+        ocupadas = await self._ips_ocupadas(
+            excluir_cliente_id,
+            excluir_servicio_id,
+        )
         gateway = (
             self._normalizar_ip(red.gateway)
             if red.gateway
@@ -135,3 +158,18 @@ class IPAMService:
                 return candidata
 
         raise ValueError(f"No hay IPs disponibles en la red {red.nombre}")
+
+    async def reservar_para_servicio(
+        self,
+        red_id: int,
+        ip_solicitada: str | None = None,
+        router_id: int | None = None,
+        excluir_servicio_id: int | None = None,
+    ) -> str:
+        """Reserva una IP para un contrato sin confundirlo con la persona."""
+        return await self.reservar_para_cliente(
+            red_id=red_id,
+            ip_solicitada=ip_solicitada,
+            router_id=router_id,
+            excluir_servicio_id=excluir_servicio_id,
+        )

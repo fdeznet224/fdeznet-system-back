@@ -17,6 +17,7 @@ router = APIRouter(prefix="/soporte", tags=["Soporte técnico"])
 
 class IncidenciaCrear(BaseModel):
     cliente_id: int
+    servicio_id: Optional[int] = Field(default=None, gt=0)
     categoria: str = Field(
         pattern=(
             r"^(sin_internet|lentitud|potencia_baja|router_wifi|"
@@ -47,6 +48,7 @@ def serializar_diagnostico(item):
         "id": item.id,
         "orden_id": item.orden_id,
         "cliente_id": item.cliente_id,
+        "servicio_id": item.servicio_id,
         "resultado": item.resultado,
         "codigo_sugerencia": item.codigo_sugerencia,
         "sugerencia": item.sugerencia,
@@ -110,6 +112,7 @@ async def crear_incidencia(
     try:
         orden = await SupportService(db).crear_incidencia(
             cliente_id=datos.cliente_id,
+            servicio_id=datos.servicio_id,
             categoria=datos.categoria,
             descripcion=datos.descripcion,
             usuario=current_user,

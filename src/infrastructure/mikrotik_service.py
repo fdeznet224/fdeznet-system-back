@@ -171,6 +171,31 @@ class MikroTikService:
         res = self._request("GET", "/ppp/secret")
         return res if isinstance(res, list) else []
 
+    def obtener_todos_pppoe_estricto(self):
+        """Lista secrets diferenciando un router vacío de un fallo de conexión."""
+        res = self._request(
+            "GET",
+            "/ppp/secret",
+            raise_on_error=True,
+        )
+        if not isinstance(res, list):
+            raise RuntimeError(
+                "MikroTik devolvió una respuesta inválida al listar PPPoE"
+            )
+        return res
+
+    def obtener_pppoe_estricto(self, usuario):
+        res = self._request(
+            "GET",
+            f"/ppp/secret?name={usuario}",
+            raise_on_error=True,
+        )
+        if not isinstance(res, list):
+            raise RuntimeError(
+                f"MikroTik no permitió verificar el PPPoE {usuario}"
+            )
+        return res[0] if res else None
+
     # ==========================================
     #  3. SESIONES ACTIVAS PPPoE
     # ==========================================
@@ -285,6 +310,24 @@ class MikroTikService:
                 f"la IP {ip_target} en {LISTA_CORTE}"
             )
         return True
+
+    def obtener_ips_cortadas(self):
+        """Obtiene una fotografía verificable de la lista de suspensión."""
+        res = self._request(
+            "GET",
+            "/ip/firewall/address-list?list=CORTE_FDEZNET",
+            raise_on_error=True,
+        )
+        if not isinstance(res, list):
+            raise RuntimeError(
+                "MikroTik devolvió una respuesta inválida para "
+                "CORTE_FDEZNET"
+            )
+        return {
+            str(item.get("address", "")).strip()
+            for item in res
+            if item.get("address")
+        }
 
     def reactivar_cliente(self, ip_target, usuario_pppoe=None):
         """Retira el corte y rehabilita el secret PPPoE si existe."""

@@ -17,8 +17,10 @@ async def get_dashboard_home(
 ):
     """
     Obtiene los KPIs principales para la pantalla de inicio:
-    - Total de Clientes Activos
-    - Finanzas del mes (Cobrado vs Pendiente)
+    - Total visible en el directorio y total histórico por estado
+    - Contratos activos (no equivale a clientes online)
+    - Cobranza real de hoy y del mes, con clientes únicos
+    - Facturación mensual sobre la misma población de clientes
     - Cortes programados para hoy
     - Tickets de soporte abiertos
     """
@@ -35,9 +37,10 @@ async def get_online_detalle(
 ):
     """
     Métricas de estado de red en tiempo real:
-    - Online (Navegando)
-    - Offline (Posible caída de fibra/luz)
+    - Online/offline de todo el directorio
+    - Online/offline limitado a contratos activos
     - Morosos (Corte administrativo)
+    - Conciliación técnica y contractual
     """
     service = DashboardService(db)
     return await service.obtener_metricas_red()

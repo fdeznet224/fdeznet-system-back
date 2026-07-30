@@ -34,6 +34,7 @@ class OrdenEstadoPayload(BaseModel):
 
 class SoporteIncidenciaPayload(BaseModel):
     cliente_id: int = Field(gt=0)
+    servicio_id: Optional[int] = Field(default=None, gt=0)
     categoria: Literal[
         "sin_internet",
         "lentitud",
@@ -196,6 +197,7 @@ class SyncService:
 
         orden = await SupportService(self.db).crear_incidencia(
             cliente_id=datos.cliente_id,
+            servicio_id=datos.servicio_id,
             categoria=datos.categoria,
             descripcion=datos.descripcion,
             usuario=usuario,
@@ -208,6 +210,7 @@ class SyncService:
         return {
             "orden_id": orden.id,
             "cliente_id": orden.cliente_id,
+            "servicio_id": orden.servicio_id,
             "estado": orden.estado,
             "version": orden.version,
         }

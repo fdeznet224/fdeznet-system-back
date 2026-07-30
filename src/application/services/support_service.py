@@ -18,6 +18,7 @@ from src.infrastructure.models import (
     DiagnosticoSoporteModel,
     LecturaOpticaModel,
     OrdenServicioModel,
+    ServicioModel,
     UsuarioModel,
 )
 
@@ -45,6 +46,7 @@ class SupportService:
         categoria: str,
         descripcion: str,
         usuario: UsuarioModel,
+        servicio_id: Optional[int] = None,
         tecnico_id: Optional[int] = None,
         prioridad: Optional[str] = None,
         fecha_programada: Optional[datetime] = None,
@@ -68,10 +70,36 @@ class SupportService:
         if not cliente or cliente.estado == "eliminado":
             raise ValueError("Cliente no encontrado o eliminado")
 
+        servicios = (
+            await self.db.execute(
+                select(ServicioModel)
+                .where(
+                    ServicioModel.cliente_id == cliente_id,
+                    ServicioModel.estado != "cancelado",
+                )
+                .order_by(ServicioModel.id)
+            )
+        ).scalars().all()
+        if servicio_id:
+            if not any(item.id == servicio_id for item in servicios):
+                raise ValueError("El servicio no pertenece al cliente")
+        elif len(servicios) == 1:
+            servicio_id = servicios[0].id
+        elif len(servicios) > 1:
+            raise ValueError(
+                "Indica servicio_id porque el cliente tiene "
+                "varios domicilios"
+            )
+
         duplicada = (
             await self.db.execute(
                 select(OrdenServicioModel.id).where(
                     OrdenServicioModel.cliente_id == cliente_id,
+                    *(
+                        [OrdenServicioModel.servicio_id == servicio_id]
+                        if servicio_id
+                        else []
+                    ),
                     OrdenServicioModel.categoria_soporte == categoria,
                     OrdenServicioModel.estado.in_(ESTADOS_ABIERTOS),
                 ).limit(1)
@@ -90,6 +118,7 @@ class SupportService:
         datos = SimpleNamespace(
             tipo=tipo,
             cliente_id=cliente_id,
+            servicio_id=servicio_id,
             prospecto_nombre=None,
             prospecto_telefono=None,
             prospecto_direccion=None,
@@ -181,14 +210,31 @@ class SupportService:
                 .where(ClienteModel.id == orden.cliente_id)
             )
         ).scalar_one()
+        servicio = None
+        if orden.servicio_id:
+            servicio = (
+                await self.db.execute(
+                    select(ServicioModel)
+                    .options(
+                        joinedload(ServicioModel.cliente),
+                        joinedload(ServicioModel.router),
+                        joinedload(ServicioModel.olt),
+                        joinedload(ServicioModel.onu),
+                    )
+                    .where(ServicioModel.id == orden.servicio_id)
+                )
+            ).scalar_one_or_none()
+            if not servicio:
+                raise ValueError("El servicio de la orden ya no existe")
+        objetivo = servicio or cliente
 
         mikrotik, olt = await asyncio.gather(
-            self._diagnosticar_mikrotik(cliente),
-            self._diagnosticar_olt(cliente),
+            self._diagnosticar_mikrotik(objetivo),
+            self._diagnosticar_olt(objetivo),
         )
         clasificacion = self.clasificar(
             categoria=orden.categoria_soporte or "otro",
-            estado_cliente=cliente.estado,
+            estado_cliente=objetivo.estado,
             mikrotik=mikrotik,
             olt=olt,
         )
@@ -200,6 +246,7 @@ class SupportService:
         registro = DiagnosticoSoporteModel(
             orden_id=orden.id,
             cliente_id=cliente.id,
+            servicio_id=servicio.id if servicio else None,
             ejecutado_por_id=usuario.id,
             resultado=clasificacion["resultado"],
             codigo_sugerencia=clasificacion["codigo"],
@@ -230,11 +277,12 @@ class SupportService:
 
         orden.diagnostico = self.resumen_texto(registro)
         orden.version += 1
-        if registro.potencia_rx_dbm is not None and cliente.onu_id:
+        if registro.potencia_rx_dbm is not None and objetivo.onu_id:
             self.db.add(
                 LecturaOpticaModel(
                     cliente_id=cliente.id,
-                    onu_id=cliente.onu_id,
+                    servicio_id=servicio.id if servicio else None,
+                    onu_id=objetivo.onu_id,
                     orden_id=orden.id,
                     tecnico_id=usuario.id,
                     potencia_rx_dbm=registro.potencia_rx_dbm,
@@ -314,15 +362,15 @@ class SupportService:
             },
         }
 
-    async def _diagnosticar_mikrotik(self, cliente: ClienteModel) -> dict:
-        if not cliente.router:
+    async def _diagnosticar_mikrotik(self, objetivo) -> dict:
+        if not objetivo.router:
             return {
                 "disponible": False,
                 "error": "Cliente sin MikroTik asignado",
             }
 
         def ejecutar():
-            router = cliente.router
+            router = objetivo.router
             mk = MikroTikService(
                 router.ip_vpn,
                 router.user_api,
@@ -336,19 +384,19 @@ class SupportService:
                     "error": f"MikroTik no disponible: {mensaje}",
                 }
             sesion = (
-                mk.obtener_info_sesion(cliente.user_pppoe)
-                if cliente.user_pppoe
+                mk.obtener_info_sesion(objetivo.user_pppoe)
+                if objetivo.user_pppoe
                 else {"online": False}
             )
             trafico = (
-                mk.obtener_consumo_interfaz_pppoe(cliente.user_pppoe)
-                if cliente.user_pppoe and sesion.get("online")
+                mk.obtener_consumo_interfaz_pppoe(objetivo.user_pppoe)
+                if objetivo.user_pppoe and sesion.get("online")
                 else {"up_bps": 0, "down_bps": 0}
             )
             ping = (
-                mk.ping_desde_router(cliente.ip_asignada, count=3)
-                if cliente.ip_asignada
-                and cliente.ip_asignada != "0.0.0.0"
+                mk.ping_desde_router(objetivo.ip_asignada, count=3)
+                if objetivo.ip_asignada
+                and objetivo.ip_asignada != "0.0.0.0"
                 else {"status": "sin_ip"}
             )
             return {
@@ -379,21 +427,26 @@ class SupportService:
                 "error": f"Error consultando MikroTik: {exc}",
             }
 
-    async def _diagnosticar_olt(self, cliente: ClienteModel) -> dict:
-        if not cliente.olt or not cliente.onu_asignada:
+    async def _diagnosticar_olt(self, objetivo) -> dict:
+        onu = getattr(objetivo, "onu", None) or getattr(
+            objetivo,
+            "onu_asignada",
+            None,
+        )
+        if not objetivo.olt or not onu:
             return {
                 "disponible": False,
                 "error": "Cliente sin OLT u ONU asignada",
             }
 
-        olt = cliente.olt
+        olt = objetivo.olt
         integracion = (olt.tipo_integracion or "snmp").strip().lower()
         errores = []
         if olt.api_enabled or integracion in {"vsol_api", "auto"}:
             try:
                 datos = await asyncio.wait_for(
-                    VsolApiService(self.db).monitorear_cliente_individual_api(
-                        cliente.id
+                    VsolApiService(self.db).monitorear_objetivo(
+                        objetivo
                     ),
                     timeout=35,
                 )
@@ -404,8 +457,8 @@ class SupportService:
         if integracion in {"snmp", "auto"} or errores:
             try:
                 datos = await asyncio.wait_for(
-                    SNMPMonitorService(self.db).monitorear_cliente_individual(
-                        cliente.id
+                    SNMPMonitorService(self.db).monitorear_objetivo(
+                        objetivo
                     ),
                     timeout=35,
                 )

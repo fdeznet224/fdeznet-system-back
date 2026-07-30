@@ -455,13 +455,31 @@ class VsolApiService:
 
         if not cliente:
             raise ValueError("Cliente no encontrado.")
+        return await self.monitorear_objetivo(cliente)
 
-        sn_cliente = self._normalizar_sn(cliente.onu_asignada.identificador if cliente.onu_asignada else None)
+    async def monitorear_objetivo(self, objetivo) -> Dict[str, Any]:
+        """Consulta la ONU del cliente legado o de un servicio concreto."""
+        onu_asignada = getattr(objetivo, "onu", None) or getattr(
+            objetivo,
+            "onu_asignada",
+            None,
+        )
+        sn_cliente = self._normalizar_sn(
+            onu_asignada.identificador if onu_asignada else None
+        )
 
-        if not cliente.olt_id or not sn_cliente:
-            raise ValueError("Al cliente le falta OLT o Identificador de ONU (SN).")
+        if not objetivo.olt_id or not sn_cliente:
+            raise ValueError(
+                "Al servicio le falta OLT o Identificador de ONU (SN)."
+            )
 
-        api_data = await self.listar_onus_unificadas(cliente.olt_id)
+        api_data = await self.listar_onus_unificadas(objetivo.olt_id)
+        cliente = getattr(objetivo, "cliente", None) or objetivo
+        servicio_id = (
+            objetivo.id
+            if getattr(objetivo, "cliente_id", None) is not None
+            else None
+        )
 
         candidatos = [
             onu
@@ -474,6 +492,7 @@ class VsolApiService:
             rx = onu.get("rx_power")
             return {
                 "cliente_id": cliente.id,
+                "servicio_id": servicio_id,
                 "nombre": cliente.nombre,
                 "identificador": sn_cliente,
                 "onu_id": onu.get("onu_id"),
@@ -498,6 +517,7 @@ class VsolApiService:
 
         return {
             "cliente_id": cliente.id,
+            "servicio_id": servicio_id,
             "nombre": cliente.nombre,
             "identificador": sn_cliente,
             "potencia": "LOS / Sin señal",

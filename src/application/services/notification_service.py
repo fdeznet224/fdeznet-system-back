@@ -178,6 +178,8 @@ class NotificationService:
             clave_dedupe=clave,
             leido=True,
             ack=0,
+            estado_envio="pendiente",
+            ruta_archivo=ruta_pdf,
         )
         self.db.add(registro)
         await self.db.flush()
@@ -186,6 +188,8 @@ class NotificationService:
         await self.db.commit()
 
         tarea = {
+            # Se incluyen también los datos por compatibilidad con consumidores
+            # internos; el worker durable vuelve a leerlos desde MySQL.
             "numero": cliente.telefono,
             "mensaje": mensaje_formateado,
             "ruta": ruta_pdf,

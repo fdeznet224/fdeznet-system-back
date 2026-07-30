@@ -21,6 +21,7 @@ from src.infrastructure.models import (
     RouterModel, 
     RedModel, 
     ClienteModel, 
+    ServicioModel,
     PlanModel
 )
 
@@ -37,6 +38,9 @@ from src.domain.schemas import (
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.application.services.network_service import NetworkService
 from src.application.services.ipam_service import IPAMService
+from src.application.services.mikrotik_reconciliation_service import (
+    MikrotikReconciliationService,
+)
 from src.application.services.access_control_service import (
     verificar_acceso_cliente,
 )
@@ -140,10 +144,19 @@ async def eliminar_router(
     if not router_db:
         raise HTTPException(status_code=404, detail="Router no encontrado")
 
-    # Seguridad: Bloquear si tiene clientes
-    clientes = await db.execute(select(ClienteModel).where(ClienteModel.router_id == router_id).limit(1))
-    if clientes.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="No se puede eliminar: Tiene clientes asociados.")
+    servicios = await db.execute(
+        select(ServicioModel.id)
+        .where(
+            ServicioModel.router_id == router_id,
+            ServicioModel.estado != "cancelado",
+        )
+        .limit(1)
+    )
+    if servicios.scalar_one_or_none():
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede eliminar: Tiene servicios asociados.",
+        )
 
     await db.delete(router_db)
     await db.commit()
@@ -182,6 +195,33 @@ async def sincronizar_configuracion_router(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+@router.post("/conciliar-mikrotik")
+async def conciliar_estados_mikrotik(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    """Ejecuta inmediatamente la misma conciliación del cronjob."""
+    try:
+        reporte = await MikrotikReconciliationService(db).ejecutar()
+        return {
+            "status": (
+                "warning" if reporte["errores"] else "success"
+            ),
+            "message": (
+                f"{reporte['verificados']} servicios verificados, "
+                f"{reporte['reparados']} reparados y "
+                f"{reporte['errores']} con error."
+            ),
+            "reporte": reporte,
+        }
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo ejecutar la conciliación: {exc}",
+        ) from exc
 
 
 # ==========================================
@@ -495,6 +535,87 @@ async def procesar_importacion(
 # ==========================================
 # 4. DIAGNÓSTICO Y MONITOREO
 # ==========================================
+
+async def _verificar_acceso_servicio(
+    db: AsyncSession,
+    current_user,
+    servicio_id: int,
+):
+    servicio = await db.get(ServicioModel, servicio_id)
+    if not servicio:
+        raise HTTPException(404, "Servicio no encontrado")
+    await verificar_acceso_cliente(
+        db,
+        current_user,
+        servicio.cliente_id,
+    )
+    return servicio
+
+
+@router.get("/diagnostico/servicios/{servicio_id}/tecnico")
+async def obtener_diagnostico_servicio(
+    servicio_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    try:
+        await _verificar_acceso_servicio(db, current_user, servicio_id)
+        return await NetworkService(db).obtener_estado_tecnico_servicio(
+            servicio_id
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@router.get("/diagnostico/servicios/{servicio_id}/ping")
+async def realizar_ping_servicio(
+    servicio_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    try:
+        await _verificar_acceso_servicio(db, current_user, servicio_id)
+        return await NetworkService(db).ping_servicio(servicio_id)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@router.get("/diagnostico/servicios/{servicio_id}/conexion")
+async def verificar_conexion_servicio(
+    servicio_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    try:
+        await _verificar_acceso_servicio(db, current_user, servicio_id)
+        return await NetworkService(db).verificar_conexion_servicio(
+            servicio_id
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@router.get("/diagnostico/servicios/{servicio_id}/trafico")
+async def verificar_trafico_servicio(
+    servicio_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    try:
+        await _verificar_acceso_servicio(db, current_user, servicio_id)
+        return await NetworkService(db).verificar_trafico_servicio(
+            servicio_id
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
 
 @router.get("/diagnostico/tecnico/{cliente_id}")
 async def obtener_diagnostico_completo(

@@ -45,6 +45,7 @@ class PromesaPagoRequest(BaseModel):
 
 class FacturaManualRequest(BaseModel):
     cliente_id: int
+    servicio_id: Optional[int] = None
     concepto: str
     monto: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     descripcion: Optional[str] = None
@@ -92,16 +93,33 @@ async def get_listado_completo(
     """
     Lista facturas con filtros avanzados, cálculo de totales y protección anti-trampa de fechas.
     """
-    query = select(FacturaModel).options(
-        joinedload(FacturaModel.cliente) 
-    ).join(ClienteModel)
+    query = (
+        select(FacturaModel)
+        .options(
+            joinedload(FacturaModel.cliente),
+            joinedload(FacturaModel.servicio),
+        )
+        .join(ClienteModel)
+        .outerjoin(
+            ServicioModel,
+            ServicioModel.id == FacturaModel.servicio_id,
+        )
+    )
 
     # Seguridad: Cajeros solo ven sus routers
     if current_user.rol != 'admin':
         allowed_router_ids = [r.id for r in current_user.routers_asignados]
         if not allowed_router_ids:
             return {"items": [], "resumen": {"pagadas_cant": 0, "pagadas_total": 0, "pendientes_cant": 0, "pendientes_total": 0}}
-        query = query.where(ClienteModel.router_id.in_(allowed_router_ids))
+        query = query.where(
+            or_(
+                ServicioModel.router_id.in_(allowed_router_ids),
+                and_(
+                    FacturaModel.servicio_id.is_(None),
+                    ClienteModel.router_id.in_(allowed_router_ids),
+                ),
+            )
+        )
 
     # 🔥 Solución al "Mes Fantasma" y filtro de pagos
     if start_date and end_date and not cliente_id and not busqueda:
@@ -117,7 +135,16 @@ async def get_listado_completo(
             query = query.where(and_(FacturaModel.fecha_emision >= start_date, FacturaModel.fecha_emision <= end_date))
 
     # Filtros Opcionales Directos
-    if router_id: query = query.where(ClienteModel.router_id == router_id)
+    if router_id:
+        query = query.where(
+            or_(
+                ServicioModel.router_id == router_id,
+                and_(
+                    FacturaModel.servicio_id.is_(None),
+                    ClienteModel.router_id == router_id,
+                ),
+            )
+        )
     if cliente_id: query = query.where(FacturaModel.cliente_id == cliente_id)
     
     # Filtro de Búsqueda por Texto
@@ -180,6 +207,7 @@ async def get_listado_completo(
         
         items_response.append({
             "id": f.id,
+            "servicio_id": f.servicio_id,
             "estado": f.estado,
             "saldo_pendiente": f.saldo_pendiente,
             "tipo_factura": getattr(f, "tipo_factura", "mensual"),
@@ -196,9 +224,23 @@ async def get_listado_completo(
             "cliente": {
                 "id": f.cliente.id,
                 "nombre": f.cliente.nombre,
-                "ip_asignada": f.cliente.ip_asignada,
+                "ip_asignada": (
+                    f.servicio.ip_asignada
+                    if f.servicio
+                    else f.cliente.ip_asignada
+                ),
                 "sn": f.cliente.cedula 
-            }
+            },
+            "servicio": (
+                {
+                    "id": f.servicio.id,
+                    "alias": f.servicio.alias,
+                    "direccion": f.servicio.direccion,
+                    "estado": f.servicio.estado,
+                }
+                if f.servicio
+                else None
+            ),
         })
 
     return {"items": items_response, "resumen": resumen}
@@ -361,11 +403,6 @@ async def crear_factura_manual(
     if cliente.estado == "eliminado":
         raise HTTPException(400, "No se puede crear factura a un cliente eliminado")
 
-    if current_user.rol != "admin":
-        allowed_router_ids = [r.id for r in current_user.routers_asignados]
-        if cliente.router_id not in allowed_router_ids:
-            raise HTTPException(403, "No tienes permiso para facturar este cliente")
-
     monto = FinanceService.dinero(data.monto)
 
     concepto = data.concepto.strip()
@@ -375,12 +412,39 @@ async def crear_factura_manual(
     fecha_emision = date.today()
     fecha_vencimiento = data.fecha_vencimiento or fecha_emision
 
-    res_servicio = await db.execute(
-        select(ServicioModel)
-        .where(ServicioModel.cliente_id == cliente.id)
-        .order_by(ServicioModel.id.desc())
-    )
-    servicio = res_servicio.scalars().first()
+    if data.servicio_id:
+        servicio = await db.get(ServicioModel, data.servicio_id)
+        if not servicio or servicio.cliente_id != cliente.id:
+            raise HTTPException(
+                400,
+                "El servicio no pertenece al cliente",
+            )
+    else:
+        servicios = (
+            await db.execute(
+                select(ServicioModel).where(
+                    ServicioModel.cliente_id == cliente.id,
+                    ServicioModel.estado != "cancelado",
+                )
+            )
+        ).scalars().all()
+        if len(servicios) > 1:
+            raise HTTPException(
+                400,
+                "Indica servicio_id porque el cliente tiene varios servicios",
+            )
+        servicio = servicios[0] if servicios else None
+
+    if current_user.rol != "admin":
+        allowed_router_ids = [r.id for r in current_user.routers_asignados]
+        router_objetivo = (
+            servicio.router_id if servicio else cliente.router_id
+        )
+        if router_objetivo not in allowed_router_ids:
+            raise HTTPException(
+                403,
+                "No tienes permiso para facturar este servicio",
+            )
 
     factura = FacturaModel(
         cliente_id=cliente.id,
@@ -401,8 +465,11 @@ async def crear_factura_manual(
         mes_correspondiente=f"Cargo manual - {concepto}",
         estado="pendiente",
 
-        periodo_desde=fecha_emision,
-        periodo_hasta=fecha_emision,
+        # Los cargos manuales no representan un periodo mensual. Mantener
+        # ambos campos en NULL permite varios cargos distintos el mismo día
+        # sin chocar con la unicidad de facturación periódica por servicio.
+        periodo_desde=None,
+        periodo_hasta=None,
         dias_facturados=1,
         dias_periodo=1,
         precio_mensual_snapshot=monto,

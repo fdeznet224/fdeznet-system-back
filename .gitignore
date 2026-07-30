@@ -18,6 +18,7 @@ __pycache__/
 # Sesión de WhatsApp Web JS
 # =========================
 .wwebjs_auth/
+.wwebjs_auth.backup-*/
 .wwebjs_cache/
 
 # =========================

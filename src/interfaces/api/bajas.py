@@ -16,6 +16,7 @@ router = APIRouter(prefix="/bajas", tags=["Bajas de servicio"])
 
 
 class BajaCrear(BaseModel):
+    servicio_id: Optional[int] = Field(default=None, gt=0)
     motivo: str = Field(min_length=5, max_length=500)
     observaciones: Optional[str] = Field(default=None, max_length=2000)
     tecnico_id: Optional[int] = Field(default=None, gt=0)
@@ -118,6 +119,7 @@ async def crear_baja(
             tecnico_id=datos.tecnico_id,
             fecha_programada=datos.fecha_programada,
             observaciones=datos.observaciones,
+            servicio_id=datos.servicio_id,
         )
         return serializar_baja(baja)
     except (ValueError, PermissionError, RuntimeError) as exc:

@@ -1,10 +1,7 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
-
-# 🔥 1. IMPORTAMOS EL CACHÉ
-from fastapi_cache.decorator import cache
 
 from src.infrastructure.database import get_db
 from src.domain.schemas import CajaNapCreate, CajaNapResponse
@@ -21,20 +18,25 @@ class PuertoNapOcupadoResponse(BaseModel):
     cedula: Optional[str] = None
 
 # ==========================================
-# CATÁLOGO DE NAPs (CON CACHÉ)
+# CATÁLOGO DE NAPs
 # ==========================================
 @router.get("/naps", response_model=List[CajaNapResponse])
-@cache(expire=300) # 🔥 Guardamos el catálogo de cajas por 5 minutos
 async def listar_cajas_nap(
-    zona_id: int = None, 
+    zona_id: Optional[int] = Query(default=None, ge=1),
+    router_id: Optional[int] = Query(default=None, ge=1),
+    olt_id: Optional[int] = Query(default=None, ge=1),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(
         role_required(["admin", "supervisor", "tecnico"])
     ),
 ):
-    """Obtiene el inventario de NAPs con ocupación en tiempo real."""
+    """Obtiene NAPs compatibles con la zona, el router y/o la OLT."""
     service = NapService(db)
-    return await service.listar_naps(zona_id)
+    return await service.listar_naps(
+        zona_id=zona_id,
+        router_id=router_id,
+        olt_id=olt_id,
+    )
 
 
 # ==========================================
@@ -50,8 +52,26 @@ async def crear_caja_nap(
     service = NapService(db)
     try:
         return await service.crear_nap(data)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.put("/naps/{id}", response_model=CajaNapResponse)
+async def actualizar_caja_nap(
+    id: int,
+    data: CajaNapCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    service = NapService(db)
+    try:
+        return await service.actualizar_nap(id, data)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @router.delete("/naps/{id}")
 async def eliminar_caja_nap(

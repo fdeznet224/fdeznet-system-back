@@ -9,7 +9,12 @@ from fastapi_cache.backends.inmemory import InMemoryBackend
 
 # Scheduler para Cronjobs
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from src.jobs import tarea_cron_unificada, tarea_monitoreo_routers, tarea_sincronizar_clientes
+from src.jobs import (
+    tarea_conciliar_mikrotik,
+    tarea_cron_unificada,
+    tarea_monitoreo_routers,
+    tarea_sincronizar_clientes,
+)
 
 # Base de Datos
 from src.infrastructure.database import engine, Base, SessionLocal
@@ -38,6 +43,7 @@ from src.interfaces.api import (
     olts,
     ordenes,
     planes,
+    servicios,
     support,
     sync,
     usuarios,
@@ -132,6 +138,22 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(tarea_monitoreo_routers, 'interval', minutes=1)
     scheduler.add_job(tarea_sincronizar_clientes, 'interval', minutes=3)
     scheduler.add_job(
+        tarea_conciliar_mikrotik,
+        "interval",
+        minutes=5,
+        id="mikrotik_state_reconciler",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        whatsapp_queue.recuperar_pendientes,
+        "interval",
+        minutes=1,
+        id="whatsapp_outbox_dispatcher",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
         tarea_cron_unificada,
         "interval",
         minutes=1,
@@ -191,6 +213,7 @@ financial_roles = [Depends(role_required(["admin", "supervisor", "cajero"]))]
 app.include_router(dashboard.router, dependencies=authenticated)
 app.include_router(clients.router, dependencies=authenticated)
 app.include_router(planes.router, dependencies=authenticated)
+app.include_router(servicios.router, dependencies=authenticated)
 app.include_router(finanzas.router, dependencies=financial_roles)
 app.include_router(network.router, dependencies=authenticated)
 app.include_router(usuarios.router, dependencies=admin_only)

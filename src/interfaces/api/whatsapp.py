@@ -1,12 +1,13 @@
 import os
 import httpx
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, func, cast, String
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,9 +25,15 @@ from src.infrastructure.models import (
     PagoAutovalidadoModel, 
     FacturaModel, 
     UsuarioModel,
-    ConfiguracionSistema # 👈 Añadido para poder alertarte de fraudes
+    ConfiguracionModel,
+    ConfiguracionSistema,  # 👈 Añadido para poder alertarte de fraudes
 )
-from src.infrastructure.whatsapp_client import whatsapp_queue, WhatsAppService
+from src.infrastructure.whatsapp_client import (
+    GLOBAL_SETTINGS,
+    WhatsAppService,
+    set_intervalo_default,
+    whatsapp_queue,
+)
 from src.infrastructure.socket_manager import manager
 
 # Importaciones de Servicios
@@ -36,12 +43,15 @@ from src.application.services.finance_service import FinanceService
 from src.application.services.access_control_service import (
     verificar_acceso_cliente,
 )
+from src.application.services.whatsapp_outbox_service import (
+    ESTADOS_SALIDA,
+    WhatsAppOutboxService,
+)
 
 router = APIRouter(prefix="/whatsapp", tags=["Configuración WhatsApp"])
 webhook_router = APIRouter(prefix="/whatsapp", tags=["Webhooks WhatsApp"])
 
 # --- CONFIGURACIÓN Y MEMORIA GLOBAL ---
-GLOBAL_SETTINGS = {"intervalo_default": 60}
 BASE_NODE_URL = os.getenv("WHATSAPP_BASE_URL") or (
     "http://whatsapp:3000"
     if os.environ.get("ENVIRONMENT") == "production"
@@ -72,8 +82,8 @@ async def obtener_factura_cobrable(db: AsyncSession, cliente_id: int):
 
 # --- SCHEMAS ---
 class Destinatario(BaseModel):
-    numero: str
-    nombre: str
+    numero: str = Field(min_length=10, max_length=100)
+    nombre: str = Field(min_length=1, max_length=150)
 
 class CampanaMasiva(BaseModel):
     clientes: List[Destinatario]
@@ -82,11 +92,27 @@ class CampanaMasiva(BaseModel):
     intervalo_segundos: int = 0  
 
 class MensajeEnviarRequest(BaseModel):
-    mensaje: str
+    mensaje: str = Field(min_length=1, max_length=10000)
 
 class AckWebhookRequest(BaseModel):
-    wa_id: str
-    ack: int
+    wa_id: Optional[str] = None
+    mensaje_chat_id: Optional[int] = None
+    ack: int = Field(ge=-1, le=4)
+
+    @model_validator(mode="after")
+    def validar_identificador(self):
+        if not self.wa_id and not self.mensaje_chat_id:
+            raise ValueError("Indica wa_id o mensaje_chat_id")
+        return self
+
+
+class ReintentoMasivoRequest(BaseModel):
+    ids: Optional[list[int]] = None
+    limite: int = Field(default=100, ge=1, le=500)
+
+
+class ConfiguracionWhatsAppRequest(BaseModel):
+    intervalo_segundos: int = Field(ge=1, le=3600)
 
 # ==========================================
 # ⚙️ FUNCION AUXILIAR: VALIDACIÓN FINAL (CAPA 3)
@@ -182,36 +208,98 @@ async def procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db
 # ==========================================
 @router.get("/configuracion")
 async def get_config(
+    db: AsyncSession = Depends(get_db),
     current_user=Depends(role_required(["admin", "supervisor"])),
 ):
+    valor = (
+        await db.execute(
+            select(ConfiguracionModel.valor).where(
+                ConfiguracionModel.clave
+                == "whatsapp_intervalo_segundos"
+            )
+        )
+    ).scalar_one_or_none()
+    if valor:
+        try:
+            set_intervalo_default(int(valor))
+        except (TypeError, ValueError):
+            pass
     return GLOBAL_SETTINGS
 
 @router.post("/configuracion")
 async def set_config(
-    datos: dict,
+    datos: ConfiguracionWhatsAppRequest,
+    db: AsyncSession = Depends(get_db),
     current_user=Depends(role_required(["admin", "supervisor"])),
 ):
-    GLOBAL_SETTINGS["intervalo_default"] = datos.get("intervalo_segundos", 60)
-    return {"status": "ok", "intervalo": GLOBAL_SETTINGS["intervalo_default"]}
+    intervalo = set_intervalo_default(
+        datos.intervalo_segundos
+    )
+    configuracion = (
+        await db.execute(
+            select(ConfiguracionModel).where(
+                ConfiguracionModel.clave
+                == "whatsapp_intervalo_segundos"
+            )
+        )
+    ).scalar_one_or_none()
+    if configuracion:
+        configuracion.valor = str(intervalo)
+    else:
+        db.add(
+            ConfiguracionModel(
+                clave="whatsapp_intervalo_segundos",
+                valor=str(intervalo),
+            )
+        )
+    await db.commit()
+    return {"status": "ok", "intervalo": intervalo}
 
 @router.post("/enviar-campana")
 async def enviar_campana(
     datos: CampanaMasiva,
+    db: AsyncSession = Depends(get_db),
     current_user=Depends(role_required(["admin", "supervisor"])),
 ):
     if not datos.clientes: raise HTTPException(status_code=400, detail="Lista vacía")
     intervalo_final = datos.intervalo_segundos if datos.intervalo_segundos > 0 else GLOBAL_SETTINGS["intervalo_default"]
-    count = 0
+    lote_id = str(uuid4())
+    registros = []
     for cliente in datos.clientes:
         texto = datos.mensaje.replace("{nombre}", cliente.nombre)
-        await whatsapp_queue.agregar_tarea({
-            "numero": cliente.numero, 
-            "mensaje": texto, 
-            "ruta": datos.ruta_archivo, 
-            "intervalo": intervalo_final
-        })
-        count += 1
-    return {"status": "procesando", "total_mensajes": count}
+        registro = MensajeChatModel(
+            cliente_id=None,
+            telefono=whatsapp_queue.service._formatear_numero(
+                cliente.numero
+            ),
+            direccion="salida",
+            mensaje=texto,
+            tipo_mensaje=(
+                "documento" if datos.ruta_archivo else "texto"
+            ),
+            tipo_evento="campana",
+            leido=True,
+            ack=0,
+            estado_envio="pendiente",
+            ruta_archivo=datos.ruta_archivo,
+            lote_id=lote_id,
+            creado_por_id=current_user.id,
+        )
+        db.add(registro)
+        registros.append(registro)
+    await db.commit()
+    for registro in registros:
+        await whatsapp_queue.agregar_tarea(
+            {
+                "mensaje_chat_id": registro.id,
+                "intervalo": intervalo_final,
+            }
+        )
+    return {
+        "status": "procesando",
+        "lote_id": lote_id,
+        "total_mensajes": len(registros),
+    }
 
 
 # ==========================================
@@ -258,7 +346,8 @@ async def webhook_recibir_mensaje(
         telefono=telefono_raw, 
         direccion="entrada",
         mensaje=texto_historial,
-        leido=False
+        leido=False,
+        estado_envio="recibido",
     )
     db.add(nuevo_mensaje)
     await db.commit()
@@ -590,17 +679,168 @@ async def webhook_actualizar_ack(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_webhook_secret),
 ):
-    stmt = select(MensajeChatModel).where(MensajeChatModel.wa_id == data.wa_id)
-    mensaje = (await db.execute(stmt)).scalar_one_or_none()
-    
+    mensaje = await WhatsAppOutboxService(db).actualizar_ack(
+        ack=data.ack,
+        wa_id=data.wa_id,
+        mensaje_chat_id=data.mensaje_chat_id,
+    )
     if mensaje:
-        mensaje.ack = data.ack
-        await db.commit()
         await manager.broadcast({
             "type": "MESSAGE_ACK",
-            "data": {"wa_id": data.wa_id, "ack": data.ack, "cliente_id": mensaje.cliente_id}
+            "data": {
+                "id": mensaje.id,
+                "wa_id": mensaje.wa_id,
+                "ack": mensaje.ack,
+                "estado_envio": mensaje.estado_envio,
+                "cliente_id": mensaje.cliente_id,
+            },
         })
     return {"status": "ok"}
+
+
+# ==========================================
+# 📤 BANDEJA OPERATIVA DE SALIDA
+# ==========================================
+def serializar_salida(mensaje: MensajeChatModel):
+    return {
+        "id": mensaje.id,
+        "cliente_id": mensaje.cliente_id,
+        "cliente": (
+            {
+                "id": mensaje.cliente.id,
+                "nombre": mensaje.cliente.nombre,
+            }
+            if mensaje.cliente
+            else None
+        ),
+        "telefono": mensaje.telefono,
+        "mensaje": mensaje.mensaje,
+        "tipo_mensaje": mensaje.tipo_mensaje,
+        "tipo_evento": mensaje.tipo_evento,
+        "lote_id": mensaje.lote_id,
+        "estado_envio": mensaje.estado_envio,
+        "ack": mensaje.ack,
+        "wa_id": mensaje.wa_id,
+        "intentos": mensaje.intentos,
+        "max_intentos": mensaje.max_intentos,
+        "reintentos_manuales": mensaje.reintentos_manuales,
+        "ultimo_error": mensaje.ultimo_error,
+        "fecha": mensaje.fecha,
+        "ultima_tentativa_en": mensaje.ultima_tentativa_en,
+        "proximo_intento_en": mensaje.proximo_intento_en,
+        "enviado_en": mensaje.enviado_en,
+        "entregado_en": mensaje.entregado_en,
+        "leido_en": mensaje.leido_en,
+        "ruta_archivo": mensaje.ruta_archivo,
+        "creado_por": (
+            {
+                "id": mensaje.creado_por.id,
+                "nombre": mensaje.creado_por.nombre_completo,
+            }
+            if mensaje.creado_por
+            else None
+        ),
+        "ultimo_reintento_por": (
+            {
+                "id": mensaje.ultimo_reintento_por.id,
+                "nombre": mensaje.ultimo_reintento_por.nombre_completo,
+            }
+            if mensaje.ultimo_reintento_por
+            else None
+        ),
+    }
+
+
+@router.get("/salidas")
+async def listar_salidas_whatsapp(
+    estado: Optional[str] = None,
+    tipo_evento: Optional[str] = None,
+    cliente_id: Optional[int] = None,
+    busqueda: Optional[str] = None,
+    desde: Optional[date] = None,
+    hasta: Optional[date] = None,
+    lote_id: Optional[str] = None,
+    pagina: int = 1,
+    limite: int = 50,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    if pagina < 1 or limite < 1 or limite > 200:
+        raise HTTPException(400, "Paginación inválida")
+    if estado and estado not in ESTADOS_SALIDA:
+        raise HTTPException(400, "Estado de envío inválido")
+    if desde and hasta and hasta < desde:
+        raise HTTPException(400, "La fecha final no puede ser anterior")
+    try:
+        items, total, resumen = await WhatsAppOutboxService(db).listar(
+            estado=estado,
+            tipo_evento=tipo_evento,
+            cliente_id=cliente_id,
+            busqueda=busqueda,
+            desde=desde,
+            hasta=hasta,
+            lote_id=lote_id,
+            pagina=pagina,
+            limite=limite,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "items": [serializar_salida(item) for item in items],
+        "total": total,
+        "pagina": pagina,
+        "limite": limite,
+        "resumen": resumen,
+        "cola_memoria": whatsapp_queue.queue.qsize(),
+    }
+
+
+@router.post("/salidas/reintentar-fallidos")
+async def reintentar_salidas_fallidas(
+    datos: ReintentoMasivoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    ids = await WhatsAppOutboxService(db).reintentar_lote(
+        current_user,
+        ids=datos.ids,
+        limite=datos.limite,
+    )
+    return {
+        "status": "encolados",
+        "total": len(ids),
+        "ids": ids,
+    }
+
+
+@router.get("/salidas/{mensaje_id}")
+async def obtener_salida_whatsapp(
+    mensaje_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    try:
+        registro = await WhatsAppOutboxService(db).obtener(mensaje_id)
+        return serializar_salida(registro)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/salidas/{mensaje_id}/reintentar")
+async def reintentar_salida_whatsapp(
+    mensaje_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    try:
+        registro = await WhatsAppOutboxService(db).reintentar(
+            mensaje_id,
+            current_user,
+        )
+        return serializar_salida(registro)
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(409, str(exc)) from exc
 
 
 # ==========================================
@@ -669,22 +909,32 @@ async def enviar_mensaje_chat(
     elif len(telefono_limpio) == 12 and telefono_limpio.startswith("52"): telefono_limpio = f"521{telefono_limpio[2:]}"
 
     nuevo_mensaje = MensajeChatModel(
-        cliente_id=cliente.id, telefono=telefono_limpio, direccion="salida", mensaje=data.mensaje, leido=True, ack=0 
+        cliente_id=cliente.id,
+        telefono=telefono_limpio,
+        direccion="salida",
+        mensaje=data.mensaje,
+        tipo_mensaje="texto",
+        tipo_evento="chat_manual",
+        leido=True,
+        ack=0,
+        estado_envio="pendiente",
+        creado_por_id=current_user.id,
     )
     db.add(nuevo_mensaje)
     await db.commit()
     await db.refresh(nuevo_mensaje)
 
-    try:
-        # 🔥 CARRIL RÁPIDO PARA EL CHAT MANUAL DEL PANEL 🔥
-        wa_service = WhatsAppService()
-        exito = await wa_service.enviar_mensaje(telefono=telefono_limpio, mensaje=data.mensaje)
-        if exito:
-             # Aquí asumes que tu servicio puente regresará ok (node)
-             nuevo_mensaje.ack = 1 
-             await db.commit()
-    except Exception as e: print(f"❌ Error enviando mensaje instantáneo: {e}")
-    return {"status": "ok"}
+    await whatsapp_queue.agregar_tarea(
+        {
+            "mensaje_chat_id": nuevo_mensaje.id,
+            "intervalo": 0,
+        }
+    )
+    return {
+        "status": "encolado",
+        "mensaje_id": nuevo_mensaje.id,
+        "estado_envio": nuevo_mensaje.estado_envio,
+    }
 
 @webhook_router.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):

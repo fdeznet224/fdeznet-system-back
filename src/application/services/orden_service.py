@@ -12,6 +12,7 @@ from src.infrastructure.models import (
     HistorialEstadoOrdenModel,
     MaterialOrdenModel,
     OrdenServicioModel,
+    ServicioModel,
     UsuarioModel,
 )
 
@@ -53,14 +54,48 @@ class OrdenService:
             raise ValueError("Prioridad inválida")
         if not datos.cliente_id and not datos.prospecto_nombre:
             raise ValueError("Indica un cliente o el nombre del prospecto")
-        if datos.cliente_id and not await self.db.get(ClienteModel, datos.cliente_id):
-            raise ValueError("El cliente no existe")
+        servicio = None
+        if datos.cliente_id:
+            if not await self.db.get(ClienteModel, datos.cliente_id):
+                raise ValueError("El cliente no existe")
+            servicios = (
+                await self.db.execute(
+                    select(ServicioModel)
+                    .where(
+                        ServicioModel.cliente_id == datos.cliente_id,
+                        ServicioModel.estado != "cancelado",
+                    )
+                    .order_by(ServicioModel.id)
+                )
+            ).scalars().all()
+            servicio_id = getattr(datos, "servicio_id", None)
+            if servicio_id:
+                servicio = next(
+                    (
+                        item
+                        for item in servicios
+                        if item.id == servicio_id
+                    ),
+                    None,
+                )
+                if not servicio:
+                    raise ValueError(
+                        "El servicio no pertenece al cliente"
+                    )
+            elif len(servicios) == 1:
+                servicio = servicios[0]
+            elif len(servicios) > 1:
+                raise ValueError(
+                    "Indica servicio_id porque el cliente tiene "
+                    "varios domicilios"
+                )
 
         tecnico = await self._validar_tecnico(datos.tecnico_id)
         estado = "asignada" if tecnico else "pendiente"
         orden = OrdenServicioModel(
             tipo=tipo,
             cliente_id=datos.cliente_id,
+            servicio_id=servicio.id if servicio else None,
             caja_nap_sugerida_id=datos.caja_nap_sugerida_id,
             puerto_nap_sugerido=datos.puerto_nap_sugerido,
             prospecto_nombre=datos.prospecto_nombre,
@@ -384,6 +419,7 @@ class OrdenService:
     def _consulta_base():
         return select(OrdenServicioModel).options(
             selectinload(OrdenServicioModel.cliente),
+            selectinload(OrdenServicioModel.servicio),
             selectinload(OrdenServicioModel.tecnico),
             selectinload(OrdenServicioModel.creado_por),
             selectinload(OrdenServicioModel.historial).selectinload(
