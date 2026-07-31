@@ -378,6 +378,25 @@ class VsolApiService:
             if sn:
                 mapa_bd[sn] = cliente
 
+        def datos_cliente(cliente: ClienteModel) -> Dict[str, Any]:
+            """Datos de CRM que Radar necesita sin depender del listado paginado."""
+            return {
+                "id_cliente": cliente.id,
+                "nombre": cliente.nombre,
+                "cedula": cliente.cedula,
+                "telefono": cliente.telefono,
+                "direccion": cliente.direccion,
+                "correo": cliente.correo,
+                "ip_asignada": cliente.ip_asignada,
+                "user_pppoe": cliente.user_pppoe,
+                "mac_address": cliente.mac_address,
+                "olt_id": cliente.olt_id,
+                "onu_id_inventario": cliente.onu_id,
+                "caja_nap_id": cliente.caja_nap_id,
+                "puerto_nap": cliente.puerto_nap,
+                "estado_fdeznet": cliente.estado,
+            }
+
         api_data = await self.listar_onus_unificadas(olt_id)
         onus_api = api_data["onus"]
         resultados = {
@@ -401,8 +420,7 @@ class VsolApiService:
             if sn in mapa_bd:
                 cliente = mapa_bd[sn]
                 dato = {
-                    "id_cliente": cliente.id,
-                    "nombre": cliente.nombre,
+                    **datos_cliente(cliente),
                     "identificador": sn,
                     "onu_id": onu.get("onu_id"),
                     "modelo": onu.get("modelo"),
@@ -412,7 +430,6 @@ class VsolApiService:
                     "phase_state": onu.get("phase_state"),
                     "alive_time": onu.get("alive_time"),
                     "estado_fisico": onu.get("estado_fisico"),
-                    "estado_fdeznet": cliente.estado,
                     "recomendacion": onu.get("recomendacion"),
                 }
                 if onu.get("estado_fisico") == "online":
@@ -435,12 +452,10 @@ class VsolApiService:
         for sn, cliente in mapa_bd.items():
             if sn not in onus_encontradas:
                 resultados["clientes_caidos"].append({
-                    "id_cliente": cliente.id,
-                    "nombre": cliente.nombre,
+                    **datos_cliente(cliente),
                     "identificador": sn,
                     "rx_power": "LOS / Sin señal",
                     "estado_fisico": "offline",
-                    "estado_fdeznet": cliente.estado,
                     "recomendacion": "La OLT no reportó esta ONU por API. Verificar energía, serial o puerto PON.",
                 })
                 resultados["resumen"]["caidos"] += 1

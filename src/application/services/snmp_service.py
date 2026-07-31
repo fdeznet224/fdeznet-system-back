@@ -137,6 +137,25 @@ class SNMPMonitorService:
             if sn:
                 mapa_bd[sn] = c
 
+        def datos_cliente(cliente: ClienteModel):
+            """Datos de CRM incluidos en Radar para evitar cruces parciales."""
+            return {
+                "id_cliente": cliente.id,
+                "nombre": cliente.nombre,
+                "cedula": cliente.cedula,
+                "telefono": cliente.telefono,
+                "direccion": cliente.direccion,
+                "correo": cliente.correo,
+                "ip_asignada": cliente.ip_asignada,
+                "user_pppoe": cliente.user_pppoe,
+                "mac_address": cliente.mac_address,
+                "olt_id": cliente.olt_id,
+                "onu_id_inventario": cliente.onu_id,
+                "caja_nap_id": cliente.caja_nap_id,
+                "puerto_nap": cliente.puerto_nap,
+                "estado_fdeznet": cliente.estado,
+            }
+
         onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
 
         resultados = {
@@ -158,12 +177,10 @@ class SNMPMonitorService:
             if id_fisico in mapa_bd:
                 cliente_real = mapa_bd[id_fisico]
                 datos_cruzados = {
-                    "id_cliente": cliente_real.id,
-                    "nombre": cliente_real.nombre,
+                    **datos_cliente(cliente_real),
                     "identificador": id_fisico,
                     "rx_power": f"{onu['potencia']} dBm",
                     "estado_fisico": onu['status'],
-                    "estado_fdeznet": cliente_real.estado
                 }
 
                 if onu['status'] == "online":
@@ -183,12 +200,10 @@ class SNMPMonitorService:
         for id_bd, cliente in mapa_bd.items():
             if id_bd not in onus_encontradas:
                 resultados["clientes_caidos"].append({
-                    "id_cliente": cliente.id,
-                    "nombre": cliente.nombre,
+                    **datos_cliente(cliente),
                     "identificador": id_bd,
                     "rx_power": "LOS / Sin señal",
                     "estado_fisico": "offline",
-                    "estado_fdeznet": cliente.estado
                 })
                 resultados["resumen"]["caidos"] += 1
 
