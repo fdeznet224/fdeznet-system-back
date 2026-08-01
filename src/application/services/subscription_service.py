@@ -101,8 +101,18 @@ class SubscriptionService:
 
         await self._validar_catalogos(
             router_id=datos.router_id,
-            plan_id=datos.plan_id,
-            plantilla_id=datos.plantilla_id,
+            plan_id=(
+                datos.plan_id
+                if datos.plan_id is not None
+                else cliente.plan_id
+            ),
+            # Compatibilidad con clientes existentes: si el nuevo domicilio
+            # no especifica plantilla, hereda la del cliente.
+            plantilla_id=(
+                datos.plantilla_id
+                if datos.plantilla_id is not None
+                else cliente.plantilla_id
+            ),
             red_id=datos.red_id,
         )
 
@@ -113,8 +123,16 @@ class SubscriptionService:
             latitud=datos.latitud,
             longitud=datos.longitud,
             router_id=datos.router_id,
-            plan_id=datos.plan_id,
-            plantilla_id=datos.plantilla_id,
+            plan_id=(
+                datos.plan_id
+                if datos.plan_id is not None
+                else cliente.plan_id
+            ),
+            plantilla_id=(
+                datos.plantilla_id
+                if datos.plantilla_id is not None
+                else cliente.plantilla_id
+            ),
             zona_id=datos.zona_id,
             red_id=datos.red_id,
             tecnico_id=datos.tecnico_id,
@@ -247,6 +265,13 @@ class SubscriptionService:
             valor = getattr(datos, campo)
             if valor is not None:
                 setattr(servicio, campo, valor)
+
+        # Los servicios creados antes de la migración de multi-domicilio
+        # pueden no tener plantilla propia, aunque el cliente sí la tenga.
+        if servicio.plantilla_id is None and servicio.cliente.plantilla_id:
+            servicio.plantilla_id = servicio.cliente.plantilla_id
+        if servicio.plan_id is None and servicio.cliente.plan_id:
+            servicio.plan_id = servicio.cliente.plan_id
 
         await self._validar_catalogos(
             router_id=servicio.router_id,

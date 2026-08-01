@@ -8,7 +8,7 @@ from sqlalchemy.orm import joinedload, selectinload
 # Modelos
 from src.infrastructure.models import (
     ClienteModel, FacturaModel, PagoModel, 
-    UsuarioModel, PlantillaFacturacionModel, PlanModel, RouterModel,
+    UsuarioModel, PlanModel, RouterModel,
     ServicioModel,
 )
 
@@ -44,24 +44,28 @@ class BillingService:
             select(ServicioModel)
             .options(
                 selectinload(ServicioModel.cliente),
+                selectinload(ServicioModel.cliente).selectinload(
+                    ClienteModel.plantilla
+                ),
+                selectinload(ServicioModel.cliente).selectinload(
+                    ClienteModel.plan
+                ),
                 selectinload(ServicioModel.plantilla),
                 selectinload(ServicioModel.plan),
             )
+            .join(ClienteModel, ClienteModel.id == ServicioModel.cliente_id)
             .where(
                 ServicioModel.estado.in_(["activo", "suspendido"]),
-                ServicioModel.plantilla_id.isnot(None),
-                ServicioModel.plan_id.isnot(None),
+                or_(
+                    ServicioModel.plantilla_id.isnot(None),
+                    ClienteModel.plantilla_id.isnot(None),
+                ),
+                or_(
+                    ServicioModel.plan_id.isnot(None),
+                    ClienteModel.plan_id.isnot(None),
+                ),
             )
         )
-
-        if dia_objetivo:
-            stmt = stmt.join(
-                PlantillaFacturacionModel,
-                PlantillaFacturacionModel.id
-                == ServicioModel.plantilla_id,
-            ).where(
-                PlantillaFacturacionModel.dia_pago == dia_objetivo
-            )
 
         result = await self.db.execute(stmt)
         servicios = result.scalars().all()
@@ -74,6 +78,7 @@ class BillingService:
             "facturas_postpago": 0,
             "mensajes_enviados": 0,
             "omitidos_sin_servicio": 0,
+            "omitidos_sin_plantilla": 0,
             "omitidos_sin_proxima_facturacion": 0,
             "omitidos_modalidad_pendiente": 0,
             "omitidos_no_toca_emitir": 0,
@@ -83,8 +88,16 @@ class BillingService:
         for servicio in servicios:
             reporte["total_procesados"] += 1
             cliente = servicio.cliente
-            plantilla = servicio.plantilla
-            plan = servicio.plan
+            plantilla = servicio.plantilla or getattr(cliente, "plantilla", None)
+            if plantilla is None:
+                reporte["omitidos_sin_plantilla"] += 1
+                continue
+            plan = servicio.plan or getattr(cliente, "plan", None)
+            if plan is None:
+                reporte["omitidos_sin_servicio"] += 1
+                continue
+            if dia_objetivo and plantilla.dia_pago != dia_objetivo:
+                continue
             if servicio.ciclo_facturacion == CicloFacturacion.aniversario:
                 reporte["omitidos_modalidad_pendiente"] += 1
                 continue
@@ -99,7 +112,9 @@ class BillingService:
                 reporte["omitidos_modalidad_pendiente"] += 1
                 continue
 
-            dia_ciclo = servicio.dia_vencimiento or plantilla.dia_pago or 1
+            # La plantilla es la configuración vigente del ciclo. El campo
+            # del servicio sólo queda como dato histórico/compatibilidad.
+            dia_ciclo = plantilla.dia_pago or servicio.dia_vencimiento or 1
             periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
                 periodo_desde=servicio.proxima_facturacion,
                 dia_ciclo=dia_ciclo,

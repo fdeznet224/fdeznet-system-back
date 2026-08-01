@@ -108,6 +108,32 @@ def test_emision_masiva_genera_una_factura_por_cada_servicio():
     assert db.commits == 1
 
 
+def test_emision_masiva_hereda_plantilla_historica_del_cliente():
+    plantilla = SimpleNamespace(
+        dia_pago=15,
+        impuesto=Decimal("16"),
+        dias_antes_emision=0,
+        dias_tolerancia=3,
+    )
+    cliente = SimpleNamespace(
+        id=10,
+        nombre="Cliente",
+        telefono=None,
+        plantilla=plantilla,
+    )
+    servicio = _servicio_facturable(101, cliente)
+    servicio.plantilla = None
+    servicio.dia_vencimiento = None
+    db = _BillingDB([servicio])
+
+    reporte = asyncio.run(
+        BillingService(db).generar_emision_masiva(dia_objetivo=15)
+    )
+
+    assert reporte["facturas_generadas"] == 1
+    assert db.facturas[0].impuesto == Decimal("37.33")
+
+
 def test_modelo_tecnico_queda_asociado_al_servicio():
     for modelo in (
         OrdenServicioModel,
