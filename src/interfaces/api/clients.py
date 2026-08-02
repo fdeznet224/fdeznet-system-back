@@ -841,8 +841,14 @@ async def obtener_resumen_comercial_cliente(
                 WHEN f.estado IN ('pendiente', 'vencida') THEN 0
                 ELSE 1
             END,
-            CASE WHEN f.fecha_vencimiento IS NULL THEN 1 ELSE 0 END,
-            f.fecha_vencimiento ASC,
+            CASE
+                WHEN f.estado IN ('pendiente', 'vencida')
+                THEN f.fecha_vencimiento
+            END ASC,
+            CASE
+                WHEN f.estado NOT IN ('pendiente', 'vencida')
+                THEN f.fecha_vencimiento
+            END DESC,
             f.id DESC
         LIMIT 1
     """)
