@@ -8,10 +8,12 @@ from src.infrastructure.database import SessionLocal
 
 
 async def create_admin():
+    usuario = os.getenv("ADMIN_BOOTSTRAP_USER", "").strip()
     password = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "")
-    if not password:
+    if not usuario or not password:
         raise RuntimeError(
-            "Define ADMIN_BOOTSTRAP_PASSWORD temporalmente para crear el administrador"
+            "Define ADMIN_BOOTSTRAP_USER y ADMIN_BOOTSTRAP_PASSWORD "
+            "temporalmente para crear el administrador"
         )
 
     async with SessionLocal() as db:
@@ -22,7 +24,7 @@ async def create_admin():
                     "ADMIN_BOOTSTRAP_NAME",
                     "Super Administrador",
                 ),
-                usuario=os.getenv("ADMIN_BOOTSTRAP_USER", "admin"),
+                usuario=usuario,
                 password=password,
                 rol="admin",
                 activo=True,

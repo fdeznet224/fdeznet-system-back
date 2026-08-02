@@ -94,11 +94,16 @@ async def lifespan(app: FastAPI):
     # 3. CREAR ADMIN SOLO CUANDO SE PROPORCIONAN CREDENCIALES DE BOOTSTRAP
     async with SessionLocal() as db:
         try:
-            bootstrap_user = os.getenv("ADMIN_BOOTSTRAP_USER", "admin").strip()
+            bootstrap_user = os.getenv("ADMIN_BOOTSTRAP_USER", "").strip()
             bootstrap_password = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "")
             stmt = select(UsuarioModel).where(UsuarioModel.rol == "admin")
             result = await db.execute(stmt.limit(1))
             if not result.scalar_one_or_none():
+                if bootstrap_password and not bootstrap_user:
+                    raise RuntimeError(
+                        "ADMIN_BOOTSTRAP_USER es obligatorio cuando se usa "
+                        "ADMIN_BOOTSTRAP_PASSWORD"
+                    )
                 if bootstrap_password:
                     service = UserService(db)
                     admin_data = UsuarioCreate(
