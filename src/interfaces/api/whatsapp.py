@@ -1,4 +1,5 @@
 import os
+import re
 import httpx
 import logging
 from datetime import date, datetime
@@ -9,7 +10,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, func, cast, String
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Importaciones de Infraestructura y Modelos
@@ -123,6 +124,52 @@ class ReintentoMasivoRequest(BaseModel):
 
 class ConfiguracionWhatsAppRequest(BaseModel):
     intervalo_segundos: int = Field(ge=1, le=3600)
+
+
+def renderizar_mensaje_campana(
+    plantilla: str,
+    *,
+    nombre: str,
+    numero: str,
+    cliente: Optional[ClienteModel] = None,
+):
+    """Reemplaza variables comerciales sin dejar placeholders desconocidos."""
+    partes = nombre.strip().split()
+    ahora = datetime.now()
+    variables = {
+        "nombre": nombre,
+        "cliente": nombre,
+        "nombre_completo": nombre,
+        "nombre_pila": partes[0] if partes else nombre,
+        "apellido": " ".join(partes[1:]) if len(partes) > 1 else "",
+        "telefono": numero or "",
+        "cedula": getattr(cliente, "cedula", None) or "",
+        "zona": (
+            cliente.zona.nombre
+            if cliente and cliente.zona
+            else ""
+        ),
+        "router": (
+            cliente.router.nombre
+            if cliente and cliente.router
+            else ""
+        ),
+        "plan": (
+            cliente.plan.nombre
+            if cliente and cliente.plan
+            else ""
+        ),
+        "fecha": ahora.strftime("%d/%m/%Y"),
+        "hora": ahora.strftime("%H:%M"),
+        "dia": ahora.strftime("%d"),
+        "mes": ahora.strftime("%m"),
+        "ano": ahora.strftime("%Y"),
+    }
+    return re.sub(
+        r"\{([a-z_]+)\}",
+        lambda match: str(variables.get(match.group(1), match.group(0))),
+        plantilla,
+    )
 
 # ==========================================
 # ⚙️ FUNCION AUXILIAR: VALIDACIÓN FINAL (CAPA 3)
@@ -281,7 +328,7 @@ async def enviar_campana(
 
     if datos.clientes:
         destinatarios = [
-            (None, cliente.numero, cliente.nombre)
+            (None, cliente.numero, cliente.nombre, None)
             for cliente in datos.clientes
         ]
     else:
@@ -318,6 +365,11 @@ async def enviar_campana(
         clientes_db = (
             await db.execute(
                 select(ClienteModel)
+                .options(
+                    selectinload(ClienteModel.zona),
+                    selectinload(ClienteModel.router),
+                    selectinload(ClienteModel.plan),
+                )
                 .where(*filtros)
                 .order_by(ClienteModel.id.asc())
             )
@@ -328,12 +380,17 @@ async def enviar_campana(
                 detail="No hay clientes con teléfono en el filtro seleccionado",
             )
         destinatarios = [
-            (cliente.id, cliente.telefono, cliente.nombre)
+            (cliente.id, cliente.telefono, cliente.nombre, cliente)
             for cliente in clientes_db
         ]
 
-    for cliente_id, numero, nombre in destinatarios:
-        texto = datos.mensaje.replace("{nombre}", nombre)
+    for cliente_id, numero, nombre, cliente_obj in destinatarios:
+        texto = renderizar_mensaje_campana(
+            datos.mensaje,
+            nombre=nombre,
+            numero=numero,
+            cliente=cliente_obj,
+        )
         registro = MensajeChatModel(
             cliente_id=cliente_id,
             telefono=whatsapp_queue.service._formatear_numero(
