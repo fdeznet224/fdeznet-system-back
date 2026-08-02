@@ -145,7 +145,11 @@ class BillingService:
                 plantilla.dias_antes_emision or 0,
             )
 
-            if not dia_objetivo and hoy < fecha_generacion:
+            # Incluso en ejecución manual no se permiten periodos futuros.
+            # El modo manual sirve para recuperar una emisión atrasada, no
+            # para adelantar varios meses al ejecutar el endpoint repetidas
+            # veces.
+            if hoy < fecha_generacion:
                 reporte["omitidos_no_toca_emitir"] += 1
                 continue
 
