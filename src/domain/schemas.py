@@ -299,10 +299,22 @@ class UsuarioUpdate(BaseModel):
     activo: Optional[bool] = None
     router_ids: Optional[List[int]] = None
 
-class UsuarioResponse(UsuarioBase):
+class UsuarioResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    nombre_completo: str
+    usuario: str = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+    )
+    rol: str = Field(
+        default="cajero",
+        pattern=r"^(admin|cajero|tecnico|supervisor)$",
+    )
+    activo: bool = True
     router_ids: List[int] = Field(default_factory=list)
 
 # ==========================================
