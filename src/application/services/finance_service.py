@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+from dateutil.relativedelta import relativedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import re
 
@@ -13,6 +14,24 @@ from src.infrastructure.models import (
     PoliticaCobranzaModel,
     PromesaPagoHistorialModel,
 )
+
+
+def calcular_fecha_maxima_promesa(
+    fecha_vencimiento: date | None,
+    hoy: date,
+    dias_max_promesa: int,
+) -> date:
+    """Calcula el límite de una promesa sin invadir el siguiente ciclo.
+
+    El límite configurable se cuenta desde el día en que se registra la
+    promesa, pero nunca permite llegar al siguiente día de pago de la factura.
+    """
+    limite_por_dias = hoy + timedelta(days=max(0, int(dias_max_promesa or 0)))
+    if not fecha_vencimiento:
+        return limite_por_dias
+
+    siguiente_pago = fecha_vencimiento + relativedelta(months=1)
+    return min(limite_por_dias, siguiente_pago - timedelta(days=1))
 
 
 CENTAVO = Decimal("0.01")
@@ -337,9 +356,15 @@ class FinanceService:
         hoy = date.today()
         if fecha_prometida <= hoy:
             raise ValueError("La promesa debe tener una fecha futura")
-        if fecha_prometida > hoy + timedelta(days=politica.dias_max_promesa):
+        fecha_maxima = calcular_fecha_maxima_promesa(
+            factura.fecha_vencimiento,
+            hoy,
+            politica.dias_max_promesa,
+        )
+        if fecha_prometida > fecha_maxima:
             raise ValueError(
-                f"La política permite hasta {politica.dias_max_promesa} días"
+                "La promesa no puede superar el "
+                f"{fecha_maxima.strftime('%d/%m/%Y')}"
             )
 
         activas = (

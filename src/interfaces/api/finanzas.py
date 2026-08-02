@@ -23,7 +23,10 @@ from src.infrastructure.models import (
 
 # Servicios
 from src.application.services.billing_service import BillingService
-from src.application.services.finance_service import FinanceService
+from src.application.services.finance_service import (
+    FinanceService,
+    calcular_fecha_maxima_promesa,
+)
 
 router = APIRouter(prefix="/finanzas", tags=["Módulo Financiero"])
 
@@ -97,6 +100,9 @@ async def get_listado_completo(
         select(FacturaModel)
         .options(
             joinedload(FacturaModel.cliente),
+            joinedload(FacturaModel.cliente).joinedload(
+                ClienteModel.politica_cobranza
+            ),
             joinedload(FacturaModel.servicio),
         )
         .join(ClienteModel)
@@ -218,6 +224,15 @@ async def get_listado_completo(
             "total": f.total,
             "fecha_emision": f.fecha_emision,
             "fecha_vencimiento": f.fecha_vencimiento,
+            "fecha_maxima_promesa": calcular_fecha_maxima_promesa(
+                f.fecha_vencimiento,
+                today,
+                getattr(
+                    getattr(f.cliente, "politica_cobranza", None),
+                    "dias_max_promesa",
+                    25,
+                ),
+            ),
             "fecha_promesa_pago": f.fecha_promesa_pago, 
             "es_promesa_activa": f.es_promesa_activa,   
             "plan_snapshot": f.plan_snapshot,
