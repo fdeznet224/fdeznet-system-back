@@ -166,6 +166,20 @@ class WhatsAppService:
                     resp.status_code,
                     resp.text,
                 )
+                # Un 500 del puente puede ocurrir después de que WhatsApp
+                # aceptó el envío. Reintentarlo automáticamente puede
+                # duplicar el mensaje; requiere revisión/reenvío manual.
+                if resp.status_code == 500:
+                    return {
+                        "ok": False,
+                        "wa_id": None,
+                        "error": (
+                            f"Puente WhatsApp HTTP {resp.status_code}: "
+                            f"{detalle or 'sin detalle'}"
+                        )[:2000],
+                        "reintentable": False,
+                        "incierto": True,
+                    }
                 return {
                     "ok": False,
                     "wa_id": None,
