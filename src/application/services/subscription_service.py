@@ -607,22 +607,32 @@ class SubscriptionService:
             servicio.router.pass_api,
             servicio.router.port_api,
         )
-        encontrado = mk.activar_desactivar_pppoe(
+        suspendido = estado == "suspendido"
+        encontrado = await asyncio.to_thread(
+            mk.activar_desactivar_pppoe,
             servicio.user_pppoe,
-            disabled=estado == "suspendido",
+            suspendido,
         )
         if encontrado is False:
             raise ValueError("MikroTik no encontró el usuario PPPoE")
         if servicio.ip_asignada:
-            mk.gestionar_corte_cliente(
+            confirmado = await asyncio.to_thread(
+                mk.gestionar_corte_cliente,
                 servicio.ip_asignada,
-                suspender=estado == "suspendido",
+                suspendido,
             )
+            if confirmado is not True:
+                raise RuntimeError("MikroTik no confirmó el estado de corte")
 
         servicio.estado = estado
         servicio.is_online = False if estado == "suspendido" else servicio.is_online
+        # Evita que las consultas de sincronización disparen un autoflush
+        # implícito fuera del contexto async de SQLAlchemy.
+        await self.db.flush()
         await self._sincronizar_estado_cliente(servicio.cliente_id)
+        await self.db.flush()
         await self._sincronizar_legacy_si_principal(servicio)
+        await self.db.flush()
         await self.db.commit()
         return await self.obtener(servicio.id)
 
