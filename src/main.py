@@ -97,7 +97,7 @@ async def lifespan(app: FastAPI):
             bootstrap_user = os.getenv("ADMIN_BOOTSTRAP_USER", "admin").strip()
             bootstrap_password = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "")
             stmt = select(UsuarioModel).where(UsuarioModel.rol == "admin")
-            result = await db.execute(stmt)
+            result = await db.execute(stmt.limit(1))
             if not result.scalar_one_or_none():
                 if bootstrap_password:
                     service = UserService(db)
