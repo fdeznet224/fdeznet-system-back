@@ -220,16 +220,30 @@ function iniciarMotor() {
     });
 
     client.on('message_ack', async (msg, ack) => {
-        try { 
-            const mensajeChatId = backendIdPorWaId.get(msg.id.id) || null;
-            await axios.post(`${BACKEND_URL}/whatsapp/webhook/ack`, {
-                wa_id: msg.id.id, 
-                ack,
-                mensaje_chat_id: mensajeChatId
-            }, webhookHeaders);
-            if (ack >= 3) backendIdPorWaId.delete(msg.id.id);
-        } catch (e) { 
-            console.error("❌ Error Webhook Ack:", e.message); 
+        const payload = {
+            wa_id: msg.id.id,
+            ack,
+            mensaje_chat_id: backendIdPorWaId.get(msg.id.id) || null
+        };
+        for (let intento = 0; intento < 4; intento += 1) {
+            try {
+                const respuesta = await axios.post(
+                    `${BACKEND_URL}/whatsapp/webhook/ack`,
+                    payload,
+                    webhookHeaders
+                );
+                if (respuesta.data?.matched !== false) {
+                    if (ack >= 3) backendIdPorWaId.delete(msg.id.id);
+                    return;
+                }
+                await new Promise(resolve => setTimeout(resolve, 500));
+            } catch (e) {
+                if (intento === 3) {
+                    console.error("❌ Error Webhook Ack:", e.message);
+                    return;
+                }
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
         }
     });
 

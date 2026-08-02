@@ -695,7 +695,7 @@ async def webhook_actualizar_ack(
                 "cliente_id": mensaje.cliente_id,
             },
         })
-    return {"status": "ok"}
+    return {"status": "ok", "matched": mensaje is not None}
 
 
 # ==========================================
