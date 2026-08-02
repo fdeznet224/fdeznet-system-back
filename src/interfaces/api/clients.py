@@ -836,6 +836,7 @@ async def obtener_resumen_comercial_cliente(
             f.fecha_limite_corte
         FROM facturas f
         WHERE f.cliente_id = :cliente_id
+          AND f.estado <> 'anulada'
         ORDER BY
             CASE
                 WHEN f.estado IN ('pendiente', 'vencida') THEN 0
