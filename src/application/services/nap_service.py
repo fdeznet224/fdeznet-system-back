@@ -194,7 +194,7 @@ class NapService:
 
     async def obtener_detalles_nap(self, nap_id: int):
         """Devuelve ocupantes por puerto, incluidos domicilios adicionales."""
-        await self.sincronizar_puertos_nap(nap_id)
+        await FTTHService(self.db).sincronizar_puertos_nap(nap_id)
         stmt = (
             select(PuertoNapModel)
             .where(
