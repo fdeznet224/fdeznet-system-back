@@ -41,13 +41,28 @@ class NapService:
         respuesta = []
         for caja in cajas:
             await FTTHService(self.db).sincronizar_puertos_nap(caja.id)
-            stmt_count = select(
-                func.sum(PuertoNapModel.estado == "ocupado"),
-                func.sum(PuertoNapModel.estado == "libre"),
-            ).where(PuertoNapModel.caja_nap_id == caja.id)
-            usados, libres = (await self.db.execute(stmt_count)).one()
-            usados = int(usados or 0)
-            libres = int(libres or 0)
+            usados = int(
+                (
+                    await self.db.execute(
+                        select(func.count(PuertoNapModel.id)).where(
+                            PuertoNapModel.caja_nap_id == caja.id,
+                            PuertoNapModel.estado == "ocupado",
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
+            libres = int(
+                (
+                    await self.db.execute(
+                        select(func.count(PuertoNapModel.id)).where(
+                            PuertoNapModel.caja_nap_id == caja.id,
+                            PuertoNapModel.estado == "libre",
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            )
             
             # 🔥 Mapeo manual 100% a prueba de fallos
             caja_dict = {
