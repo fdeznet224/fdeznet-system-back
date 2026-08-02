@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
+from sqlalchemy.orm.attributes import NO_VALUE, instance_state
 
 from src.application.services.billing_calendar_service import (
     BillingCalendarService,
@@ -733,6 +734,7 @@ class SubscriptionService:
         if principal_id != servicio.id:
             return
         cliente = await self.db.get(ClienteModel, servicio.cliente_id)
+        estado_servicio = instance_state(servicio)
         for campo in (
             "direccion",
             "latitud",
@@ -754,5 +756,12 @@ class SubscriptionService:
             "is_online",
             "ultimo_cambio_estado",
         ):
-            setattr(cliente, campo, getattr(servicio, campo))
-        cliente.proxima_factura = servicio.proxima_facturacion
+            valor = estado_servicio.dict.get(campo, NO_VALUE)
+            if valor is not NO_VALUE:
+                setattr(cliente, campo, valor)
+        proxima_facturacion = estado_servicio.dict.get(
+            "proxima_facturacion",
+            NO_VALUE,
+        )
+        if proxima_facturacion is not NO_VALUE:
+            cliente.proxima_factura = proxima_facturacion
