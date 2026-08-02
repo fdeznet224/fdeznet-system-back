@@ -1,13 +1,24 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload # 👈 Nueva importación necesaria
-from src.infrastructure.models import ClienteModel, InventarioONUModel
+from src.infrastructure.models import (
+    ClienteModel,
+    InventarioONUModel,
+    ServicioModel,
+)
+from src.application.services.ftth_service import FTTHService
 
 class InventarioService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def registrar_equipo(self, identificador: str, tecnologia: str, modelo: str = "Genérico"):
+    async def registrar_equipo(
+        self,
+        identificador: str,
+        tecnologia: str,
+        modelo: str = "Genérico",
+        usuario_id: int = None,
+    ):
         """Registra un nuevo equipo validando que no exista."""
         stmt = select(InventarioONUModel).where(InventarioONUModel.identificador == identificador)
         existe = (await self.db.execute(stmt)).scalar_one_or_none()
@@ -23,6 +34,16 @@ class InventarioService:
         )
         
         self.db.add(nueva_onu)
+        await self.db.flush()
+        FTTHService(self.db).registrar_movimiento(
+            onu=nueva_onu,
+            tecnico_id=usuario_id,
+            tipo_movimiento="alta_inventario",
+            estado_anterior=None,
+            estado_nuevo="DISPONIBLE",
+            condicion="NUEVA",
+            motivo="Alta de equipo en inventario",
+        )
         await self.db.commit()
         await self.db.refresh(nueva_onu)
         
@@ -38,6 +59,28 @@ class InventarioService:
         
         if estado:
             stmt = stmt.where(InventarioONUModel.estado == estado.upper())
+            if estado.strip().upper() == "DISPONIBLE":
+                # El estado del inventario puede quedar desactualizado en datos
+                # heredados. Una referencia real siempre tiene prioridad y el
+                # equipo no debe volver a ofrecerse para otra instalación.
+                cliente_ocupante = (
+                    select(ClienteModel.id)
+                    .where(
+                        ClienteModel.onu_id == InventarioONUModel.id
+                    )
+                    .exists()
+                )
+                servicio_ocupante = (
+                    select(ServicioModel.id)
+                    .where(
+                        ServicioModel.onu_id == InventarioONUModel.id
+                    )
+                    .exists()
+                )
+                stmt = stmt.where(
+                    ~cliente_ocupante,
+                    ~servicio_ocupante,
+                )
             
         resultado = await self.db.execute(stmt)
         equipos = resultado.scalars().all()
@@ -63,15 +106,28 @@ class InventarioService:
             
         return lista_final
 
-    async def eliminar_equipo(self, onu_id: int):
-        """Elimina un equipo solo si no está en uso."""
+    async def eliminar_equipo(self, onu_id: int, usuario_id: int = None):
+        """Da de baja un equipo conservando todo su historial."""
         onu = await self.db.get(InventarioONUModel, onu_id)
         if not onu:
             raise ValueError("Equipo no encontrado en el inventario.")
             
-        if onu.estado == "INSTALADO":
-            raise ValueError("No puedes borrar un equipo que está actualmente instalado en un cliente.")
-            
-        await self.db.delete(onu)
+        if onu.estado in {"INSTALADO", "RESERVADO", "POR_RECOGER"}:
+            raise ValueError(
+                "No puedes dar de baja un equipo instalado, reservado "
+                "o pendiente de recoger."
+            )
+
+        estado_anterior = onu.estado
+        onu.estado = "BAJA"
+        onu.tecnico_id = None
+        FTTHService(self.db).registrar_movimiento(
+            onu=onu,
+            tecnico_id=usuario_id,
+            tipo_movimiento="baja_inventario",
+            estado_anterior=estado_anterior,
+            estado_nuevo="BAJA",
+            motivo="Baja administrativa de inventario",
+        )
         await self.db.commit()
-        return "Equipo eliminado correctamente."
+        return "Equipo dado de baja; su historial fue conservado."

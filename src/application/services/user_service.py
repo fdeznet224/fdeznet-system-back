@@ -7,6 +7,8 @@ from passlib.context import CryptContext
 from src.infrastructure.models import UsuarioModel, RouterModel
 from src.domain.schemas import UsuarioCreate, UsuarioUpdate
 
+ROLES_VALIDOS = {"admin", "cajero", "tecnico", "supervisor"}
+
 # Configuración de Hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -17,10 +19,24 @@ class UserService:
     def get_password_hash(self, password):
         return pwd_context.hash(password)
 
+    @staticmethod
+    def validar_password(password: str):
+        if len(password) < 10:
+            raise ValueError("La contraseña debe tener al menos 10 caracteres")
+        if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+            raise ValueError("La contraseña debe incluir letras y números")
+
+    @staticmethod
+    def validar_rol(rol: str):
+        if rol.strip().lower() not in ROLES_VALIDOS:
+            raise ValueError("Rol inválido. Usa admin, cajero, tecnico o supervisor")
+
     # ==========================================
     # CREAR USUARIO
     # ==========================================
     async def crear_usuario(self, datos: UsuarioCreate):
+        self.validar_password(datos.password)
+        self.validar_rol(datos.rol)
         # 1. Validar duplicados
         stmt = select(UsuarioModel).where(UsuarioModel.usuario == datos.usuario)
         res = await self.db.execute(stmt)
@@ -31,7 +47,7 @@ class UserService:
         nuevo_usuario = UsuarioModel(
             nombre_completo=datos.nombre_completo,
             usuario=datos.usuario,
-            rol=datos.rol,
+            rol=datos.rol.strip().lower(),
             activo=datos.activo,
             password_hash=self.get_password_hash(datos.password)
         )
@@ -70,11 +86,14 @@ class UserService:
             usuario_db.nombre_completo = datos.nombre_completo
         
         if datos.usuario is not None: usuario_db.usuario = datos.usuario
-        if datos.rol is not None: usuario_db.rol = datos.rol
+        if datos.rol is not None:
+            self.validar_rol(datos.rol)
+            usuario_db.rol = datos.rol.strip().lower()
         if datos.activo is not None: usuario_db.activo = datos.activo
         
         # 3. Actualizar Contraseña (si se envió)
         if datos.password and len(datos.password) > 0:
+            self.validar_password(datos.password)
             usuario_db.password_hash = self.get_password_hash(datos.password)
 
         # 4. Actualizar Permisos de Routers

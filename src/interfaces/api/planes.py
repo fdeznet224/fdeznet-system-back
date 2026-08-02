@@ -24,13 +24,23 @@ router = APIRouter(prefix="/planes", tags=["Catálogo - Planes de Internet"])
 
 @router.get("/", response_model=List[PlanResponse])
 @cache(expire=300) # 🔥 2. Guardamos la lista general por 5 minutos
-async def listar_planes(db: AsyncSession = Depends(get_db)):
+async def listar_planes(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
     repo = PlanRepository(db)
     return await repo.get_all_planes()
 
 @router.get("/router/{router_id}", response_model=List[PlanResponse])
-@cache(expire=300) # 🔥 3. Guardamos la lista filtrada por router por 5 minutos
-async def listar_planes_por_router(router_id: int, db: AsyncSession = Depends(get_db)):
+async def listar_planes_por_router(
+    router_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
     repo = PlanRepository(db)
     return await repo.get_planes_by_router(router_id)
 

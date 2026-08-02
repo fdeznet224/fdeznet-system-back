@@ -1,8 +1,7 @@
 import pandas as pd
-import ipaddress
 import io
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response
 from fastapi.responses import StreamingResponse 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -16,11 +15,13 @@ from src.domain.schemas import WireguardConfigResponse
 # Infraestructura y Auth
 from src.infrastructure.database import get_db
 from src.infrastructure.auth import role_required
+from src.utils.text_tools import generar_password_pppoe
 from src.infrastructure.models import (
     InventarioONUModel,
     RouterModel, 
     RedModel, 
     ClienteModel, 
+    ServicioModel,
     PlanModel
 )
 
@@ -36,6 +37,13 @@ from src.domain.schemas import (
 # Servicios
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.application.services.network_service import NetworkService
+from src.application.services.ipam_service import IPAMService
+from src.application.services.mikrotik_reconciliation_service import (
+    MikrotikReconciliationService,
+)
+from src.application.services.access_control_service import (
+    verificar_acceso_cliente,
+)
 
 router = APIRouter(prefix="/network", tags=["Infraestructura y Redes"])
 
@@ -45,7 +53,10 @@ router = APIRouter(prefix="/network", tags=["Infraestructura y Redes"])
 
 @router.get("/routers/", response_model=List[RouterResponse])
 @cache(expire=300) # 🔥 Catálogo de Routers en caché por 5 minutos
-async def listar_routers(db: AsyncSession = Depends(get_db)):
+async def listar_routers(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     """Lista todos los routers (Nodos/OLTs) registrados."""
     result = await db.execute(select(RouterModel)) 
     return result.scalars().all()
@@ -133,10 +144,19 @@ async def eliminar_router(
     if not router_db:
         raise HTTPException(status_code=404, detail="Router no encontrado")
 
-    # Seguridad: Bloquear si tiene clientes
-    clientes = await db.execute(select(ClienteModel).where(ClienteModel.router_id == router_id).limit(1))
-    if clientes.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="No se puede eliminar: Tiene clientes asociados.")
+    servicios = await db.execute(
+        select(ServicioModel.id)
+        .where(
+            ServicioModel.router_id == router_id,
+            ServicioModel.estado != "cancelado",
+        )
+        .limit(1)
+    )
+    if servicios.scalar_one_or_none():
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede eliminar: Tiene servicios asociados.",
+        )
 
     await db.delete(router_db)
     await db.commit()
@@ -144,7 +164,11 @@ async def eliminar_router(
     return {"status": "success", "message": "Router eliminado correctamente"}
 
 @router.get("/routers/{router_id}/ping")
-async def verificar_estado_router(router_id: int, db: AsyncSession = Depends(get_db)):
+async def verificar_estado_router(
+    router_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     """Prueba de conexión simple."""
     r = await db.get(RouterModel, router_id)
     if not r: raise HTTPException(404, "Router no encontrado")
@@ -173,13 +197,43 @@ async def sincronizar_configuracion_router(
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 
+@router.post("/conciliar-mikrotik")
+async def conciliar_estados_mikrotik(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    """Ejecuta inmediatamente la misma conciliación del cronjob."""
+    try:
+        reporte = await MikrotikReconciliationService(db).ejecutar()
+        return {
+            "status": (
+                "warning" if reporte["errores"] else "success"
+            ),
+            "message": (
+                f"{reporte['verificados']} servicios verificados, "
+                f"{reporte['reparados']} reparados y "
+                f"{reporte['errores']} con error."
+            ),
+            "reporte": reporte,
+        }
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo ejecutar la conciliación: {exc}",
+        ) from exc
+
+
 # ==========================================
 # 2. GESTIÓN DE REDES (IPAM)
 # ==========================================
 
 @router.get("/redes/", response_model=List[RedResponse])
 @cache(expire=300) # 🔥 Catálogo de Redes en caché
-async def listar_todas_las_redes(db: AsyncSession = Depends(get_db)):
+async def listar_todas_las_redes(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     result = await db.execute(select(RedModel))
     return result.scalars().all()
 
@@ -225,35 +279,32 @@ async def eliminar_red(
 
 @router.get("/redes/router/{router_id}", response_model=List[RedResponse])
 @cache(expire=300) # 🔥 Lista de redes filtrada en caché
-async def listar_redes_por_router(router_id: int, db: AsyncSession = Depends(get_db)):
+async def listar_redes_por_router(
+    router_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     res = await db.execute(select(RedModel).where(RedModel.router_id == router_id))
     return res.scalars().all()
 
 @router.get("/redes/{red_id}/ips-libres", response_model=List[str])
 # 🚫 SIN CACHÉ: Las IPs libres deben calcularse en estricto tiempo real
-async def obtener_ips_libres(red_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_ips_libres(
+    red_id: int,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     """Calcula las siguientes IPs disponibles."""
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     red = await db.get(RedModel, red_id)
-    if not red: raise HTTPException(404, "Red no encontrada")
-
-    stmt = select(ClienteModel.ip_asignada).where(ClienteModel.ip_asignada.isnot(None))
-    result = await db.execute(stmt)
-    ips_ocupadas = {ip.strip() for ip in result.scalars().all() if ip and ip.strip()}
-    
-    if red.gateway: ips_ocupadas.add(red.gateway.strip())
-
-    ips_disponibles = []
+    if not red:
+        raise HTTPException(404, "Red no encontrada")
     try:
-        network = ipaddress.ip_network(red.cidr, strict=False)
-        for ip in network.hosts():
-            ip_str = str(ip)
-            if ip_str not in ips_ocupadas:
-                ips_disponibles.append(ip_str)
-                if len(ips_disponibles) >= 254: break
-    except ValueError:
-        raise HTTPException(400, "CIDR de red inválido")
-
-    return ips_disponibles
+        return await IPAMService(db).listar_disponibles(red, limite=254)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # ==========================================
@@ -452,7 +503,9 @@ async def procesar_importacion(
                 telefono=str(row.get('telefono', '')),
                 direccion=str(row.get('direccion', '')),
                 user_pppoe=user_ppp,
-                pass_pppoe=str(row.get('password_pppoe', '12345')),
+                pass_pppoe=str(
+                    row.get("password_pppoe") or generar_password_pppoe()
+                ),
                 ip_asignada=ip if ip else None,
                 
                 onu_id=onu_id_asignado,  
@@ -483,35 +536,152 @@ async def procesar_importacion(
 # 4. DIAGNÓSTICO Y MONITOREO
 # ==========================================
 
+async def _verificar_acceso_servicio(
+    db: AsyncSession,
+    current_user,
+    servicio_id: int,
+):
+    servicio = await db.get(ServicioModel, servicio_id)
+    if not servicio:
+        raise HTTPException(404, "Servicio no encontrado")
+    await verificar_acceso_cliente(
+        db,
+        current_user,
+        servicio.cliente_id,
+    )
+    return servicio
+
+
+@router.get("/diagnostico/servicios/{servicio_id}/tecnico")
+async def obtener_diagnostico_servicio(
+    servicio_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    try:
+        await _verificar_acceso_servicio(db, current_user, servicio_id)
+        return await NetworkService(db).obtener_estado_tecnico_servicio(
+            servicio_id
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@router.get("/diagnostico/servicios/{servicio_id}/ping")
+async def realizar_ping_servicio(
+    servicio_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    try:
+        await _verificar_acceso_servicio(db, current_user, servicio_id)
+        return await NetworkService(db).ping_servicio(servicio_id)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@router.get("/diagnostico/servicios/{servicio_id}/conexion")
+async def verificar_conexion_servicio(
+    servicio_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    try:
+        await _verificar_acceso_servicio(db, current_user, servicio_id)
+        return await NetworkService(db).verificar_conexion_servicio(
+            servicio_id
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@router.get("/diagnostico/servicios/{servicio_id}/trafico")
+async def verificar_trafico_servicio(
+    servicio_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    try:
+        await _verificar_acceso_servicio(db, current_user, servicio_id)
+        return await NetworkService(db).verificar_trafico_servicio(
+            servicio_id
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
 @router.get("/diagnostico/tecnico/{cliente_id}")
-async def obtener_diagnostico_completo(cliente_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_diagnostico_completo(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
     service = NetworkService(db)
     try:
+        await verificar_acceso_cliente(db, current_user, cliente_id)
         return await service.obtener_estado_tecnico(cliente_id)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except Exception as e:
         raise HTTPException(500, str(e))
 
 @router.get("/diagnostico/ping/{cliente_id}")
-async def realizar_ping_cliente(cliente_id: int, db: AsyncSession = Depends(get_db)):
+async def realizar_ping_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
     service = NetworkService(db)
     try:
+        await verificar_acceso_cliente(db, current_user, cliente_id)
         return await service.ping_cliente(cliente_id)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except Exception as e:
         raise HTTPException(500, str(e))
 
 @router.get("/diagnostico/conexion/{cliente_id}")
-async def verificar_conexion_cliente(cliente_id: int, db: AsyncSession = Depends(get_db)):
+async def verificar_conexion_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
     service = NetworkService(db)
     try:
+        await verificar_acceso_cliente(db, current_user, cliente_id)
         return await service.verificar_conexion(cliente_id)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except Exception as e:
         return {"online": False, "mensaje": "Error de consulta", "error": str(e)}
 
 @router.get("/diagnostico/trafico/{cliente_id}")
-async def verificar_trafico_cliente(cliente_id: int, db: AsyncSession = Depends(get_db)):
+async def verificar_trafico_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
     service = NetworkService(db)
     try:
+        await verificar_acceso_cliente(db, current_user, cliente_id)
         return await service.verificar_trafico(cliente_id)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except Exception as e:
         print(f"❌ Error al consultar tráfico del cliente {cliente_id}: {e}") 
         return {"velocidad_subida": 0, "velocidad_bajada": 0}

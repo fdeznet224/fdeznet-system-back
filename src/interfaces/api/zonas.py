@@ -19,7 +19,10 @@ router = APIRouter(prefix="/zonas", tags=["Catálogo - Zonas"])
 # ==========================================
 
 @router.get("/", response_model=List[ZonaResponse])
-async def listar_zonas(db: AsyncSession = Depends(get_db)):
+async def listar_zonas(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     """
     Lista todas las zonas (colonias/sectores) disponibles.
     """

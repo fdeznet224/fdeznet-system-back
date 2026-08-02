@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 # Modelos y Schemas
-from src.infrastructure.models import ZonaModel, ClienteModel
+from src.infrastructure.models import ServicioModel, ZonaModel
 from src.domain.schemas import ZonaCreate
 
 class ZoneService:
@@ -45,12 +45,18 @@ class ZoneService:
             raise ValueError("Zona no encontrada")
 
         # 1. Verificar Integridad: ¿Hay clientes en esta zona?
-        stmt = select(func.count(ClienteModel.id)).where(ClienteModel.zona_id == zona_id)
+        stmt = select(func.count(ServicioModel.id)).where(
+            ServicioModel.zona_id == zona_id,
+            ServicioModel.estado != "cancelado",
+        )
         res = await self.db.execute(stmt)
-        clientes_en_zona = res.scalar()
+        servicios_en_zona = res.scalar()
 
-        if clientes_en_zona > 0:
-            raise ValueError(f"No se puede eliminar: Hay {clientes_en_zona} clientes asignados a esta zona.")
+        if servicios_en_zona > 0:
+            raise ValueError(
+                "No se puede eliminar: Hay "
+                f"{servicios_en_zona} servicios asignados a esta zona."
+            )
 
         # 2. Eliminar
         await self.db.delete(zona)

@@ -15,11 +15,12 @@ class AuthService:
         user = result.scalar()
 
         # 2. Validar
-        if not user or not verify_password(form_data.password, user.password_hash):
+        if (
+            not user
+            or not verify_password(form_data.password, user.password_hash)
+            or not user.activo
+        ):
             raise ValueError("Usuario o contraseña incorrectos")
-        
-        if not user.activo:
-            raise ValueError("Usuario inactivo")
 
         # 3. Generar Token
         access_token = create_access_token(data={"sub": user.usuario, "rol": user.rol})

@@ -2,7 +2,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 # Modelos y Schemas
-from src.infrastructure.models import PlanModel, RouterModel, ClienteModel, RedModel
+from src.infrastructure.models import (
+    PlanModel,
+    RedModel,
+    RouterModel,
+    ServicioModel,
+)
 from src.domain.schemas import PlanCreate
 from src.infrastructure.mikrotik_service import MikroTikService
 
@@ -67,12 +72,18 @@ class PlanService:
     # 3. ELIMINAR PLAN
     # ==========================================
     async def eliminar_plan(self, plan_id: int):
-        stmt = select(func.count(ClienteModel.id)).where(ClienteModel.plan_id == plan_id)
+        stmt = select(func.count(ServicioModel.id)).where(
+            ServicioModel.plan_id == plan_id,
+            ServicioModel.estado != "cancelado",
+        )
         res = await self.db.execute(stmt)
-        clientes_activos = res.scalar()
+        servicios_activos = res.scalar()
         
-        if clientes_activos > 0:
-            raise ValueError(f"No se puede eliminar: Hay {clientes_activos} clientes usando este plan.")
+        if servicios_activos > 0:
+            raise ValueError(
+                "No se puede eliminar: Hay "
+                f"{servicios_activos} servicios usando este plan."
+            )
 
         plan = await self.db.get(PlanModel, plan_id)
         if not plan: 

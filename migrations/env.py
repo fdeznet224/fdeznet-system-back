@@ -6,7 +6,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
 # Permite importar el paquete src desde la raíz del proyecto.
 PROJECT_ROOT = os.path.abspath(
@@ -25,7 +25,7 @@ config = context.config
 # Alembic usa interpolación con %, por eso se escapan.
 config.set_main_option(
     "sqlalchemy.url",
-    DATABASE_URL.replace("%", "%%"),
+    str(DATABASE_URL).replace("%", "%%"),
 )
 
 if config.config_file_name is not None:
@@ -63,14 +63,10 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    configuration = config.get_section(
-        config.config_ini_section,
-        {},
-    )
-
-    connectable = async_engine_from_config(
-        configuration,
-        prefix="sqlalchemy.",
+    # Usa la misma URL tipada que la aplicación. Reconstruirla desde
+    # alembic.ini puede alterar credenciales escapadas o el host configurado.
+    connectable = create_async_engine(
+        DATABASE_URL,
         poolclass=pool.NullPool,
     )
 

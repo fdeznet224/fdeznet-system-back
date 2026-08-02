@@ -3,6 +3,8 @@ import re
 import httpx
 import os
 import logging
+import tempfile
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -11,104 +13,129 @@ class OCRService:
         # Cargamos el modelo en español e inglés
         self.reader = easyocr.Reader(['es', 'en'])
 
-    async def procesar_ticket(self, url_imagen: str):
-        """Descarga la imagen y extrae Folio, Monto y Cédula de Cliente (Concepto)"""
-        temp_path = f"temp_ticket_{os.urandom(4).hex()}.jpg"
-        
-        try:
-            # 1. Descargar la imagen
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url_imagen)
-                with open(temp_path, "wb") as f:
-                    f.write(resp.content)
+    @staticmethod
+    def extraer_datos(texto_crudo: str) -> dict:
+        """Interpreta el texto OCR sin depender de una imagen real."""
+        texto = " ".join((texto_crudo or "").split()).lower()
 
-            # 2. Leer texto
+        folio = None
+        patrones_folio = [
+            r"clave de rastreo[^\w]*([a-z0-9-]{10,50})",
+            r"rastreo es[^\w]*([a-z0-9-]{10,50})",
+            r"folio[^\w]*([a-z0-9-]{6,50})",
+            r"operaci[oó]n[^\w]*([a-z0-9-]{6,50})",
+            r"referencia[^\w]*([a-z0-9-]{6,50})",
+            r"ref\.[^\w]*([a-z0-9-]{6,50})",
+            r"autorizaci[oó]n[^\w]*([a-z0-9-]{6,50})",
+        ]
+        for patron in patrones_folio:
+            match = re.search(patron, texto)
+            if not match:
+                continue
+            candidato = re.sub(
+                r"[^A-Z0-9-]",
+                "",
+                match.group(1).upper(),
+            )
+            if any(c.isdigit() for c in candidato):
+                folio = candidato
+                break
+
+        if not folio:
+            candidatos = [
+                re.sub(r"[^A-Z0-9-]", "", palabra.upper())
+                for palabra in texto_crudo.split()
+                if len(palabra) >= 10
+                and any(c.isdigit() for c in palabra)
+            ]
+            candidatos = [
+                candidato
+                for candidato in candidatos
+                if len(candidato) >= 10
+            ]
+            if candidatos:
+                folio = max(candidatos, key=len)
+
+        monto = 0.0
+        numero = r"(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)"
+        patrones_monto = [
+            rf"(?:importe|monto|enviaste|transferiste|total)[^\d]*{numero}",
+            rf"[\$sS]\s*{numero}",
+            rf"{numero}\s*(?:mxn|m\.?n\.?|pesos)",
+        ]
+        for patron in patrones_monto:
+            match = re.search(patron, texto)
+            if not match:
+                continue
+            try:
+                monto = float(match.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            if monto > 0:
+                break
+
+        cedula_detectada = None
+        for patron in [
+            r"concepto[^\w]*([a-z0-9]{3,10})",
+            r"motivo[^\w]*([a-z0-9]{3,10})",
+            r"mensaje[^\w]*([a-z0-9]{3,10})",
+            r"descripci[oó]n[^\w]*([a-z0-9]{3,10})",
+        ]:
+            match = re.search(patron, texto)
+            if match:
+                cedula_detectada = match.group(1).upper()
+                break
+
+        return {
+            "folio": folio,
+            "monto": monto,
+            "cedula_detectada": cedula_detectada,
+            "exito": folio is not None and monto > 0,
+        }
+
+    async def procesar_ticket(self, url_imagen: str):
+        """Descarga una imagen y extrae folio, monto y cédula."""
+        temp_path = None
+
+        try:
+            parsed = urlparse(url_imagen)
+            if parsed.scheme not in {"http", "https"}:
+                raise ValueError("URL de comprobante inválida")
+
+            async with httpx.AsyncClient(
+                timeout=20.0,
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(url_imagen)
+                resp.raise_for_status()
+                contenido = resp.content
+
+            if not contenido or len(contenido) > 10 * 1024 * 1024:
+                raise ValueError("Imagen vacía o mayor a 10 MB")
+
+            content_type = resp.headers.get("content-type", "").lower()
+            if content_type and not content_type.startswith("image/"):
+                raise ValueError("El comprobante recibido no es una imagen")
+
+            with tempfile.NamedTemporaryFile(
+                prefix="fdeznet_ticket_",
+                suffix=".jpg",
+                delete=False,
+            ) as temporal:
+                temporal.write(contenido)
+                temp_path = temporal.name
+
             resultados = self.reader.readtext(temp_path, detail=0)
             texto_crudo = " ".join(resultados)
-            texto = texto_crudo.lower()
-            
-            logger.info(f"Texto OCR extraído: {texto}")
-
-            # ==========================================
-            # 3. EXTRACCIÓN DE FOLIO / REFERENCIA
-            # ==========================================
-            folio = None
-            patrones_folio = [
-                r"clave de rastreo[^\w]*([a-z0-9]{15,40})",
-                r"rastreo es[^\w]*([a-z0-9]{15,40})",
-                r"folio[^\w]*([a-z0-9]{6,40})",
-                r"operaci[oó]n[^\w]*([a-z0-9]{6,40})",
-                r"referencia[^\w]*([a-z0-9]{6,40})",
-                r"ref\.[^\w]*([a-z0-9]{6,40})",
-                r"autorizaci[oó]n[^\w]*([a-z0-9]{6,40})"
-            ]
-
-            for patron in patrones_folio:
-                match = re.search(patron, texto)
-                if match:
-                    folio_encontrado = match.group(1).upper()
-                    if not folio_encontrado.isalpha() and len(folio_encontrado) >= 6:
-                        folio = folio_encontrado
-                        break
-            
-            if not folio:
-                palabras = texto_crudo.split()
-                candidatos = [p.upper() for p in palabras if len(p) >= 10 and any(c.isdigit() for c in p)]
-                if candidatos:
-                    folio = max(candidatos, key=len)
-
-            # ==========================================
-            # 4. EXTRACCIÓN DE MONTO
-            # ==========================================
-            monto = 0.0
-            patrones_monto = [
-                r"[\$sS]\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2}))",
-                r"importe[^\d]*(\d{1,3}(?:,\d{3})*(?:\.\d{2}))",
-                r"monto[^\d]*(\d{1,3}(?:,\d{3})*(?:\.\d{2}))",
-                r"enviaste[^\d]*(\d{1,3}(?:,\d{3})*(?:\.\d{2}))",
-                r"(\d{1,3}(?:,\d{3})*(?:\.\d{2}))\s?(mxn|mn|pesos)"
-            ]
-
-            for patron in patrones_monto:
-                match = re.search(patron, texto)
-                if match:
-                    try:
-                        monto = float(match.group(1).replace(",", ""))
-                        if monto > 0:
-                            break
-                    except ValueError:
-                        continue
-
-            # ==========================================
-            # 5. EXTRACCIÓN DE CÉDULA (CONCEPTO DE PAGO) 🚀
-            # ==========================================
-            cedula_detectada = None
-            # Buscamos palabras como "concepto", "motivo", "mensaje", seguidas de un código alfanumérico corto (3 a 10 caracteres)
-            patrones_concepto = [
-                r"concepto[^\w]*([a-z0-9]{3,10})",
-                r"motivo[^\w]*([a-z0-9]{3,10})",
-                r"mensaje[^\w]*([a-z0-9]{3,10})",
-                r"descripci[oó]n[^\w]*([a-z0-9]{3,10})"
-            ]
-
-            for patron in patrones_concepto:
-                match = re.search(patron, texto)
-                if match:
-                    # Lo extraemos y lo pasamos a mayúsculas para que coincida con tu BD (Ej. "329B")
-                    cedula_detectada = match.group(1).upper()
-                    break
-
-            return {
-                "folio": folio,
-                "monto": monto,
-                "cedula_detectada": cedula_detectada, # 👈 Nuevo dato que regresa al bot
-                "exito": folio is not None and monto > 0
-            }
+            # No registrar el texto completo: puede contener datos bancarios,
+            # nombres, cuentas o referencias personales.
+            logger.info("OCR procesado; se extrajeron datos estructurados")
+            return self.extraer_datos(texto_crudo)
 
         except Exception as e:
             logger.error(f"Error procesando OCR: {e}")
             return {"folio": None, "monto": 0.0, "cedula_detectada": None, "exito": False}
             
         finally:
-            if os.path.exists(temp_path):
+            if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)

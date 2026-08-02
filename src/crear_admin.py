@@ -1,29 +1,36 @@
+"""Crea el primer administrador usando variables de entorno seguras."""
 import asyncio
-from passlib.context import CryptContext
-from sqlalchemy import select
-from src.infrastructure.database import async_session_factory
-from src.infrastructure.models import UsuarioModel
+import os
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+from src.application.services.user_service import UserService
+from src.domain.schemas import UsuarioCreate
+from src.infrastructure.database import SessionLocal
+
 
 async def create_admin():
-    async with async_session_factory() as db:
-        # Verificar si existe
-        result = await db.execute(select(UsuarioModel).where(UsuarioModel.usuario == "admin"))
-        if result.scalar():
-            print("⚠️ El usuario admin ya existe")
-            return
-
-        nuevo_admin = UsuarioModel(
-            nombre_completo="Administrador",
-            usuario="admin",
-            password_hash=pwd_context.hash("admin123"), # Tu contraseña aquí
-            rol="admin",
-            activo=True
+    password = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "")
+    if not password:
+        raise RuntimeError(
+            "Define ADMIN_BOOTSTRAP_PASSWORD temporalmente para crear el administrador"
         )
-        db.add(nuevo_admin)
-        await db.commit()
-        print("✅ Usuario 'admin' creado con contraseña 'admin123'")
+
+    async with SessionLocal() as db:
+        service = UserService(db)
+        admin = await service.crear_usuario(
+            UsuarioCreate(
+                nombre_completo=os.getenv(
+                    "ADMIN_BOOTSTRAP_NAME",
+                    "Super Administrador",
+                ),
+                usuario=os.getenv("ADMIN_BOOTSTRAP_USER", "admin"),
+                password=password,
+                rol="admin",
+                activo=True,
+                router_ids=[],
+            )
+        )
+        print(f"Administrador '{admin.usuario}' creado correctamente")
+
 
 if __name__ == "__main__":
     asyncio.run(create_admin())

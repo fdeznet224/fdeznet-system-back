@@ -17,7 +17,7 @@ class MikroTikService:
         self.auth = (user, password)
         self.timeout = 10 
 
-    def _request(self, method, endpoint, payload=None):
+    def _request(self, method, endpoint, payload=None, raise_on_error=False):
         url = f"{self.base_url}{endpoint}"
         try:
             response = requests.request(
@@ -25,14 +25,26 @@ class MikroTikService:
             )
             if response.status_code in [200, 201, 204]:
                 return response.json() if response.text else True
-            if response.status_code == 404: 
+            if response.status_code == 404:
+                if raise_on_error:
+                    raise RuntimeError(
+                        f"MikroTik respondió 404 en {endpoint}"
+                    )
                 return None
             if response.status_code >= 400:
-                print(f"⚠️ MK Error {response.status_code} en {endpoint}: {response.text}")
+                mensaje = (
+                    f"MK Error {response.status_code} en {endpoint}: "
+                    f"{response.text}"
+                )
+                print(f"⚠️ {mensaje}")
+                if raise_on_error:
+                    raise RuntimeError(mensaje)
                 return None
             return None
         except Exception as e:
             print(f"❌ Error Conexión MK ({endpoint}): {e}")
+            if raise_on_error:
+                raise
             return None
 
     def probar_conexion(self):
@@ -98,16 +110,36 @@ class MikroTikService:
 
         res = self._request("GET", f"/ppp/secret?name={user}")
         if res and isinstance(res, list) and len(res) > 0:
-            return self._request("PATCH", f"/ppp/secret/{res[0]['.id']}", payload)
+            resultado = self._request(
+                "PATCH",
+                f"/ppp/secret/{res[0]['.id']}",
+                payload,
+                raise_on_error=True,
+            )
         else:
-            return self._request("PUT", "/ppp/secret", payload)
+            resultado = self._request(
+                "PUT",
+                "/ppp/secret",
+                payload,
+                raise_on_error=True,
+            )
+
+        if resultado is None or resultado is False:
+            raise RuntimeError(
+                f"MikroTik no confirmó la creación o actualización de PPPoE {user}"
+            )
+        return resultado
 
     def eliminar_pppoe_user(self, usuario):
         try:
             respuesta = self._request("GET", f"/ppp/secret?name={usuario}")
             if isinstance(respuesta, list) and len(respuesta) > 0:
                 id_interno = respuesta[0].get(".id")
-                self._request("DELETE", f"/ppp/secret/{id_interno}")
+                self._request(
+                    "DELETE",
+                    f"/ppp/secret/{id_interno}",
+                    raise_on_error=True,
+                )
                 print(f"✅ MikroTik: Usuario {usuario} eliminado correctamente.")
             else:
                 print(f"⚠️ MikroTik: El usuario {usuario} ya no existía.")
@@ -122,7 +154,14 @@ class MikroTikService:
     def activar_desactivar_pppoe(self, usuario, disabled: bool):
         res = self._request("GET", f"/ppp/secret?name={usuario}")
         if res and len(res) > 0:
-            self._request("PATCH", f"/ppp/secret/{res[0]['.id']}", {"disabled": "true" if disabled else "false"})
+            resultado = self._request(
+                "PATCH",
+                f"/ppp/secret/{res[0]['.id']}",
+                {"disabled": "true" if disabled else "false"},
+                raise_on_error=True,
+            )
+            if resultado is None:
+                return False
             if disabled:
                 self.desconectar_cliente_activo(usuario)
             return True
@@ -131,6 +170,31 @@ class MikroTikService:
     def obtener_todos_pppoe(self):
         res = self._request("GET", "/ppp/secret")
         return res if isinstance(res, list) else []
+
+    def obtener_todos_pppoe_estricto(self):
+        """Lista secrets diferenciando un router vacío de un fallo de conexión."""
+        res = self._request(
+            "GET",
+            "/ppp/secret",
+            raise_on_error=True,
+        )
+        if not isinstance(res, list):
+            raise RuntimeError(
+                "MikroTik devolvió una respuesta inválida al listar PPPoE"
+            )
+        return res
+
+    def obtener_pppoe_estricto(self, usuario):
+        res = self._request(
+            "GET",
+            f"/ppp/secret?name={usuario}",
+            raise_on_error=True,
+        )
+        if not isinstance(res, list):
+            raise RuntimeError(
+                f"MikroTik no permitió verificar el PPPoE {usuario}"
+            )
+        return res[0] if res else None
 
     # ==========================================
     #  3. SESIONES ACTIVAS PPPoE
@@ -187,17 +251,99 @@ class MikroTikService:
             return False, str(e)
 
     def gestionar_corte_cliente(self, ip_target, suspender: bool):
-        if not ip_target or ip_target == '0.0.0.0': return False
+        if not ip_target or ip_target == '0.0.0.0':
+            return False
+
+        ip_target = str(ip_target).strip()
         LISTA_CORTE = "CORTE_FDEZNET"
         
-        res = self._request("GET", f"/ip/firewall/address-list?address={ip_target}&list={LISTA_CORTE}")
-        existe = True if res and len(res) > 0 else False
+        endpoint_consulta = (
+            f"/ip/firewall/address-list?address={ip_target}"
+            f"&list={LISTA_CORTE}"
+        )
+        res = self._request(
+            "GET",
+            endpoint_consulta,
+            raise_on_error=True,
+        )
+        if not isinstance(res, list):
+            raise RuntimeError(
+                "MikroTik devolvió una respuesta inválida al consultar "
+                "el address-list"
+            )
+        existe = len(res) > 0
 
         if suspender and not existe:
-            return self._request("PUT", "/ip/firewall/address-list", {"list": LISTA_CORTE, "address": ip_target, "comment": "Suspendido"})
+            self._request(
+                "PUT",
+                "/ip/firewall/address-list",
+                {
+                    "list": LISTA_CORTE,
+                    "address": ip_target,
+                    "comment": "Suspendido",
+                },
+                raise_on_error=True,
+            )
         elif not suspender and existe:
             for item in res:
-                self._request("DELETE", f"/ip/firewall/address-list/{item['.id']}")
+                self._request(
+                    "DELETE",
+                    f"/ip/firewall/address-list/{item['.id']}",
+                    raise_on_error=True,
+                )
+
+        verificacion = self._request(
+            "GET",
+            endpoint_consulta,
+            raise_on_error=True,
+        )
+        if not isinstance(verificacion, list):
+            raise RuntimeError(
+                "MikroTik no permitió verificar el address-list"
+            )
+
+        sigue_en_lista = len(verificacion) > 0
+        if suspender != sigue_en_lista:
+            accion = "agregar" if suspender else "retirar"
+            raise RuntimeError(
+                f"MikroTik no confirmó que se pudiera {accion} "
+                f"la IP {ip_target} en {LISTA_CORTE}"
+            )
+        return True
+
+    def obtener_ips_cortadas(self):
+        """Obtiene una fotografía verificable de la lista de suspensión."""
+        res = self._request(
+            "GET",
+            "/ip/firewall/address-list?list=CORTE_FDEZNET",
+            raise_on_error=True,
+        )
+        if not isinstance(res, list):
+            raise RuntimeError(
+                "MikroTik devolvió una respuesta inválida para "
+                "CORTE_FDEZNET"
+            )
+        return {
+            str(item.get("address", "")).strip()
+            for item in res
+            if item.get("address")
+        }
+
+    def reactivar_cliente(self, ip_target, usuario_pppoe=None):
+        """Retira el corte y rehabilita el secret PPPoE si existe."""
+        if self.gestionar_corte_cliente(ip_target, suspender=False) is not True:
+            return False
+
+        if usuario_pppoe:
+            if not self.activar_desactivar_pppoe(
+                usuario_pppoe,
+                disabled=False,
+            ):
+                raise RuntimeError(
+                    f"No se encontró o no se pudo habilitar el PPPoE "
+                    f"{usuario_pppoe}"
+                )
+
         return True
 
     # ==========================================

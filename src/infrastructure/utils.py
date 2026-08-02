@@ -4,8 +4,11 @@ from src.infrastructure.models import LogActividadModel
 async def registrar_log(db, usuario, accion, detalle, ip="0.0.0.0"):
     nuevo_log = LogActividadModel(
         usuario_id=usuario.id,
-        punto_venta_id=usuario.punto_venta_id,
+        usuario_nombre=usuario.usuario,
         accion=accion,
+        metodo="SYSTEM",
+        ruta="internal",
+        estado_http=200,
         detalle=detalle,
         ip_cliente=ip
     )

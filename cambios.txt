@@ -1,0 +1,194 @@
+ESTADO DE IMPLEMENTACIÓN — 28/07/2026
+
+Los bloques descritos en este documento ya fueron abordados:
+
+  1. Seguridad, permisos y auditoría.
+  2. Órdenes técnicas e instalación FTTH guiada.
+  3. Control de ONU, puertos NAP e historial de movimientos.
+  4. Finanzas operativas, caja y cobranza.
+  5. Soporte técnico y diagnósticos.
+  6. PWA con operación controlada ante conexión inestable.
+  7. Bajas completas y recuperación de equipo.
+  8. Estabilización: contratos de API, health checks y frontend dividido por rutas.
+ 9. Calidad: Pydantic 2, presupuesto de lint y pruebas E2E en escritorio/móvil.
+10. Tipado: radar OLT, panel técnico y detalle de cliente; Quagga retirado.
+11. Tipado: alta, herramientas, listado y panel principal de clientes.
+ 12. Tipado: sistema, importación, cobranza, instalación y chat; horarios corregidos.
+ 13. Tipado: terminal de cobro, inventario, CRM, importación modal y vista técnica.
+ 14. Tipado: navegación, facturas, ciclos, WhatsApp y adaptador OLT de producción.
+ 15. Estructura y tipado: órdenes, finanzas, monitoreo y componentes por módulo.
+ 16. Arquitectura frontend: reorganización global por dominio y alias de imports.
+ 17. Tipado: usuarios, zonas, mensajes, VPN y registros de cronjobs.
+ 18. Tipado: cajas NAP, planes, redes IP, routers y diagnóstico de ping.
+ 19. Tipado: acceso, PWA, portal del cliente, landing y herramientas móviles.
+ 20. Calidad final: radar OLT tipado y lint global estricto sin advertencias.
+
+La validación actual cuenta con 68 pruebas de backend aprobadas y el frontend
+supera `npm run check:release` con 76 casos E2E y cero advertencias de lint.
+La guía de publicación y la deuda técnica restante están en
+`docs/estabilizacion-despliegue.md`.
+
+-----------------------------------------------------------------------------
+
+  - Clientes, planes, zonas y servicios.
+  - Facturación, pagos, prorrateo y promesas de pago.
+  - Suspensión/reactivación mediante MikroTik.
+  - OLT, diagnóstico de ONU, cajas NAP e inventario.
+  - Técnicos, instalaciones y PWA móvil.
+  - WhatsApp, portal del cliente, mapas y reportes básicos.
+  - Los 17 tests actuales pasan correctamente.
+
+  Las prioridades que encontré son:
+
+  1. Seguridad: proteger rutas sensibles, eliminar credenciales predeterminadas, restringir CORS y validar webhooks.
+  2. Órdenes técnicas reales: instalaciones, reparaciones, retiros, cambio de ONU, evidencias, estados, fechas e historial. Actualmente una instalación pendiente se representa como cliente, lo
+     cual limita el seguimiento.
+
+  3. Control FTTH: impedir que una ONU o puerto NAP se asigne dos veces y guardar historial de movimientos, potencia óptica y cambios de equipo.
+  4. Finanzas completas: ingresos, egresos, gastos, cierres de caja, anulaciones, descuentos, saldo a favor y auditoría. Los importes deberían manejarse con decimales, no Float.
+  5. Cobranza: pagos parciales, promesas con límite configurable, seguimiento de morosos y mensajes automáticos sin duplicados.
+  6. Roles y auditoría: administrador, cajero, técnico y supervisor, registrando quién cambió, cobró, suspendió o eliminó algo.
+  7. PWA: ya es instalable, pero falta reforzar funcionamiento con conexión inestable, sincronización pendiente y experiencia móvil.
+
+  Mi recomendación es comenzar con un primer bloque de seguridad, permisos y auditoría, porque protege clientes, pagos y credenciales de MikroTik/OLT. Después construiría el módulo formal de
+  órdenes técnicas y control de equipos. No hice cambios todavía para evitar romper operaciones existentes sin acordar primero este orden.
+
+
+
+
+  El flujo ideal sería:
+
+  Solicitud → instalación → activación → facturación → cobranza → soporte → baja y recuperación del equipo.
+
+  ### Lo que ya está bien planteado
+
+  - Crear clientes y asignarles plan, router, zona, NAP, puerto y ONU.
+  - Manejar instalaciones pendientes y asignarlas a técnicos.
+  - Activar PPPoE/IP en MikroTik.
+  - Consultar conexión y potencia óptica desde la OLT.
+  - Generar facturas, registrar pagos y emitir recibos.
+  - Suspender automáticamente y reactivar después del pago.
+  - Registrar promesas de pago.
+  - Enviar recordatorios por WhatsApp.
+  - Controlar ONU disponible, instalada o pendiente de recoger.
+  - Usar el sistema como PWA para técnicos y cobradores.
+
+  Eso cubre aproximadamente el 70–80 % de la operación diaria real.
+
+  ## Mejoras que sí utilizarían
+
+  ### 1. Orden de servicio independiente
+
+  Actualmente una instalación pendiente se maneja prácticamente como un cliente incompleto. Funcionará al principio, pero después será difícil distinguir instalaciones, reparaciones, cambios
+  de domicilio y retiros.
+
+  Conviene una orden sencilla con:
+
+  - Tipo: instalación, reparación, cambio de domicilio, cambio de ONU o retiro.
+  - Cliente o prospecto.
+  - Técnico responsable.
+  - Fecha programada.
+  - Prioridad.
+  - Estado: pendiente, asignada, en camino, trabajando, terminada o cancelada.
+  - Comentarios y evidencias fotográficas.
+  - Material utilizado.
+  - Firma o conformidad del cliente.
+
+  No hace falta un módulo enorme de tickets; una sola estructura puede cubrir todos los trabajos técnicos.
+
+  ### 2. Instalación FTTH guiada
+
+  El técnico debería completar una instalación desde el teléfono siguiendo un flujo corto:
+
+  1. Confirmar ubicación.
+  2. Seleccionar NAP y puerto libre.
+  3. Escanear el código de la ONU.
+  4. Registrar potencia óptica.
+  5. Tomar fotografías.
+  6. Confirmar plan y datos PPPoE.
+  7. Activar el servicio.
+  8. Entregar evidencia y cerrar la orden.
+
+  Al finalizar, el sistema debe actualizar automáticamente cliente, ONU, puerto NAP, OLT, MikroTik y fecha de inicio de facturación.
+
+  ### 3. Historial de equipos
+
+  No basta con conocer el estado actual de una ONU. Hace falta saber:
+
+  - Quién la recibió.
+  - En qué cliente estuvo instalada.
+  - Cuándo se retiró.
+  - Por qué fue reemplazada.
+  - Si regresó funcionando, dañada o incompleta.
+  - Qué técnico hizo el movimiento.
+
+  Esto evita pérdidas de equipos y discusiones sobre quién tenía cada ONU.
+
+  ### 4. Control real de NAP
+
+  Agregaría únicamente:
+
+  - Puertos libres, ocupados, dañados y reservados.
+  - Validación para impedir dos clientes en el mismo puerto.
+  - Clientes conectados por puerto.
+  - Potencia registrada en la instalación.
+  - OLT, tarjeta/PON y ruta troncal asociada.
+  - Mapa con color según ocupación.
+
+  No agregaría diseño avanzado de fibra o diagramas complejos todavía.
+
+  ### 5. Soporte técnico práctico
+
+  En lugar de un helpdesk pesado:
+
+  - Motivo: sin internet, lentitud, potencia baja, router Wi-Fi, cable roto o cambio de domicilio.
+  - Diagnóstico automático: MikroTik + OLT.
+  - Resultado de ping, sesión PPPoE, tráfico y potencia.
+  - Técnico asignado.
+  - Solución aplicada.
+  - Tiempo de resolución.
+
+  El sistema incluso podría sugerir: “ONU fuera de línea”, “cliente conectado pero sin tráfico” o “potencia óptica crítica”.
+
+  ### 6. Cobranza operativa
+
+  Además de facturas y pagos:
+
+  - Pagos parciales.
+  - Descuentos autorizados.
+  - Convenios o promesas con límite.
+  - Historial de promesas incumplidas.
+  - Reconexión automática después del pago.
+  - Lista diaria de clientes por cobrar.
+  - Campañas de WhatsApp por zona, vencimiento o estado.
+  - Evitar mensajes duplicados.
+  - Registro de entregado, leído o fallido.
+
+  Una mejora importante sería permitir configurar distintas políticas: cliente residencial, negocio, empleado o cliente especial.
+
+  ### 7. Caja y control financiero mínimo
+
+  No construiría un sistema contable completo. Para la operación diaria bastaría con:
+
+  - Ingresos por efectivo, transferencia y otros métodos.
+  - Gastos operativos.
+  - Apertura y cierre de caja.
+  - Dinero esperado contra dinero entregado.
+  - Pagos registrados por cada cobrador.
+  - Anulaciones con motivo y autorización.
+  - Reporte diario, semanal y mensual.
+  - Cartera vencida y recuperación de deuda.
+
+  ### 8. Bajas completas
+
+  Cuando un cliente se retire:
+
+  1. Cancelar el servicio.
+  2. Deshabilitarlo en MikroTik.
+  3. Detener futuras facturas.
+  4. Liberar el puerto NAP.
+  5. Crear orden para recoger la ONU.
+  6. Mantener los adeudos pendientes.
+  7. Confirmar regreso del equipo a bodega.
+
+  Este flujo es muy importante porque ahí suelen perderse equipos y quedar información incorrecta

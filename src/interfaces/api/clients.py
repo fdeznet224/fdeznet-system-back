@@ -1,5 +1,6 @@
 from typing import List, Optional
 from datetime import date
+from decimal import Decimal
 import re 
 from sqlalchemy import select, or_, func
 
@@ -12,8 +13,14 @@ from src.domain.schemas import InstalacionRequest
 
 # Infraestructura y Base de Datos
 from src.infrastructure.database import get_db
-from src.infrastructure.auth import get_current_user
-from src.infrastructure.models import ClienteModel, ConfiguracionModel, FacturaModel
+from src.infrastructure.auth import get_current_user, role_required
+from src.infrastructure.models import (
+    BajaServicioModel,
+    ClienteModel,
+    ConfiguracionModel,
+    FacturaModel,
+    MensajeChatModel,
+)
 
 
 # Servicios y Herramientas
@@ -21,6 +28,14 @@ from src.infrastructure.whatsapp_client import whatsapp_queue
 
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.application.services.client_service import ClientService
+from src.application.services.access_control_service import (
+    filtro_clientes_del_tecnico,
+    verificar_acceso_cliente,
+)
+from src.application.services.baja_service import (
+    BajaService,
+    ESTADOS_BAJA_ABIERTA,
+)
 from src.infrastructure.repositories import ClienteRepository
 from src.infrastructure import RefPPP 
 
@@ -54,6 +69,7 @@ class ClientePortalResponse(BaseModel):
     onu_id: Optional[int] = None
     caja_nap_id: Optional[int] = None
     plan_id: Optional[int] = None       # Agregado por si el front lo necesita en el POST
+    zona_id: Optional[int] = None
     
     router_nombre: str       
     estado: str              
@@ -64,22 +80,19 @@ class ClientePortalResponse(BaseModel):
     nap_nombre: Optional[str] = None
     puerto_nap: Optional[int] = None
 
-    # Sugerencias PPPoE
-    suggested_user: Optional[str] = None
-    suggested_pass: Optional[str] = None
     router_id: Optional[int] = None 
     
     # Plan
     plan_nombre: str
     velocidad_bajada: int    
     velocidad_subida: int    
-    precio_plan: float
+    precio_plan: Decimal
     
     # Financiero
-    total_deuda: float
+    total_deuda: Decimal
     facturas_pendientes: int 
     fecha_corte: Optional[date] = None
-    saldo_a_favor: float
+    saldo_a_favor: Decimal
 
 class EstadoUpdate(BaseModel):
     nuevo_estado: str
@@ -101,7 +114,13 @@ class CambioONURequest(BaseModel):
 # ==========================================
 
 @router.get("/{dato}/portal", response_model=ClientePortalResponse)
-async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
+async def obtener_datos_portal(
+    dato: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
     if dato.isdigit():
         criterio = ClienteModel.id == int(dato)
     else:
@@ -121,6 +140,10 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
     
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    try:
+        await verificar_acceso_cliente(db, current_user, cliente.id)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
 
     # --- A. CÁLCULOS FINANCIEROS (Sincronizado con listado-completo) ---
     # Filtramos facturas: pendientes, vencidas o promesas (Adeudos reales)
@@ -153,10 +176,6 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
         except Exception:
             online_status = False
 
-    # --- C. CREDENCIALES PPPoE ---
-    sug_user = cliente.user_pppoe if cliente.user_pppoe else f"user_{cliente.id}"
-    sug_pass = cliente.pass_pppoe if cliente.pass_pppoe else "123456"
-
     # --- D. DATOS EXTRA ---
     nap_nombre = cliente.caja_nap.nombre if cliente.caja_nap else "No Asignada"
     olt_nombre = cliente.olt.nombre if cliente.olt else "No Asignada"
@@ -178,6 +197,7 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
         "caja_nap_id": cliente.caja_nap_id,
         "plan_id": cliente.plan_id,
         "router_id": cliente.router_id, 
+        "zona_id": cliente.zona_id,
         
         # Datos visuales que ya tenías
         "identificador_onu": id_onu, 
@@ -187,8 +207,6 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
         "olt_nombre": olt_nombre,
         "nap_nombre": nap_nombre,
         "puerto_nap": cliente.puerto_nap,
-        "suggested_user": sug_user,
-        "suggested_pass": sug_pass,
         "plan_nombre": cliente.plan.nombre if cliente.plan else "Sin Plan",
         "velocidad_bajada": cliente.plan.velocidad_bajada if cliente.plan else 0,
         "velocidad_subida": cliente.plan.velocidad_subida if cliente.plan else 0,
@@ -208,7 +226,10 @@ async def obtener_datos_portal(dato: str, db: AsyncSession = Depends(get_db)):
 @router.get("/buscar")
 async def buscar_clientes_global(
     query: str = Query(..., min_length=3), 
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "cajero", "tecnico"])
+    ),
 ):
     filtro = f"%{query}%"
     stmt = (
@@ -233,6 +254,10 @@ async def buscar_clientes_global(
         .group_by(ClienteModel.id)
         .limit(8)
     )
+    if current_user.rol == "tecnico":
+        stmt = stmt.where(
+            filtro_clientes_del_tecnico(current_user.id)
+        )
 
     result = await db.execute(stmt)
     rows = result.mappings().all()
@@ -255,7 +280,9 @@ async def listar_clientes(
     search: Optional[str] = Query(None, description="Buscar por Nombre, SN/Cédula o IP"),
     tecnico_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
 ):
     # 👇 1. Importación local de Inventario para la consulta cruzada
     from src.infrastructure.models import InventarioONUModel 
@@ -289,7 +316,11 @@ async def listar_clientes(
         query = query.where(ClienteModel.router_id == router_id)
 
     # 👇 4. LÓGICA DE FILTRADO PARA EL TÉCNICO (CORE) 👇
-    if tecnico_id:
+    if current_user.rol == "tecnico":
+        query = query.where(
+            filtro_clientes_del_tecnico(current_user.id)
+        )
+    elif tecnico_id:
         # El técnico debe ver:
         # A) Clientes donde él es el instalador Y no están cancelados.
         # B) Clientes cuya ONU en bodega tiene asignado su ID para retiro.
@@ -311,13 +342,17 @@ async def listar_clientes(
 @router.get("/listado-completo-unificado", response_model=List[ClienteFullResponse])
 async def get_clientes_unificados(
     db: AsyncSession = Depends(get_db), 
-    current_user = Depends(get_current_user)
+    current_user=Depends(role_required(["admin", "supervisor"])),
 ):
     service = ClientService(db)
     return await service.get_listado_unificado()
 
 @router.get("/{cliente_id}", response_model=ClienteResponse)
-async def obtener_cliente(cliente_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     query = select(ClienteModel).options(
         selectinload(ClienteModel.plan),
         selectinload(ClienteModel.router),
@@ -347,12 +382,16 @@ async def registrar_cliente(
     cliente: ClienteCreate, 
     background_tasks: BackgroundTasks, 
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor"]))
 ):
     service = ClientService(db)
     try:
-        return await service.registrar_cliente(cliente, background_tasks)
-    except ValueError as e:
+        return await service.registrar_cliente(
+            cliente,
+            background_tasks,
+            usuario_operador=current_user,
+        )
+    except (ValueError, PermissionError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"Error registro API: {e}")
@@ -364,22 +403,31 @@ async def completar_instalacion(
     cliente_id: int,
     datos: InstalacionRequest, 
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor", "tecnico"]))
 ):
     service = ClientService(db)
     try:
-        cliente_activado = await service.activar_instalacion(cliente_id, datos)
+        cliente_activado = await service.activar_instalacion(
+            cliente_id,
+            datos,
+            usuario_operador=current_user,
+        )
         
         return {
             "status": "success", 
             "message": "¡Servicio activado correctamente en el Router!", 
-            "cliente": cliente_activado.nombre
+            "cliente": cliente_activado,
         }
     
+    except PermissionError as error:
+        await db.rollback()
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except ValueError as ve:
+        await db.rollback()
         raise HTTPException(status_code=409, detail=str(ve)) 
         
     except Exception as e:
+        await db.rollback()
         print(f"Error activando: {e}")
         raise HTTPException(status_code=500, detail=f"Error en activación: {str(e)}")
 
@@ -389,27 +437,29 @@ async def editar_cliente(
     cliente_id: int, 
     datos: ClienteCreate, 
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor"]))
 ):
     service = ClientService(db)
     try:
         return await service.editar_cliente(cliente_id, datos)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.delete("/{cliente_id}")
 async def eliminar_cliente(
     cliente_id: int, 
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor"]))
 ):
     service = ClientService(db)
     try:
         mensaje = await service.eliminar_cliente(cliente_id)
         return {"status": "ok", "message": mensaje}
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        detalle = str(e)
+        estado_http = 409 if "historial financiero u operativo" in detalle else 404
+        raise HTTPException(status_code=estado_http, detail=detalle) from e
 
 
 # ==========================================
@@ -421,7 +471,7 @@ async def cambiar_estado(
     cliente_id: int, 
     estado: EstadoUpdate, 
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor"]))
 ):
     service = ClientService(db)
     try:
@@ -435,21 +485,39 @@ async def enviar_mensaje_directo(
     cliente_id: int, 
     datos: MensajeManual, 
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor", "cajero"]))
 ):
     cliente = await db.get(ClienteModel, cliente_id)
     if not cliente or not cliente.telefono:
         raise HTTPException(status_code=404, detail="Cliente o teléfono no encontrado")
     
     try:
-        await whatsapp_queue.agregar_tarea({
-            "numero": cliente.telefono,
-            "mensaje": datos.mensaje,
-            "intervalo": 2  
-        })
+        registro = MensajeChatModel(
+            cliente_id=cliente.id,
+            telefono=whatsapp_queue.service._formatear_numero(
+                cliente.telefono
+            ),
+            direccion="salida",
+            mensaje=datos.mensaje,
+            tipo_mensaje="texto",
+            tipo_evento="mensaje_manual",
+            leido=True,
+            ack=0,
+            estado_envio="pendiente",
+            creado_por_id=current_user.id,
+        )
+        db.add(registro)
+        await db.commit()
+        await whatsapp_queue.agregar_tarea(
+            {
+                "mensaje_chat_id": registro.id,
+                "intervalo": 2,
+            }
+        )
 
         return {
-            "status": "enviando", 
+            "status": "encolado",
+            "mensaje_id": registro.id,
             "cliente": cliente.nombre,
             "destino": cliente.telefono
         }
@@ -463,19 +531,24 @@ async def crear_promesa_pago(
     cliente_id: int, 
     datos: PromesaRequest, 
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin", "supervisor", "cajero"]))
 ):
     service = ClientService(db)
     try:
-        msg = await service.registrar_promesa_pago(cliente_id, datos.fecha_promesa)
+        msg = await service.registrar_promesa_pago(
+            cliente_id,
+            datos.fecha_promesa,
+            current_user.id,
+        )
         return {"status": "ok", "message": msg}
-    except ValueError as e:
+    except (ValueError, PermissionError) as e:
+        await db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/test/forzar-cortes-automaticos")
 async def test_cortes_automaticos(
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(role_required(["admin"]))
 ):
     service = ClientService(db)
     try:
@@ -487,15 +560,24 @@ async def test_cortes_automaticos(
 
 
 @router.get("/{cliente_id}/diagnostico-fibra")
-async def diagnostico_fibra_cliente(cliente_id: int, db: AsyncSession = Depends(get_db)):
+async def diagnostico_fibra_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
     """
     Botón mágico para el área de Soporte Técnico: 
     Revisa la potencia óptica en vivo de un solo cliente.
     """
     servicio = SNMPMonitorService(db)
     try:
+        await verificar_acceso_cliente(db, current_user, cliente_id)
         resultado = await servicio.monitorear_cliente_individual(cliente_id)
         return {"status": "success", "data": resultado}
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -504,59 +586,160 @@ async def diagnostico_fibra_cliente(cliente_id: int, db: AsyncSession = Depends(
 
 
 
-@router.post("/{cliente_id}/dar-de-baja")
-async def dar_de_baja_cliente(cliente_id: int, db: AsyncSession = Depends(get_db)):
-    """Desconecta al cliente de MikroTik y envía la ONU a 'Por Recoger'"""
-    service = ClientService(db)
+@router.post("/{cliente_id}/dar-de-baja", deprecated=True)
+async def dar_de_baja_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Compatibilidad: inicia una baja formal con retiro de equipo."""
     try:
-        mensaje = await service.procesar_baja_servicio(cliente_id)
-        return {"status": "success", "message": mensaje}
-    except ValueError as e:
+        baja = await BajaService(db).crear(
+            cliente_id=cliente_id,
+            motivo="Baja solicitada desde el flujo anterior",
+            usuario=current_user,
+        )
+        return {
+            "status": "success",
+            "baja_id": baja.id,
+            "estado": baja.estado,
+            "message": "Servicio cancelado y baja registrada",
+        }
+    except (ValueError, PermissionError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     
 
-@router.post("/{cliente_id}/reactivar")
-async def reactivar_cliente_cancelado(cliente_id: int, db: AsyncSession = Depends(get_db)):
+@router.post("/{cliente_id}/reactivar", deprecated=True)
+async def reactivar_cliente_cancelado(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     """Reconecta a un cliente cancelado y lo vuelve a activar en MikroTik."""
-    service = ClientService(db)
     try:
-        mensaje = await service.reactivar_servicio(cliente_id)
-        return {"status": "success", "message": mensaje}
-    except ValueError as e:
+        baja = (
+            await db.execute(
+                select(BajaServicioModel)
+                .where(
+                    BajaServicioModel.cliente_id == cliente_id,
+                    BajaServicioModel.estado.in_(ESTADOS_BAJA_ABIERTA),
+                )
+                .order_by(BajaServicioModel.id.desc())
+            )
+        ).scalars().first()
+        if not baja:
+            raise ValueError(
+                "No existe una baja reversible; crea una nueva instalación"
+            )
+        baja = await BajaService(db).cancelar_y_reactivar(
+            baja.id,
+            current_user,
+        )
+        return {
+            "status": "success",
+            "baja_id": baja.id,
+            "message": "Baja cancelada y servicio reactivado",
+        }
+    except (ValueError, PermissionError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 
 # 🔥 CORRECCIÓN APLICADA AQUÍ: Usa inventario_id en lugar de cliente_id
-@router.post("/inventario/{inventario_id}/confirmar-retiro-onu")
-async def confirmar_retiro_onu(inventario_id: int, db: AsyncSession = Depends(get_db)):
+@router.post(
+    "/inventario/{inventario_id}/confirmar-retiro-onu",
+    deprecated=True,
+)
+async def confirmar_retiro_onu(
+    inventario_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
     """El técnico presiona esto al recuperar el equipo físico."""
-    service = ClientService(db)
     try:
-        mensaje = await service.confirmar_retiro_tecnico(inventario_id)
-        return {"status": "success", "message": mensaje}
-    except ValueError as e:
+        baja = (
+            await db.execute(
+                select(BajaServicioModel)
+                .where(
+                    BajaServicioModel.onu_id == inventario_id,
+                    BajaServicioModel.estado == "pendiente_retiro",
+                )
+                .order_by(BajaServicioModel.id.desc())
+            )
+        ).scalars().first()
+        if not baja:
+            raise ValueError("No existe una baja abierta para esta ONU")
+        resultado = await BajaService(db).confirmar_retiro(
+            baja.id,
+            "funcional",
+            current_user,
+            "Confirmado desde el endpoint compatible",
+        )
+        return {
+            "status": "success",
+            "baja_id": resultado.id,
+            "message": "Retiro confirmado y equipo ingresado a bodega",
+        }
+    except (ValueError, PermissionError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     
-@router.post("/inventario/{inventario_id}/asignar-retiro/{tecnico_id}") 
-async def asignar_retiro(inventario_id: int, tecnico_id: int, db: AsyncSession = Depends(get_db)):
-    service = ClientService(db)
+@router.post(
+    "/inventario/{inventario_id}/asignar-retiro/{tecnico_id}",
+    deprecated=True,
+)
+async def asignar_retiro(
+    inventario_id: int,
+    tecnico_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     try:
-        # En tu ClientService también asegúrate de que 'asignar_tecnico_retiro' 
-        # busque la ONU por inventario_id.
-        mensaje = await service.asignar_tecnico_retiro(inventario_id, tecnico_id)
-        return {"status": "success", "message": mensaje}
+        baja = (
+            await db.execute(
+                select(BajaServicioModel)
+                .where(
+                    BajaServicioModel.onu_id == inventario_id,
+                    BajaServicioModel.estado == "pendiente_retiro",
+                )
+                .order_by(BajaServicioModel.id.desc())
+            )
+        ).scalars().first()
+        if not baja:
+            raise ValueError("No existe una baja abierta para esta ONU")
+        resultado = await BajaService(db).asignar_tecnico(
+            baja.id,
+            tecnico_id,
+            current_user,
+        )
+        return {
+            "status": "success",
+            "baja_id": resultado.id,
+            "message": f"Retiro asignado al técnico ID: {tecnico_id}",
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 # 🔥 NUEVO ENDPOINT PARA EL CAMBIO POR FALLA 🔥
 @router.post("/{cliente_id}/cambiar-onu")
-async def cambiar_onu_cliente(cliente_id: int, req: CambioONURequest, db: AsyncSession = Depends(get_db)):
+async def cambiar_onu_cliente(
+    cliente_id: int,
+    req: CambioONURequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
     """Sustituye la ONU de un cliente y actualiza el inventario."""
     service = ClientService(db)
     try:
-        mensaje = await service.procesar_cambio_onu(cliente_id, req.nuevo_inventario_id, req.estado_vieja_onu)
+        await verificar_acceso_cliente(db, current_user, cliente_id)
+        mensaje = await service.procesar_cambio_onu(
+            cliente_id,
+            req.nuevo_inventario_id,
+            req.estado_vieja_onu,
+            usuario_operador=current_user,
+        )
         return {"status": "success", "message": mensaje}
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -566,6 +749,7 @@ async def cambiar_onu_cliente(cliente_id: int, req: CambioONURequest, db: AsyncS
 async def obtener_resumen_comercial_cliente(
     cliente_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
 ):
     """Resumen comercial para el detalle del cliente.
 

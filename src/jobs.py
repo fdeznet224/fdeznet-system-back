@@ -1,11 +1,24 @@
 import asyncio
 import requests
+import os
 from datetime import datetime, timedelta
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 from src.infrastructure.database import SessionLocal
-from src.infrastructure.models import ConfiguracionSistema, RouterModel, ClienteModel, LogCronjobModel
+from src.infrastructure.models import (
+    ConfiguracionSistema,
+    RouterModel,
+    ClienteModel,
+    LogCronjobModel,
+    MensajeChatModel,
+    ServicioModel,
+)
 from src.infrastructure.mikrotik_service import MikroTikService
+from src.infrastructure.whatsapp_client import whatsapp_queue
 from src.application.services.billing_service import BillingService
+from src.application.services.mikrotik_reconciliation_service import (
+    MikrotikReconciliationService,
+)
 
 # ==========================================
 # 📱 NOTIFICACIÓN DE WHATSAPP (Asíncrona)
@@ -17,12 +30,32 @@ async def enviar_alertas_whatsapp(mensaje, db):
         if not config or not config.telefonos_alerta: return
         
         lista_numeros = [n.strip() for n in config.telefonos_alerta.split(",") if n.strip()]
+        registros = []
         for numero in lista_numeros:
-            # Hacemos la petición al bot local
-            requests.post("http://127.0.0.1:3000/enviar-mensaje", json={"numero": numero, "mensaje": mensaje}, timeout=5)
+            registro = MensajeChatModel(
+                cliente_id=None,
+                telefono=whatsapp_queue.service._formatear_numero(numero),
+                direccion="salida",
+                mensaje=mensaje,
+                tipo_mensaje="texto",
+                tipo_evento="alerta_router",
+                leido=True,
+                ack=0,
+                estado_envio="pendiente",
+            )
+            db.add(registro)
+            registros.append(registro)
+        await db.commit()
+        for registro in registros:
+            await whatsapp_queue.agregar_tarea(
+                {"mensaje_chat_id": registro.id, "intervalo": 2}
+            )
             
     except Exception as e:
-        error_msg = f"Fallo al enviar WhatsApp al {numero}: El bot no responde o está apagado. Detalle: {str(e)}"
+        error_msg = (
+            "Fallo al registrar alertas WhatsApp en la bandeja: "
+            f"{str(e)}"
+        )
         print(f"❌ {error_msg}")
         
         # Guardar en la base de datos para verlo en el panel
@@ -97,24 +130,84 @@ async def tarea_sincronizar_clientes():
                 usuarios_online = await asyncio.to_thread(obtener_usuarios_activos_http_sync, router.ip_vpn, router.user_api, router.pass_api, (router.port_api or 80))
                 
                 if usuarios_online is not None:
-                    clientes = (await db.execute(select(ClienteModel).where(ClienteModel.router_id == router.id))).scalars().all()
+                    servicios = (
+                        await db.execute(
+                            select(ServicioModel).where(
+                                ServicioModel.router_id == router.id,
+                                ServicioModel.estado != "cancelado",
+                            )
+                        )
+                    ).scalars().all()
                     cambios = 0
-                    for cliente in clientes:
-                        estado_real = cliente.user_pppoe in usuarios_online
-                        if cliente.is_online != estado_real:
-                            cliente.is_online = estado_real
-                            cliente.ultimo_cambio_estado = datetime.now()
+                    usuarios_online_set = set(usuarios_online)
+                    for servicio in servicios:
+                        estado_real = (
+                            bool(servicio.user_pppoe)
+                            and servicio.user_pppoe in usuarios_online_set
+                        )
+                        if servicio.is_online != estado_real:
+                            servicio.is_online = estado_real
+                            servicio.ultimo_cambio_estado = datetime.now()
                             cambios += 1
                     
                     await db.commit()
-                    db.add(LogCronjobModel(nivel="INFO", origen="Clientes", mensaje=f"Sincronizado '{router.nombre}': {cambios} cambios detectados."))
+                    db.add(LogCronjobModel(nivel="INFO", origen="Servicios", mensaje=f"Sincronizado '{router.nombre}': {cambios} cambios detectados."))
                     await db.commit()
                 else:
-                    db.add(LogCronjobModel(nivel="WARN", origen="Clientes", mensaje=f"No se pudo conectar al router '{router.nombre}' para sincronizar."))
+                    db.add(LogCronjobModel(nivel="WARN", origen="Servicios", mensaje=f"No se pudo conectar al router '{router.nombre}' para sincronizar."))
                     await db.commit()
-        except Exception as e:
-            db.add(LogCronjobModel(nivel="ERROR", origen="Clientes", mensaje=f"Error en sincronización: {str(e)}"))
+
+            # Compatibilidad: mientras el frontend migra, el estado técnico del
+            # cliente representa si al menos uno de sus servicios está online.
+            clientes = (
+                await db.execute(
+                    select(ClienteModel).options(
+                        selectinload(ClienteModel.servicios)
+                    )
+                )
+            ).scalars().all()
+            for cliente in clientes:
+                cliente.is_online = any(
+                    servicio.is_online
+                    for servicio in cliente.servicios
+                    if servicio.estado != "cancelado"
+                )
             await db.commit()
+        except Exception as e:
+            db.add(LogCronjobModel(nivel="ERROR", origen="Servicios", mensaje=f"Error en sincronización: {str(e)}"))
+            await db.commit()
+
+
+# ==========================================
+# 2.5 CONCILIACIÓN BD -> MIKROTIK
+# ==========================================
+async def tarea_conciliar_mikrotik():
+    """Repara periódicamente diferencias de activación y suspensión."""
+    print("🛡️ [RED] Conciliando estados deseados con MikroTik...")
+    async with SessionLocal() as db:
+        try:
+            return await MikrotikReconciliationService(db).ejecutar()
+        except Exception as exc:
+            await db.rollback()
+            db.add(
+                LogCronjobModel(
+                    nivel="ERROR",
+                    origen="ConciliacionMikroTik",
+                    mensaje=(
+                        "Fallo fatal del conciliador; se reintentará "
+                        f"en el siguiente ciclo: {exc}"
+                    ),
+                )
+            )
+            await db.commit()
+            return {
+                "verificados": 0,
+                "correctos": 0,
+                "reparados": 0,
+                "errores": 1,
+                "routers": 0,
+            }
+
 
 # ==========================================
 # 3. TAREA DE FACTURACIÓN Y CORTES
@@ -141,8 +234,8 @@ async def _corte_automatico_ejecutado_hoy(db) -> bool:
 
 
 async def tarea_cron_unificada():
-    # Extrae la hora actual en formato de 24 horas (ej: "03", "06", "09")
-    hora_actual = datetime.now().strftime("%H")
+    # Compara hora y minuto para respetar configuraciones como 06:30.
+    momento_actual = datetime.now().strftime("%H:%M")
     
     async with SessionLocal() as db:
         try:
@@ -151,15 +244,15 @@ async def tarea_cron_unificada():
             billing_service = BillingService(db)
 
             # Extraemos limpiamente solo el componente de la hora (de "03:00" nos deja "03")
-            hora_corte = config.hora_ejecucion_corte.split(":")[0] if config.hora_ejecucion_corte else "03"
-            hora_facturas = config.hora_generacion_facturas.split(":")[0] if config.hora_generacion_facturas else "06"
-            hora_mensajes = config.hora_recordatorios.split(":")[0] if config.hora_recordatorios else "09"
+            hora_corte = (config.hora_ejecucion_corte or "03:00")[:5]
+            hora_facturas = (config.hora_generacion_facturas or "06:00")[:5]
+            hora_mensajes = (config.hora_recordatorios or "09:00")[:5]
 
             # ------------------------------------------------------
             # A. GENERACIÓN DE FACTURAS AUTOMÁTICA (5 días antes)
             # ------------------------------------------------------
             if config.generar_facturas_automaticamente:
-                if hora_actual == hora_facturas:
+                if momento_actual == hora_facturas:
                     resultado = await billing_service.generar_emision_masiva()
                     db.add(LogCronjobModel(
                         nivel="INFO", 
@@ -171,7 +264,7 @@ async def tarea_cron_unificada():
             # B. RECORDATORIO DE PAGO URGENTE (1 día antes)
             # ------------------------------------------------------
             if config.activar_notificaciones:
-                if hora_actual == hora_mensajes:
+                if momento_actual == hora_mensajes:
                     # Lee directamente tu nueva columna de la BD
                     dias_urgente = config.recordatorio_2_dias or 0
                     
@@ -188,8 +281,8 @@ async def tarea_cron_unificada():
             # C. MOTOR DE CORTES AUTOMÁTICOS (Fecha límite superada)
             # ------------------------------------------------------
             if config.activar_corte_automatico:
-                hora_programada = int(hora_corte)
-                hora_servidor = int(hora_actual)
+                hora_programada = int(hora_corte.split(":")[0])
+                hora_servidor = int(momento_actual.split(":")[0])
                 if (
                     hora_servidor >= hora_programada
                     and not await _corte_automatico_ejecutado_hoy(db)

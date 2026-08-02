@@ -42,7 +42,7 @@ async def listar_plantillas_facturacion(db: AsyncSession = Depends(get_db)):
 
 @router.post("/plantillas-facturacion")
 async def crear_plantilla_facturacion(data: BillingTemplateRequest, db: AsyncSession = Depends(get_db)):
-    nueva = PlantillaFacturacionModel(**data.dict())
+    nueva = PlantillaFacturacionModel(**data.model_dump())
     db.add(nueva)
     await db.commit()
     await db.refresh(nueva)
@@ -54,7 +54,7 @@ async def actualizar_plantilla_facturacion(id: int, data: BillingTemplateRequest
     if not plantilla:
         raise HTTPException(status_code=404, detail="Plantilla no encontrada")
     
-    for key, value in data.dict().items():
+    for key, value in data.model_dump().items():
         setattr(plantilla, key, value)
     
     await db.commit()
@@ -154,7 +154,7 @@ async def obtener_configuracion_sistema(db: AsyncSession = Depends(get_db)):
 
 @router.put("/sistema")
 async def guardar_configuracion_sistema(datos: SystemConfigUpdate, db: AsyncSession = Depends(get_db)):
-    stmt = update(ConfiguracionSistema).where(ConfiguracionSistema.id == 1).values(**datos.dict())
+    stmt = update(ConfiguracionSistema).where(ConfiguracionSistema.id == 1).values(**datos.model_dump())
     await db.execute(stmt)
     await db.commit()
     return {"status": "ok", "mensaje": "Configuración guardada"}
@@ -170,7 +170,7 @@ async def obtener_password_default(db: AsyncSession = Depends(get_db)):
     stmt = select(ConfiguracionModel).where(ConfiguracionModel.clave == 'pppoe_password_default')
     res = await db.execute(stmt)
     config = res.scalar()
-    return {"password": config.valor if config else "12345"}
+    return {"password": config.valor if config else None}
 
 @router.post("/pppoe-default")
 async def cambiar_password_default(data: ConfigUpdate, db: AsyncSession = Depends(get_db)):

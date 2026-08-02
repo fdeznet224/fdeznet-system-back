@@ -1,46 +1,89 @@
 import os
 import httpx
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime
+from decimal import Decimal
 from typing import List, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, func, cast, String
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Importaciones de Infraestructura y Modelos
-from src.infrastructure.database import get_db
+from src.infrastructure.database import SessionLocal, get_db
+from src.infrastructure.auth import (
+    decode_access_token,
+    role_required,
+    verify_webhook_secret,
+)
 from src.infrastructure.models import (
     ClienteModel, 
     MensajeChatModel, 
     PagoAutovalidadoModel, 
     FacturaModel, 
     UsuarioModel,
-    ConfiguracionSistema # 👈 Añadido para poder alertarte de fraudes
+    ConfiguracionModel,
+    ConfiguracionSistema,  # 👈 Añadido para poder alertarte de fraudes
 )
-from src.infrastructure.whatsapp_client import whatsapp_queue, WhatsAppService
+from src.infrastructure.whatsapp_client import (
+    GLOBAL_SETTINGS,
+    WhatsAppService,
+    set_intervalo_default,
+    whatsapp_queue,
+)
 from src.infrastructure.socket_manager import manager
 
 # Importaciones de Servicios
 from src.application.services.ocr_service import OCRService
 from src.application.services.billing_service import BillingService
+from src.application.services.finance_service import FinanceService
+from src.application.services.access_control_service import (
+    verificar_acceso_cliente,
+)
+from src.application.services.whatsapp_outbox_service import (
+    ESTADOS_SALIDA,
+    WhatsAppOutboxService,
+)
 
 router = APIRouter(prefix="/whatsapp", tags=["Configuración WhatsApp"])
+webhook_router = APIRouter(prefix="/whatsapp", tags=["Webhooks WhatsApp"])
 
 # --- CONFIGURACIÓN Y MEMORIA GLOBAL ---
-GLOBAL_SETTINGS = {"intervalo_default": 60}
-BASE_NODE_URL = "http://whatsapp:3000" if os.environ.get("ENVIRONMENT") == "production" else "http://127.0.0.1:3000"
+BASE_NODE_URL = os.getenv("WHATSAPP_BASE_URL") or (
+    "http://whatsapp:3000"
+    if os.environ.get("ENVIRONMENT") == "production"
+    else "http://127.0.0.1:3000"
+)
+NODE_HEADERS = {
+    "X-Webhook-Secret": os.getenv("WEBHOOK_SECRET", ""),
+}
 
 # Memoria temporal para el Bot (Estado por número de teléfono)
 bot_memory = {}
 ocr_tool = OCRService()
 
+
+async def obtener_factura_cobrable(db: AsyncSession, cliente_id: int):
+    """Obtiene la deuda más antigua, incluso si el cliente ya fue cortado."""
+    stmt = (
+        select(FacturaModel)
+        .where(
+            FacturaModel.cliente_id == cliente_id,
+            FacturaModel.estado.in_(["pendiente", "vencida"]),
+            FacturaModel.saldo_pendiente > 0,
+        )
+        .order_by(FacturaModel.fecha_vencimiento.asc())
+    )
+    return (await db.execute(stmt)).scalars().first()
+
+
 # --- SCHEMAS ---
 class Destinatario(BaseModel):
-    numero: str
-    nombre: str
+    numero: str = Field(min_length=10, max_length=100)
+    nombre: str = Field(min_length=1, max_length=150)
 
 class CampanaMasiva(BaseModel):
     clientes: List[Destinatario]
@@ -49,11 +92,27 @@ class CampanaMasiva(BaseModel):
     intervalo_segundos: int = 0  
 
 class MensajeEnviarRequest(BaseModel):
-    mensaje: str
+    mensaje: str = Field(min_length=1, max_length=10000)
 
 class AckWebhookRequest(BaseModel):
-    wa_id: str
-    ack: int
+    wa_id: Optional[str] = None
+    mensaje_chat_id: Optional[int] = None
+    ack: int = Field(ge=-1, le=4)
+
+    @model_validator(mode="after")
+    def validar_identificador(self):
+        if not self.wa_id and not self.mensaje_chat_id:
+            raise ValueError("Indica wa_id o mensaje_chat_id")
+        return self
+
+
+class ReintentoMasivoRequest(BaseModel):
+    ids: Optional[list[int]] = None
+    limite: int = Field(default=100, ge=1, le=500)
+
+
+class ConfiguracionWhatsAppRequest(BaseModel):
+    intervalo_segundos: int = Field(ge=1, le=3600)
 
 # ==========================================
 # ⚙️ FUNCION AUXILIAR: VALIDACIÓN FINAL (CAPA 3)
@@ -67,32 +126,73 @@ async def procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db
         await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="❌ Cédula de seguridad incorrecta. Inténtalo de nuevo o escribe 'cancelar'.")
         return {"status": "firma_invalida"}
 
-    stmt_f = select(FacturaModel).where(FacturaModel.cliente_id == cliente_final.id, FacturaModel.estado == "pendiente").order_by(FacturaModel.fecha_vencimiento.asc())
-    factura = (await db.execute(stmt_f)).scalars().first()
+    factura = await obtener_factura_cobrable(db, cliente_final.id)
 
     if not factura:
         res = "✅ Identidad confirmada, pero no tienes facturas pendientes de pago en este momento."
         del bot_memory[telefono_raw]
     else:
         # 🛡️ CAPA 3: Validación Matemática de Montos
-        monto_ticket = float(estado["pago"]["monto"])
-        deuda_real = float(factura.total)
+        monto_ticket = FinanceService.dinero(estado["pago"]["monto"])
+        deuda_real = Decimal(factura.saldo_pendiente or 0)
 
         if monto_ticket < deuda_real:
             res = f"❌ *Pago Rechazado*\n\nEl comprobante indica un pago de *${monto_ticket}*, pero tu factura es de *${deuda_real}*.\n\nSi es un error de lectura, envía una foto más clara o contacta a soporte."
             del bot_memory[telefono_raw]
         else:
             try:
-                stmt_u = select(UsuarioModel).where(UsuarioModel.id == 1)
-                admin_user = (await db.execute(stmt_u)).scalar_one()
+                stmt_u = (
+                    select(UsuarioModel)
+                    .where(
+                        UsuarioModel.rol == "admin",
+                        UsuarioModel.activo.is_(True),
+                    )
+                    .order_by(UsuarioModel.id.asc())
+                )
+                admin_user = (
+                    await db.execute(stmt_u)
+                ).scalars().first()
+                if not admin_user:
+                    raise RuntimeError(
+                        "No existe un administrador activo para "
+                        "registrar el pago automático"
+                    )
 
                 billing_service = BillingService(db)
-                await billing_service.registrar_pago_completo(factura_id=factura.id, usuario_operador=admin_user, metodo_pago="BOT_AUTOPAGO", monto=monto_ticket, referencia=estado["pago"]["folio"])
+                resultado_pago = await billing_service.registrar_pago_completo(
+                    factura_id=factura.id,
+                    usuario_operador=admin_user,
+                    metodo_pago="BOT_AUTOPAGO",
+                    monto=estado["pago"]["monto"],
+                    referencia=estado["pago"]["folio"],
+                    clave_idempotencia=(
+                        f"bot-autopago:{estado['pago']['folio']}"
+                    ),
+                )
                 
                 db.add(PagoAutovalidadoModel(cliente_id=cliente_final.id, monto=monto_ticket, folio_banco=estado["pago"]["folio"], whatsapp_remitente=telefono_raw))
                 await db.commit()
 
-                res = f"✅ ¡Todo listo, {cliente_final.nombre}!\nTu pago de *${monto_ticket}* ha sido procesado exitosamente.\nTu internet quedará activo en breve. 🚀"
+                if resultado_pago.get("reactivado"):
+                    estado_servicio = (
+                        "\nTu servicio fue reactivado y MikroTik "
+                        "confirmó el cambio. 🚀"
+                    )
+                elif cliente_final.estado == "suspendido":
+                    estado_servicio = (
+                        "\nEl pago fue aplicado, pero todavía existe otra "
+                        "deuda pendiente; el servicio continúa suspendido."
+                    )
+                else:
+                    estado_servicio = (
+                        "\nTu servicio permanece activo."
+                    )
+
+                res = (
+                    f"✅ ¡Todo listo, {cliente_final.nombre}!\n"
+                    f"Tu pago de *${monto_ticket}* fue procesado "
+                    f"correctamente.{estado_servicio}"
+                )
                 del bot_memory[telefono_raw]
             except Exception as e:
                 print(f"Error procesando pago bot: {e}")
@@ -107,36 +207,110 @@ async def procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db
 # ⚙️ ENDPOINTS DE CONFIGURACIÓN Y CAMPAÑAS
 # ==========================================
 @router.get("/configuracion")
-async def get_config(): 
+async def get_config(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    valor = (
+        await db.execute(
+            select(ConfiguracionModel.valor).where(
+                ConfiguracionModel.clave
+                == "whatsapp_intervalo_segundos"
+            )
+        )
+    ).scalar_one_or_none()
+    if valor:
+        try:
+            set_intervalo_default(int(valor))
+        except (TypeError, ValueError):
+            pass
     return GLOBAL_SETTINGS
 
 @router.post("/configuracion")
-async def set_config(datos: dict):
-    GLOBAL_SETTINGS["intervalo_default"] = datos.get("intervalo_segundos", 60)
-    return {"status": "ok", "intervalo": GLOBAL_SETTINGS["intervalo_default"]}
+async def set_config(
+    datos: ConfiguracionWhatsAppRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    intervalo = set_intervalo_default(
+        datos.intervalo_segundos
+    )
+    configuracion = (
+        await db.execute(
+            select(ConfiguracionModel).where(
+                ConfiguracionModel.clave
+                == "whatsapp_intervalo_segundos"
+            )
+        )
+    ).scalar_one_or_none()
+    if configuracion:
+        configuracion.valor = str(intervalo)
+    else:
+        db.add(
+            ConfiguracionModel(
+                clave="whatsapp_intervalo_segundos",
+                valor=str(intervalo),
+            )
+        )
+    await db.commit()
+    return {"status": "ok", "intervalo": intervalo}
 
 @router.post("/enviar-campana")
-async def enviar_campana(datos: CampanaMasiva):
+async def enviar_campana(
+    datos: CampanaMasiva,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     if not datos.clientes: raise HTTPException(status_code=400, detail="Lista vacía")
     intervalo_final = datos.intervalo_segundos if datos.intervalo_segundos > 0 else GLOBAL_SETTINGS["intervalo_default"]
-    count = 0
+    lote_id = str(uuid4())
+    registros = []
     for cliente in datos.clientes:
         texto = datos.mensaje.replace("{nombre}", cliente.nombre)
-        await whatsapp_queue.agregar_tarea({
-            "numero": cliente.numero, 
-            "mensaje": texto, 
-            "ruta": datos.ruta_archivo, 
-            "intervalo": intervalo_final
-        })
-        count += 1
-    return {"status": "procesando", "total_mensajes": count}
+        registro = MensajeChatModel(
+            cliente_id=None,
+            telefono=whatsapp_queue.service._formatear_numero(
+                cliente.numero
+            ),
+            direccion="salida",
+            mensaje=texto,
+            tipo_mensaje=(
+                "documento" if datos.ruta_archivo else "texto"
+            ),
+            tipo_evento="campana",
+            leido=True,
+            ack=0,
+            estado_envio="pendiente",
+            ruta_archivo=datos.ruta_archivo,
+            lote_id=lote_id,
+            creado_por_id=current_user.id,
+        )
+        db.add(registro)
+        registros.append(registro)
+    await db.commit()
+    for registro in registros:
+        await whatsapp_queue.agregar_tarea(
+            {
+                "mensaje_chat_id": registro.id,
+                "intervalo": intervalo_final,
+            }
+        )
+    return {
+        "status": "procesando",
+        "lote_id": lote_id,
+        "total_mensajes": len(registros),
+    }
 
 
 # ==========================================
 # 🤖 WEBHOOK PRINCIPAL (EL CEREBRO DEL BOT Y CHAT)
 # ==========================================
-@router.post("/webhook/recibir")
-async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(get_db)):
+@webhook_router.post("/webhook/recibir")
+async def webhook_recibir_mensaje(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_webhook_secret),
+):
     datos = await request.json()
     
     telefono_busqueda = datos.get("telefono", "").strip() 
@@ -172,7 +346,8 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
         telefono=telefono_raw, 
         direccion="entrada",
         mensaje=texto_historial,
-        leido=False
+        leido=False,
+        estado_envio="recibido",
     )
     db.add(nuevo_mensaje)
     await db.commit()
@@ -332,8 +507,10 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
             cliente_final = (await db.execute(stmt_c)).scalars().first()
 
             if cliente_final:
-                stmt_f = select(FacturaModel).where(FacturaModel.cliente_id == cliente_final.id, FacturaModel.estado == "pendiente").order_by(FacturaModel.fecha_vencimiento.asc())
-                factura = (await db.execute(stmt_f)).scalars().first()
+                factura = await obtener_factura_cobrable(
+                    db,
+                    cliente_final.id,
+                )
 
                 if not factura:
                     res = "✅ No tienes facturas pendientes, tu servicio está al corriente."
@@ -366,26 +543,48 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
                     mes_objetivo = hoy.month
                     ano_objetivo = hoy.year
 
-                fecha_promesa = datetime(ano_objetivo, mes_objetivo, dia_ingresado).date()
-                fecha_con_gracia = fecha_promesa + timedelta(days=1)
+                fecha_promesa = datetime(
+                    ano_objetivo,
+                    mes_objetivo,
+                    dia_ingresado,
+                ).date()
 
                 cliente_final = await db.get(ClienteModel, estado["cliente_id"])
                 factura = await db.get(FacturaModel, estado["factura_id"])
 
-                factura.fecha_promesa_pago = fecha_con_gracia
-                factura.es_promesa_activa = True
-                
-                if cliente_final.estado == 'suspendido':
-                    cliente_final.estado = 'activo'
-                    billing_service = BillingService(db)
-                    await billing_service._reactivar_en_mikrotik(cliente_final)
-                
-                await db.commit()
-                res = f"✅ ¡Promesa registrada, {cliente_final.nombre}!\n\nTienes hasta el *{fecha_con_gracia.strftime('%d/%m/%Y')}* para realizar tu pago (incluye 1 día de gracia).\nTu servicio ha sido reactivado. 🚀"
+                (
+                    promesa,
+                    factura,
+                    cliente_final,
+                    politica,
+                    reactivado,
+                ) = (
+                    await BillingService(db).registrar_promesa_y_reactivar(
+                        factura.id,
+                        fecha_promesa,
+                        usuario_id=None,
+                        notas="Registrada por autoservicio de WhatsApp",
+                        enviar_notificaciones=False,
+                    )
+                )
+
+                mensaje_reconexion = (
+                    "\nTu servicio ha sido reactivado. 🚀"
+                    if reactivado
+                    else ""
+                )
+                res = (
+                    f"✅ ¡Promesa registrada, {cliente_final.nombre}!\n\n"
+                    f"Tienes hasta el "
+                    f"*{fecha_promesa.strftime('%d/%m/%Y')}* "
+                    f"para realizar tu pago. El corte se aplicará al día "
+                    f"siguiente si continúa pendiente.{mensaje_reconexion}"
+                )
                 del bot_memory[telefono_raw]
 
-            except ValueError:
-                res = "❌ Día no válido. Escribe solamente el número del día (del 1 al 31) o escribe 'cancelar'."
+            except ValueError as exc:
+                await db.rollback()
+                res = f"❌ No fue posible registrar la promesa: {exc}"
 
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "promesa_finalizada"}
@@ -399,7 +598,60 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
             if cliente_final:
                 nombre_plan = cliente_final.plan.nombre if cliente_final.plan else "Sin plan"
                 megas_bajada = (cliente_final.plan.velocidad_bajada / 1024) if cliente_final.plan else 0
-                estado_str = "🟢 ACTIVO" if cliente_final.estado == "activo" else "🔴 SUSPENDIDO"
+                etiquetas_estado = {
+                    "activo": "🟢 ACTIVO",
+                    "suspendido": "🔴 SUSPENDIDO",
+                    "pendiente_instalacion": "🟡 PENDIENTE DE INSTALACIÓN",
+                    "cancelado": "⚫ CANCELADO",
+                    "retirado": "⚫ RETIRADO",
+                }
+                estado_str = etiquetas_estado.get(
+                    cliente_final.estado,
+                    f"🟠 {cliente_final.estado.upper()}",
+                )
+
+                facturas_abiertas = (
+                    await db.execute(
+                        select(FacturaModel)
+                        .where(
+                            FacturaModel.cliente_id == cliente_final.id,
+                            FacturaModel.estado.in_(
+                                ["pendiente", "vencida"]
+                            ),
+                            FacturaModel.saldo_pendiente > 0,
+                        )
+                        .order_by(FacturaModel.fecha_vencimiento.asc())
+                    )
+                ).scalars().all()
+                deuda_total = sum(
+                    (
+                        Decimal(factura.saldo_pendiente or 0)
+                        for factura in facturas_abiertas
+                    ),
+                    Decimal("0.00"),
+                )
+
+                siguiente = (
+                    facturas_abiertas[0]
+                    if facturas_abiertas
+                    else None
+                )
+                if (
+                    siguiente
+                    and siguiente.es_promesa_activa
+                    and siguiente.fecha_promesa_pago
+                ):
+                    fecha_financiera = (
+                        "Promesa vigente hasta "
+                        f"{siguiente.fecha_promesa_pago.strftime('%d/%m/%Y')}"
+                    )
+                elif siguiente and siguiente.fecha_vencimiento:
+                    fecha_financiera = (
+                        "Vencimiento más próximo: "
+                        f"{siguiente.fecha_vencimiento.strftime('%d/%m/%Y')}"
+                    )
+                else:
+                    fecha_financiera = "Sin pagos pendientes"
                 
                 res = (
                     f"📊 *ESTADO DE TU SERVICIO*\n\n"
@@ -407,7 +659,9 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
                     f"📡 *Plan actual:* {nombre_plan} ({int(megas_bajada)} Mbps)\n"
                     f"🌐 *IP:* {cliente_final.ip_asignada or 'Dinámica'}\n"
                     f"🔌 *Estado:* {estado_str}\n"
-                    f"💰 *Saldo a favor:* ${cliente_final.saldo_a_favor}\n\n"
+                    f"💳 *Saldo pendiente:* ${deuda_total:.2f}\n"
+                    f"📅 *Cobranza:* {fecha_financiera}\n"
+                    f"💰 *Saldo a favor:* ${Decimal(cliente_final.saldo_a_favor or 0):.2f}\n\n"
                     f"Para volver al menú escribe *fdezpay*."
                 )
                 del bot_memory[telefono_raw]
@@ -419,26 +673,184 @@ async def webhook_recibir_mensaje(request: Request, db: AsyncSession = Depends(g
 
     return {"status": "chat_normal"}
 
-@router.post("/webhook/ack")
-async def webhook_actualizar_ack(data: AckWebhookRequest, db: AsyncSession = Depends(get_db)):
-    stmt = select(MensajeChatModel).where(MensajeChatModel.wa_id == data.wa_id)
-    mensaje = (await db.execute(stmt)).scalar_one_or_none()
-    
+@webhook_router.post("/webhook/ack")
+async def webhook_actualizar_ack(
+    data: AckWebhookRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_webhook_secret),
+):
+    mensaje = await WhatsAppOutboxService(db).actualizar_ack(
+        ack=data.ack,
+        wa_id=data.wa_id,
+        mensaje_chat_id=data.mensaje_chat_id,
+    )
     if mensaje:
-        mensaje.ack = data.ack
-        await db.commit()
         await manager.broadcast({
             "type": "MESSAGE_ACK",
-            "data": {"wa_id": data.wa_id, "ack": data.ack, "cliente_id": mensaje.cliente_id}
+            "data": {
+                "id": mensaje.id,
+                "wa_id": mensaje.wa_id,
+                "ack": mensaje.ack,
+                "estado_envio": mensaje.estado_envio,
+                "cliente_id": mensaje.cliente_id,
+            },
         })
     return {"status": "ok"}
+
+
+# ==========================================
+# 📤 BANDEJA OPERATIVA DE SALIDA
+# ==========================================
+def serializar_salida(mensaje: MensajeChatModel):
+    return {
+        "id": mensaje.id,
+        "cliente_id": mensaje.cliente_id,
+        "cliente": (
+            {
+                "id": mensaje.cliente.id,
+                "nombre": mensaje.cliente.nombre,
+            }
+            if mensaje.cliente
+            else None
+        ),
+        "telefono": mensaje.telefono,
+        "mensaje": mensaje.mensaje,
+        "tipo_mensaje": mensaje.tipo_mensaje,
+        "tipo_evento": mensaje.tipo_evento,
+        "lote_id": mensaje.lote_id,
+        "estado_envio": mensaje.estado_envio,
+        "ack": mensaje.ack,
+        "wa_id": mensaje.wa_id,
+        "intentos": mensaje.intentos,
+        "max_intentos": mensaje.max_intentos,
+        "reintentos_manuales": mensaje.reintentos_manuales,
+        "ultimo_error": mensaje.ultimo_error,
+        "fecha": mensaje.fecha,
+        "ultima_tentativa_en": mensaje.ultima_tentativa_en,
+        "proximo_intento_en": mensaje.proximo_intento_en,
+        "enviado_en": mensaje.enviado_en,
+        "entregado_en": mensaje.entregado_en,
+        "leido_en": mensaje.leido_en,
+        "ruta_archivo": mensaje.ruta_archivo,
+        "creado_por": (
+            {
+                "id": mensaje.creado_por.id,
+                "nombre": mensaje.creado_por.nombre_completo,
+            }
+            if mensaje.creado_por
+            else None
+        ),
+        "ultimo_reintento_por": (
+            {
+                "id": mensaje.ultimo_reintento_por.id,
+                "nombre": mensaje.ultimo_reintento_por.nombre_completo,
+            }
+            if mensaje.ultimo_reintento_por
+            else None
+        ),
+    }
+
+
+@router.get("/salidas")
+async def listar_salidas_whatsapp(
+    estado: Optional[str] = None,
+    tipo_evento: Optional[str] = None,
+    cliente_id: Optional[int] = None,
+    busqueda: Optional[str] = None,
+    desde: Optional[date] = None,
+    hasta: Optional[date] = None,
+    lote_id: Optional[str] = None,
+    pagina: int = 1,
+    limite: int = 50,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    if pagina < 1 or limite < 1 or limite > 200:
+        raise HTTPException(400, "Paginación inválida")
+    if estado and estado not in ESTADOS_SALIDA:
+        raise HTTPException(400, "Estado de envío inválido")
+    if desde and hasta and hasta < desde:
+        raise HTTPException(400, "La fecha final no puede ser anterior")
+    try:
+        items, total, resumen = await WhatsAppOutboxService(db).listar(
+            estado=estado,
+            tipo_evento=tipo_evento,
+            cliente_id=cliente_id,
+            busqueda=busqueda,
+            desde=desde,
+            hasta=hasta,
+            lote_id=lote_id,
+            pagina=pagina,
+            limite=limite,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "items": [serializar_salida(item) for item in items],
+        "total": total,
+        "pagina": pagina,
+        "limite": limite,
+        "resumen": resumen,
+        "cola_memoria": whatsapp_queue.queue.qsize(),
+    }
+
+
+@router.post("/salidas/reintentar-fallidos")
+async def reintentar_salidas_fallidas(
+    datos: ReintentoMasivoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    ids = await WhatsAppOutboxService(db).reintentar_lote(
+        current_user,
+        ids=datos.ids,
+        limite=datos.limite,
+    )
+    return {
+        "status": "encolados",
+        "total": len(ids),
+        "ids": ids,
+    }
+
+
+@router.get("/salidas/{mensaje_id}")
+async def obtener_salida_whatsapp(
+    mensaje_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    try:
+        registro = await WhatsAppOutboxService(db).obtener(mensaje_id)
+        return serializar_salida(registro)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/salidas/{mensaje_id}/reintentar")
+async def reintentar_salida_whatsapp(
+    mensaje_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    try:
+        registro = await WhatsAppOutboxService(db).reintentar(
+            mensaje_id,
+            current_user,
+        )
+        return serializar_salida(registro)
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(409, str(exc)) from exc
 
 
 # ==========================================
 # 💬 ENDPOINTS DEL CHAT CRM (REACT)
 # ==========================================
 @router.get("/no-leidos")
-async def obtener_no_leidos(db: AsyncSession = Depends(get_db)):
+async def obtener_no_leidos(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
     stmt = select(
         MensajeChatModel.cliente_id, 
         func.count(MensajeChatModel.id),
@@ -456,7 +868,17 @@ async def obtener_no_leidos(db: AsyncSession = Depends(get_db)):
     }
 
 @router.get("/chat/{cliente_id}")
-async def obtener_historial_chat(cliente_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_historial_chat(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    try:
+        await verificar_acceso_cliente(db, current_user, cliente_id)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     stmt = select(MensajeChatModel).where(MensajeChatModel.cliente_id == cliente_id).order_by(MensajeChatModel.fecha.asc())
     mensajes = (await db.execute(stmt)).scalars().all()
 
@@ -467,7 +889,18 @@ async def obtener_historial_chat(cliente_id: int, db: AsyncSession = Depends(get
     return mensajes
 
 @router.post("/chat/{cliente_id}/enviar")
-async def enviar_mensaje_chat(cliente_id: int, data: MensajeEnviarRequest, db: AsyncSession = Depends(get_db)):
+async def enviar_mensaje_chat(
+    cliente_id: int,
+    data: MensajeEnviarRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    try:
+        await verificar_acceso_cliente(db, current_user, cliente_id)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     cliente = await db.get(ClienteModel, cliente_id)
     if not cliente or not cliente.telefono: raise HTTPException(status_code=404, detail="Cliente no encontrado")
 
@@ -476,25 +909,54 @@ async def enviar_mensaje_chat(cliente_id: int, data: MensajeEnviarRequest, db: A
     elif len(telefono_limpio) == 12 and telefono_limpio.startswith("52"): telefono_limpio = f"521{telefono_limpio[2:]}"
 
     nuevo_mensaje = MensajeChatModel(
-        cliente_id=cliente.id, telefono=telefono_limpio, direccion="salida", mensaje=data.mensaje, leido=True, ack=0 
+        cliente_id=cliente.id,
+        telefono=telefono_limpio,
+        direccion="salida",
+        mensaje=data.mensaje,
+        tipo_mensaje="texto",
+        tipo_evento="chat_manual",
+        leido=True,
+        ack=0,
+        estado_envio="pendiente",
+        creado_por_id=current_user.id,
     )
     db.add(nuevo_mensaje)
     await db.commit()
     await db.refresh(nuevo_mensaje)
 
-    try:
-        # 🔥 CARRIL RÁPIDO PARA EL CHAT MANUAL DEL PANEL 🔥
-        wa_service = WhatsAppService()
-        exito = await wa_service.enviar_mensaje(telefono=telefono_limpio, mensaje=data.mensaje)
-        if exito:
-             # Aquí asumes que tu servicio puente regresará ok (node)
-             nuevo_mensaje.ack = 1 
-             await db.commit()
-    except Exception as e: print(f"❌ Error enviando mensaje instantáneo: {e}")
-    return {"status": "ok"}
+    await whatsapp_queue.agregar_tarea(
+        {
+            "mensaje_chat_id": nuevo_mensaje.id,
+            "intervalo": 0,
+        }
+    )
+    return {
+        "status": "encolado",
+        "mensaje_id": nuevo_mensaje.id,
+        "estado_envio": nuevo_mensaje.estado_envio,
+    }
 
-@router.websocket("/ws/{user_id}")
+@webhook_router.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    token = websocket.query_params.get("token", "")
+    try:
+        username = decode_access_token(token)
+        async with SessionLocal() as db:
+            result = await db.execute(
+                select(UsuarioModel).where(UsuarioModel.usuario == username)
+            )
+            user = result.scalar_one_or_none()
+            if (
+                not user
+                or not user.activo
+                or user.rol not in {"admin", "supervisor"}
+                or str(user.id) != str(user_id)
+            ):
+                raise ValueError("Usuario no autorizado")
+    except Exception:
+        await websocket.close(code=1008, reason="No autorizado")
+        return
+
     await manager.connect(websocket)
     try:
         while True:
@@ -507,28 +969,46 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 # ⚙️ CONTROL DEL MOTOR NODE.JS
 # ==========================================
 @router.get("/status")
-async def obtener_estado():
+async def obtener_estado(
+    current_user=Depends(role_required(["admin"])),
+):
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{BASE_NODE_URL}/status", timeout=5.0)
+            resp = await client.get(
+                f"{BASE_NODE_URL}/status",
+                headers=NODE_HEADERS,
+                timeout=5.0,
+            )
             return resp.json() 
     except Exception as e:
         return {"active": False, "connected": False, "qr": None}
 
 @router.post("/init")
-async def iniciar_whatsapp():
+async def iniciar_whatsapp(
+    current_user=Depends(role_required(["admin"])),
+):
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{BASE_NODE_URL}/init", timeout=15.0)
+            resp = await client.post(
+                f"{BASE_NODE_URL}/init",
+                headers=NODE_HEADERS,
+                timeout=15.0,
+            )
             return resp.json()
     except Exception as e:
         raise HTTPException(status_code=500, detail="No se pudo arrancar el motor de WhatsApp")
 
 @router.post("/logout")
-async def logout_whatsapp():
+async def logout_whatsapp(
+    current_user=Depends(role_required(["admin"])),
+):
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{BASE_NODE_URL}/logout", timeout=10.0)
+            resp = await client.post(
+                f"{BASE_NODE_URL}/logout",
+                headers=NODE_HEADERS,
+                timeout=10.0,
+            )
             return resp.json()
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error de comunicación con el motor")

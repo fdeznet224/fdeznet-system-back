@@ -10,9 +10,9 @@ class SNMPMonitorService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def _ejecutar_comando(self, cmd: str) -> str:
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
+    async def _ejecutar_comando(self, *args: str) -> str:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -21,13 +21,23 @@ class SNMPMonitorService:
         if stderr:
             err_msg = stderr.decode('utf-8').strip()
             if err_msg:
-                print(f"❌ [SISTEMA OS] Error ejecutando comando ({cmd}): {err_msg}")
+                print(
+                    "❌ [SISTEMA OS] Error ejecutando SNMP "
+                    f"({args[0]}): {err_msg}"
+                )
                 
         return stdout.decode('utf-8')
 
     async def _consulta_individual(self, ip: str, comm: str, oid: str) -> str:
-        cmd = f"/usr/bin/snmpget -v2c -c {comm} -On {ip} {oid}"
-        res = await self._ejecutar_comando(cmd)
+        res = await self._ejecutar_comando(
+            "/usr/bin/snmpget",
+            "-v2c",
+            "-c",
+            comm,
+            "-On",
+            ip,
+            oid,
+        )
         if "STRING:" in res.upper(): 
             return res.split('STRING:')[1].strip().replace('"', '')
         if "INTEGER:" in res.upper(): 
@@ -43,8 +53,15 @@ class SNMPMonitorService:
         tipo_tec = conf['TIPO']
         rama_walk = conf['RAMA_POTENCIA'] if tipo_tec == 'EPON' else conf['RAMA_IDS']
         
-        cmd_walk = f"/usr/bin/snmpwalk -v2c -c {comunidad} -On {ip} {rama_walk}"
-        res_walk = await self._ejecutar_comando(cmd_walk)
+        res_walk = await self._ejecutar_comando(
+            "/usr/bin/snmpwalk",
+            "-v2c",
+            "-c",
+            comunidad,
+            "-On",
+            ip,
+            rama_walk,
+        )
         
         reporte = []
         if not res_walk.strip(): return reporte
@@ -120,6 +137,25 @@ class SNMPMonitorService:
             if sn:
                 mapa_bd[sn] = c
 
+        def datos_cliente(cliente: ClienteModel):
+            """Datos de CRM incluidos en Radar para evitar cruces parciales."""
+            return {
+                "id_cliente": cliente.id,
+                "nombre": cliente.nombre,
+                "cedula": cliente.cedula,
+                "telefono": cliente.telefono,
+                "direccion": cliente.direccion,
+                "correo": cliente.correo,
+                "ip_asignada": cliente.ip_asignada,
+                "user_pppoe": cliente.user_pppoe,
+                "mac_address": cliente.mac_address,
+                "olt_id": cliente.olt_id,
+                "onu_id_inventario": cliente.onu_id,
+                "caja_nap_id": cliente.caja_nap_id,
+                "puerto_nap": cliente.puerto_nap,
+                "estado_fdeznet": cliente.estado,
+            }
+
         onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
 
         resultados = {
@@ -141,12 +177,10 @@ class SNMPMonitorService:
             if id_fisico in mapa_bd:
                 cliente_real = mapa_bd[id_fisico]
                 datos_cruzados = {
-                    "id_cliente": cliente_real.id,
-                    "nombre": cliente_real.nombre,
+                    **datos_cliente(cliente_real),
                     "identificador": id_fisico,
                     "rx_power": f"{onu['potencia']} dBm",
                     "estado_fisico": onu['status'],
-                    "estado_fdeznet": cliente_real.estado
                 }
 
                 if onu['status'] == "online":
@@ -166,12 +200,10 @@ class SNMPMonitorService:
         for id_bd, cliente in mapa_bd.items():
             if id_bd not in onus_encontradas:
                 resultados["clientes_caidos"].append({
-                    "id_cliente": cliente.id,
-                    "nombre": cliente.nombre,
+                    **datos_cliente(cliente),
                     "identificador": id_bd,
                     "rx_power": "LOS / Sin señal",
                     "estado_fisico": "offline",
-                    "estado_fdeznet": cliente.estado
                 })
                 resultados["resumen"]["caidos"] += 1
 
@@ -187,17 +219,33 @@ class SNMPMonitorService:
         
         if not cliente:
             raise ValueError("Cliente no encontrado.")
-            
-        sn_cliente = cliente.onu_asignada.identificador if cliente.onu_asignada else None
-        
-        if not cliente.olt_id or not sn_cliente:
-            raise ValueError("Al cliente le falta OLT o Identificador de ONU (SN).")
+        return await self.monitorear_objetivo(cliente)
 
-        olt = await self.db.get(OLTModel, cliente.olt_id)
+    async def monitorear_objetivo(self, objetivo):
+        """Consulta la ONU del cliente legado o de un servicio concreto."""
+        onu = getattr(objetivo, "onu", None) or getattr(
+            objetivo,
+            "onu_asignada",
+            None,
+        )
+        sn_cliente = onu.identificador if onu else None
+        if not objetivo.olt_id or not sn_cliente:
+            raise ValueError(
+                "Al servicio le falta OLT o Identificador de ONU (SN)."
+            )
+        olt = await self.db.get(OLTModel, objetivo.olt_id)
+        if not olt:
+            raise ValueError("La OLT asignada no existe.")
         
         onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
 
         id_buscado = sn_cliente.upper().strip()
+        cliente = getattr(objetivo, "cliente", None) or objetivo
+        servicio_id = (
+            objetivo.id
+            if getattr(objetivo, "cliente_id", None) is not None
+            else None
+        )
         
         for onu in onus_fisicas:
             if onu["identificador"] == id_buscado:
@@ -215,6 +263,7 @@ class SNMPMonitorService:
 
                 return {
                     "cliente_id": cliente.id,
+                    "servicio_id": servicio_id,
                     "nombre": cliente.nombre,
                     "identificador": id_buscado,
                     "potencia": f"{onu['potencia']} dBm",
@@ -225,6 +274,7 @@ class SNMPMonitorService:
 
         return {
             "cliente_id": cliente.id,
+            "servicio_id": servicio_id,
             "nombre": cliente.nombre,
             "identificador": id_buscado,
             "potencia": "LOS / Sin señal",
