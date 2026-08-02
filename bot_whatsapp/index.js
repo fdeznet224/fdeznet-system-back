@@ -325,13 +325,20 @@ app.post('/enviar-mensaje', async (req, res) => {
                 } else {
                     response = await client.sendMessage(chatId, mensaje);
                 }
+                // whatsapp-web.js puede devolver el identificador serializado
+                // en distintas formas según la versión. El envío ya ocurrió;
+                // nunca debemos convertirlo en HTTP 500 por leer id.id.
+                const waId = response?.id?.id
+                    || response?.id?._serialized
+                    || response?.id?.serialized
+                    || null;
                 const resultado = {
                     status: 'sent',
-                    wa_id: response.id.id,
+                    wa_id: waId,
                     mensaje_chat_id: mensajeChatId || null
                 };
-                if (mensajeChatId) {
-                    backendIdPorWaId.set(response.id.id, Number(mensajeChatId));
+                if (mensajeChatId && waId) {
+                    backendIdPorWaId.set(waId, Number(mensajeChatId));
                 }
                 return resultado;
             })();

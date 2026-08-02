@@ -140,7 +140,6 @@ def renderizar_mensaje_campana(
         "nombre": nombre,
         "cliente": nombre,
         "nombre_completo": nombre,
-        "nombre_pila": partes[0] if partes else nombre,
         "apellido": " ".join(partes[1:]) if len(partes) > 1 else "",
         "telefono": numero or "",
         "cedula": getattr(cliente, "cedula", None) or "",
