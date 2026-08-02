@@ -27,6 +27,39 @@ class FTTHService:
         if not caja:
             raise ValueError("La caja NAP no existe")
 
+        # La relación comercial es la fuente de verdad. Los servicios nuevos
+        # pueden tener caja/puerto asignados aunque el registro físico del
+        # puerto todavía conserve estado "libre".
+        servicios = (
+            await self.db.execute(
+                select(ServicioModel).where(
+                    ServicioModel.caja_nap_id == caja.id,
+                    ServicioModel.puerto_nap.isnot(None),
+                    ServicioModel.estado != "cancelado",
+                )
+            )
+        ).scalars().all()
+        clientes = (
+            await self.db.execute(
+                select(ClienteModel).where(
+                    ClienteModel.caja_nap_id == caja.id,
+                    ClienteModel.puerto_nap.isnot(None),
+                )
+            )
+        ).scalars().all()
+
+        ocupantes = {}
+        for servicio in servicios:
+            ocupantes.setdefault(
+                servicio.puerto_nap,
+                (servicio.id, servicio.cliente_id),
+            )
+        for cliente in clientes:
+            ocupantes.setdefault(
+                cliente.puerto_nap,
+                (None, cliente.id),
+            )
+
         existentes = set(
             (
                 await self.db.execute(
@@ -45,6 +78,25 @@ class FTTHService:
                         estado="libre",
                     )
                 )
+
+        puertos = (
+            await self.db.execute(
+                select(PuertoNapModel).where(
+                    PuertoNapModel.caja_nap_id == caja.id
+                )
+            )
+        ).scalars().all()
+        for puerto in puertos:
+            ocupante = ocupantes.get(puerto.numero)
+            if ocupante:
+                puerto.estado = "ocupado"
+                puerto.servicio_id, puerto.cliente_id = ocupante
+            elif puerto.estado == "ocupado":
+                # El cliente/servicio ya no apunta a este puerto: no dejamos
+                # ocupaciones fantasma en tarjetas ni mapas.
+                puerto.estado = "libre"
+                puerto.servicio_id = None
+                puerto.cliente_id = None
         await self.db.flush()
 
     async def listar_puertos(self, caja_nap_id: int):
