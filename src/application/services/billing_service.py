@@ -29,6 +29,23 @@ from src.application.services.billing_calendar_service import (
 )
 from src.application.services.finance_service import FinanceService
 
+
+MESES_EN_ESPANOL = (
+    "Enero",
+    "Febrero",
+    "Marzo",
+    "Abril",
+    "Mayo",
+    "Junio",
+    "Julio",
+    "Agosto",
+    "Septiembre",
+    "Octubre",
+    "Noviembre",
+    "Diciembre",
+)
+
+
 class BillingService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -154,7 +171,10 @@ class BillingService:
                 )
             else:
                 if periodo.periodo_desde.day == 1:
-                    mes_actual_str = periodo.periodo_desde.strftime("%B %Y").capitalize()
+                    mes_actual_str = (
+                        f"{MESES_EN_ESPANOL[periodo.periodo_desde.month - 1]} "
+                        f"{periodo.periodo_desde.year}"
+                    )
                 else:
                     mes_actual_str = f"Ciclo {periodo.periodo_desde.strftime('%d/%m/%Y')} - {periodo.periodo_hasta.strftime('%d/%m/%Y')}"
                 detalles = (
