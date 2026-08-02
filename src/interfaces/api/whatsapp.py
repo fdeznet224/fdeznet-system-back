@@ -86,10 +86,20 @@ class Destinatario(BaseModel):
     nombre: str = Field(min_length=1, max_length=150)
 
 class CampanaMasiva(BaseModel):
-    clientes: List[Destinatario]
-    mensaje: str
+    clientes: Optional[List[Destinatario]] = None
+    zona_id: Optional[int] = Field(default=None, gt=0)
+    router_id: Optional[int] = Field(default=None, gt=0)
+    mensaje: str = Field(min_length=1, max_length=10000)
     ruta_archivo: Optional[str] = None
-    intervalo_segundos: int = 0  
+    intervalo_segundos: int = Field(default=0, ge=0, le=3600)
+
+    @model_validator(mode="after")
+    def validar_destino(self):
+        if not self.clientes and not self.zona_id and not self.router_id:
+            raise ValueError("Selecciona una zona o router para la campaña")
+        if self.clientes and (self.zona_id or self.router_id):
+            raise ValueError("Usa clientes o un filtro de zona/router, no ambos")
+        return self
 
 class MensajeEnviarRequest(BaseModel):
     mensaje: str = Field(min_length=1, max_length=10000)
@@ -261,16 +271,73 @@ async def enviar_campana(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(role_required(["admin", "supervisor"])),
 ):
-    if not datos.clientes: raise HTTPException(status_code=400, detail="Lista vacía")
-    intervalo_final = datos.intervalo_segundos if datos.intervalo_segundos > 0 else GLOBAL_SETTINGS["intervalo_default"]
+    intervalo_final = (
+        datos.intervalo_segundos
+        if datos.intervalo_segundos > 0
+        else GLOBAL_SETTINGS["intervalo_default"]
+    )
     lote_id = str(uuid4())
     registros = []
-    for cliente in datos.clientes:
-        texto = datos.mensaje.replace("{nombre}", cliente.nombre)
+
+    if datos.clientes:
+        destinatarios = [
+            (None, cliente.numero, cliente.nombre)
+            for cliente in datos.clientes
+        ]
+    else:
+        allowed_router_ids = (
+            [router.id for router in current_user.routers_asignados]
+            if current_user.rol != "admin"
+            else None
+        )
+        if allowed_router_ids == []:
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes routers asignados para esta campaña",
+            )
+        if (
+            datos.router_id
+            and allowed_router_ids is not None
+            and datos.router_id not in allowed_router_ids
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes acceso a ese router",
+            )
+
+        filtros = [
+            ClienteModel.telefono.isnot(None),
+            ClienteModel.telefono != "",
+        ]
+        if datos.zona_id:
+            filtros.append(ClienteModel.zona_id == datos.zona_id)
+        if datos.router_id:
+            filtros.append(ClienteModel.router_id == datos.router_id)
+        if allowed_router_ids is not None:
+            filtros.append(ClienteModel.router_id.in_(allowed_router_ids))
+        clientes_db = (
+            await db.execute(
+                select(ClienteModel)
+                .where(*filtros)
+                .order_by(ClienteModel.id.asc())
+            )
+        ).scalars().all()
+        if not clientes_db:
+            raise HTTPException(
+                status_code=404,
+                detail="No hay clientes con teléfono en el filtro seleccionado",
+            )
+        destinatarios = [
+            (cliente.id, cliente.telefono, cliente.nombre)
+            for cliente in clientes_db
+        ]
+
+    for cliente_id, numero, nombre in destinatarios:
+        texto = datos.mensaje.replace("{nombre}", nombre)
         registro = MensajeChatModel(
-            cliente_id=None,
+            cliente_id=cliente_id,
             telefono=whatsapp_queue.service._formatear_numero(
-                cliente.numero
+                numero
             ),
             direccion="salida",
             mensaje=texto,
@@ -284,6 +351,7 @@ async def enviar_campana(
             ruta_archivo=datos.ruta_archivo,
             lote_id=lote_id,
             creado_por_id=current_user.id,
+            intervalo_salida=intervalo_final,
         )
         db.add(registro)
         registros.append(registro)
@@ -299,6 +367,7 @@ async def enviar_campana(
         "status": "procesando",
         "lote_id": lote_id,
         "total_mensajes": len(registros),
+        "intervalo_segundos": intervalo_final,
     }
 
 
@@ -718,6 +787,7 @@ def serializar_salida(mensaje: MensajeChatModel):
         "tipo_mensaje": mensaje.tipo_mensaje,
         "tipo_evento": mensaje.tipo_evento,
         "lote_id": mensaje.lote_id,
+        "intervalo_salida": mensaje.intervalo_salida,
         "estado_envio": mensaje.estado_envio,
         "ack": mensaje.ack,
         "wa_id": mensaje.wa_id,
@@ -838,6 +908,20 @@ async def reintentar_salida_whatsapp(
             current_user,
         )
         return serializar_salida(registro)
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.delete("/salidas/{mensaje_id}")
+async def eliminar_salida_whatsapp(
+    mensaje_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    try:
+        await WhatsAppOutboxService(db).eliminar(mensaje_id)
+        return {"status": "eliminado", "id": mensaje_id}
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(409, str(exc)) from exc

@@ -1541,6 +1541,9 @@ class MensajeChatModel(Base):
         default="pendiente",
         server_default="pendiente",
     )
+    # Intervalo individual para campañas y envíos masivos. NULL usa la
+    # configuración global; persistirlo evita perder el ritmo al reiniciar.
+    intervalo_salida = Column(Integer, nullable=True)
     intentos = Column(Integer, nullable=False, default=0, server_default="0")
     max_intentos = Column(
         Integer,

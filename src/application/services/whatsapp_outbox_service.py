@@ -24,6 +24,7 @@ ESTADOS_SALIDA = {
     "leido",
     "fallido",
     "incierto",
+    "eliminado",
 }
 ESTADOS_REENVIABLES = {"fallido", "incierto"}
 
@@ -51,7 +52,10 @@ class WhatsAppOutboxService:
         hasta: Optional[date] = None,
         lote_id: Optional[str] = None,
     ):
-        filtros = [MensajeChatModel.direccion == "salida"]
+        filtros = [
+            MensajeChatModel.direccion == "salida",
+            MensajeChatModel.estado_envio != "eliminado",
+        ]
         if estado:
             if estado not in ESTADOS_SALIDA:
                 raise ValueError("Estado de envío inválido")
@@ -128,7 +132,10 @@ class WhatsAppOutboxService:
                     MensajeChatModel.estado_envio,
                     func.count(MensajeChatModel.id),
                 )
-                .where(MensajeChatModel.direccion == "salida")
+                .where(
+                    MensajeChatModel.direccion == "salida",
+                    MensajeChatModel.estado_envio != "eliminado",
+                )
                 .group_by(MensajeChatModel.estado_envio)
             )
         ).all()
@@ -148,6 +155,7 @@ class WhatsAppOutboxService:
                 self._consulta_base().where(
                     MensajeChatModel.id == mensaje_id,
                     MensajeChatModel.direccion == "salida",
+                    MensajeChatModel.estado_envio != "eliminado",
                 )
             )
         ).scalar_one_or_none()
@@ -180,6 +188,28 @@ class WhatsAppOutboxService:
             {"mensaje_chat_id": registro.id, "intervalo": 0}
         )
         return await self.obtener(registro.id)
+
+    async def eliminar(self, mensaje_id: int):
+        """Oculta una salida sin borrar su clave de deduplicación."""
+        registro = (
+            await self.db.execute(
+                select(MensajeChatModel)
+                .where(
+                    MensajeChatModel.id == mensaje_id,
+                    MensajeChatModel.direccion == "salida",
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not registro or registro.estado_envio == "eliminado":
+            raise ValueError("Mensaje de salida no encontrado")
+        if registro.estado_envio == "procesando":
+            raise ValueError("No se puede borrar un mensaje en proceso de envío")
+        registro.estado_envio = "eliminado"
+        registro.proximo_intento_en = None
+        registro.bloqueado_hasta = None
+        await self.db.commit()
+        return registro.id
 
     async def reintentar_lote(
         self,

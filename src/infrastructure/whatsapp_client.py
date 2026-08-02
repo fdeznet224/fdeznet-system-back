@@ -285,6 +285,7 @@ class WhatsAppQueue:
                     select(MensajeChatModel.id)
                     .where(
                         MensajeChatModel.direccion == "salida",
+                        MensajeChatModel.estado_envio != "eliminado",
                         MensajeChatModel.intentos
                         < MensajeChatModel.max_intentos,
                         or_(
@@ -375,17 +376,15 @@ class WhatsAppQueue:
                         async with self._processor_lock:
                             self._queued_ids.discard(mensaje_id)
 
-                intervalo_tarea = tarea.get("intervalo", 0)
+                intervalo_tarea = datos.get(
+                    "intervalo",
+                    tarea.get("intervalo", 0),
+                ) if datos else tarea.get("intervalo", 0)
                 wait_time = (
                     intervalo_tarea
                     if intervalo_tarea > 0
                     else GLOBAL_SETTINGS.get("intervalo_default", 60)
                 )
-                if not resultado or not resultado.get("ok"):
-                    # Si no salió ningún mensaje no consumimos el intervalo
-                    # anti-ban completo y la cola puede registrar pronto los
-                    # demás fallos mientras el puente está caído.
-                    wait_time = min(wait_time, 2)
                 logger.info(
                     "⏳ Control anti-bloqueo: siguiente salida en %s segundos",
                     wait_time,
@@ -414,6 +413,8 @@ class WhatsAppQueue:
             ).scalar_one_or_none()
             if not registro or registro.direccion != "salida":
                 return None
+            if registro.estado_envio == "eliminado":
+                return None
             if registro.estado_envio in ESTADOS_FINALES:
                 return None
             if (
@@ -435,6 +436,11 @@ class WhatsAppQueue:
                 "numero": registro.telefono,
                 "mensaje": registro.mensaje,
                 "ruta": registro.ruta_archivo,
+                "intervalo": (
+                    registro.intervalo_salida
+                    if registro.intervalo_salida and registro.intervalo_salida > 0
+                    else GLOBAL_SETTINGS.get("intervalo_default", 60)
+                ),
             }
 
     async def _actualizar_registro(self, mensaje_id, resultado):
@@ -447,7 +453,7 @@ class WhatsAppQueue:
             try:
                 async with SessionLocal() as db:
                     registro = await db.get(MensajeChatModel, mensaje_id)
-                    if registro:
+                    if registro and registro.estado_envio != "eliminado":
                         ahora = datetime.now()
                         registro.bloqueado_hasta = None
                         if resultado["ok"]:
