@@ -96,7 +96,10 @@ class ClientService:
             user_pppoe=cliente.user_pppoe,
             pass_pppoe=cliente.pass_pppoe,
             is_online=cliente.is_online,
-            ultimo_cambio_estado=cliente.ultimo_cambio_estado,
+            # El cliente recién creado todavía puede tener este atributo
+            # expirado por el valor generado por la BD. No se debe provocar
+            # una carga lazy desde AsyncSession durante el alta.
+            ultimo_cambio_estado=None,
             tipo_facturacion=TipoFacturacion.prepago,
             ciclo_facturacion=CicloFacturacion.calendario,
             meses_gratis=1,
@@ -385,8 +388,11 @@ class ClientService:
             )
             # F. Guardamos permanentemente
             await self.db.commit()
-            await self.db.refresh(nuevo_cliente)
-            
+            # La sesión usa AsyncSession y el cliente recién creado ya tiene
+            # su identidad/valores sincronizados tras el commit. Un refresh
+            # completo aquí puede intentar cargar relaciones lazy fuera del
+            # contexto greenlet y provocar MissingGreenlet; el recargado
+            # explícito de abajo ya trae las relaciones necesarias.
             return await self._recargar_cliente(nuevo_cliente.id)
             
         except IntegrityError as e:

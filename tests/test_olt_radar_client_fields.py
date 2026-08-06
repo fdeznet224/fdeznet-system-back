@@ -118,3 +118,14 @@ def test_radar_snmp_incluye_datos_crm_en_cliente_detectado():
 
     assert result["resumen"]["activos"] == 1
     _assert_crm_fields(result["clientes_activos"][0])
+
+
+def test_radar_snmp_deduplica_serial_y_prefiere_registro_online():
+    onus = SNMPMonitorService._deduplicar_onus([
+        {"identificador": " onu-1 ", "potencia": "0.00", "status": "offline"},
+        {"identificador": "ONU-1", "potencia": "-21.4", "status": "online"},
+    ])
+
+    assert len(onus) == 1
+    assert onus[0]["identificador"] == "ONU-1"
+    assert onus[0]["status"] == "online"

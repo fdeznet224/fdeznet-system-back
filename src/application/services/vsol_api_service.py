@@ -355,7 +355,9 @@ class VsolApiService:
         if not olt:
             raise ValueError("OLT no encontrada.")
         auth, optical, status = await self._consultar_api(olt)
-        onus = self._unificar_onus(auth, optical, status)
+        onus = self._deduplicar_onus_por_serial(
+            self._unificar_onus(auth, optical, status)
+        )
         return {
             "olt_id": olt.id,
             "olt_nombre": olt.nombre,

@@ -51,6 +51,13 @@ class IPAMService:
             ServicioModel.ip_asignada.isnot(None),
             ServicioModel.estado != "cancelado",
         )
+        # Al editar/activar un cliente, su servicio principal puede contener
+        # la misma IP que el registro legado del cliente. Si solo se excluye
+        # el cliente, el IPAM interpreta ese propio servicio como un conflicto.
+        if excluir_cliente_id is not None:
+            stmt_servicios = stmt_servicios.where(
+                ServicioModel.cliente_id != excluir_cliente_id,
+            )
         if excluir_servicio_id is not None:
             stmt_servicios = stmt_servicios.where(
                 ServicioModel.id != excluir_servicio_id

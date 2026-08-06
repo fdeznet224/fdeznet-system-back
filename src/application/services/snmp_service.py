@@ -10,6 +10,29 @@ class SNMPMonitorService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    @staticmethod
+    def _deduplicar_onus(onus):
+        """Conserva un solo registro por serial, prefiriendo el más útil."""
+        mejores = {}
+        for onu in onus:
+            serial = str(onu.get("identificador") or "").strip().upper()
+            if not serial:
+                continue
+            potencia = None
+            try:
+                potencia = float(onu.get("potencia"))
+            except (TypeError, ValueError):
+                pass
+            candidato = (
+                1 if onu.get("status") == "online" else 0,
+                1 if potencia is not None else 0,
+                potencia if potencia is not None else -999.0,
+            )
+            actual = mejores.get(serial)
+            if actual is None or candidato > actual[0]:
+                mejores[serial] = (candidato, {**onu, "identificador": serial})
+        return [item[1] for item in mejores.values()]
+
     async def _ejecutar_comando(self, *args: str) -> str:
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -156,7 +179,9 @@ class SNMPMonitorService:
                 "estado_fdeznet": cliente.estado,
             }
 
-        onus_fisicas = await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
+        onus_fisicas = self._deduplicar_onus(
+            await self._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
+        )
 
         resultados = {
             "olt_nombre": olt.nombre,
