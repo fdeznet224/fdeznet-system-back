@@ -134,7 +134,7 @@ After=network.target mysql.service
 [Service]
 User=root
 WorkingDirectory=$APP_DIR/backend
-Environment="PATH=$APP_DIR/backend/venv/bin"
+Environment="PATH=$APP_DIR/backend/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ExecStart=$APP_DIR/backend/venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000
 Restart=always
 

@@ -45,11 +45,13 @@ async def eliminar_tunel(tunnel_id: int, db: AsyncSession = Depends(get_db)):
     try:
         # 1. Quitar el peer de Linux (Opcional, pero recomendado para mantener limpio wg0)
         service._ejecutar_comando([
-            "sudo", "wg", "set", service.WG_INTERFACE, 
+            service.SUDO_BIN, service.WG_BIN, "set", service.WG_INTERFACE,
             "peer", tunel.public_key, 
             "remove"
         ])
-        service._ejecutar_comando(["sudo", "wg-quick", "save", service.WG_INTERFACE])
+        service._ejecutar_comando([
+            service.SUDO_BIN, service.WG_QUICK_BIN, "save", service.WG_INTERFACE
+        ])
     except Exception as e:
         print(f"No se pudo remover el peer de Linux: {e}")
         # Seguimos adelante para borrarlo de la BD de todos modos

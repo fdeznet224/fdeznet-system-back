@@ -13,6 +13,9 @@ class VPNService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.WG_INTERFACE = os.getenv("WG_INTERFACE", "wg0")
+        self.WG_BIN = os.getenv("WG_BIN", "/usr/bin/wg")
+        self.WG_QUICK_BIN = os.getenv("WG_QUICK_BIN", "/usr/bin/wg-quick")
+        self.SUDO_BIN = os.getenv("SUDO_BIN", "/usr/bin/sudo")
         self.SERVER_PORT = int(os.getenv("WG_PORT", 51820))
         self.VPN_SUBNET_BASE = "10.8.0."
         
@@ -36,13 +39,13 @@ class VPNService:
         """Extrae la llave pública directamente de WireGuard en Linux"""
         try:
             # Intento 1: Preguntarle al motor de WireGuard activo
-            comando = ["sudo", "wg", "show", self.WG_INTERFACE, "public-key"]
+            comando = [self.SUDO_BIN, self.WG_BIN, "show", self.WG_INTERFACE, "public-key"]
             res = subprocess.check_output(comando, stderr=subprocess.DEVNULL)
             return res.decode('utf-8').strip()
         except Exception:
             try:
                 # Intento 2: Si el servicio está apagado, lee el archivo físico
-                with open('/etc/wireguard/publickey', 'r') as f:
+                with open('/etc/wireguard/server_public.key', 'r') as f:
                     return f.read().strip()
             except Exception:
                 print("⚠️ Aviso: No se encontró la llave pública de WireGuard. ¿Está instalado?")
@@ -58,6 +61,11 @@ class VPNService:
             return res.decode('utf-8').strip()
         except subprocess.CalledProcessError as e:
             raise ValueError(f"Error ejecutando comando VPN: {e}")
+        except FileNotFoundError as e:
+            raise ValueError(
+                f"No se encontró el ejecutable VPN '{e.filename}'. "
+                "Instala WireGuard en la VPS (apt install wireguard) y reinicia el backend."
+            ) from e
 
     async def obtener_siguiente_ip(self) -> str:
         """Busca en la tabla vpn_tunnels la siguiente IP disponible"""
@@ -80,8 +88,8 @@ class VPNService:
         """Genera llaves, asigna IP, guarda en BD y registra en Linux"""
         
         # 1. Generar Llaves para el MikroTik
-        client_privkey = self._ejecutar_comando(["wg", "genkey"])
-        client_pubkey = self._ejecutar_comando(["wg", "pubkey"], input_str=client_privkey)
+        client_privkey = self._ejecutar_comando([self.WG_BIN, "genkey"])
+        client_pubkey = self._ejecutar_comando([self.WG_BIN, "pubkey"], input_str=client_privkey)
 
         # 2. Obtener IP libre
         client_ip = await self.obtener_siguiente_ip()
@@ -90,11 +98,11 @@ class VPNService:
         if self.SERVER_PUBKEY != "ERROR_LLAVE_NO_ENCONTRADA":
             try:
                 self._ejecutar_comando([
-                    "sudo", "wg", "set", self.WG_INTERFACE, 
+                    self.SUDO_BIN, self.WG_BIN, "set", self.WG_INTERFACE,
                     "peer", client_pubkey, 
                     "allowed-ips", f"{client_ip}/32"
                 ])
-                self._ejecutar_comando(["sudo", "wg-quick", "save", self.WG_INTERFACE])
+                self._ejecutar_comando([self.SUDO_BIN, self.WG_QUICK_BIN, "save", self.WG_INTERFACE])
             except Exception as e:
                 print(f"⚠️ No se pudo registrar en Linux (¿Estás en local sin WireGuard?): {e}")
 
@@ -129,8 +137,8 @@ class VPNService:
         """Genera un archivo .conf y un Código QR para Celulares/PCs"""
         
         # 1. Generar Llaves para el Celular
-        client_privkey = self._ejecutar_comando(["wg", "genkey"])
-        client_pubkey = self._ejecutar_comando(["wg", "pubkey"], input_str=client_privkey)
+        client_privkey = self._ejecutar_comando([self.WG_BIN, "genkey"])
+        client_pubkey = self._ejecutar_comando([self.WG_BIN, "pubkey"], input_str=client_privkey)
 
         # 2. Obtener IP libre
         client_ip = await self.obtener_siguiente_ip()
@@ -139,11 +147,11 @@ class VPNService:
         if self.SERVER_PUBKEY != "ERROR_LLAVE_NO_ENCONTRADA":
             try:
                 self._ejecutar_comando([
-                    "sudo", "wg", "set", self.WG_INTERFACE, 
+                    self.SUDO_BIN, self.WG_BIN, "set", self.WG_INTERFACE,
                     "peer", client_pubkey, 
                     "allowed-ips", f"{client_ip}/32"
                 ])
-                self._ejecutar_comando(["sudo", "wg-quick", "save", self.WG_INTERFACE])
+                self._ejecutar_comando([self.SUDO_BIN, self.WG_QUICK_BIN, "save", self.WG_INTERFACE])
             except Exception as e:
                 print(f"⚠️ No se pudo registrar en Linux: {e}")
 
