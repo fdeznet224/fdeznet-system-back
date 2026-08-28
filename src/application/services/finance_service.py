@@ -3,7 +3,7 @@ from dateutil.relativedelta import relativedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import re
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infrastructure.models import (
@@ -13,6 +13,8 @@ from src.infrastructure.models import (
     PagoModel,
     PoliticaCobranzaModel,
     PromesaPagoHistorialModel,
+    ServicioModel,
+    SuspensionFacturacionModel,
 )
 
 
@@ -118,6 +120,17 @@ class FinanceService:
                 .with_for_update()
             )
         ).scalar_one()
+        servicio = (
+            await self.db.get(ServicioModel, factura.servicio_id)
+            if factura.servicio_id
+            else None
+        )
+        if servicio and servicio.estado == "suspendido":
+            await self.recalcular_factura_por_suspension(
+                factura,
+                servicio,
+                fecha_reactivacion=date.today(),
+            )
         deuda = self.dinero(factura.saldo_pendiente, permitir_cero=True)
         if deuda <= 0:
             raise ValueError("La factura no tiene saldo pendiente")
@@ -177,6 +190,132 @@ class FinanceService:
 
         return pago, factura, cliente, False
 
+    async def recalcular_factura_por_suspension(
+        self,
+        factura: FacturaModel,
+        servicio: ServicioModel,
+        *,
+        fecha_reactivacion: date | None = None,
+    ) -> FacturaModel:
+        """Descuenta únicamente días confirmados sin servicio.
+
+        Los días posteriores a ``fecha_reactivacion`` se mantienen cobrados
+        porque son servicio prepago que quedará habilitado al pagar o prometer.
+        """
+        if (
+            not factura.periodo_desde
+            or not factura.periodo_hasta
+            or not factura.dias_facturados
+            or not factura.precio_diario
+        ):
+            return factura
+
+        intervalos = (
+            await self.db.execute(
+                select(SuspensionFacturacionModel).where(
+                    SuspensionFacturacionModel.servicio_id == servicio.id,
+                    SuspensionFacturacionModel.fecha_inicio
+                    <= factura.periodo_hasta,
+                    or_(
+                        SuspensionFacturacionModel.fecha_fin.is_(None),
+                        SuspensionFacturacionModel.fecha_fin
+                        >= factura.periodo_desde,
+                    ),
+                )
+            )
+        ).scalars().all()
+
+        dias_suspendidos: set[date] = set()
+        fin_abierto = (fecha_reactivacion or date.today()) - timedelta(days=1)
+        for intervalo in intervalos:
+            desde = max(intervalo.fecha_inicio, factura.periodo_desde)
+            hasta = min(
+                intervalo.fecha_fin or fin_abierto,
+                factura.periodo_hasta,
+            )
+            while desde <= hasta:
+                dias_suspendidos.add(desde)
+                desde += timedelta(days=1)
+
+        dias_totales = int(factura.dias_facturados or 0)
+        dias_sin_servicio = min(dias_totales, len(dias_suspendidos))
+        dias_con_servicio = dias_totales - dias_sin_servicio
+
+        base_original = self.dinero(
+            factura.monto_servicio_original
+            if factura.monto_servicio_original is not None
+            else Decimal(factura.precio_diario) * Decimal(dias_totales),
+            permitir_cero=True,
+        )
+        impuesto_original = self.dinero(
+            factura.impuesto_servicio_original
+            if factura.impuesto_servicio_original is not None
+            else factura.impuesto or 0,
+            permitir_cero=True,
+        )
+        base_ajustada = self.dinero(
+            Decimal(factura.precio_diario) * Decimal(dias_con_servicio),
+            permitir_cero=True,
+        )
+        impuesto_ajustado = Decimal("0.00")
+        if base_original > 0 and impuesto_original > 0:
+            impuesto_ajustado = self.dinero(
+                impuesto_original * base_ajustada / base_original,
+                permitir_cero=True,
+            )
+
+        cargos = self.dinero(
+            factura.cargos_adicionales_total or 0,
+            permitir_cero=True,
+        )
+        total_nuevo = self.dinero(
+            base_ajustada + impuesto_ajustado + cargos,
+            permitir_cero=True,
+        )
+        aplicado = self.dinero(
+            (
+                await self.db.execute(
+                    select(func.coalesce(func.sum(PagoModel.monto_aplicado), 0)).where(
+                        PagoModel.factura_id == factura.id,
+                        PagoModel.estado == "aplicado",
+                    )
+                )
+            ).scalar_one(),
+            permitir_cero=True,
+        )
+        descuentos = self.dinero(
+            factura.descuento_total or 0,
+            permitir_cero=True,
+        )
+
+        factura.monto_servicio_original = base_original
+        factura.impuesto_servicio_original = impuesto_original
+        factura.dias_con_servicio = dias_con_servicio
+        factura.dias_sin_servicio = dias_sin_servicio
+        factura.ajuste_suspension = self.dinero(
+            (base_original + impuesto_original)
+            - (base_ajustada + impuesto_ajustado),
+            permitir_cero=True,
+        )
+        factura.monto = self.dinero(
+            base_ajustada + cargos,
+            permitir_cero=True,
+        )
+        factura.impuesto = impuesto_ajustado
+        factura.total = total_nuevo
+        factura.saldo_pendiente = max(
+            Decimal("0.00"),
+            total_nuevo - aplicado - descuentos,
+        ).quantize(CENTAVO)
+        if factura.saldo_pendiente > 0:
+            factura.estado = (
+                "vencida"
+                if factura.fecha_vencimiento
+                and factura.fecha_vencimiento < date.today()
+                else "pendiente"
+            )
+        return factura
+
     async def aplicar_descuento(
         self,
         factura_id: int,
@@ -230,6 +369,177 @@ class FinanceService:
         await self.db.commit()
         await self.db.refresh(registro)
         return registro, factura
+
+    async def registrar_cargo_adicional(
+        self,
+        *,
+        cliente_id: int,
+        servicio_id: int | None,
+        concepto: str,
+        monto,
+        descripcion: str | None,
+        fecha_vencimiento: date,
+        afecta_corte: bool,
+    ) -> tuple[FacturaModel, bool]:
+        """Agrega un cargo a una mensualidad abierta o crea una factura aparte.
+
+        Una factura con pagos aplicados no se modifica porque hacerlo rompería
+        los saldos históricos necesarios para poder anular esos pagos.
+        """
+        cargo = self.dinero(monto)
+        condiciones = [
+            FacturaModel.cliente_id == cliente_id,
+            FacturaModel.estado.in_(["pendiente", "vencida"]),
+            FacturaModel.tipo_factura.in_(["mensual", "prorrateo"]),
+        ]
+        if servicio_id is None:
+            condiciones.append(FacturaModel.servicio_id.is_(None))
+        else:
+            condiciones.append(FacturaModel.servicio_id == servicio_id)
+
+        candidatas = (
+            await self.db.execute(
+                select(FacturaModel)
+                .where(*condiciones)
+                .order_by(FacturaModel.fecha_vencimiento.desc(), FacturaModel.id.desc())
+                .with_for_update()
+            )
+        ).scalars().all()
+
+        for factura in candidatas:
+            pagos_aplicados = (
+                await self.db.execute(
+                    select(PagoModel.id)
+                    .where(
+                        PagoModel.factura_id == factura.id,
+                        PagoModel.estado == "aplicado",
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if pagos_aplicados is not None:
+                continue
+
+            factura.monto = self.dinero(
+                Decimal(factura.monto or 0) + cargo
+            )
+            factura.total = self.dinero(
+                Decimal(factura.total or 0) + cargo
+            )
+            factura.saldo_pendiente = self.dinero(
+                Decimal(factura.saldo_pendiente or 0) + cargo
+            )
+            factura.cargos_adicionales_total = self.dinero(
+                Decimal(factura.cargos_adicionales_total or 0) + cargo
+            )
+            detalle_cargo = f"Cargo adicional - {concepto.strip()}"
+            if descripcion and descripcion.strip():
+                detalle_cargo += f": {descripcion.strip()}"
+            factura.detalles = "\n".join(
+                parte for parte in [factura.detalles, detalle_cargo] if parte
+            )
+            await self.db.commit()
+            await self.db.refresh(factura)
+            return factura, True
+
+        factura = FacturaModel(
+            cliente_id=cliente_id,
+            servicio_id=servicio_id,
+            plan_snapshot="Cargo manual",
+            detalles=descripcion or concepto,
+            monto=cargo,
+            impuesto=Decimal("0.00"),
+            total=cargo,
+            saldo_pendiente=cargo,
+            fecha_emision=date.today(),
+            fecha_vencimiento=fecha_vencimiento,
+            fecha_limite_corte=fecha_vencimiento if afecta_corte else None,
+            mes_correspondiente=f"Cargo manual - {concepto}",
+            estado="pendiente",
+            periodo_desde=None,
+            periodo_hasta=None,
+            dias_facturados=1,
+            dias_periodo=1,
+            precio_mensual_snapshot=cargo,
+            precio_diario=cargo,
+            es_prorrateada=False,
+            tipo_factura="manual",
+            concepto=concepto,
+            descripcion=descripcion,
+            afecta_corte=afecta_corte,
+            creada_manual=True,
+            monto_servicio_original=Decimal("0.00"),
+            impuesto_servicio_original=Decimal("0.00"),
+            cargos_adicionales_total=cargo,
+            dias_con_servicio=0,
+            dias_sin_servicio=0,
+        )
+        self.db.add(factura)
+        await self.db.commit()
+        await self.db.refresh(factura)
+        return factura, False
+
+    async def anular_factura(
+        self,
+        factura_id: int,
+        usuario_id: int,
+        motivo: str,
+        nueva_fecha_facturacion: date | None = None,
+    ) -> tuple[FacturaModel, ServicioModel | None]:
+        factura = (
+            await self.db.execute(
+                select(FacturaModel)
+                .where(FacturaModel.id == factura_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not factura:
+            raise ValueError("Factura no encontrada")
+        if factura.estado == "anulada":
+            raise ValueError("La factura ya está anulada")
+        if len((motivo or "").strip()) < 5:
+            raise ValueError("Indica el motivo de la anulación")
+
+        pago_aplicado = (
+            await self.db.execute(
+                select(PagoModel.id)
+                .where(
+                    PagoModel.factura_id == factura.id,
+                    PagoModel.estado == "aplicado",
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if pago_aplicado is not None:
+            raise ValueError(
+                "La factura tiene pagos aplicados; anula primero sus pagos"
+            )
+
+        factura.saldo_antes_anulacion = self.dinero(
+            factura.saldo_pendiente,
+            permitir_cero=True,
+        )
+        factura.saldo_pendiente = Decimal("0.00")
+        factura.estado = "anulada"
+        factura.motivo_anulacion = motivo.strip()
+        factura.anulada_por_id = usuario_id
+        factura.fecha_anulacion = datetime.now()
+        factura.es_promesa_activa = False
+        await self._resolver_promesas(factura.id, "cancelada")
+
+        servicio = None
+        if (
+            factura.servicio_id
+            and factura.periodo_desde
+            and nueva_fecha_facturacion is not None
+        ):
+            servicio = await self.db.get(ServicioModel, factura.servicio_id)
+            if servicio and servicio.estado != "cancelado":
+                servicio.proxima_facturacion = nueva_fecha_facturacion
+
+        await self.db.commit()
+        await self.db.refresh(factura)
+        return factura, servicio
 
     async def anular_pago(
         self,

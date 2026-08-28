@@ -26,6 +26,21 @@ anularse por un administrador o supervisor mientras la caja siga abierta.
   y guarda motivo y autorización.
 - `POST /finanzas/pagos/{id}/anular` revierte únicamente el último pago aplicado.
   No permite alterar pagos de cajas cerradas ni crédito ya utilizado.
+- `POST /finanzas/facturas/{id}/anular` anula una factura sin borrar su
+  historial. Si tiene pagos aplicados, estos deben anularse primero. Para
+  cambiar el ciclo, se puede enviar `nueva_fecha_facturacion` después de
+  actualizar el día de pago de la plantilla.
+- `POST /finanzas/factura-manual` consolida el cargo en la mensualidad abierta
+  del mismo servicio siempre que todavía no tenga pagos aplicados; si no hay
+  una mensualidad segura para modificar, crea una factura de cargo separada.
+- `POST /finanzas/facturas/{id}/cotizar-reactivacion` recalcula una factura
+  prepago usando los días reales con servicio. Los intervalos suspendidos no
+  se cobran; una reactivación por promesa vuelve a contar como servicio desde
+  ese día y un incumplimiento abre un nuevo intervalo de suspensión.
+- Las mensualidades no se trasladan al ciclo siguiente: el cliente prepago
+  debe liquidar la factura recalculada antes de reactivarse. La próxima
+  mensualidad conserva su precio normal; únicamente los cargos adicionales
+  del mismo ciclo se suman a su factura abierta.
 
 ## Políticas y seguimiento
 

@@ -69,3 +69,16 @@ def test_cors_permite_cabeceras_del_cliente_axios():
         "pragma",
         "expires",
     } <= allowed_headers
+
+
+def test_finanzas_expone_anulacion_de_factura():
+    paths = app.openapi()["paths"]
+    assert "/finanzas/facturas/{factura_id}/anular" in paths
+    assert "post" in paths["/finanzas/facturas/{factura_id}/anular"]
+
+
+def test_finanzas_expone_cotizacion_de_reactivacion():
+    paths = app.openapi()["paths"]
+    ruta = "/finanzas/facturas/{factura_id}/cotizar-reactivacion"
+    assert ruta in paths
+    assert "post" in paths[ruta]

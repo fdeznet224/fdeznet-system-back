@@ -60,6 +60,10 @@ class MotivoRequest(BaseModel):
     motivo: str = Field(min_length=5, max_length=500)
 
 
+class AnularFacturaRequest(MotivoRequest):
+    nueva_fecha_facturacion: Optional[date] = None
+
+
 class DescuentoRequest(MotivoRequest):
     monto: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
 
@@ -216,14 +220,42 @@ async def get_listado_completo(
             "servicio_id": f.servicio_id,
             "estado": f.estado,
             "saldo_pendiente": f.saldo_pendiente,
+            "monto": f.monto,
+            "impuesto": f.impuesto,
             "tipo_factura": getattr(f, "tipo_factura", "mensual"),
             "concepto": getattr(f, "concepto", None),
             "descripcion": getattr(f, "descripcion", None),
             "afecta_corte": getattr(f, "afecta_corte", True),
             "creada_manual": getattr(f, "creada_manual", False),
+            "motivo_anulacion": getattr(f, "motivo_anulacion", None),
+            "fecha_anulacion": getattr(f, "fecha_anulacion", None),
+            "saldo_antes_anulacion": getattr(
+                f,
+                "saldo_antes_anulacion",
+                None,
+            ),
+            "monto_servicio_original": getattr(
+                f, "monto_servicio_original", None
+            ),
+            "cargos_adicionales_total": getattr(
+                f, "cargos_adicionales_total", 0
+            ),
+            "dias_con_servicio": getattr(f, "dias_con_servicio", None),
+            "dias_sin_servicio": getattr(f, "dias_sin_servicio", None),
+            "ajuste_suspension": getattr(f, "ajuste_suspension", 0),
             "total": f.total,
+            "detalles": f.detalles,
+            "mes_correspondiente": f.mes_correspondiente,
             "fecha_emision": f.fecha_emision,
             "fecha_vencimiento": f.fecha_vencimiento,
+            "fecha_limite_corte": f.fecha_limite_corte,
+            "periodo_desde": f.periodo_desde,
+            "periodo_hasta": f.periodo_hasta,
+            "dias_facturados": f.dias_facturados,
+            "dias_periodo": f.dias_periodo,
+            "es_prorrateada": f.es_prorrateada,
+            "tipo_facturacion_snapshot": f.tipo_facturacion_snapshot,
+            "ciclo_facturacion_snapshot": f.ciclo_facturacion_snapshot,
             "fecha_maxima_promesa": calcular_fecha_maxima_promesa(
                 f.fecha_vencimiento,
                 today,
@@ -461,50 +493,24 @@ async def crear_factura_manual(
                 "No tienes permiso para facturar este servicio",
             )
 
-    factura = FacturaModel(
+    factura, consolidada = await FinanceService(db).registrar_cargo_adicional(
         cliente_id=cliente.id,
         servicio_id=servicio.id if servicio else None,
-
-        plan_snapshot="Cargo manual",
-        detalles=data.descripcion or concepto,
-
-        monto=monto,
-        impuesto=Decimal("0.00"),
-        total=monto,
-        saldo_pendiente=monto,
-
-        fecha_emision=fecha_emision,
-        fecha_vencimiento=fecha_vencimiento,
-        fecha_limite_corte=fecha_vencimiento if data.afecta_corte else None,
-
-        mes_correspondiente=f"Cargo manual - {concepto}",
-        estado="pendiente",
-
-        # Los cargos manuales no representan un periodo mensual. Mantener
-        # ambos campos en NULL permite varios cargos distintos el mismo día
-        # sin chocar con la unicidad de facturación periódica por servicio.
-        periodo_desde=None,
-        periodo_hasta=None,
-        dias_facturados=1,
-        dias_periodo=1,
-        precio_mensual_snapshot=monto,
-        precio_diario=monto,
-        es_prorrateada=False,
-
-        tipo_factura="manual",
         concepto=concepto,
+        monto=monto,
         descripcion=data.descripcion,
+        fecha_vencimiento=fecha_vencimiento,
         afecta_corte=data.afecta_corte,
-        creada_manual=True,
     )
-
-    db.add(factura)
-    await db.commit()
-    await db.refresh(factura)
 
     return {
         "status": "ok",
-        "mensaje": "Factura manual creada correctamente",
+        "mensaje": (
+            "Cargo agregado a la factura mensual"
+            if consolidada
+            else "Factura manual creada correctamente"
+        ),
+        "consolidada": consolidada,
         "factura": {
             "id": factura.id,
             "cliente_id": cliente.id,
@@ -519,6 +525,75 @@ async def crear_factura_manual(
             "fecha_emision": factura.fecha_emision,
             "fecha_vencimiento": factura.fecha_vencimiento,
         },
+    }
+
+
+@router.post("/facturas/{factura_id}/anular")
+async def anular_factura(
+    factura_id: int,
+    data: AnularFacturaRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    try:
+        factura, servicio = await FinanceService(db).anular_factura(
+            factura_id=factura_id,
+            usuario_id=current_user.id,
+            motivo=data.motivo,
+            nueva_fecha_facturacion=data.nueva_fecha_facturacion,
+        )
+        return {
+            "status": "ok",
+            "mensaje": "Factura anulada correctamente",
+            "factura_id": factura.id,
+            "estado": factura.estado,
+            "saldo_pendiente": factura.saldo_pendiente,
+            "proxima_facturacion": (
+                servicio.proxima_facturacion if servicio else None
+            ),
+        }
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/facturas/{factura_id}/cotizar-reactivacion")
+async def cotizar_reactivacion(
+    factura_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    factura = await db.get(FacturaModel, factura_id)
+    if not factura:
+        raise HTTPException(404, "Factura no encontrada")
+    servicio = (
+        await db.get(ServicioModel, factura.servicio_id)
+        if factura.servicio_id
+        else None
+    )
+    if not servicio or servicio.estado != "suspendido":
+        raise HTTPException(400, "El servicio no está suspendido")
+
+    await FinanceService(db).recalcular_factura_por_suspension(
+        factura,
+        servicio,
+        fecha_reactivacion=date.today(),
+    )
+    await db.commit()
+    await db.refresh(factura)
+    return {
+        "status": "ok",
+        "factura_id": factura.id,
+        "dias_con_servicio": factura.dias_con_servicio,
+        "dias_sin_servicio": factura.dias_sin_servicio,
+        "ajuste_suspension": factura.ajuste_suspension,
+        "mensualidad_ajustada": (
+            Decimal(factura.monto or 0)
+            - Decimal(factura.cargos_adicionales_total or 0)
+        ),
+        "cargos_adicionales": factura.cargos_adicionales_total,
+        "total": factura.total,
+        "saldo_pendiente": factura.saldo_pendiente,
     }
 
 

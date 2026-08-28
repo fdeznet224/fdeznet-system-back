@@ -10,6 +10,7 @@ from src.infrastructure.models import (
     ClienteModel, FacturaModel, PagoModel, 
     UsuarioModel, PlanModel, RouterModel,
     ServicioModel,
+    SuspensionFacturacionModel,
 )
 
 # Servicios e Helpers
@@ -100,6 +101,7 @@ class BillingService:
             "omitidos_modalidad_pendiente": 0,
             "omitidos_no_toca_emitir": 0,
             "omitidos_factura_existente": 0,
+            "omitidos_periodo_anulado": 0,
         }
 
         for servicio in servicios:
@@ -160,7 +162,16 @@ class BillingService:
                     FacturaModel.periodo_hasta == periodo.periodo_hasta,
                 )
             )
-            if (await self.db.execute(stmt_dup)).scalars().first():
+            factura_existente = (
+                await self.db.execute(stmt_dup)
+            ).scalars().first()
+            if factura_existente:
+                if factura_existente.estado == "anulada":
+                    # Una anulación conserva el comprobante original. Para
+                    # reemitir se debe indicar una nueva fecha de facturación,
+                    # produciendo un periodo distinto y auditable.
+                    reporte["omitidos_periodo_anulado"] += 1
+                    continue
                 servicio.proxima_facturacion = periodo.siguiente_facturacion
                 reporte["omitidos_factura_existente"] += 1
                 continue
@@ -210,7 +221,14 @@ class BillingService:
                 es_prorrateada=periodo.es_prorrateada,
                 tipo_facturacion_snapshot=tipo_snapshot,
                 ciclo_facturacion_snapshot=ciclo_snapshot,
+                monto_servicio_original=periodo.subtotal,
+                impuesto_servicio_original=periodo.impuesto,
+                cargos_adicionales_total=0,
+                dias_con_servicio=periodo.dias_facturados,
+                dias_sin_servicio=0,
+                ajuste_suspension=0,
             )
+
             self.db.add(nueva_factura)
             await self.db.flush()
 
@@ -228,7 +246,7 @@ class BillingService:
                     "nueva_factura",
                     cliente.id,
                     variables_extra={
-                        "monto": f"${periodo.total}",
+                        "monto": f"${nueva_factura.total}",
                         "folio": str(nueva_factura.id),
                         "mes_actual": mes_actual_str,
                     },
@@ -404,6 +422,12 @@ class BillingService:
                     "suspendido",
                 )
             )
+            if servicio:
+                await self._abrir_suspension_facturacion(
+                    servicio,
+                    factura,
+                    "promesa_incumplida" if promesa_rota else "falta_pago",
+                )
             await self._sincronizar_estado_cliente(cliente.id)
             factura.estado = "vencida"
 
@@ -523,6 +547,12 @@ class BillingService:
                     objetivo
                 )
                 if reactivado:
+                    if servicio:
+                        await self._cerrar_suspension_facturacion(
+                            servicio,
+                            date.today(),
+                            "pago",
+                        )
                     await self._actualizar_estado_servicio_factura(
                         factura,
                         "activo",
@@ -704,6 +734,59 @@ class BillingService:
         else:
             cliente.estado = "cancelado"
 
+    async def _abrir_suspension_facturacion(
+        self,
+        servicio: ServicioModel,
+        factura: FacturaModel,
+        motivo: str,
+    ) -> SuspensionFacturacionModel:
+        abierta = (
+            await self.db.execute(
+                select(SuspensionFacturacionModel).where(
+                    SuspensionFacturacionModel.servicio_id == servicio.id,
+                    SuspensionFacturacionModel.fecha_fin.is_(None),
+                )
+            )
+        ).scalars().first()
+        if abierta:
+            return abierta
+        abierta = SuspensionFacturacionModel(
+            servicio_id=servicio.id,
+            factura_origen_id=factura.id,
+            fecha_inicio=date.today(),
+            motivo_inicio=motivo,
+        )
+        servicio.fecha_suspension_facturacion = date.today()
+        self.db.add(abierta)
+        await self.db.flush()
+        return abierta
+
+    async def _cerrar_suspension_facturacion(
+        self,
+        servicio: ServicioModel,
+        fecha_reactivacion: date,
+        motivo: str,
+    ) -> None:
+        abiertas = (
+            await self.db.execute(
+                select(SuspensionFacturacionModel)
+                .where(
+                    SuspensionFacturacionModel.servicio_id == servicio.id,
+                    SuspensionFacturacionModel.fecha_fin.is_(None),
+                )
+                .with_for_update()
+            )
+        ).scalars().all()
+        ultimo_dia_sin_servicio = fecha_reactivacion - timedelta(days=1)
+        for intervalo in abiertas:
+            if ultimo_dia_sin_servicio < intervalo.fecha_inicio:
+                await self.db.delete(intervalo)
+            else:
+                intervalo.fecha_fin = ultimo_dia_sin_servicio
+                intervalo.motivo_fin = motivo
+        servicio.fecha_suspension_facturacion = None
+        servicio.fecha_ultima_reactivacion = fecha_reactivacion
+
     async def _reactivar_en_mikrotik(self, cliente):
         if not cliente.router_id or not cliente.ip_asignada:
             return False
@@ -765,6 +848,19 @@ class BillingService:
                 factura,
                 "activo",
             )
+            if servicio:
+                await self._cerrar_suspension_facturacion(
+                    servicio,
+                    date.today(),
+                    "promesa_pago",
+                )
+                await FinanceService(
+                    self.db
+                ).recalcular_factura_por_suspension(
+                    factura,
+                    servicio,
+                    fecha_reactivacion=date.today(),
+                )
             await self._sincronizar_estado_cliente(cliente.id)
 
         await self.db.commit()

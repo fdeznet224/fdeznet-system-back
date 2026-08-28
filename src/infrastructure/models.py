@@ -862,6 +862,24 @@ class FacturaModel(Base):
     descripcion = Column(String(500), nullable=True)
     afecta_corte = Column(Boolean, default=True, server_default="1", nullable=False)
     creada_manual = Column(Boolean, default=False, server_default="0", nullable=False)
+    motivo_anulacion = Column(String(500), nullable=True)
+    anulada_por_id = Column(
+        Integer,
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    fecha_anulacion = Column(DateTime(timezone=True), nullable=True)
+    saldo_antes_anulacion = Column(Numeric(12, 2), nullable=True)
+    monto_servicio_original = Column(Numeric(12, 2), nullable=True)
+    impuesto_servicio_original = Column(Numeric(12, 2), nullable=True)
+    cargos_adicionales_total = Column(
+        Numeric(12, 2), nullable=False, default=0, server_default=text("0.00")
+    )
+    dias_con_servicio = Column(Integer, nullable=True)
+    dias_sin_servicio = Column(Integer, nullable=True)
+    ajuste_suspension = Column(
+        Numeric(12, 2), nullable=False, default=0, server_default=text("0.00")
+    )
     
     cliente = relationship("ClienteModel", back_populates="facturas")
     servicio = relationship("ServicioModel",back_populates="facturas",)
@@ -876,6 +894,47 @@ class FacturaModel(Base):
         back_populates="factura",
         order_by="PromesaPagoHistorialModel.created_at.desc()",
     )
+    anulada_por = relationship(
+        "UsuarioModel",
+        foreign_keys=[anulada_por_id],
+    )
+
+
+class SuspensionFacturacionModel(Base):
+    __tablename__ = "suspensiones_facturacion"
+    __table_args__ = (
+        Index(
+            "ix_suspensiones_facturacion_servicio_fechas",
+            "servicio_id",
+            "fecha_inicio",
+            "fecha_fin",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    servicio_id = Column(
+        Integer,
+        ForeignKey("servicios.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    factura_origen_id = Column(
+        Integer,
+        ForeignKey("facturas.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    fecha_inicio = Column(Date, nullable=False)
+    fecha_fin = Column(Date, nullable=True)
+    motivo_inicio = Column(String(100), nullable=False, default="falta_pago")
+    motivo_fin = Column(String(100), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    servicio = relationship("ServicioModel")
+    factura_origen = relationship("FacturaModel", foreign_keys=[factura_origen_id])
 
 
 
@@ -1082,6 +1141,11 @@ class ServicioModel(Base):
         default="dias_reales_mes",
         server_default="dias_reales_mes",
     )
+
+    # Intervalo abierto cuando el corte por falta de pago fue confirmado.
+    # Se usa para no cobrar los días en los que no se prestó el servicio.
+    fecha_suspension_facturacion = Column(Date, nullable=True)
+    fecha_ultima_reactivacion = Column(Date, nullable=True)
 
     estado = Column(
         String(30),

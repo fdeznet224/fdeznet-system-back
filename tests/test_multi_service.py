@@ -36,6 +36,9 @@ class _ScalarResult:
     def first(self):
         return self.values[0] if self.values else None
 
+    def scalar_one_or_none(self):
+        return self.values[0] if self.values else None
+
 
 class _BillingDB:
     def __init__(self, servicios):
@@ -47,7 +50,10 @@ class _BillingDB:
         self.commits = 0
 
     async def execute(self, _statement):
-        return next(self.resultados)
+        try:
+            return next(self.resultados)
+        except StopIteration:
+            return _ScalarResult([])
 
     def add(self, instancia):
         if isinstance(instancia, FacturaModel):
