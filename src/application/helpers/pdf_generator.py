@@ -1,5 +1,7 @@
 import os
+from html import escape
 from datetime import datetime
+from decimal import Decimal
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -17,12 +19,43 @@ except ImportError:
 def convertir_monto_a_texto(monto):
     if num2words:
         try:
-            return num2words(monto, lang='es', to='currency', currency='MXN').upper()
+            return num2words(
+                Decimal(str(monto)),
+                lang='es',
+                to='currency',
+                currency='MXN',
+            ).upper()
         except:
             return f"{monto} PESOS 00/100 M.N."
     return f"{monto} PESOS 00/100 M.N."
 
-async def generar_recibo_pdf(nombre_cliente, monto, concepto, fecha_pago, folio, nueva_fecha_vencimiento, telefono_cliente="", metodo_pago="EFECTIVO"):
+MESES_ES = (
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+)
+
+
+def formatear_fecha_en_espanol(fecha, incluir_hora=False):
+    """Devuelve una fecha inequívoca y fácil de leer para el cliente."""
+    if not fecha:
+        return "No especificada"
+    texto = f"{fecha.day} de {MESES_ES[fecha.month - 1]} de {fecha.year}"
+    if incluir_hora and isinstance(fecha, datetime):
+        texto += f", {fecha.strftime('%H:%M')} h"
+    return texto
+
+
+async def generar_recibo_pdf(
+    nombre_cliente,
+    monto,
+    concepto,
+    fecha_pago,
+    folio,
+    nueva_fecha_vencimiento,
+    telefono_cliente="",
+    metodo_pago="EFECTIVO",
+    descripcion="",
+):
     """
     Genera un PDF con diseño minimalista FdezNet (Azul y Blanco) incluyendo el Método de Pago.
     Retorna la ruta absoluta del archivo generado.
@@ -85,17 +118,26 @@ async def generar_recibo_pdf(nombre_cliente, monto, concepto, fecha_pago, folio,
     elements.append(Spacer(1, 10*mm))
 
     # --- 6. INFORMACIÓN DEL CLIENTE Y MÉTODO DE PAGO ---
+    datos_cliente = (
+        f"<b>{escape(str(nombre_cliente).upper())}</b><br/>"
+        f"Tel: {escape(str(telefono_cliente or 'No registrado'))}"
+    )
+    if nueva_fecha_vencimiento:
+        datos_cliente += (
+            "<br/>Próximo vencimiento: "
+            f"{escape(formatear_fecha_en_espanol(nueva_fecha_vencimiento))}"
+        )
     info_data = [
         [Paragraph("EMISOR", style_label), Paragraph("CLIENTE", style_label)],
         [Paragraph("<b>FDEZNET TELECOMUNICACIONES</b><br/>Vicente Guerrero, Chiapas.<br/>Tel: 961-363-2496", style_normal), 
-         Paragraph(f"<b>{nombre_cliente.upper()}</b><br/>Tel: {telefono_cliente}<br/>Vence: {nueva_fecha_vencimiento}", style_normal)],
+         Paragraph(datos_cliente, style_normal)],
         
         # Espacio separador
         [Spacer(1, 6*mm), Spacer(1, 6*mm)], 
         
         # Nuevas columnas para Fecha y Método de Pago
         [Paragraph("FECHA Y HORA DE PAGO", style_label), Paragraph("MÉTODO DE PAGO", style_label)],
-        [Paragraph(fecha_pago.strftime('%d/%m/%Y %H:%M'), style_value), Paragraph(str(metodo_pago).upper(), style_value)],
+        [Paragraph(formatear_fecha_en_espanol(fecha_pago, incluir_hora=True), style_value), Paragraph(escape(str(metodo_pago).upper()), style_value)],
     ]
     info_table = Table(info_data, colWidths=[90*mm, 90*mm])
     info_table.setStyle(TableStyle([
@@ -106,9 +148,12 @@ async def generar_recibo_pdf(nombre_cliente, monto, concepto, fecha_pago, folio,
     elements.append(Spacer(1, 12*mm))
 
     # --- 7. TABLA DE DETALLES ---
+    resumen_cobro = f"<b>{escape(str(concepto))}</b>"
+    if descripcion:
+        resumen_cobro += f"<br/><font color='#64748b'>{escape(str(descripcion)).replace(chr(10), '<br/>')}</font>"
     concept_data = [
-        [Paragraph("DESCRIPCIÓN", style_label), Paragraph("SUBTOTAL", style_label)],
-        [Paragraph(concepto, style_normal), Paragraph(f"MX${monto:,.2f}", style_value)],
+        [Paragraph("RESUMEN DEL COBRO", style_label), Paragraph("IMPORTE", style_label)],
+        [Paragraph(resumen_cobro, style_normal), Paragraph(f"MX${monto:,.2f}", style_value)],
     ]
     concept_table = Table(concept_data, colWidths=[140*mm, 40*mm])
     concept_table.setStyle(TableStyle([

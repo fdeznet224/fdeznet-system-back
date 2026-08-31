@@ -507,12 +507,17 @@ class BillingService:
             clave_idempotencia=clave_idempotencia,
         )
         if repetido:
+            facturas_pendientes = await self._listar_facturas_pendientes_cliente(
+                cliente.id
+            )
             return {
                 "status": "ok",
                 "idempotente": True,
                 "pago_id": nuevo_pago.id,
                 "factura_liquidada": factura.saldo_pendiente == 0,
                 "saldo_pendiente": factura.saldo_pendiente,
+                "facturas_pendientes_cant": len(facturas_pendientes),
+                "facturas_pendientes": facturas_pendientes,
             }
 
         stmt_c = select(ClienteModel).options(
@@ -575,11 +580,26 @@ class BillingService:
                 
                 if pago_completado:
                     # Si liquidó, se le manda su PDF
-                    prox_venc = (factura.fecha_vencimiento + relativedelta(months=1)).strftime("%d/%m/%Y")
+                    prox_venc = (
+                        factura.fecha_vencimiento + relativedelta(months=1)
+                        if factura.tipo_factura in {"mensual", "prorrateo"}
+                        else None
+                    )
+                    concepto_recibo = (
+                        factura.concepto
+                        or f"Mensualidad de internet - {factura.plan_snapshot}"
+                    )
+                    descripcion_recibo = (
+                        factura.descripcion
+                        or factura.detalles
+                        or factura.mes_correspondiente
+                        or "Pago de servicio"
+                    )
                     ruta_pdf = await generar_recibo_pdf(
                         nombre_cliente=cliente.nombre,
                         monto=nuevo_pago.monto_total,
-                        concepto=f"MENSUALIDAD INTERNET - {factura.plan_snapshot}",
+                        concepto=concepto_recibo,
+                        descripcion=descripcion_recibo,
                         fecha_pago=nuevo_pago.fecha_pago,
                         folio=factura.id,
                         nueva_fecha_vencimiento=prox_venc,
@@ -611,6 +631,9 @@ class BillingService:
             except Exception as e:
                 print(f"⚠️ Error al notificar pago: {e}")
 
+        facturas_pendientes = await self._listar_facturas_pendientes_cliente(
+            cliente.id
+        )
         return {
             "status": "ok",
             "idempotente": False,
@@ -619,11 +642,44 @@ class BillingService:
             "saldo_pendiente": factura.saldo_pendiente,
             "saldo_a_favor": cliente.saldo_a_favor,
             "reactivado": reactivado,
+            "facturas_pendientes_cant": len(facturas_pendientes),
+            "facturas_pendientes": facturas_pendientes,
         }
 
     # ==========================================
     # HELPERS
     # ==========================================
+
+    async def _listar_facturas_pendientes_cliente(self, cliente_id: int):
+        facturas = (
+            await self.db.execute(
+                select(FacturaModel)
+                .where(
+                    FacturaModel.cliente_id == cliente_id,
+                    FacturaModel.estado.in_(["pendiente", "vencida"]),
+                    FacturaModel.saldo_pendiente > 0,
+                )
+                .order_by(
+                    FacturaModel.fecha_vencimiento.asc(),
+                    FacturaModel.id.asc(),
+                )
+            )
+        ).scalars().all()
+        return [
+            {
+                "id": item.id,
+                "concepto": (
+                    item.concepto
+                    or item.detalles
+                    or item.mes_correspondiente
+                    or f"Factura #{item.id}"
+                ),
+                "descripcion": item.descripcion,
+                "fecha_vencimiento": item.fecha_vencimiento,
+                "saldo_pendiente": item.saldo_pendiente,
+            }
+            for item in facturas
+        ]
 
     # FACTURACION_ISP_V2_STATE_SYNC_HELPERS
     async def _actualizar_estado_servicio_factura(
