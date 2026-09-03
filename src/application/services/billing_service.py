@@ -51,6 +51,31 @@ class BillingService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    @staticmethod
+    def _variables_detalle_factura(factura):
+        """Variables comunes para recibos y plantillas de WhatsApp."""
+        def fecha(valor):
+            return valor.strftime("%d/%m/%Y") if valor else "N/A"
+
+        def dinero(valor):
+            return f"${float(valor or 0):.2f}"
+
+        return {
+            "detalle_cobro": factura.descripcion or "Detalle no disponible",
+            "periodo_desde": fecha(factura.periodo_desde),
+            "periodo_hasta": fecha(factura.periodo_hasta),
+            "dias_con_servicio": str(factura.dias_con_servicio or 0),
+            "dias_sin_servicio": str(factura.dias_sin_servicio or 0),
+            "monto_servicio_original": dinero(
+                factura.monto_servicio_original
+            ),
+            "ajuste_suspension": dinero(factura.ajuste_suspension),
+            "cargos_adicionales": dinero(
+                factura.cargos_adicionales_total
+            ),
+            "total_factura": dinero(factura.total),
+        }
+
     # ==========================================
     # 1. GENERACIÓN MASIVA INTELIGENTE
     # ==========================================
@@ -252,13 +277,10 @@ class BillingService:
                     "nueva_factura",
                     cliente.id,
                     variables_extra={
+                        **self._variables_detalle_factura(nueva_factura),
                         "monto": f"${nueva_factura.total}",
                         "folio": str(nueva_factura.id),
                         "mes_actual": mes_actual_str,
-                        "detalle_cobro": nueva_factura.descripcion,
-                        "dias_con_servicio": str(periodo.dias_facturados),
-                        "periodo_desde": periodo.periodo_desde.strftime("%d/%m/%Y"),
-                        "periodo_hasta": periodo.periodo_hasta.strftime("%d/%m/%Y"),
                     },
                     clave_dedupe=f"factura:{nueva_factura.id}:emitida",
                 )
@@ -615,11 +637,20 @@ class BillingService:
                         nueva_fecha_vencimiento=prox_venc,
                         telefono_cliente=cliente.telefono,
                         metodo_pago=nuevo_pago.metodo_pago,
+                        periodo_desde=factura.periodo_desde,
+                        periodo_hasta=factura.periodo_hasta,
+                        dias_con_servicio=factura.dias_con_servicio,
+                        dias_sin_servicio=factura.dias_sin_servicio,
+                        monto_servicio_original=factura.monto_servicio_original,
+                        ajuste_suspension=factura.ajuste_suspension,
+                        cargos_adicionales=factura.cargos_adicionales_total,
+                        total_factura=factura.total,
                     )
                     await notificador.notificar(
                         tipo_evento="pago_recibido", 
                         cliente_id=cliente.id,
                         variables_extra={
+                            **self._variables_detalle_factura(factura),
                             "monto_pagado": f"${nuevo_pago.monto_total:.2f}",
                             "referencia": referencia or "N/A",
                         },
@@ -632,6 +663,7 @@ class BillingService:
                         tipo_evento="abono_recibido", # 👈 Aquí hace match con la BD
                         cliente_id=cliente.id,
                         variables_extra={
+                            **self._variables_detalle_factura(factura),
                             "monto_pagado": f"${nuevo_pago.monto_total:.2f}",
                             "referencia": f"Abono parcial registrado. (Resta por pagar: ${factura.saldo_pendiente})"
                         },
@@ -947,6 +979,7 @@ class BillingService:
                     tipo_evento="promesa_pago",
                     cliente_id=cliente.id,
                     variables_extra={
+                        **self._variables_detalle_factura(factura),
                         "fecha_limite_promesa": fecha_promesa_str,
                         "monto_promesa": (
                             f"${float(factura.saldo_pendiente or 0):.2f}"

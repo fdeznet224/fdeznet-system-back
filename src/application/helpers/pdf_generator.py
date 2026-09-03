@@ -45,6 +45,43 @@ def formatear_fecha_en_espanol(fecha, incluir_hora=False):
     return texto
 
 
+def construir_detalle_facturacion(
+    periodo_desde=None,
+    periodo_hasta=None,
+    dias_con_servicio=None,
+    dias_sin_servicio=None,
+    monto_servicio_original=None,
+    ajuste_suspension=None,
+    cargos_adicionales=None,
+    total_factura=None,
+):
+    """Construye las filas auditables que se muestran en el recibo."""
+    filas = []
+    if periodo_desde and periodo_hasta:
+        filas.append((
+            "Periodo facturado",
+            f"{periodo_desde.strftime('%d/%m/%Y')} al "
+            f"{periodo_hasta.strftime('%d/%m/%Y')}",
+        ))
+    if dias_con_servicio is not None:
+        filas.append(("Días con servicio (cobrados)", str(dias_con_servicio)))
+    if dias_sin_servicio is not None:
+        filas.append(("Días sin servicio (no cobrados)", str(dias_sin_servicio)))
+
+    def dinero(valor):
+        return f"MX${Decimal(str(valor or 0)):,.2f}"
+
+    if monto_servicio_original is not None:
+        filas.append(("Servicio antes del ajuste", dinero(monto_servicio_original)))
+    if Decimal(str(ajuste_suspension or 0)) > 0:
+        filas.append(("Descuento por suspensión", f"-{dinero(ajuste_suspension)}"))
+    if Decimal(str(cargos_adicionales or 0)) > 0:
+        filas.append(("Cargos adicionales", dinero(cargos_adicionales)))
+    if total_factura is not None:
+        filas.append(("Total de la factura", dinero(total_factura)))
+    return filas
+
+
 async def generar_recibo_pdf(
     nombre_cliente,
     monto,
@@ -55,6 +92,14 @@ async def generar_recibo_pdf(
     telefono_cliente="",
     metodo_pago="EFECTIVO",
     descripcion="",
+    periodo_desde=None,
+    periodo_hasta=None,
+    dias_con_servicio=None,
+    dias_sin_servicio=None,
+    monto_servicio_original=None,
+    ajuste_suspension=None,
+    cargos_adicionales=None,
+    total_factura=None,
 ):
     """
     Genera un PDF con diseño minimalista FdezNet (Azul y Blanco) incluyendo el Método de Pago.
@@ -104,7 +149,7 @@ async def generar_recibo_pdf(
         ('LINEBELOW', (0,0), (-1,-1), 0.5, COLOR_LINEAS), # Línea divisoria muy fina
     ]))
     elements.append(header_table)
-    elements.append(Spacer(1, 10*mm))
+    elements.append(Spacer(1, 5*mm))
 
     # --- 5. BARRA DE ESTADO ---
     status_table = Table([[Paragraph("TRANSACCIÓN COMPLETADA CON ÉXITO", style_estado)]], colWidths=[180*mm])
@@ -115,7 +160,7 @@ async def generar_recibo_pdf(
         ('LINEBELOW', (0,0), (-1,-1), 0.5, COLOR_ACENTO),
     ]))
     elements.append(status_table)
-    elements.append(Spacer(1, 10*mm))
+    elements.append(Spacer(1, 5*mm))
 
     # --- 6. INFORMACIÓN DEL CLIENTE Y MÉTODO DE PAGO ---
     datos_cliente = (
@@ -145,7 +190,7 @@ async def generar_recibo_pdf(
         ('BOTTOMPADDING', (0,0), (-1,-1), 2),
     ]))
     elements.append(info_table)
-    elements.append(Spacer(1, 12*mm))
+    elements.append(Spacer(1, 6*mm))
 
     # --- 7. TABLA DE DETALLES ---
     resumen_cobro = f"<b>{escape(str(concepto))}</b>"
@@ -163,12 +208,45 @@ async def generar_recibo_pdf(
         ('BOTTOMPADDING', (0,0), (-1,-1), 8),
     ]))
     elements.append(concept_table)
-    elements.append(Spacer(1, 8*mm))
+    elements.append(Spacer(1, 4*mm))
+
+    detalle_facturacion = construir_detalle_facturacion(
+        periodo_desde=periodo_desde,
+        periodo_hasta=periodo_hasta,
+        dias_con_servicio=dias_con_servicio,
+        dias_sin_servicio=dias_sin_servicio,
+        monto_servicio_original=monto_servicio_original,
+        ajuste_suspension=ajuste_suspension,
+        cargos_adicionales=cargos_adicionales,
+        total_factura=total_factura,
+    )
+    if detalle_facturacion:
+        detalle_data = [[
+            Paragraph("DETALLE DEL PERIODO FACTURADO", style_label),
+            Paragraph("VALOR", style_label),
+        ]]
+        detalle_data.extend([
+            [
+                Paragraph(escape(etiqueta), style_normal),
+                Paragraph(escape(valor), style_value),
+            ]
+            for etiqueta, valor in detalle_facturacion
+        ])
+        detalle_table = Table(detalle_data, colWidths=[140*mm, 40*mm])
+        detalle_table.setStyle(TableStyle([
+            ('LINEBELOW', (0, 0), (-1, 0), 1, COLOR_PRIMARIO),
+            ('LINEBELOW', (0, 1), (-1, -1), 0.5, COLOR_LINEAS),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        elements.append(detalle_table)
+        elements.append(Spacer(1, 4*mm))
 
     # Monto en letra
     monto_letra = convertir_monto_a_texto(monto)
     elements.append(Paragraph(f"CANTIDAD EN LETRA: {monto_letra}", style_label))
-    elements.append(Spacer(1, 15*mm))
+    elements.append(Spacer(1, 6*mm))
 
     # --- 8. FOOTER (QR y Total) ---
     qr_data = f"FDEZNET|FOLIO:{folio}|MONTO:{monto}|FECHA:{fecha_pago.strftime('%Y%m%d')}|METODO:{metodo_pago}"
@@ -192,7 +270,7 @@ async def generar_recibo_pdf(
     elements.append(footer_table)
 
     # --- 9. NOTA DE SEGURIDAD ---
-    elements.append(Spacer(1, 20*mm))
+    elements.append(Spacer(1, 6*mm))
     seguridad_text = f"<font color='#94a3b8' size='7'>Este recibo es un comprobante oficial de pago emitido por FdezNet. ID Transacción: {datetime.now().timestamp()}</font>"
     elements.append(Paragraph(seguridad_text, styles['Normal']))
 

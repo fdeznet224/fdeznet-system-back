@@ -155,7 +155,16 @@ class NotificationService:
             "monto_pagado": "$0.00",
             "referencia": "N/A",
             "fecha_limite_promesa": "N/A",
-            "monto_promesa": "$0.00"
+            "monto_promesa": "$0.00",
+            "detalle_cobro": "",
+            "periodo_desde": "N/A",
+            "periodo_hasta": "N/A",
+            "dias_con_servicio": "0",
+            "dias_sin_servicio": "0",
+            "monto_servicio_original": "$0.00",
+            "ajuste_suspension": "$0.00",
+            "cargos_adicionales": "$0.00",
+            "total_factura": "$0.00",
         }
 
         # 5. UNIFICAR DATOS (Las variables de 'variables_extra' sobrescriben los valores por defecto)
@@ -168,7 +177,7 @@ class NotificationService:
         )
         detalle_cobro = str(datos_finales.get("detalle_cobro") or "").strip()
         if (
-            tipo_evento == "nueva_factura"
+            tipo_evento in {"nueva_factura", "pago_recibido"}
             and detalle_cobro
             and "{detalle_cobro}" not in texto_plantilla
             and detalle_cobro not in mensaje_formateado
