@@ -195,7 +195,7 @@ class DashboardService:
         ).one()
 
         # --- D. FACTURACIÓN DEL MES SOBRE LOS MISMOS CLIENTES ACTUALES ---
-        factura_valida = FacturaModel.estado != "anulada"
+        factura_valida = FacturaModel.estado.notin_(["anulada", "sin_cargo"])
         factura_pendiente = and_(
             FacturaModel.estado.in_(["pendiente", "vencida"]),
             FacturaModel.saldo_pendiente > 0,

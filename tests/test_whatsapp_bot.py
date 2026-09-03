@@ -1,4 +1,6 @@
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from src.application.services.ocr_service import OCRService
 from src.interfaces.api.whatsapp import obtener_factura_cobrable
@@ -39,8 +41,8 @@ def test_ocr_no_aprueba_texto_sin_folio():
     assert resultado["exito"] is False
 
 
-def test_bot_busca_facturas_pendientes_y_vencidas():
-    factura = object()
+def test_bot_busca_facturas_pendientes_y_vencidas(monkeypatch):
+    factura = SimpleNamespace(id=81)
 
     class Result:
         def scalars(self):
@@ -57,10 +59,20 @@ def test_bot_busca_facturas_pendientes_y_vencidas():
             self.statement = statement
             return Result()
 
+        async def commit(self):
+            return None
+
+    preparar = AsyncMock(return_value=(factura, factura, None))
+    monkeypatch.setattr(
+        "src.interfaces.api.whatsapp.BillingService.preparar_factura_cobrable",
+        preparar,
+    )
+
     db = FakeDB()
     encontrada = asyncio.run(obtener_factura_cobrable(db, 12))
     parametros = db.statement.compile().params
 
     assert encontrada is factura
+    preparar.assert_awaited_once()
     assert ["pendiente", "vencida"] in parametros.values()
     assert 12 in parametros.values()

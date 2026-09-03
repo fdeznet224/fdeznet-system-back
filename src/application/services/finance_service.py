@@ -313,7 +313,14 @@ class FinanceService:
             Decimal("0.00"),
             total_nuevo - aplicado - descuentos,
         ).quantize(CENTAVO)
-        if factura.saldo_pendiente > 0:
+        if total_nuevo == 0 and aplicado == 0 and descuentos == 0:
+            factura.estado = "sin_cargo"
+            factura.fecha_pago_real = None
+            factura.es_promesa_activa = False
+            await self._resolver_promesas(factura.id, "cancelada")
+        elif factura.saldo_pendiente == 0:
+            factura.estado = "pagada"
+        else:
             factura.estado = (
                 "vencida"
                 if factura.fecha_vencimiento
@@ -321,6 +328,51 @@ class FinanceService:
                 else "pendiente"
             )
         return factura
+
+    async def normalizar_facturas_suspendidas(
+        self,
+        servicio: ServicioModel,
+        *,
+        fecha_reactivacion: date | None = None,
+        solo_periodos_cerrados: bool = False,
+    ) -> list[FacturaModel]:
+        """Recalcula en orden los ciclos afectados por una suspensión.
+
+        En los procesos automáticos sólo se cierran períodos ya concluidos.
+        Al pagar o prometer se cotiza además el ciclo actual suponiendo que el
+        servicio vuelve en ``fecha_reactivacion``.
+        """
+        facturas = (
+            await self.db.execute(
+                select(FacturaModel)
+                .where(
+                    FacturaModel.servicio_id == servicio.id,
+                    FacturaModel.estado.in_(["pendiente", "vencida"]),
+                    FacturaModel.tipo_factura.in_(["mensual", "prorrateo"]),
+                )
+                .order_by(
+                    FacturaModel.periodo_desde.asc(),
+                    FacturaModel.id.asc(),
+                )
+                .with_for_update()
+            )
+        ).scalars().all()
+
+        normalizadas = []
+        for factura in facturas:
+            if (
+                solo_periodos_cerrados
+                and factura.periodo_hasta
+                and factura.periodo_hasta >= date.today()
+            ):
+                continue
+            await self.recalcular_factura_por_suspension(
+                factura,
+                servicio,
+                fecha_reactivacion=fecha_reactivacion,
+            )
+            normalizadas.append(factura)
+        return normalizadas
 
     async def aplicar_descuento(
         self,

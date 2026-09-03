@@ -149,6 +149,14 @@ class BillingService:
                 reporte["omitidos_sin_proxima_facturacion"] += 1
                 continue
 
+            if servicio.estado == "suspendido":
+                await FinanceService(
+                    self.db
+                ).normalizar_facturas_suspendidas(
+                    servicio,
+                    solo_periodos_cerrados=True,
+                )
+
             tipo_snapshot = servicio.tipo_facturacion.value if hasattr(servicio.tipo_facturacion, "value") else str(servicio.tipo_facturacion)
             ciclo_snapshot = servicio.ciclo_facturacion.value if hasattr(servicio.ciclo_facturacion, "value") else str(servicio.ciclo_facturacion)
 
@@ -263,6 +271,17 @@ class BillingService:
             self.db.add(nueva_factura)
             await self.db.flush()
 
+            if (
+                servicio.estado == "suspendido"
+                and periodo.periodo_hasta < hoy
+            ):
+                await FinanceService(
+                    self.db
+                ).recalcular_factura_por_suspension(
+                    nueva_factura,
+                    servicio,
+                )
+
             servicio.proxima_facturacion = periodo.siguiente_facturacion
             reporte["facturas_generadas"] += 1
             if periodo.es_prorrateada:
@@ -272,7 +291,14 @@ class BillingService:
             else:
                 reporte["facturas_prepago"] += 1
 
-            if cliente.telefono:
+            debe_notificar = (
+                nueva_factura.saldo_pendiente > 0
+                and (
+                    servicio.estado != "suspendido"
+                    or periodo.periodo_hasta < hoy
+                )
+            )
+            if cliente.telefono and debe_notificar:
                 exito = await notificador.notificar(
                     "nueva_factura",
                     cliente.id,
@@ -530,8 +556,18 @@ class BillingService:
         clave_idempotencia: str = None,
     ):
         finanzas = FinanceService(self.db)
+        factura_cobrable, _, _ = await self.preparar_factura_cobrable(
+            factura_id,
+            fecha_reactivacion=date.today(),
+        )
+        if factura_cobrable.id != factura_id:
+            raise ValueError(
+                f"Primero debe cobrarse la factura #{factura_cobrable.id}, "
+                f"que es la deuda real más antigua del servicio. "
+                f"Saldo: ${factura_cobrable.saldo_pendiente}."
+            )
         nuevo_pago, factura, cliente, repetido = await finanzas.registrar_pago(
-            factura_id=factura_id,
+            factura_id=factura_cobrable.id,
             usuario_id=usuario_operador.id,
             metodo_pago=metodo_pago,
             monto=monto,
@@ -546,6 +582,7 @@ class BillingService:
                 "status": "ok",
                 "idempotente": True,
                 "pago_id": nuevo_pago.id,
+                "factura_id_aplicada": factura.id,
                 "factura_liquidada": factura.saldo_pendiente == 0,
                 "saldo_pendiente": factura.saldo_pendiente,
                 "facturas_pendientes_cant": len(facturas_pendientes),
@@ -680,6 +717,7 @@ class BillingService:
             "status": "ok",
             "idempotente": False,
             "pago_id": nuevo_pago.id,
+            "factura_id_aplicada": factura.id,
             "factura_liquidada": pago_completado,
             "saldo_pendiente": factura.saldo_pendiente,
             "saldo_a_favor": cliente.saldo_a_favor,
@@ -691,6 +729,66 @@ class BillingService:
     # ==========================================
     # HELPERS
     # ==========================================
+
+    async def preparar_factura_cobrable(
+        self,
+        factura_id: int,
+        *,
+        fecha_reactivacion: date | None = None,
+    ):
+        """Cierra ciclos sin servicio y devuelve la deuda real más antigua."""
+        solicitada = await self.db.get(FacturaModel, factura_id)
+        if not solicitada:
+            raise ValueError("Factura no encontrada")
+
+        servicio = (
+            await self.db.get(ServicioModel, solicitada.servicio_id)
+            if solicitada.servicio_id
+            else None
+        )
+        if servicio and servicio.estado == "suspendido":
+            await FinanceService(
+                self.db
+            ).normalizar_facturas_suspendidas(
+                servicio,
+                fecha_reactivacion=fecha_reactivacion,
+            )
+
+        condiciones = [
+            FacturaModel.estado.in_(["pendiente", "vencida"]),
+            FacturaModel.saldo_pendiente > 0,
+        ]
+        if not solicitada.afecta_corte:
+            condiciones.append(FacturaModel.id == solicitada.id)
+        else:
+            condiciones.append(FacturaModel.afecta_corte.is_(True))
+        if solicitada.servicio_id:
+            condiciones.append(
+                FacturaModel.servicio_id == solicitada.servicio_id
+            )
+        else:
+            condiciones.extend([
+                FacturaModel.cliente_id == solicitada.cliente_id,
+                FacturaModel.servicio_id.is_(None),
+            ])
+
+        cobrable = (
+            await self.db.execute(
+                select(FacturaModel)
+                .where(*condiciones)
+                .order_by(
+                    FacturaModel.fecha_vencimiento.asc(),
+                    FacturaModel.id.asc(),
+                )
+                .with_for_update()
+            )
+        ).scalars().first()
+        if not cobrable:
+            raise ValueError(
+                "No quedan facturas con deuda real. Los ciclos sin servicio "
+                "se cerraron sin cargo."
+            )
+        return cobrable, solicitada, servicio
 
     async def _listar_facturas_pendientes_cliente(self, cliente_id: int):
         facturas = (
@@ -795,6 +893,7 @@ class BillingService:
         condiciones = [
             FacturaModel.estado.in_(["pendiente", "vencida"]),
             FacturaModel.saldo_pendiente > 0,
+            FacturaModel.afecta_corte.is_(True),
         ]
         if factura.servicio_id:
             condiciones.append(
@@ -918,9 +1017,13 @@ class BillingService:
         enviar_notificaciones: bool = True,
     ):
         """Registra una promesa con el mismo flujo para todos los canales."""
+        factura_cobrable, _, _ = await self.preparar_factura_cobrable(
+            factura_id,
+            fecha_reactivacion=date.today(),
+        )
         promesa, factura, cliente, politica = (
             await FinanceService(self.db).registrar_promesa(
-                factura_id,
+                factura_cobrable.id,
                 fecha_promesa,
                 usuario_id,
                 notas,

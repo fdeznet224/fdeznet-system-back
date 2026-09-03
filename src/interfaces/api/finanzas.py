@@ -574,16 +574,21 @@ async def cotizar_reactivacion(
     if not servicio or servicio.estado != "suspendido":
         raise HTTPException(400, "El servicio no está suspendido")
 
-    await FinanceService(db).recalcular_factura_por_suspension(
-        factura,
-        servicio,
-        fecha_reactivacion=date.today(),
-    )
+    try:
+        factura, _, _ = await BillingService(db).preparar_factura_cobrable(
+            factura_id,
+            fecha_reactivacion=date.today(),
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     await db.commit()
     await db.refresh(factura)
     return {
         "status": "ok",
         "factura_id": factura.id,
+        "concepto": factura.concepto,
+        "fecha_vencimiento": factura.fecha_vencimiento,
         "periodo_desde": factura.periodo_desde,
         "periodo_hasta": factura.periodo_hasta,
         "dias_con_servicio": factura.dias_con_servicio,

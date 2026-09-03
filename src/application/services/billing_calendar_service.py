@@ -191,6 +191,13 @@ class BillingCalendarService:
             )
 
         palabra_sin = "día" if len(dias_no_cobrados) == 1 else "días"
+        if not dias_cobrados:
+            return (
+                "Sin cargo por suspensión: no hubo días con servicio. "
+                f"Días sin servicio y no cobrados: "
+                f"{rangos_texto(dias_no_cobrados)} "
+                f"({len(dias_no_cobrados)} {palabra_sin})."
+            )
         return (
             f"Días con servicio: {rangos_texto(dias_cobrados)} "
             f"({len(dias_cobrados)} {palabra_servicio}). "

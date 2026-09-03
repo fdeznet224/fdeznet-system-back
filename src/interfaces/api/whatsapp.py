@@ -78,7 +78,22 @@ async def obtener_factura_cobrable(db: AsyncSession, cliente_id: int):
         )
         .order_by(FacturaModel.fecha_vencimiento.asc())
     )
-    return (await db.execute(stmt)).scalars().first()
+    factura = (await db.execute(stmt)).scalars().first()
+    if not factura:
+        return None
+    try:
+        cobrable, _, _ = await BillingService(
+            db
+        ).preparar_factura_cobrable(
+            factura.id,
+            fecha_reactivacion=date.today(),
+        )
+    except ValueError:
+        # La preparación puede haber cerrado todos los ciclos como sin cargo.
+        await db.commit()
+        return None
+    await db.commit()
+    return cobrable
 
 
 # --- SCHEMAS ---
