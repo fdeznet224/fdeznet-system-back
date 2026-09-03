@@ -271,12 +271,13 @@ async def get_listado_completo(
             "cliente": {
                 "id": f.cliente.id,
                 "nombre": f.cliente.nombre,
+                "cedula": f.cliente.cedula,
                 "ip_asignada": (
                     f.servicio.ip_asignada
                     if f.servicio
                     else f.cliente.ip_asignada
                 ),
-                "sn": f.cliente.cedula 
+                "sn": f.cliente.cedula,
             },
             "servicio": (
                 {
