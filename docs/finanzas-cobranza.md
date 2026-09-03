@@ -41,6 +41,18 @@ anularse por un administrador o supervisor mientras la caja siga abierta.
   debe liquidar la factura recalculada antes de reactivarse. La próxima
   mensualidad conserva su precio normal; únicamente los cargos adicionales
   del mismo ciclo se suman a su factura abierta.
+- La fecha de pago real nunca cambia el ciclo contratado. En una plantilla de
+  pago del 1 al 5 y corte el 6, una reactivación el día 8 cobra los días con
+  servicio del 1 al 5 y del 8 hasta fin de mes; los días completos 6 y 7 no se
+  cobran. El siguiente periodo vuelve a vencer el día 1, no el día 8.
+- Las instalaciones nuevas no regalan un mes por defecto. Una activación el
+  día 3 con ciclo calendario genera un primer prorrateo del 3 al último día del
+  mes y deja el siguiente vencimiento en el día 1. Los meses gratis continúan
+  disponibles como una elección explícita al activar el servicio.
+- La descripción de la factura enumera los rangos con servicio y, cuando hay
+  suspensión, los rangos sin servicio que fueron descontados. La notificación
+  de una nueva factura admite `{detalle_cobro}`, `{dias_con_servicio}`,
+  `{periodo_desde}` y `{periodo_hasta}`.
 
 ## Políticas y seguimiento
 

@@ -55,7 +55,32 @@ def test_instalacion_tiene_facturacion_prepago_por_defecto():
     solicitud = InstalacionRequest(user_pppoe="cliente-test", pass_pppoe="clave-test")
     assert solicitud.tipo_facturacion.value == "prepago"
     assert solicitud.ciclo_facturacion.value == "calendario"
-    assert solicitud.meses_gratis == 1
+    assert solicitud.meses_gratis == 0
+
+
+def test_instalacion_dia_3_cobra_hasta_fin_de_mes_y_conserva_ciclo():
+    fechas = BillingCalendarService.calcular_fechas_servicio(
+        fecha_instalacion=date(2026, 9, 3),
+    )
+    periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
+        periodo_desde=fechas.proxima_facturacion,
+        dia_ciclo=1,
+        precio_mensual=300,
+    )
+
+    assert fechas.fecha_inicio_cobro == date(2026, 9, 3)
+    assert periodo.periodo_desde == date(2026, 9, 3)
+    assert periodo.periodo_hasta == date(2026, 9, 30)
+    assert periodo.dias_facturados == 28
+    assert periodo.total == 280
+    assert periodo.siguiente_facturacion == date(2026, 10, 1)
+    assert BillingCalendarService.describir_dias_cobrados(
+        periodo.periodo_desde,
+        periodo.periodo_hasta,
+    ) == (
+        "Periodo cobrado: 03/09/2026 al 30/09/2026 "
+        "(28 días con servicio)."
+    )
 
 
 def test_prorrateo_dia_1_llega_a_fin_de_mes():

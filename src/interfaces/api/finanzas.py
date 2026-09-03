@@ -584,8 +584,11 @@ async def cotizar_reactivacion(
     return {
         "status": "ok",
         "factura_id": factura.id,
+        "periodo_desde": factura.periodo_desde,
+        "periodo_hasta": factura.periodo_hasta,
         "dias_con_servicio": factura.dias_con_servicio,
         "dias_sin_servicio": factura.dias_sin_servicio,
+        "descripcion": factura.descripcion,
         "ajuste_suspension": factura.ajuste_suspension,
         "mensualidad_ajustada": (
             Decimal(factura.monto or 0)

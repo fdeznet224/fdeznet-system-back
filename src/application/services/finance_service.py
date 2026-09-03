@@ -6,6 +6,7 @@ import re
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.application.services.billing_calendar_service import BillingCalendarService
 from src.infrastructure.models import (
     ClienteModel,
     DescuentoFacturaModel,
@@ -292,6 +293,11 @@ class FinanceService:
         factura.impuesto_servicio_original = impuesto_original
         factura.dias_con_servicio = dias_con_servicio
         factura.dias_sin_servicio = dias_sin_servicio
+        factura.descripcion = BillingCalendarService.describir_dias_cobrados(
+            factura.periodo_desde,
+            factura.periodo_hasta,
+            dias_suspendidos,
+        )
         factura.ajuste_suspension = self.dinero(
             (base_original + impuesto_original)
             - (base_ajustada + impuesto_ajustado),

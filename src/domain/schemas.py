@@ -389,7 +389,7 @@ class InstalacionRequest(BaseModel):
     fecha_activacion: Optional[date] = None
     tipo_facturacion: TipoFacturacionEnum = TipoFacturacionEnum.prepago
     ciclo_facturacion: CicloFacturacionEnum = CicloFacturacionEnum.calendario
-    meses_gratis: int = Field(default=1, ge=0, le=12)
+    meses_gratis: int = Field(default=0, ge=0, le=12)
     potencia_optica_dbm: Optional[float] = Field(default=None, ge=-50, le=10)
     potencia_tx_dbm: Optional[float] = Field(default=None, ge=-50, le=20)
     observaciones_opticas: Optional[str] = Field(default=None, max_length=500)

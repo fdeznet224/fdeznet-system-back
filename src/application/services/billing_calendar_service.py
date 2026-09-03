@@ -113,7 +113,7 @@ class BillingCalendarService:
         cls,
         fecha_instalacion: date,
         fecha_activacion: date | None = None,
-        meses_gratis: int = 1,
+        meses_gratis: int = 0,
         ciclo_facturacion: str = "calendario",
     ) -> ServiceBillingDates:
         if meses_gratis < 0:
@@ -136,6 +136,66 @@ class BillingCalendarService:
             fecha_fin_periodo_gratis=fecha_fin_gratis,
             fecha_inicio_cobro=fecha_inicio_cobro,
             proxima_facturacion=fecha_inicio_cobro,
+        )
+
+    @staticmethod
+    def _rangos_consecutivos(fechas: set[date]) -> list[tuple[date, date]]:
+        if not fechas:
+            return []
+        ordenadas = sorted(fechas)
+        rangos: list[tuple[date, date]] = []
+        inicio = anterior = ordenadas[0]
+        for actual in ordenadas[1:]:
+            if actual != anterior + timedelta(days=1):
+                rangos.append((inicio, anterior))
+                inicio = actual
+            anterior = actual
+        rangos.append((inicio, anterior))
+        return rangos
+
+    @classmethod
+    def describir_dias_cobrados(
+        cls,
+        periodo_desde: date,
+        periodo_hasta: date,
+        dias_sin_servicio: set[date] | None = None,
+    ) -> str:
+        """Explica las fechas cobradas y los días descontados del periodo."""
+        if periodo_hasta < periodo_desde:
+            raise ValueError("El periodo hasta no puede ser anterior al periodo desde.")
+
+        dias_periodo: set[date] = set()
+        actual = periodo_desde
+        while actual <= periodo_hasta:
+            dias_periodo.add(actual)
+            actual += timedelta(days=1)
+
+        dias_no_cobrados = dias_periodo & set(dias_sin_servicio or set())
+        dias_cobrados = dias_periodo - dias_no_cobrados
+
+        def rangos_texto(fechas: set[date]) -> str:
+            partes = []
+            for inicio, fin in cls._rangos_consecutivos(fechas):
+                inicio_texto = inicio.strftime("%d/%m/%Y")
+                fin_texto = fin.strftime("%d/%m/%Y")
+                partes.append(
+                    inicio_texto if inicio == fin else f"{inicio_texto} al {fin_texto}"
+                )
+            return " y ".join(partes)
+
+        palabra_servicio = "día" if len(dias_cobrados) == 1 else "días"
+        if not dias_no_cobrados:
+            return (
+                f"Periodo cobrado: {rangos_texto(dias_cobrados)} "
+                f"({len(dias_cobrados)} {palabra_servicio} con servicio)."
+            )
+
+        palabra_sin = "día" if len(dias_no_cobrados) == 1 else "días"
+        return (
+            f"Días con servicio: {rangos_texto(dias_cobrados)} "
+            f"({len(dias_cobrados)} {palabra_servicio}). "
+            f"Días sin servicio y no cobrados: {rangos_texto(dias_no_cobrados)} "
+            f"({len(dias_no_cobrados)} {palabra_sin})."
         )
 
     @classmethod

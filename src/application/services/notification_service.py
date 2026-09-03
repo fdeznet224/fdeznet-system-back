@@ -166,6 +166,14 @@ class NotificationService:
             texto_plantilla,
             datos_finales,
         )
+        detalle_cobro = str(datos_finales.get("detalle_cobro") or "").strip()
+        if (
+            tipo_evento == "nueva_factura"
+            and detalle_cobro
+            and "{detalle_cobro}" not in texto_plantilla
+            and detalle_cobro not in mensaje_formateado
+        ):
+            mensaje_formateado = f"{mensaje_formateado}\n\n{detalle_cobro}"
         
         # 7. ENCOLAR TAREA HACIA EL BOT DE WHATSAPP
         registro = MensajeChatModel(

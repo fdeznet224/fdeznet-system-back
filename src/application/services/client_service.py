@@ -102,7 +102,7 @@ class ClientService:
             ultimo_cambio_estado=None,
             tipo_facturacion=TipoFacturacion.prepago,
             ciclo_facturacion=CicloFacturacion.calendario,
-            meses_gratis=1,
+            meses_gratis=0,
             estado="pendiente_instalacion",
         )
         self.db.add(servicio)

@@ -162,3 +162,85 @@ def test_reactivation_uses_each_service_plan_price(
     assert factura.dias_con_servicio == 16
     assert factura.total == Decimal(total_esperado)
     assert factura.ajuste_suspension == Decimal(ajuste_esperado)
+
+
+@pytest.mark.parametrize(
+    ("intervalos", "reactivacion", "dias_con_servicio", "dias_sin_servicio", "total"),
+    [
+        # Erika: corte el 6 y reactivación el 8. Sólo los días completos 6 y 7
+        # quedan sin servicio; pagar el 8 no mueve el ciclo al día 8.
+        ([(date(2026, 8, 6), None)], date(2026, 8, 8), 29, 2, "280.64"),
+        # Natali: servicio del 1 al 9 y del 20 al 31.
+        ([(date(2026, 8, 10), date(2026, 8, 19))], None, 21, 10, "203.23"),
+    ],
+)
+def test_calendar_cycle_charges_used_and_remaining_days_without_moving_due_date(
+    intervalos,
+    reactivacion,
+    dias_con_servicio,
+    dias_sin_servicio,
+    total,
+):
+    factura = FacturaModel(
+        id=20,
+        servicio_id=8,
+        periodo_desde=date(2026, 8, 1),
+        periodo_hasta=date(2026, 8, 31),
+        dias_facturados=31,
+        precio_diario=Decimal("9.6774"),
+        monto_servicio_original=Decimal("300.00"),
+        impuesto_servicio_original=Decimal("0.00"),
+        cargos_adicionales_total=Decimal("0.00"),
+        descuento_total=Decimal("0.00"),
+        fecha_vencimiento=date(2026, 8, 1),
+        estado="vencida",
+    )
+    servicio = ServicioModel(
+        id=8,
+        estado="suspendido",
+        proxima_facturacion=date(2026, 9, 1),
+    )
+    registros = [
+        SuspensionFacturacionModel(
+            servicio_id=8,
+            fecha_inicio=inicio,
+            fecha_fin=fin,
+        )
+        for inicio, fin in intervalos
+    ]
+
+    class Resultado:
+        def __init__(self, valor):
+            self.valor = valor
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.valor
+
+        def scalar_one(self):
+            return self.valor
+
+    class DbFalsa:
+        def __init__(self):
+            self.resultados = [Resultado(registros), Resultado(Decimal("0.00"))]
+
+        async def execute(self, _consulta):
+            return self.resultados.pop(0)
+
+    asyncio.run(
+        FinanceService(DbFalsa()).recalcular_factura_por_suspension(
+            factura,
+            servicio,
+            fecha_reactivacion=reactivacion,
+        )
+    )
+
+    assert factura.dias_con_servicio == dias_con_servicio
+    assert factura.dias_sin_servicio == dias_sin_servicio
+    assert factura.total == Decimal(total)
+    assert servicio.proxima_facturacion == date(2026, 9, 1)
+    if dias_sin_servicio:
+        assert "Días con servicio:" in factura.descripcion
+        assert "Días sin servicio y no cobrados:" in factura.descripcion
