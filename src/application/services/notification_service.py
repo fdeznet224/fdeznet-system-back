@@ -15,6 +15,17 @@ from src.infrastructure.whatsapp_client import whatsapp_queue
 logger = logging.getLogger(__name__)
 
 PLANTILLAS_OBLIGATORIAS = {
+    "pago_recibido": (
+        "✅ Hola {nombre}, recibimos tu pago por {monto_pagado}. "
+        "Gracias por tu pago.\n\n{detalle_cobro}"
+    ),
+    "abono_recibido": (
+        "✅ Hola {nombre}, recibimos tu abono por {monto_pagado}. "
+        "{referencia}"
+    ),
+    "reconexion": (
+        "✅ Hola {nombre}, tu servicio de internet fue reconectado."
+    ),
     "promesa_pago": (
         "✅ Hola {nombre}, registramos tu promesa de pago por "
         "{monto_promesa} con fecha límite {fecha_limite_promesa}. "

@@ -174,6 +174,74 @@ def test_mensaje_promesa_tiene_fallback_obligatorio(monkeypatch):
     assert "al día siguiente" in tareas[0]["mensaje"]
 
 
+def test_confirmacion_pago_tiene_fallback_obligatorio(monkeypatch):
+    cliente = SimpleNamespace(
+        id=16,
+        nombre="Cliente Pago",
+        telefono="5512345678",
+        direccion=None,
+        cedula="EFGH",
+        ip_asignada="192.0.2.16",
+        user_pppoe="cliente16",
+        pass_pppoe="secreto",
+        saldo_a_favor=0,
+        estado="activo",
+        plan=None,
+        plantilla=None,
+        router=None,
+        onu_asignada=None,
+        zona=None,
+    )
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class FakeDB:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, _stmt):
+            self.calls += 1
+            return Result(None if self.calls == 1 else cliente)
+
+        def add(self, _value):
+            return None
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+    tareas = []
+
+    async def fake_agregar_tarea(tarea):
+        tareas.append(tarea)
+
+    monkeypatch.setattr(whatsapp_queue, "agregar_tarea", fake_agregar_tarea)
+
+    enviado = asyncio.run(
+        NotificationService(FakeDB()).notificar(
+            "pago_recibido",
+            cliente.id,
+            variables_extra={
+                "monto_pagado": "$500.00",
+                "detalle_cobro": "Mensualidad septiembre",
+            },
+            ruta_pdf="/tmp/recibo.pdf",
+        )
+    )
+
+    assert enviado is True
+    assert "$500.00" in tareas[0]["mensaje"]
+    assert "Mensualidad septiembre" in tareas[0]["mensaje"]
+    assert tareas[0]["ruta"] == "/tmp/recibo.pdf"
+
+
 def test_ipam_no_devuelve_gateway_ni_ip_asignada():
     class FakeDB:
         async def execute(self, _stmt):

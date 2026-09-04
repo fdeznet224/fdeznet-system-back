@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+import logging
 from typing import Optional, List
 from dateutil.relativedelta import relativedelta
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,9 @@ from src.application.services.billing_calendar_service import (
     BillingCalendarService,
 )
 from src.application.services.finance_service import FinanceService
+
+
+logger = logging.getLogger(__name__)
 
 
 MESES_EN_ESPANOL = (
@@ -732,6 +736,7 @@ class BillingService:
         await self.db.commit()
 
         # 👇 🚀 LOGICA DE WHATSAPP 👇
+        notificacion_pago_encolada = False
         if cliente.telefono:
             try:
                 notificador = NotificationService(self.db)
@@ -796,7 +801,7 @@ class BillingService:
                             for fila in conceptos_pagados
                         ],
                     )
-                    await notificador.notificar(
+                    notificacion_pago_encolada = await notificador.notificar(
                         tipo_evento="pago_recibido", 
                         cliente_id=cliente.id,
                         variables_extra={
@@ -809,7 +814,7 @@ class BillingService:
                     )
                 else:
                     # Si solo abonó una parte, se manda este aviso sencillo sin PDF
-                    await notificador.notificar(
+                    notificacion_pago_encolada = await notificador.notificar(
                         tipo_evento="abono_recibido", # 👈 Aquí hace match con la BD
                         cliente_id=cliente.id,
                         variables_extra={
@@ -820,8 +825,12 @@ class BillingService:
                         clave_dedupe=f"pago:{nuevo_pago.id}:abono",
                     )
                 
-            except Exception as e:
-                print(f"⚠️ Error al notificar pago: {e}")
+            except Exception:
+                logger.exception(
+                    "Error al crear la confirmación del pago %s para el cliente %s",
+                    nuevo_pago.id,
+                    cliente.id,
+                )
 
         facturas_pendientes = await self._listar_facturas_pendientes_cliente(
             cliente.id
@@ -832,6 +841,7 @@ class BillingService:
             "pago_id": nuevo_pago.id,
             "factura_id_aplicada": factura.id,
             "factura_liquidada": pago_completado,
+            "notificacion_pago_encolada": notificacion_pago_encolada,
             "saldo_pendiente": factura.saldo_pendiente,
             "saldo_a_favor": cliente.saldo_a_favor,
             "reactivado": reactivado,
