@@ -82,6 +82,52 @@ class FinanceService:
             )
         return metodo
 
+    async def aplicar_saldo_favor_automatico(
+        self,
+        factura: FacturaModel,
+        cliente: ClienteModel,
+        *,
+        referencia: str = "Aplicación automática a nueva factura",
+    ) -> PagoModel | None:
+        """Consume el crédito disponible sin ocultarlo como descuento.
+
+        El movimiento se registra como un pago con ``saldo_favor`` para que
+        pueda auditarse y revertirse igual que cualquier otro pago.
+        """
+        credito = self.dinero(
+            getattr(cliente, "saldo_a_favor", 0),
+            permitir_cero=True,
+        )
+        deuda = self.dinero(factura.saldo_pendiente, permitir_cero=True)
+        aplicado = min(credito, deuda)
+        if aplicado <= 0:
+            return None
+
+        saldo_posterior = (deuda - aplicado).quantize(CENTAVO)
+        cliente.saldo_a_favor = (credito - aplicado).quantize(CENTAVO)
+        factura.saldo_pendiente = saldo_posterior
+        if saldo_posterior == 0:
+            factura.estado = "pagada"
+            factura.fecha_pago_real = datetime.now()
+
+        pago = PagoModel(
+            cliente_id=cliente.id,
+            factura_id=factura.id,
+            usuario_id=None,
+            monto_total=aplicado,
+            monto_aplicado=aplicado,
+            monto_saldo_favor=Decimal("0.00"),
+            monto_saldo_favor_usado=aplicado,
+            saldo_anterior=deuda,
+            saldo_posterior=saldo_posterior,
+            metodo_pago="saldo_favor",
+            referencia=referencia,
+            fecha_pago=datetime.now(),
+        )
+        self.db.add(pago)
+        await self.db.flush()
+        return pago
+
     async def registrar_pago(
         self,
         factura_id: int,

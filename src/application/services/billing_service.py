@@ -282,6 +282,18 @@ class BillingService:
                     servicio,
                 )
 
+            # El crédito se aplica después de cualquier prorrateo para no
+            # consumirlo contra un importe provisional. Una factura del ciclo
+            # abierto de un servicio suspendido se ajustará al reactivarlo.
+            if (
+                servicio.estado != "suspendido"
+                or periodo.periodo_hasta < hoy
+            ):
+                await FinanceService(self.db).aplicar_saldo_favor_automatico(
+                    nueva_factura,
+                    cliente,
+                )
+
             servicio.proxima_facturacion = periodo.siguiente_facturacion
             reporte["facturas_generadas"] += 1
             if periodo.es_prorrateada:

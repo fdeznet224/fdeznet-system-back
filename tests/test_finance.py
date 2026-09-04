@@ -58,6 +58,70 @@ def test_payment_keeps_reversible_balance_fields():
     }.issubset(PagoModel.__table__.c.keys())
 
 
+def test_automatic_credit_pays_new_invoice_and_keeps_audit_record():
+    cliente = ClienteModel(id=7, saldo_a_favor=Decimal("350.00"))
+    factura = FacturaModel(
+        id=91,
+        cliente_id=7,
+        saldo_pendiente=Decimal("300.00"),
+        total=Decimal("300.00"),
+        estado="pendiente",
+    )
+
+    class DbFalsa:
+        def __init__(self):
+            self.agregados = []
+
+        def add(self, item):
+            self.agregados.append(item)
+
+        async def flush(self):
+            return None
+
+    db = DbFalsa()
+    pago = asyncio.run(
+        FinanceService(db).aplicar_saldo_favor_automatico(factura, cliente)
+    )
+
+    assert factura.estado == "pagada"
+    assert factura.saldo_pendiente == Decimal("0.00")
+    assert cliente.saldo_a_favor == Decimal("50.00")
+    assert pago.metodo_pago == "saldo_favor"
+    assert pago.monto_saldo_favor_usado == Decimal("300.00")
+    assert pago.saldo_anterior == Decimal("300.00")
+    assert pago.saldo_posterior == Decimal("0.00")
+
+
+def test_automatic_credit_partially_reduces_new_invoice():
+    cliente = ClienteModel(id=7, saldo_a_favor=Decimal("75.00"))
+    factura = FacturaModel(
+        id=92,
+        cliente_id=7,
+        saldo_pendiente=Decimal("300.00"),
+        total=Decimal("300.00"),
+        estado="pendiente",
+    )
+
+    class DbFalsa:
+        def add(self, _item):
+            return None
+
+        async def flush(self):
+            return None
+
+    pago = asyncio.run(
+        FinanceService(DbFalsa()).aplicar_saldo_favor_automatico(
+            factura,
+            cliente,
+        )
+    )
+
+    assert factura.estado == "pendiente"
+    assert factura.saldo_pendiente == Decimal("225.00")
+    assert cliente.saldo_a_favor == Decimal("0.00")
+    assert pago.monto_aplicado == Decimal("75.00")
+
+
 def test_invoice_keeps_cancellation_audit_fields():
     assert {
         "motivo_anulacion",
