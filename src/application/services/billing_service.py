@@ -62,7 +62,11 @@ class BillingService:
             return f"${float(valor or 0):.2f}"
 
         return {
-            "detalle_cobro": factura.descripcion or "Detalle no disponible",
+            "detalle_cobro": (
+                factura.detalles
+                or factura.descripcion
+                or "Detalle no disponible"
+            ),
             "periodo_desde": fecha(factura.periodo_desde),
             "periodo_hasta": fecha(factura.periodo_hasta),
             "dias_con_servicio": str(factura.dias_con_servicio or 0),
