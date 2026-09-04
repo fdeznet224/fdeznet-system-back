@@ -20,7 +20,7 @@ from sqlalchemy.sql import func
 from sqlalchemy import text
 from sqlalchemy.orm import relationship
 from .database import Base
-from datetime import datetime
+from datetime import date, datetime
 from sqlalchemy.dialects.mysql import LONGTEXT
 
 # ==========================================
@@ -898,6 +898,55 @@ class FacturaModel(Base):
         "UsuarioModel",
         foreign_keys=[anulada_por_id],
     )
+    conceptos = relationship(
+        "FacturaConceptoModel",
+        back_populates="factura",
+        order_by="FacturaConceptoModel.id",
+    )
+
+
+class FacturaConceptoModel(Base):
+    """Renglón cobrable que puede esperar a la próxima factura mensual."""
+
+    __tablename__ = "factura_conceptos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    factura_id = Column(
+        Integer,
+        ForeignKey("facturas.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=False, index=True)
+    servicio_id = Column(Integer, ForeignKey("servicios.id"), nullable=True, index=True)
+    tipo = Column(String(30), nullable=False, default="cargo", server_default="cargo")
+    concepto = Column(String(150), nullable=False)
+    descripcion = Column(String(500), nullable=True)
+    monto_original = Column(Numeric(12, 2), nullable=False)
+    saldo_pendiente = Column(Numeric(12, 2), nullable=False)
+    estado = Column(String(20), nullable=False, default="pendiente", server_default="pendiente")
+    afecta_corte = Column(Boolean, nullable=False, default=False, server_default="0")
+    fecha_cargo = Column(Date, nullable=False, default=date.today)
+    numero_cuota = Column(Integer, nullable=True)
+    total_cuotas = Column(Integer, nullable=True)
+    cargo_origen_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    factura = relationship("FacturaModel", back_populates="conceptos")
+    cliente = relationship("ClienteModel")
+    servicio = relationship("ServicioModel")
+    aplicaciones_pago = relationship("PagoConceptoModel", back_populates="concepto")
+
+
+class PagoConceptoModel(Base):
+    __tablename__ = "pago_conceptos"
+    id = Column(Integer, primary_key=True)
+    pago_id = Column(Integer, ForeignKey("pagos.id", ondelete="CASCADE"), nullable=False, index=True)
+    concepto_id = Column(Integer, ForeignKey("factura_conceptos.id", ondelete="CASCADE"), nullable=False, index=True)
+    monto_aplicado = Column(Numeric(12, 2), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+    pago = relationship("PagoModel", back_populates="aplicaciones_conceptos")
+    concepto = relationship("FacturaConceptoModel", back_populates="aplicaciones_pago")
 
 
 class SuspensionFacturacionModel(Base):
@@ -1335,6 +1384,7 @@ class PagoModel(Base):
     
     cliente = relationship("ClienteModel", back_populates="pagos")
     factura = relationship("FacturaModel", back_populates="pagos")
+    aplicaciones_conceptos = relationship("PagoConceptoModel", back_populates="pago")
     usuario = relationship(
         "UsuarioModel",
         back_populates="pagos",

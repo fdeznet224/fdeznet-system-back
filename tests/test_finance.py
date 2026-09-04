@@ -11,7 +11,9 @@ from src.application.services.billing_service import BillingService
 from src.infrastructure.models import (
     ClienteModel,
     FacturaModel,
+    FacturaConceptoModel,
     PagoModel,
+    PagoConceptoModel,
     PlanModel,
     ServicioModel,
     SuspensionFacturacionModel,
@@ -122,6 +124,49 @@ def test_automatic_credit_partially_reduces_new_invoice():
     assert pago.monto_aplicado == Decimal("75.00")
 
 
+def test_manual_charge_is_scheduled_in_monthly_installments():
+    class DbFalsa:
+        def __init__(self):
+            self.items = []
+            self.next_id = 1
+
+        def add(self, item):
+            if item.id is None:
+                item.id = self.next_id
+                self.next_id += 1
+            self.items.append(item)
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, _item):
+            return None
+
+    db = DbFalsa()
+    primero, consolidada = asyncio.run(
+        FinanceService(db).registrar_cargo_adicional(
+            cliente_id=3,
+            servicio_id=8,
+            concepto="Cambio de ONU",
+            monto="300.00",
+            descripcion="Equipo nuevo",
+            fecha_vencimiento=date.today(),
+            afecta_corte=False,
+            numero_cuotas=3,
+        )
+    )
+
+    assert consolidada is False
+    assert [item.monto_original for item in db.items] == [
+        Decimal("100.00"), Decimal("100.00"), Decimal("100.00")
+    ]
+    assert [item.numero_cuota for item in db.items] == [1, 2, 3]
+    assert all(item.cargo_origen_id == primero.id for item in db.items)
+
+
 def test_invoice_keeps_cancellation_audit_fields():
     assert {
         "motivo_anulacion",
@@ -152,6 +197,14 @@ def test_invoice_keeps_service_day_breakdown_and_consolidation_fields():
         "motivo_inicio",
         "motivo_fin",
     }.issubset(SuspensionFacturacionModel.__table__.c.keys())
+    assert {
+        "factura_id", "cliente_id", "servicio_id", "tipo", "concepto",
+        "monto_original", "saldo_pendiente", "estado", "afecta_corte",
+        "numero_cuota", "total_cuotas",
+    }.issubset(FacturaConceptoModel.__table__.c.keys())
+    assert {
+        "pago_id", "concepto_id", "monto_aplicado",
+    }.issubset(PagoConceptoModel.__table__.c.keys())
 
 
 @pytest.mark.parametrize(

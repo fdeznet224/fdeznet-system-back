@@ -39,6 +39,7 @@ class CobroFullRequest(BaseModel):
     monto_recibido: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     referencia: Optional[str] = None
     clave_idempotencia: Optional[str] = Field(None, max_length=100)
+    concepto_ids: list[int] = Field(default_factory=list)
 
 class PromesaPagoRequest(BaseModel):
     factura_id: int
@@ -54,6 +55,7 @@ class FacturaManualRequest(BaseModel):
     descripcion: Optional[str] = None
     fecha_vencimiento: Optional[date] = None
     afecta_corte: bool = False
+    numero_cuotas: int = Field(default=1, ge=1, le=24)
 
 
 class MotivoRequest(BaseModel):
@@ -108,6 +110,7 @@ async def get_listado_completo(
                 ClienteModel.politica_cobranza
             ),
             joinedload(FacturaModel.servicio),
+            selectinload(FacturaModel.conceptos),
         )
         .join(ClienteModel)
         .outerjoin(
@@ -268,6 +271,22 @@ async def get_listado_completo(
             "fecha_promesa_pago": f.fecha_promesa_pago, 
             "es_promesa_activa": f.es_promesa_activa,   
             "plan_snapshot": f.plan_snapshot,
+            "conceptos": [
+                {
+                    "id": concepto.id,
+                    "tipo": concepto.tipo,
+                    "concepto": concepto.concepto,
+                    "descripcion": concepto.descripcion,
+                    "monto_original": concepto.monto_original,
+                    "saldo_pendiente": concepto.saldo_pendiente,
+                    "estado": concepto.estado,
+                    "afecta_corte": concepto.afecta_corte,
+                    "fecha_cargo": concepto.fecha_cargo,
+                    "numero_cuota": concepto.numero_cuota,
+                    "total_cuotas": concepto.total_cuotas,
+                }
+                for concepto in f.conceptos
+            ],
             "cliente": {
                 "id": f.cliente.id,
                 "nombre": f.cliente.nombre,
@@ -354,6 +373,7 @@ async def registrar_cobro(
             monto=data.monto_recibido,
             referencia=data.referencia,
             clave_idempotencia=data.clave_idempotencia,
+            concepto_ids=data.concepto_ids or None,
         )
         return resultado
     except ValueError as exc:
@@ -494,7 +514,7 @@ async def crear_factura_manual(
                 "No tienes permiso para facturar este servicio",
             )
 
-    factura, consolidada = await FinanceService(db).registrar_cargo_adicional(
+    cargo, consolidada = await FinanceService(db).registrar_cargo_adicional(
         cliente_id=cliente.id,
         servicio_id=servicio.id if servicio else None,
         concepto=concepto,
@@ -502,29 +522,28 @@ async def crear_factura_manual(
         descripcion=data.descripcion,
         fecha_vencimiento=fecha_vencimiento,
         afecta_corte=data.afecta_corte,
+        numero_cuotas=data.numero_cuotas,
     )
 
     return {
         "status": "ok",
         "mensaje": (
-            "Cargo agregado a la factura mensual"
-            if consolidada
-            else "Factura manual creada correctamente"
+            "Cargo agregado a la próxima factura mensual"
         ),
         "consolidada": consolidada,
         "factura": {
-            "id": factura.id,
+            "id": cargo.id,
             "cliente_id": cliente.id,
             "cliente": cliente.nombre,
-            "tipo_factura": factura.tipo_factura,
-            "concepto": factura.concepto,
-            "descripcion": factura.descripcion,
-            "total": factura.total,
-            "saldo_pendiente": factura.saldo_pendiente,
-            "estado": factura.estado,
-            "afecta_corte": factura.afecta_corte,
-            "fecha_emision": factura.fecha_emision,
-            "fecha_vencimiento": factura.fecha_vencimiento,
+            "tipo_factura": "cargo_pendiente",
+            "concepto": cargo.concepto,
+            "descripcion": cargo.descripcion,
+            "total": cargo.monto_original,
+            "saldo_pendiente": cargo.saldo_pendiente,
+            "estado": cargo.estado,
+            "afecta_corte": cargo.afecta_corte,
+            "fecha_emision": cargo.fecha_cargo,
+            "fecha_vencimiento": data.fecha_vencimiento,
         },
     }
 

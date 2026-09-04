@@ -54,6 +54,7 @@ def construir_detalle_facturacion(
     ajuste_suspension=None,
     cargos_adicionales=None,
     total_factura=None,
+    conceptos_pagados=None,
 ):
     """Construye las filas auditables que se muestran en el recibo."""
     filas = []
@@ -209,6 +210,26 @@ async def generar_recibo_pdf(
     ]))
     elements.append(concept_table)
     elements.append(Spacer(1, 4*mm))
+
+    if conceptos_pagados:
+        filas_conceptos = [[
+            Paragraph("CONCEPTOS PAGADOS", style_label),
+            Paragraph("APLICADO", style_label),
+        ]]
+        for item in conceptos_pagados:
+            filas_conceptos.append([
+                Paragraph(escape(str(item.get("concepto") or "Concepto")), style_normal),
+                Paragraph(f"MX${Decimal(str(item.get('monto') or 0)):,.2f}", style_value),
+            ])
+        tabla_conceptos = Table(filas_conceptos, colWidths=[140*mm, 40*mm])
+        tabla_conceptos.setStyle(TableStyle([
+            ('LINEBELOW', (0, 0), (-1, 0), 1, COLOR_PRIMARIO),
+            ('LINEBELOW', (0, 1), (-1, -1), 0.5, COLOR_LINEAS),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(tabla_conceptos)
+        elements.append(Spacer(1, 4*mm))
 
     detalle_facturacion = construir_detalle_facturacion(
         periodo_desde=periodo_desde,

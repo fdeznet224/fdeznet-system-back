@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Optional, List
 from dateutil.relativedelta import relativedelta
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,7 +8,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 # Modelos
 from src.infrastructure.models import (
-    ClienteModel, FacturaModel, PagoModel, 
+    ClienteModel, FacturaModel, FacturaConceptoModel, PagoConceptoModel, PagoModel,
     UsuarioModel, PlanModel, RouterModel,
     ServicioModel,
     SuspensionFacturacionModel,
@@ -282,6 +283,72 @@ class BillingService:
                     servicio,
                 )
 
+            concepto_internet = FacturaConceptoModel(
+                factura_id=nueva_factura.id,
+                cliente_id=cliente.id,
+                servicio_id=servicio.id,
+                tipo="internet",
+                concepto=(
+                    "Internet prorrateado"
+                    if periodo.es_prorrateada
+                    else "Servicio de internet"
+                ),
+                descripcion=nueva_factura.descripcion,
+                monto_original=nueva_factura.total,
+                saldo_pendiente=nueva_factura.saldo_pendiente,
+                estado="facturado",
+                afecta_corte=True,
+                fecha_cargo=periodo.periodo_desde,
+            )
+            self.db.add(concepto_internet)
+
+            cargos_pendientes = (
+                await self.db.execute(
+                    select(FacturaConceptoModel)
+                    .where(
+                        FacturaConceptoModel.cliente_id == cliente.id,
+                        FacturaConceptoModel.factura_id.is_(None),
+                        FacturaConceptoModel.estado == "pendiente",
+                        FacturaConceptoModel.fecha_cargo <= hoy,
+                        or_(
+                            FacturaConceptoModel.servicio_id == servicio.id,
+                            FacturaConceptoModel.servicio_id.is_(None),
+                        ),
+                    )
+                    .order_by(
+                        FacturaConceptoModel.fecha_cargo.asc(),
+                        FacturaConceptoModel.id.asc(),
+                    )
+                    .with_for_update()
+                )
+            ).scalars().all()
+            total_cargos = sum(
+                (Decimal(cargo.saldo_pendiente or 0) for cargo in cargos_pendientes),
+                Decimal("0.00"),
+            )
+            if total_cargos:
+                nueva_factura.monto = Decimal(nueva_factura.monto or 0) + total_cargos
+                nueva_factura.total = Decimal(nueva_factura.total or 0) + total_cargos
+                nueva_factura.saldo_pendiente = Decimal(nueva_factura.saldo_pendiente or 0) + total_cargos
+                nueva_factura.cargos_adicionales_total = total_cargos
+                for cargo in cargos_pendientes:
+                    cargo.factura_id = nueva_factura.id
+                    cargo.estado = "facturado"
+                detalle_cargos = [
+                    f"{cargo.concepto}"
+                    + (
+                        f" (cuota {cargo.numero_cuota}/{cargo.total_cuotas})"
+                        if cargo.numero_cuota and cargo.total_cuotas
+                        else ""
+                    )
+                    + f": ${Decimal(cargo.saldo_pendiente or 0):.2f}"
+                    for cargo in cargos_pendientes
+                ]
+                nueva_factura.detalles = "\n".join(
+                    [nueva_factura.detalles or "", *detalle_cargos]
+                ).strip()
+                await self.db.flush()
+
             # El crédito se aplica después de cualquier prorrateo para no
             # consumirlo contra un importe provisional. Una factura del ciclo
             # abierto de un servicio suspendido se ajustará al reactivarlo.
@@ -289,10 +356,16 @@ class BillingService:
                 servicio.estado != "suspendido"
                 or periodo.periodo_hasta < hoy
             ):
-                await FinanceService(self.db).aplicar_saldo_favor_automatico(
+                pago_credito = await FinanceService(self.db).aplicar_saldo_favor_automatico(
                     nueva_factura,
                     cliente,
                 )
+                if pago_credito:
+                    await self._distribuir_pago_en_conceptos(
+                        nueva_factura,
+                        pago_credito,
+                        None,
+                    )
 
             servicio.proxima_facturacion = periodo.siguiente_facturacion
             reporte["facturas_generadas"] += 1
@@ -566,6 +639,7 @@ class BillingService:
         monto,
         referencia: str = None,
         clave_idempotencia: str = None,
+        concepto_ids: list[int] | None = None,
     ):
         finanzas = FinanceService(self.db)
         factura_cobrable, _, _ = await self.preparar_factura_cobrable(
@@ -601,6 +675,12 @@ class BillingService:
                 "facturas_pendientes": facturas_pendientes,
             }
 
+        internet_liquidado = await self._distribuir_pago_en_conceptos(
+            factura,
+            nuevo_pago,
+            concepto_ids,
+        )
+
         stmt_c = select(ClienteModel).options(
             selectinload(ClienteModel.plan),
             selectinload(ClienteModel.plantilla),
@@ -620,7 +700,7 @@ class BillingService:
         
         # Reconexión automática SOLO si la factura quedó pagada por completo
         # FACTURACION_ISP_V2_SAFE_REACTIVATION
-        if pago_completado and estado_previo == "suspendido":
+        if internet_liquidado and estado_previo == "suspendido":
             await self.db.flush()
             tiene_otra_deuda = (
                 await self._servicio_tiene_deuda_pendiente(
@@ -676,6 +756,19 @@ class BillingService:
                         or factura.mes_correspondiente
                         or "Pago de servicio"
                     )
+                    conceptos_pagados = (
+                        await self.db.execute(
+                            select(
+                                FacturaConceptoModel.concepto,
+                                PagoConceptoModel.monto_aplicado,
+                            )
+                            .join(
+                                PagoConceptoModel,
+                                PagoConceptoModel.concepto_id == FacturaConceptoModel.id,
+                            )
+                            .where(PagoConceptoModel.pago_id == nuevo_pago.id)
+                        )
+                    ).all()
                     ruta_pdf = await generar_recibo_pdf(
                         nombre_cliente=cliente.nombre,
                         monto=nuevo_pago.monto_total,
@@ -694,6 +787,10 @@ class BillingService:
                         ajuste_suspension=factura.ajuste_suspension,
                         cargos_adicionales=factura.cargos_adicionales_total,
                         total_factura=factura.total,
+                        conceptos_pagados=[
+                            {"concepto": fila.concepto, "monto": fila.monto_aplicado}
+                            for fila in conceptos_pagados
+                        ],
                     )
                     await notificador.notificar(
                         tipo_evento="pago_recibido", 
@@ -737,6 +834,77 @@ class BillingService:
             "facturas_pendientes_cant": len(facturas_pendientes),
             "facturas_pendientes": facturas_pendientes,
         }
+
+    async def _distribuir_pago_en_conceptos(
+        self,
+        factura: FacturaModel,
+        pago: PagoModel,
+        concepto_ids: list[int] | None,
+    ) -> bool:
+        """Aplica el importe por renglón y devuelve si internet quedó liquidado."""
+        consulta = select(FacturaConceptoModel).where(
+            FacturaConceptoModel.factura_id == factura.id,
+            FacturaConceptoModel.saldo_pendiente > 0,
+        )
+        if concepto_ids:
+            consulta = consulta.where(FacturaConceptoModel.id.in_(concepto_ids))
+        conceptos = (
+            await self.db.execute(
+                consulta.order_by(
+                    FacturaConceptoModel.afecta_corte.desc(),
+                    FacturaConceptoModel.fecha_cargo.asc(),
+                    FacturaConceptoModel.id.asc(),
+                ).with_for_update()
+            )
+        ).scalars().all()
+        if concepto_ids and len({item.id for item in conceptos}) != len(set(concepto_ids)):
+            raise ValueError("Algún concepto seleccionado no pertenece a la factura o ya está pagado")
+
+        restante = Decimal(pago.monto_aplicado or 0)
+        saldo_seleccionado = sum(
+            (Decimal(item.saldo_pendiente or 0) for item in conceptos),
+            Decimal("0.00"),
+        )
+        if concepto_ids and restante > saldo_seleccionado:
+            raise ValueError(
+                f"El monto excede el saldo de los conceptos seleccionados (${saldo_seleccionado})"
+            )
+        for concepto in conceptos:
+            if restante <= 0:
+                break
+            saldo = Decimal(concepto.saldo_pendiente or 0)
+            aplicado = min(restante, saldo)
+            concepto.saldo_pendiente = (saldo - aplicado).quantize(Decimal("0.01"))
+            concepto.estado = "pagado" if concepto.saldo_pendiente == 0 else "abonado"
+            self.db.add(PagoConceptoModel(
+                pago_id=pago.id,
+                concepto_id=concepto.id,
+                monto_aplicado=aplicado,
+            ))
+            restante -= aplicado
+
+        total_conceptos = (
+            await self.db.execute(
+                select(func.count(FacturaConceptoModel.id)).where(
+                    FacturaConceptoModel.factura_id == factura.id,
+                )
+            )
+        ).scalar_one()
+        if total_conceptos == 0:
+            return Decimal(factura.saldo_pendiente or 0) == 0
+
+        internet_pendiente = (
+            await self.db.execute(
+                select(func.count(FacturaConceptoModel.id)).where(
+                    FacturaConceptoModel.factura_id == factura.id,
+                    FacturaConceptoModel.afecta_corte.is_(True),
+                    FacturaConceptoModel.saldo_pendiente > 0,
+                )
+            )
+        ).scalar_one()
+        if internet_pendiente == 0:
+            factura.afecta_corte = False
+        return internet_pendiente == 0
 
     # ==========================================
     # HELPERS

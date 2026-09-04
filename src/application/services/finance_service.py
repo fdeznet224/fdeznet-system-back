@@ -10,8 +10,10 @@ from src.application.services.billing_calendar_service import BillingCalendarSer
 from src.infrastructure.models import (
     ClienteModel,
     DescuentoFacturaModel,
+    FacturaConceptoModel,
     FacturaModel,
     PagoModel,
+    PagoConceptoModel,
     PoliticaCobranzaModel,
     PromesaPagoHistorialModel,
     ServicioModel,
@@ -484,104 +486,40 @@ class FinanceService:
         descripcion: str | None,
         fecha_vencimiento: date,
         afecta_corte: bool,
-    ) -> tuple[FacturaModel, bool]:
-        """Agrega un cargo a una mensualidad abierta o crea una factura aparte.
-
-        Una factura con pagos aplicados no se modifica porque hacerlo rompería
-        los saldos históricos necesarios para poder anular esos pagos.
-        """
+        numero_cuotas: int = 1,
+    ) -> tuple[FacturaConceptoModel, bool]:
+        """Guarda un concepto para incorporarlo a la próxima mensualidad."""
         cargo = self.dinero(monto)
-        condiciones = [
-            FacturaModel.cliente_id == cliente_id,
-            FacturaModel.estado.in_(["pendiente", "vencida"]),
-            FacturaModel.tipo_factura.in_(["mensual", "prorrateo"]),
-        ]
-        if servicio_id is None:
-            condiciones.append(FacturaModel.servicio_id.is_(None))
-        else:
-            condiciones.append(FacturaModel.servicio_id == servicio_id)
-
-        candidatas = (
-            await self.db.execute(
-                select(FacturaModel)
-                .where(*condiciones)
-                .order_by(FacturaModel.fecha_vencimiento.desc(), FacturaModel.id.desc())
-                .with_for_update()
-            )
-        ).scalars().all()
-
-        for factura in candidatas:
-            pagos_aplicados = (
-                await self.db.execute(
-                    select(PagoModel.id)
-                    .where(
-                        PagoModel.factura_id == factura.id,
-                        PagoModel.estado == "aplicado",
-                    )
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if pagos_aplicados is not None:
-                continue
-
-            factura.monto = self.dinero(
-                Decimal(factura.monto or 0) + cargo
-            )
-            factura.total = self.dinero(
-                Decimal(factura.total or 0) + cargo
-            )
-            factura.saldo_pendiente = self.dinero(
-                Decimal(factura.saldo_pendiente or 0) + cargo
-            )
-            factura.cargos_adicionales_total = self.dinero(
-                Decimal(factura.cargos_adicionales_total or 0) + cargo
-            )
-            detalle_cargo = f"Cargo adicional - {concepto.strip()}"
-            if descripcion and descripcion.strip():
-                detalle_cargo += f": {descripcion.strip()}"
-            factura.detalles = "\n".join(
-                parte for parte in [factura.detalles, detalle_cargo] if parte
-            )
-            await self.db.commit()
-            await self.db.refresh(factura)
-            return factura, True
-
-        factura = FacturaModel(
+        cuotas = max(1, min(int(numero_cuotas or 1), 24))
+        base = (cargo / cuotas).quantize(CENTAVO)
+        importes = [base for _ in range(cuotas)]
+        importes[-1] += cargo - sum(importes, Decimal("0.00"))
+        conceptos = []
+        for indice, importe in enumerate(importes, start=1):
+            concepto_pendiente = FacturaConceptoModel(
             cliente_id=cliente_id,
             servicio_id=servicio_id,
-            plan_snapshot="Cargo manual",
-            detalles=descripcion or concepto,
-            monto=cargo,
-            impuesto=Decimal("0.00"),
-            total=cargo,
-            saldo_pendiente=cargo,
-            fecha_emision=date.today(),
-            fecha_vencimiento=fecha_vencimiento,
-            fecha_limite_corte=fecha_vencimiento if afecta_corte else None,
-            mes_correspondiente=f"Cargo manual - {concepto}",
+            factura_id=None,
+            tipo="cargo",
+            concepto=concepto.strip(),
+            descripcion=(descripcion or "").strip() or None,
+            monto_original=importe,
+            saldo_pendiente=importe,
             estado="pendiente",
-            periodo_desde=None,
-            periodo_hasta=None,
-            dias_facturados=1,
-            dias_periodo=1,
-            precio_mensual_snapshot=cargo,
-            precio_diario=cargo,
-            es_prorrateada=False,
-            tipo_factura="manual",
-            concepto=concepto,
-            descripcion=descripcion,
             afecta_corte=afecta_corte,
-            creada_manual=True,
-            monto_servicio_original=Decimal("0.00"),
-            impuesto_servicio_original=Decimal("0.00"),
-            cargos_adicionales_total=cargo,
-            dias_con_servicio=0,
-            dias_sin_servicio=0,
-        )
-        self.db.add(factura)
+            fecha_cargo=date.today() + relativedelta(months=indice - 1),
+            numero_cuota=indice if cuotas > 1 else None,
+            total_cuotas=cuotas if cuotas > 1 else None,
+            )
+            self.db.add(concepto_pendiente)
+            conceptos.append(concepto_pendiente)
+        await self.db.flush()
+        origen = conceptos[0].id
+        for item in conceptos:
+            item.cargo_origen_id = origen
         await self.db.commit()
-        await self.db.refresh(factura)
-        return factura, False
+        await self.db.refresh(conceptos[0])
+        return conceptos[0], False
 
     async def anular_factura(
         self,
@@ -722,6 +660,33 @@ class FinanceService:
             else "pendiente"
         )
         factura.fecha_pago_real = None
+        aplicaciones = (
+            await self.db.execute(
+                select(PagoConceptoModel)
+                .where(PagoConceptoModel.pago_id == pago.id)
+                .with_for_update()
+            )
+        ).scalars().all()
+        restaura_internet = False
+        for aplicacion in aplicaciones:
+            concepto = await self.db.get(
+                FacturaConceptoModel,
+                aplicacion.concepto_id,
+                with_for_update=True,
+            )
+            concepto.saldo_pendiente = (
+                Decimal(concepto.saldo_pendiente or 0)
+                + Decimal(aplicacion.monto_aplicado or 0)
+            ).quantize(CENTAVO)
+            concepto.estado = (
+                "facturado"
+                if concepto.saldo_pendiente == concepto.monto_original
+                else "abonado"
+            )
+            restaura_internet = restaura_internet or bool(concepto.afecta_corte)
+            await self.db.delete(aplicacion)
+        if restaura_internet:
+            factura.afecta_corte = True
         pago.estado = "anulado"
         pago.motivo_anulacion = motivo.strip()
         pago.anulado_por_id = usuario_id
