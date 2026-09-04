@@ -4,7 +4,10 @@ from src.application.helpers.pdf_generator import (
     construir_detalle_facturacion,
     convertir_monto_a_texto,
     formatear_fecha_en_espanol,
+    generar_recibo_pdf,
 )
+
+import asyncio
 
 
 def test_construye_detalle_facturacion_con_dias_y_ajuste():
@@ -43,3 +46,25 @@ def test_convierte_un_entero_como_pesos_y_no_como_centavos():
     assert convertir_monto_a_texto(50) == (
         "CINCUENTA PESOS CON CERO CENTAVOS"
     )
+
+
+def test_genera_recibo_con_conceptos_pagados(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    ruta = asyncio.run(
+        generar_recibo_pdf(
+            nombre_cliente="Cliente Prueba",
+            monto=300,
+            concepto="Mensualidad de internet",
+            descripcion="Septiembre 2026",
+            fecha_pago=datetime(2026, 9, 4, 14, 0),
+            folio=900,
+            nueva_fecha_vencimiento=date(2026, 10, 1),
+            conceptos_pagados=[
+                {"concepto": "Internet", "monto": 300},
+            ],
+        )
+    )
+
+    assert ruta.endswith(".pdf")
+    assert (tmp_path / "static" / "recibos").is_dir()

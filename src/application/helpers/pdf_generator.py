@@ -101,6 +101,7 @@ async def generar_recibo_pdf(
     ajuste_suspension=None,
     cargos_adicionales=None,
     total_factura=None,
+    conceptos_pagados=None,
 ):
     """
     Genera un PDF con diseño minimalista FdezNet (Azul y Blanco) incluyendo el Método de Pago.
