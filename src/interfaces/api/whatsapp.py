@@ -333,6 +333,7 @@ def renderizar_mensaje_campana(
         "apellido": " ".join(partes[1:]) if len(partes) > 1 else "",
         "telefono": numero or "",
         "cedula": getattr(cliente, "cedula", None) or "",
+        "contrato": getattr(cliente, "cedula", None) or "",
         "zona": (
             cliente.zona.nombre
             if cliente and cliente.zona
@@ -367,9 +368,9 @@ async def procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db
     cedula_input = mensaje_texto.upper().strip()
     cliente_final = await db.get(ClienteModel, estado["cliente_id"])
 
-    # Verificación de firma: Si viene de "confirmar", debe escribir su cédula exacta
+    # Verificación de firma: debe escribir su número de contrato exacto.
     if cedula_input != "SI" and cedula_input != cliente_final.cedula:
-        await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="❌ Cédula de seguridad incorrecta. Inténtalo de nuevo o escribe 'cancelar'.")
+        await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="❌ Número de contrato incorrecto. Inténtalo de nuevo o escribe 'cancelar'.")
         return {"status": "firma_invalida"}
 
     factura = await obtener_factura_cobrable(db, cliente_final.id)
@@ -1014,7 +1015,7 @@ async def webhook_recibir_mensaje(
                 telefono=telefono_raw,
                 mensaje=(
                     "⏳ Puedo ayudarte a registrar una promesa y, si aplica, "
-                    "reactivar tu servicio. Escribe tu *Cédula de Cliente*."
+                    "reactivar tu servicio. Escribe tu *número de contrato*."
                 ),
             )
             return {"status": "bot_promesa_automatico"}
@@ -1023,7 +1024,7 @@ async def webhook_recibir_mensaje(
                 telefono=telefono_raw,
                 mensaje=(
                     "📊 Para consultar tu servicio y saldo, escribe tu "
-                    "*Cédula de Cliente*."
+                    "*número de contrato*."
                 ),
             )
             return {"status": "bot_estado_automatico"}
@@ -1032,7 +1033,7 @@ async def webhook_recibir_mensaje(
                 telefono=telefono_raw,
                 mensaje=(
                     "📡 Vamos a revisar tu servicio. Escribe tu "
-                    "*Cédula de Cliente*."
+                    "*número de contrato*."
                 ),
             )
             return {"status": "bot_soporte_automatico"}
@@ -1082,11 +1083,11 @@ async def webhook_recibir_mensaje(
                 
             elif texto_limpio == "2":
                 estado["paso"] = "VALIDAR_CEDULA_PROMESA"
-                res = "⏳ *Promesa de Pago*\nPor favor escribe tu *Cédula de Cliente* para buscar tu cuenta (Ej: 329B)."
+                res = "⏳ *Promesa de Pago*\nPor favor escribe tu *número de contrato* para buscar tu cuenta (Ej: 329B)."
                 
             elif texto_limpio == "3":
                 estado["paso"] = "VALIDAR_CEDULA_ESTADO"
-                res = "📊 *Estado del Servicio*\nPor favor, escribe tu *Cédula de Cliente* para buscar tus datos."
+                res = "📊 *Estado del Servicio*\nPor favor, escribe tu *número de contrato* para buscar tus datos."
 
             elif texto_limpio == "4":
                 res = await obtener_datos_pago(db)
@@ -1096,7 +1097,7 @@ async def webhook_recibir_mensaje(
                 estado["paso"] = "VALIDAR_CEDULA_SOPORTE"
                 res = (
                     "📡 *Revisión de conexión*\nEscribe tu "
-                    "*Cédula de Cliente* para revisar tu servicio."
+                    "*número de contrato* para revisar tu servicio."
                 )
                 
             else:
@@ -1190,7 +1191,7 @@ async def webhook_recibir_mensaje(
                         await db.commit()
                         estado["paso"] = "VALIDACION_FINAL_PAGO" 
                         estado["cliente_id"] = cliente_ocr.id
-                        res = f"Detecté la cédula *{cedula_ocr}* en el ticket.\n\n¿Deseas aplicar el pago de *${resultado_ocr['monto']}* a la cuenta de *{cliente_ocr.nombre}*? (Responde *SI* o *NO*)"
+                        res = f"Detecté el número de contrato *{cedula_ocr}* en el comprobante.\n\n¿Deseas aplicar el pago de *${resultado_ocr['monto']}* a la cuenta de *{cliente_ocr.nombre}*? (Responde *SI* o *NO*)"
                         await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
                         return {"status": "confirmar_ocr"}
 
@@ -1202,7 +1203,7 @@ async def webhook_recibir_mensaje(
                     res = f"Detecto que envías desde el celular de *{cliente_h.nombre}*.\n\nHe leído un pago por *${resultado_ocr['monto']}*.\n¿Deseas aplicar este pago a tu cuenta? (Responde *SI* o *NO*)"
                 else:
                     estado["paso"] = "PEDIR_CEDULA_PAGO"
-                    res = f"He leído tu ticket por *${resultado_ocr['monto']}*.\n¿A qué cuenta aplicamos el pago? Escribe la *Cédula de Cliente* (Ej. 329B)."
+                    res = f"He leído tu comprobante por *${resultado_ocr['monto']}*.\n¿A qué cuenta aplicamos el pago? Escribe el *número de contrato* (Ej. 329B)."
 
                 await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
                 return {"status": "bot_init_pago"}
@@ -1214,7 +1215,7 @@ async def webhook_recibir_mensaje(
             if texto_limpio in {"si", "sí", "s"}:
                 estado["paso"] = "VALIDAR_CEDULA_PROMESA"
                 res = (
-                    "⏳ Escribe tu *Cédula de Cliente* para registrar la "
+                    "⏳ Escribe tu *número de contrato* para registrar la "
                     "promesa y revisar si se puede reactivar el servicio."
                 )
             elif texto_limpio in {"no", "n"}:
@@ -1231,10 +1232,10 @@ async def webhook_recibir_mensaje(
         elif estado["paso"] == "CONFIRMAR_NOMBRE_PAGO":
             if "si" in texto_limpio:
                 estado["paso"] = "VALIDACION_FINAL_PAGO" 
-                res = "¡Perfecto! ✅ Escribe tu *Cédula de 4 dígitos* como firma de seguridad para confirmar la transacción."
+                res = "¡Perfecto! ✅ Escribe tu *número de contrato* como firma de seguridad para confirmar la transacción."
             else:
                 estado["paso"] = "PEDIR_CEDULA_PAGO"
-                res = "Entendido. Escribe la *Cédula de Cliente* a la que deseas aplicar el pago (Ej. la cuenta de un familiar)."
+                res = "Entendido. Escribe el *número de contrato* al que deseas aplicar el pago (Ej. la cuenta de un familiar)."
             
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "bot_confirmando_pago"}
@@ -1258,7 +1259,7 @@ async def webhook_recibir_mensaje(
                 estado["cliente_id"] = cliente_final.id
                 return await procesar_validacion_final_pago("si", estado, telefono_raw, db, wa_service)
             else:
-                res = "❌ Cédula incorrecta. Inténtalo de nuevo o escribe 'cancelar'."
+                res = "❌ Número de contrato incorrecto. Inténtalo de nuevo o escribe 'cancelar'."
                 await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
                 return {"status": "cedula_invalida"}
 
@@ -1295,7 +1296,7 @@ async def webhook_recibir_mensaje(
                         "(ejemplo: *15/09/2026*)."
                     )
             else:
-                res = "❌ Cédula incorrecta. Inténtalo de nuevo o escribe 'cancelar'."
+                res = "❌ Número de contrato incorrecto. Inténtalo de nuevo o escribe 'cancelar'."
             
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "pidiendo_dia_promesa"}
@@ -1357,7 +1358,7 @@ async def webhook_recibir_mensaje(
             ).scalars().first()
             if not cliente_final:
                 res = (
-                    "❌ Cédula incorrecta. Inténtalo nuevamente o escribe "
+                    "❌ Número de contrato incorrecto. Inténtalo nuevamente o escribe "
                     "'cancelar'."
                 )
             elif cliente_final.estado == "suspendido":
@@ -1478,7 +1479,7 @@ async def webhook_recibir_mensaje(
                 )
                 del bot_memory[telefono_raw]
             else:
-                res = "❌ Cédula incorrecta. Inténtalo de nuevo o escribe 'cancelar'."
+                res = "❌ Número de contrato incorrecto. Inténtalo de nuevo o escribe 'cancelar'."
             
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "bot_estado_finished"}

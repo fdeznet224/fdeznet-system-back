@@ -94,7 +94,7 @@ class OCRService:
         }
 
     async def procesar_ticket(self, url_imagen: str):
-        """Descarga una imagen y extrae folio, monto y cédula."""
+        """Descarga una imagen y extrae folio, monto y número de contrato."""
         temp_path = None
 
         try:

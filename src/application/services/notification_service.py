@@ -136,6 +136,7 @@ class NotificationService:
             "telefono": cliente.telefono,
             "direccion": cliente.direccion or "Domicilio conocido",
             "cedula": cliente.cedula or "Pendiente",
+            "contrato": cliente.cedula or "Pendiente",
             "zona": cliente.zona.nombre if cliente.zona else "Cobertura General",
             
             # Hardware e IP

@@ -14,6 +14,7 @@ from src.interfaces.api.whatsapp import (
     mensaje_audio_no_disponible,
     mensaje_fuera_de_horario,
     obtener_factura_cobrable,
+    renderizar_mensaje_campana,
 )
 
 
@@ -141,3 +142,21 @@ def test_foto_de_comprobante_tiene_prioridad_sobre_el_texto():
         "[FOTO_COMPROBANTE]",
         es_comprobante=True,
     ) == "pago"
+
+
+def test_plantillas_usan_numero_de_contrato_sin_romper_variable_anterior():
+    cliente = SimpleNamespace(
+        cedula="329B",
+        zona=None,
+        router=None,
+        plan=None,
+    )
+
+    mensaje = renderizar_mensaje_campana(
+        "Contrato: {contrato}; compatibilidad: {cedula}",
+        nombre="Cliente",
+        numero="529611111111",
+        cliente=cliente,
+    )
+
+    assert mensaje == "Contrato: 329B; compatibilidad: 329B"

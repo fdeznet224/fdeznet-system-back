@@ -358,7 +358,7 @@ async def descargar_plantilla_preparada(
 
             filas.append({
                 "nombre_cliente": nombre_mk, 
-                "cedula": "", # 👈 NUEVA COLUMNA: Aquí pegarás las cédulas viejas
+                "numero_contrato": "",
                 "ip_asignada": ip,
                 "identificador_onu": item.get('caller-id') or '', 
                 "usuario_pppoe": item.get('name', ''),
@@ -476,14 +476,16 @@ async def procesar_importacion(
                 errores.append(f"Fila {fila}: Usuario PPPoE duplicado.")
                 continue
 
-            # 🔥 4. LÓGICA DE CÉDULA: ¿Vieja o Nueva? 🔥
-            cedula_excel = str(row.get('cedula', '')).strip().upper()
+            # Se acepta el encabezado anterior para importar archivos existentes.
+            cedula_excel = str(
+                row.get("numero_contrato") or row.get("cedula") or ""
+            ).strip().upper()
             cedula_final = ""
 
             if cedula_excel:
-                # Si escribiste una cédula, verificamos que no esté repetida
+                # Si se proporcionó un contrato, verificamos que no esté repetido.
                 if cedula_excel in cedulas_existentes:
-                    errores.append(f"Fila {fila}: La cédula {cedula_excel} ya existe. Se omitió este cliente.")
+                    errores.append(f"Fila {fila}: El número de contrato {cedula_excel} ya existe. Se omitió este cliente.")
                     continue
                 cedula_final = cedula_excel
                 cedulas_existentes.add(cedula_final)

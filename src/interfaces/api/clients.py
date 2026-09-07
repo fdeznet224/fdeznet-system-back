@@ -246,7 +246,7 @@ async def buscar_clientes_global(
             or_(
                 ClienteModel.nombre.ilike(filtro),
                 ClienteModel.telefono.ilike(filtro),
-                ClienteModel.cedula.ilike(filtro),       # 👈 Búsqueda limpia por Cédula
+                ClienteModel.cedula.ilike(filtro),       # 👈 Búsqueda limpia por Número de contrato
                 ClienteModel.user_pppoe.ilike(filtro),   # ⚡ Extra: Puedes buscar por usuario PPPoE
                 ClienteModel.ip_asignada.ilike(filtro)   # ⚡ Extra: Puedes buscar por IP asignada
             )
@@ -277,7 +277,7 @@ async def buscar_clientes_global(
 @router.get("/", response_model=List[ClienteResponse])
 async def listar_clientes(
     router_id: Optional[int] = None, 
-    search: Optional[str] = Query(None, description="Buscar por Nombre, SN/Cédula o IP"),
+    search: Optional[str] = Query(None, description="Buscar por nombre, número de contrato o IP"),
     tecnico_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(
