@@ -2,6 +2,7 @@ import os
 import re
 import httpx
 import logging
+import unicodedata
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import List, Optional
@@ -28,6 +29,7 @@ from src.infrastructure.models import (
     UsuarioModel,
     ConfiguracionModel,
     ConfiguracionSistema,  # 👈 Añadido para poder alertarte de fraudes
+    PlantillaMensajeModel,
 )
 from src.infrastructure.whatsapp_client import (
     GLOBAL_SETTINGS,
@@ -94,9 +96,8 @@ def mensaje_fuera_de_horario() -> str:
         "• Lunes a viernes: 8:00 a. m. a 8:00 p. m.\n"
         "• Sábado: 9:00 a. m. a 2:00 p. m.\n"
         "• Domingo: cerrado.\n\n"
-        "Tu mensaje quedó registrado para que un asesor lo revise. "
-        "Para consultar saldo, reportar un pago o registrar una promesa, "
-        "escribe *fdezbot*."
+        "FdezBot está disponible ahora para ayudarte con pagos, saldo, "
+        "promesas y problemas de conexión."
     )
 
 
@@ -113,9 +114,88 @@ def construir_menu_bot() -> str:
         "Soy tu asistente de pagos y servicios. Elige una opción:\n\n"
         "1️⃣ *Reportar pago* (transferencia o depósito)\n"
         "2️⃣ *Promesa de pago* (puede reactivar tu servicio)\n"
-        "3️⃣ *Consultar mi servicio y saldo*\n\n"
-        "👉 Responde sólo con *1*, *2* o *3*.\n"
+        "3️⃣ *Consultar mi servicio y saldo*\n"
+        "4️⃣ *Datos para depósito o transferencia*\n"
+        "5️⃣ *No tengo internet*\n\n"
+        "👉 Responde con un número del *1* al *5*.\n"
         "Escribe *menú* para volver aquí o *cancelar* para salir."
+    )
+
+
+def normalizar_texto_bot(texto: str) -> str:
+    texto = unicodedata.normalize("NFKD", (texto or "").lower())
+    return "".join(
+        caracter
+        for caracter in texto
+        if not unicodedata.combining(caracter)
+    )
+
+
+def detectar_intencion_bot(
+    texto: str,
+    *,
+    es_comprobante: bool = False,
+) -> str:
+    """Clasifica por reglas las solicitudes más comunes del ISP."""
+    if es_comprobante:
+        return "pago"
+    limpio = normalizar_texto_bot(texto)
+    palabras = set(re.findall(r"[a-z0-9]+", limpio))
+    if any(
+        frase in limpio
+        for frase in (
+            "numero de cuenta",
+            "a que cuenta",
+            "donde deposito",
+            "donde transfiero",
+        )
+    ):
+        return "datos_pago"
+    if palabras & {
+        "cuenta",
+        "clabe",
+        "deposito",
+        "depositar",
+        "transferencia",
+        "transferir",
+    }:
+        return "datos_pago"
+    if any(
+        frase in limpio
+        for frase in (
+            "no tengo internet",
+            "sin internet",
+            "no hay internet",
+            "no tengo servicio",
+        )
+    ):
+        return "sin_internet"
+    if palabras & {"reactivar", "reactivacion", "reconexion", "activar"}:
+        return "promesa"
+    if palabras & {"saldo", "debo", "deuda", "vencimiento", "servicio"}:
+        return "estado"
+    if palabras & {"pague", "pago", "comprobante", "ticket"}:
+        return "pago"
+    if palabras & {"promesa", "prorroga"}:
+        return "promesa"
+    return "menu"
+
+
+async def obtener_datos_pago(db: AsyncSession) -> str:
+    plantilla = (
+        await db.execute(
+            select(PlantillaMensajeModel).where(
+                PlantillaMensajeModel.tipo == "datos_pago",
+                PlantillaMensajeModel.activo.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if plantilla and plantilla.texto.strip():
+        return "🏦 *Datos para realizar tu pago*\n\n" + plantilla.texto.strip()
+    return (
+        "🏦 Los datos bancarios todavía no están publicados en el "
+        "autoservicio. Tu solicitud quedó registrada y un asesor te enviará "
+        "la cuenta correcta en el próximo horario de atención."
     )
 
 
@@ -602,6 +682,68 @@ async def webhook_recibir_mensaje(
         )
         return {"status": "palabra_anterior"}
 
+    # Fuera del horario, cualquier mensaje inicia el autoservicio. Una foto de
+    # comprobante entra directamente al análisis, sin exigir una palabra clave.
+    if esta_fuera_de_horario() and telefono_raw not in bot_memory:
+        intencion = detectar_intencion_bot(
+            mensaje_texto,
+            es_comprobante=bool(
+                media_url
+                and "[FOTO_COMPROBANTE]" in mensaje_texto.upper()
+            ),
+        )
+        paso_por_intencion = {
+            "pago": "ESPERANDO_FOTO_PAGO",
+            "promesa": "VALIDAR_CEDULA_PROMESA",
+            "estado": "VALIDAR_CEDULA_ESTADO",
+            "sin_internet": "VALIDAR_CEDULA_SOPORTE",
+            "menu": "ESPERANDO_OPCION",
+        }
+        if intencion == "datos_pago":
+            await wa_service.enviar_mensaje(
+                telefono=telefono_raw,
+                mensaje=await obtener_datos_pago(db),
+            )
+            return {"status": "bot_datos_pago"}
+
+        bot_memory[telefono_raw] = {
+            "paso": paso_por_intencion[intencion],
+            "iniciado_en": datetime.now(),
+        }
+        if intencion == "promesa":
+            await wa_service.enviar_mensaje(
+                telefono=telefono_raw,
+                mensaje=(
+                    "⏳ Puedo ayudarte a registrar una promesa y, si aplica, "
+                    "reactivar tu servicio. Escribe tu *Cédula de Cliente*."
+                ),
+            )
+            return {"status": "bot_promesa_automatico"}
+        if intencion == "estado":
+            await wa_service.enviar_mensaje(
+                telefono=telefono_raw,
+                mensaje=(
+                    "📊 Para consultar tu servicio y saldo, escribe tu "
+                    "*Cédula de Cliente*."
+                ),
+            )
+            return {"status": "bot_estado_automatico"}
+        if intencion == "sin_internet":
+            await wa_service.enviar_mensaje(
+                telefono=telefono_raw,
+                mensaje=(
+                    "📡 Vamos a revisar tu servicio. Escribe tu "
+                    "*Cédula de Cliente*."
+                ),
+            )
+            return {"status": "bot_soporte_automatico"}
+        if intencion == "menu":
+            await wa_service.enviar_mensaje(
+                telefono=telefono_raw,
+                mensaje=mensaje_fuera_de_horario() + "\n\n" + construir_menu_bot(),
+            )
+            return {"status": "bot_automatico"}
+
     # =========================================================
     # 3. LÓGICA DEL BOT 
     # =========================================================
@@ -646,9 +788,20 @@ async def webhook_recibir_mensaje(
             elif texto_limpio == "3":
                 estado["paso"] = "VALIDAR_CEDULA_ESTADO"
                 res = "📊 *Estado del Servicio*\nPor favor, escribe tu *Cédula de Cliente* para buscar tus datos."
+
+            elif texto_limpio == "4":
+                res = await obtener_datos_pago(db)
+                del bot_memory[telefono_raw]
+
+            elif texto_limpio == "5":
+                estado["paso"] = "VALIDAR_CEDULA_SOPORTE"
+                res = (
+                    "📡 *Revisión de conexión*\nEscribe tu "
+                    "*Cédula de Cliente* para revisar tu servicio."
+                )
                 
             else:
-                res = "❌ Opción no válida. Por favor, responde 1, 2 o 3. (Escribe 'cancelar' para salir)."
+                res = "❌ Opción no válida. Responde con un número del 1 al 5. (Escribe 'cancelar' para salir)."
             
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "procesando_menu"}
@@ -661,7 +814,18 @@ async def webhook_recibir_mensaje(
                 resultado_ocr = await ocr_tool.procesar_ticket(media_url)
                 
                 if not resultado_ocr["exito"]:
-                    await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="⚠️ No logré leer el folio o monto. Envía una foto más clara, sin reflejos, o escribe 'cancelar'.")
+                    estado["paso"] = "CONFIRMAR_PROMESA_COMPROBANTE"
+                    await wa_service.enviar_mensaje(
+                        telefono=telefono_raw,
+                        mensaje=(
+                            "⚠️ No pude leer con seguridad el folio o monto. "
+                            "La imagen quedó guardada para revisión humana y "
+                            "*no se registró un pago automático*.\n\n"
+                            "Si tu servicio está suspendido, puedo iniciar una "
+                            "promesa de pago para intentar reactivarlo. "
+                            "¿Deseas continuar? Responde *SI* o *NO*."
+                        ),
+                    )
                     return {"status": "ocr_failed"}
 
                 # 🛡️ CAPA 1: Evitar Folios Duplicados
@@ -714,6 +878,24 @@ async def webhook_recibir_mensaje(
             else:
                 await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="⚠️ Estoy esperando una FOTO de tu comprobante. (Escribe 'cancelar' para salir).")
                 return {"status": "esperando_foto"}
+
+        elif estado["paso"] == "CONFIRMAR_PROMESA_COMPROBANTE":
+            if texto_limpio in {"si", "sí", "s"}:
+                estado["paso"] = "VALIDAR_CEDULA_PROMESA"
+                res = (
+                    "⏳ Escribe tu *Cédula de Cliente* para registrar la "
+                    "promesa y revisar si se puede reactivar el servicio."
+                )
+            elif texto_limpio in {"no", "n"}:
+                del bot_memory[telefono_raw]
+                res = (
+                    "✅ Entendido. Tu comprobante quedó en el chat para que "
+                    "un asesor lo verifique en el próximo horario de atención."
+                )
+            else:
+                res = "Por favor responde *SI* o *NO*."
+            await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
+            return {"status": "promesa_comprobante"}
 
         elif estado["paso"] == "CONFIRMAR_NOMBRE_PAGO":
             if "si" in texto_limpio:
@@ -822,6 +1004,62 @@ async def webhook_recibir_mensaje(
 
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "promesa_finalizada"}
+
+        # --- FLUJO 4: DIAGNÓSTICO BÁSICO SIN INTERNET ---
+        elif estado["paso"] == "VALIDAR_CEDULA_SOPORTE":
+            cedula_input = mensaje_texto.upper().strip()
+            cliente_final = (
+                await db.execute(
+                    select(ClienteModel).where(
+                        ClienteModel.cedula == cedula_input
+                    )
+                )
+            ).scalars().first()
+            if not cliente_final:
+                res = (
+                    "❌ Cédula incorrecta. Inténtalo nuevamente o escribe "
+                    "'cancelar'."
+                )
+            elif cliente_final.estado == "suspendido":
+                factura = await obtener_factura_cobrable(db, cliente_final.id)
+                if not factura:
+                    del bot_memory[telefono_raw]
+                    res = (
+                        f"🔴 Hola, *{cliente_final.nombre}*. Tu servicio aparece "
+                        "suspendido, pero no encontré una deuda a la cual aplicar "
+                        "una promesa. El caso quedó registrado para revisión."
+                    )
+                elif factura.es_promesa_activa:
+                    del bot_memory[telefono_raw]
+                    res = (
+                        "⚠️ Ya tienes una promesa activa hasta el "
+                        f"{factura.fecha_promesa_pago}. El reporte quedó "
+                        "registrado para que un asesor revise la conexión."
+                    )
+                else:
+                    estado["paso"] = "PEDIR_DIA_PROMESA"
+                    estado["cliente_id"] = cliente_final.id
+                    estado["factura_id"] = factura.id
+                    res = (
+                        f"🔴 Hola, *{cliente_final.nombre}*. Tu servicio aparece "
+                        "suspendido y tienes un saldo de "
+                        f"*${Decimal(factura.saldo_pendiente or 0):.2f}*.\n\n"
+                        "Puedo registrar una promesa e intentar reactivarlo. "
+                        "Escribe el día en que pagarás (ejemplo: *15*) o la "
+                        "fecha completa (ejemplo: *15/09/2026*)."
+                    )
+            else:
+                del bot_memory[telefono_raw]
+                res = (
+                    f"🟢 Hola, *{cliente_final.nombre}*. Tu cuenta no aparece "
+                    "suspendida. Desconecta la ONU y el router de la corriente "
+                    "durante 30 segundos y vuelve a conectarlos.\n\n"
+                    "Si la luz *LOS* está roja o sigues sin internet después de "
+                    "5 minutos, deja ambos equipos encendidos. Tu reporte quedó "
+                    "registrado para revisión de un asesor."
+                )
+            await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
+            return {"status": "soporte_basico"}
 
         # --- FLUJO 3: ESTADO DEL SERVICIO ---
         elif estado["paso"] == "VALIDAR_CEDULA_ESTADO":

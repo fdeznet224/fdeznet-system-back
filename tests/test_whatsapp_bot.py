@@ -8,6 +8,7 @@ from src.application.services.ocr_service import OCRService
 from src.interfaces.api.whatsapp import (
     BOT_KEYWORD,
     construir_menu_bot,
+    detectar_intencion_bot,
     esta_fuera_de_horario,
     interpretar_fecha_promesa,
     mensaje_audio_no_disponible,
@@ -92,6 +93,7 @@ def test_bot_usa_fdezbot_como_palabra_de_acceso():
     assert BOT_KEYWORD == "fdezbot"
     assert "FdezBot" in construir_menu_bot()
     assert "fdezpay" not in construir_menu_bot().lower()
+    assert "No tengo internet" in construir_menu_bot()
 
 
 def test_bot_acepta_dia_o_fecha_completa_para_promesa():
@@ -114,11 +116,27 @@ def test_bot_respeta_horario_de_atencion():
 def test_bot_informa_horario_y_autoservicio_sin_ia():
     mensaje = mensaje_fuera_de_horario()
     assert "Lunes a viernes" in mensaje
-    assert "fdezbot" in mensaje
-    assert "asesor" in mensaje
+    assert "FdezBot" in mensaje
+    assert "disponible ahora" in mensaje
 
 
 def test_bot_pide_texto_al_recibir_audio():
     mensaje = mensaje_audio_no_disponible()
     assert "no procesa notas de voz" in mensaje
     assert "fdezbot" in mensaje
+
+
+def test_bot_reconoce_solicitudes_comunes_fuera_de_horario():
+    assert detectar_intencion_bot("¿A qué cuenta deposito?") == "datos_pago"
+    assert detectar_intencion_bot("No tengo internet") == "sin_internet"
+    assert detectar_intencion_bot("pueden reactivar mi servicio") == "promesa"
+    assert detectar_intencion_bot("cuánto saldo debo") == "estado"
+    assert detectar_intencion_bot("ya pagué") == "pago"
+    assert detectar_intencion_bot("buenas noches") == "menu"
+
+
+def test_foto_de_comprobante_tiene_prioridad_sobre_el_texto():
+    assert detectar_intencion_bot(
+        "[FOTO_COMPROBANTE]",
+        es_comprobante=True,
+    ) == "pago"
