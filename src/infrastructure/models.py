@@ -1743,3 +1743,66 @@ class PagoAutovalidadoModel(Base):
 
     # Relación para saber de quién es el dinero
     # cliente = relationship("ClienteModel", back_populates="pagos_auto")
+
+
+class ComprobantePagoRevisionModel(Base):
+    __tablename__ = "comprobantes_pago_revision"
+    __table_args__ = (
+        Index("ix_comprobantes_revision_estado_fecha", "estado", "fecha_recepcion"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    cliente_id = Column(
+        Integer,
+        ForeignKey("clientes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    factura_id = Column(
+        Integer,
+        ForeignKey("facturas.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    pago_id = Column(
+        Integer,
+        ForeignKey("pagos.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    mensaje_chat_id = Column(
+        Integer,
+        ForeignKey("mensajes_chat.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    revisado_por_id = Column(
+        Integer,
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    telefono = Column(String(100), nullable=False)
+    media_url = Column(Text, nullable=False)
+    monto_detectado = Column(Numeric(12, 2), nullable=True)
+    folio_detectado = Column(String(100), nullable=True, index=True)
+    cedula_detectada = Column(String(20), nullable=True)
+    estado = Column(
+        String(30),
+        nullable=False,
+        default="pendiente",
+        server_default="pendiente",
+    )
+    motivo_revision = Column(String(100), nullable=False)
+    notas_revision = Column(Text, nullable=True)
+    fecha_recepcion = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    fecha_revision = Column(DateTime, nullable=True)
+
+    cliente = relationship("ClienteModel")
+    factura = relationship("FacturaModel")
+    pago = relationship("PagoModel")
+    mensaje_chat = relationship("MensajeChatModel")
+    revisado_por = relationship("UsuarioModel", foreign_keys=[revisado_por_id])

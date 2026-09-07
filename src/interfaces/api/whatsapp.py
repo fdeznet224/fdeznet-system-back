@@ -7,8 +7,11 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import List, Optional
 from uuid import uuid4
+from pathlib import Path
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket
+from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, func, cast, String
 from sqlalchemy.orm import joinedload, selectinload
@@ -30,6 +33,7 @@ from src.infrastructure.models import (
     ConfiguracionModel,
     ConfiguracionSistema,  # 👈 Añadido para poder alertarte de fraudes
     PlantillaMensajeModel,
+    ComprobantePagoRevisionModel,
 )
 from src.infrastructure.whatsapp_client import (
     GLOBAL_SETTINGS,
@@ -291,6 +295,23 @@ class ReintentoMasivoRequest(BaseModel):
     limite: int = Field(default=100, ge=1, le=500)
 
 
+class AprobarComprobanteRequest(BaseModel):
+    cliente_id: int = Field(gt=0)
+    factura_id: Optional[int] = Field(default=None, gt=0)
+    monto: Optional[Decimal] = Field(
+        default=None,
+        gt=0,
+        max_digits=12,
+        decimal_places=2,
+    )
+    referencia: Optional[str] = Field(default=None, max_length=100)
+    notas: Optional[str] = Field(default=None, max_length=1000)
+
+
+class RechazarComprobanteRequest(BaseModel):
+    motivo: str = Field(min_length=3, max_length=1000)
+
+
 class ConfiguracionWhatsAppRequest(BaseModel):
     intervalo_segundos: int = Field(ge=1, le=3600)
 
@@ -362,6 +383,18 @@ async def procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db
         deuda_real = Decimal(factura.saldo_pendiente or 0)
 
         if monto_ticket < deuda_real:
+            revision_id = estado.get("revision_id")
+            revision = (
+                await db.get(ComprobantePagoRevisionModel, revision_id)
+                if revision_id
+                else None
+            )
+            if revision:
+                revision.motivo_revision = "monto_no_coincide"
+                revision.notas_revision = (
+                    f"OCR ${monto_ticket}; deuda ${deuda_real}"
+                )
+                await db.commit()
             res = f"❌ *Pago Rechazado*\n\nEl comprobante indica un pago de *${monto_ticket}*, pero tu factura es de *${deuda_real}*.\n\nSi es un error de lectura, envía una foto más clara o contacta a soporte."
             del bot_memory[telefono_raw]
         else:
@@ -396,6 +429,19 @@ async def procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db
                 )
                 
                 db.add(PagoAutovalidadoModel(cliente_id=cliente_final.id, monto=monto_ticket, folio_banco=estado["pago"]["folio"], whatsapp_remitente=telefono_raw))
+                revision_id = estado.get("revision_id")
+                revision = (
+                    await db.get(ComprobantePagoRevisionModel, revision_id)
+                    if revision_id
+                    else None
+                )
+                if revision:
+                    revision.estado = "aprobado"
+                    revision.cliente_id = cliente_final.id
+                    revision.factura_id = factura.id
+                    revision.pago_id = resultado_pago.get("pago_id")
+                    revision.motivo_revision = "autovalidado"
+                    revision.fecha_revision = datetime.now()
                 await db.commit()
 
                 if resultado_pago.get("reactivado"):
@@ -421,6 +467,17 @@ async def procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db
                 del bot_memory[telefono_raw]
             except Exception as e:
                 print(f"Error procesando pago bot: {e}")
+                await db.rollback()
+                revision_id = estado.get("revision_id")
+                revision = (
+                    await db.get(ComprobantePagoRevisionModel, revision_id)
+                    if revision_id
+                    else None
+                )
+                if revision:
+                    revision.motivo_revision = "error_autovalidacion"
+                    revision.notas_revision = str(e)[:1000]
+                    await db.commit()
                 res = "❌ Error interno al procesar el pago. Contacta a soporte."
                 del bot_memory[telefono_raw]
     
@@ -479,6 +536,231 @@ async def set_config(
         )
     await db.commit()
     return {"status": "ok", "intervalo": intervalo}
+
+
+async def _factura_sugerida_revision(
+    db: AsyncSession,
+    cliente_id: Optional[int],
+):
+    if not cliente_id:
+        return None
+    return (
+        await db.execute(
+            select(FacturaModel)
+            .where(
+                FacturaModel.cliente_id == cliente_id,
+                FacturaModel.estado.in_(["pendiente", "vencida"]),
+                FacturaModel.saldo_pendiente > 0,
+            )
+            .order_by(FacturaModel.fecha_vencimiento.asc())
+            .limit(1)
+        )
+    ).scalars().first()
+
+
+@router.get("/comprobantes-revision")
+async def listar_comprobantes_revision(
+    estado: str = Query(default="pendiente"),
+    pagina: int = Query(default=1, ge=1),
+    limite: int = Query(default=30, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    estados = {"pendiente", "procesando", "aprobado", "rechazado", "todos"}
+    if estado not in estados:
+        raise HTTPException(status_code=400, detail="Estado de revisión inválido")
+    filtros = [] if estado == "todos" else [ComprobantePagoRevisionModel.estado == estado]
+    total = (
+        await db.execute(
+            select(func.count(ComprobantePagoRevisionModel.id)).where(*filtros)
+        )
+    ).scalar_one()
+    registros = (
+        await db.execute(
+            select(ComprobantePagoRevisionModel)
+            .options(
+                joinedload(ComprobantePagoRevisionModel.cliente),
+                joinedload(ComprobantePagoRevisionModel.factura),
+                joinedload(ComprobantePagoRevisionModel.revisado_por),
+            )
+            .where(*filtros)
+            .order_by(ComprobantePagoRevisionModel.fecha_recepcion.desc())
+            .offset((pagina - 1) * limite)
+            .limit(limite)
+        )
+    ).scalars().all()
+    items = []
+    for item in registros:
+        factura = item.factura or await _factura_sugerida_revision(
+            db,
+            item.cliente_id,
+        )
+        items.append({
+            "id": item.id,
+            "estado": item.estado,
+            "cliente_id": item.cliente_id,
+            "cliente_nombre": item.cliente.nombre if item.cliente else None,
+            "cliente_cedula": item.cliente.cedula if item.cliente else None,
+            "telefono": item.telefono,
+            "monto_detectado": item.monto_detectado,
+            "folio_detectado": item.folio_detectado,
+            "cedula_detectada": item.cedula_detectada,
+            "motivo_revision": item.motivo_revision,
+            "notas_revision": item.notas_revision,
+            "fecha_recepcion": item.fecha_recepcion,
+            "fecha_revision": item.fecha_revision,
+            "revisado_por": (
+                item.revisado_por.nombre_completo
+                if item.revisado_por
+                else None
+            ),
+            "pago_id": item.pago_id,
+            "factura_sugerida": (
+                {
+                    "id": factura.id,
+                    "saldo_pendiente": factura.saldo_pendiente,
+                    "fecha_vencimiento": factura.fecha_vencimiento,
+                }
+                if factura
+                else None
+            ),
+            "archivo_url": f"/whatsapp/comprobantes-revision/{item.id}/archivo",
+        })
+    return {
+        "items": items,
+        "total": total,
+        "pagina": pagina,
+        "limite": limite,
+    }
+
+
+@router.get("/comprobantes-revision/{comprobante_id}/archivo")
+async def ver_archivo_comprobante(
+    comprobante_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    comprobante = await db.get(ComprobantePagoRevisionModel, comprobante_id)
+    if not comprobante:
+        raise HTTPException(status_code=404, detail="Comprobante no encontrado")
+    nombre = Path(urlparse(comprobante.media_url).path).name
+    if not nombre or Path(nombre).suffix.lower() not in {
+        ".jpg", ".jpeg", ".png", ".webp",
+    }:
+        raise HTTPException(status_code=404, detail="Archivo no disponible")
+    uploads = Path(__file__).resolve().parents[3] / "bot_whatsapp" / "uploads"
+    archivo = (uploads / nombre).resolve()
+    if archivo.parent != uploads.resolve() or not archivo.is_file():
+        raise HTTPException(status_code=404, detail="Archivo no disponible")
+    return FileResponse(archivo)
+
+
+@router.post("/comprobantes-revision/{comprobante_id}/aprobar")
+async def aprobar_comprobante_revision(
+    comprobante_id: int,
+    datos: AprobarComprobanteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    comprobante = (
+        await db.execute(
+            select(ComprobantePagoRevisionModel)
+            .where(ComprobantePagoRevisionModel.id == comprobante_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if not comprobante:
+        raise HTTPException(status_code=404, detail="Comprobante no encontrado")
+    if comprobante.estado in {"aprobado", "rechazado"}:
+        raise HTTPException(status_code=409, detail="El comprobante ya fue revisado")
+
+    monto = datos.monto or comprobante.monto_detectado
+    if not monto or Decimal(monto) <= 0:
+        raise HTTPException(status_code=400, detail="Indica el monto confirmado")
+    factura = (
+        await db.get(FacturaModel, datos.factura_id)
+        if datos.factura_id
+        else await _factura_sugerida_revision(db, datos.cliente_id)
+    )
+    if not factura or factura.cliente_id != datos.cliente_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No se encontró una factura pendiente del cliente",
+        )
+
+    comprobante.estado = "procesando"
+    comprobante.cliente_id = datos.cliente_id
+    comprobante.factura_id = factura.id
+    comprobante.revisado_por_id = current_user.id
+    comprobante.notas_revision = datos.notas
+    await db.commit()
+    try:
+        resultado = await BillingService(db).registrar_pago_completo(
+            factura_id=factura.id,
+            usuario_operador=current_user,
+            metodo_pago="transferencia",
+            monto=monto,
+            referencia=(
+                datos.referencia
+                or comprobante.folio_detectado
+                or f"REV-{comprobante.id}"
+            ),
+            clave_idempotencia=f"comprobante-revision:{comprobante.id}",
+        )
+        await db.refresh(comprobante)
+        comprobante.estado = "aprobado"
+        comprobante.pago_id = resultado.get("pago_id")
+        comprobante.fecha_revision = datetime.now()
+        await db.commit()
+        return {"status": "aprobado", **resultado}
+    except ValueError as exc:
+        await db.rollback()
+        comprobante = await db.get(ComprobantePagoRevisionModel, comprobante_id)
+        comprobante.estado = "pendiente"
+        comprobante.notas_revision = f"Error al aprobar: {exc}"
+        await db.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/comprobantes-revision/{comprobante_id}/rechazar")
+async def rechazar_comprobante_revision(
+    comprobante_id: int,
+    datos: RechazarComprobanteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    comprobante = (
+        await db.execute(
+            select(ComprobantePagoRevisionModel)
+            .where(ComprobantePagoRevisionModel.id == comprobante_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if not comprobante:
+        raise HTTPException(status_code=404, detail="Comprobante no encontrado")
+    if comprobante.estado not in {"pendiente", "procesando"}:
+        raise HTTPException(status_code=409, detail="El comprobante ya fue revisado")
+    comprobante.estado = "rechazado"
+    comprobante.notas_revision = datos.motivo
+    comprobante.revisado_por_id = current_user.id
+    comprobante.fecha_revision = datetime.now()
+    await db.commit()
+    try:
+        await WhatsAppService().enviar_mensaje(
+            telefono=comprobante.telefono,
+            mensaje=(
+                "❌ No pudimos aprobar el comprobante enviado.\n"
+                f"Motivo: {datos.motivo}\n\n"
+                "Puedes enviar una nueva imagen clara o comunicarte con un asesor."
+            ),
+            tipo_evento="comprobante_rechazado",
+        )
+    except Exception:
+        logger.exception(
+            "No fue posible notificar rechazo del comprobante %s",
+            comprobante.id,
+        )
+    return {"status": "rechazado"}
 
 @router.post("/enviar-campana")
 async def enviar_campana(
@@ -829,6 +1111,30 @@ async def webhook_recibir_mensaje(
                 await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="🤖 Analizando tu comprobante... ⏳")
                 
                 resultado_ocr = await ocr_tool.procesar_ticket(media_url)
+
+                monto_detectado = Decimal(
+                    str(resultado_ocr.get("monto") or 0)
+                )
+                revision = ComprobantePagoRevisionModel(
+                    cliente_id=cliente_h.id if cliente_h else None,
+                    mensaje_chat_id=nuevo_mensaje.id,
+                    telefono=telefono_raw,
+                    media_url=media_url,
+                    monto_detectado=(
+                        monto_detectado if monto_detectado > 0 else None
+                    ),
+                    folio_detectado=resultado_ocr.get("folio"),
+                    cedula_detectada=resultado_ocr.get("cedula_detectada"),
+                    motivo_revision=(
+                        "esperando_confirmacion"
+                        if resultado_ocr["exito"]
+                        else "ocr_no_legible"
+                    ),
+                )
+                db.add(revision)
+                await db.commit()
+                await db.refresh(revision)
+                estado["revision_id"] = revision.id
                 
                 if not resultado_ocr["exito"]:
                     estado["paso"] = "CONFIRMAR_PROMESA_COMPROBANTE"
@@ -851,6 +1157,10 @@ async def webhook_recibir_mensaje(
                 pago_existente = (await db.execute(stmt_fraude)).scalars().first()
 
                 if pago_existente:
+                    revision.estado = "rechazado"
+                    revision.motivo_revision = "folio_duplicado"
+                    revision.fecha_revision = datetime.now()
+                    await db.commit()
                     res_fraude = f"🚫 *¡Alerta de Seguridad!*\n\nEl comprobante con folio *{folio_banco}* ya fue registrado anteriormente. Este intento ha sido bloqueado. Si es un error, contacta a soporte."
                     del bot_memory[telefono_raw]
                     await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res_fraude)
@@ -876,6 +1186,8 @@ async def webhook_recibir_mensaje(
                     cliente_ocr = (await db.execute(stmt_c_ocr)).scalars().first()
                     
                     if cliente_ocr:
+                        revision.cliente_id = cliente_ocr.id
+                        await db.commit()
                         estado["paso"] = "VALIDACION_FINAL_PAGO" 
                         estado["cliente_id"] = cliente_ocr.id
                         res = f"Detecté la cédula *{cedula_ocr}* en el ticket.\n\n¿Deseas aplicar el pago de *${resultado_ocr['monto']}* a la cuenta de *{cliente_ocr.nombre}*? (Responde *SI* o *NO*)"
@@ -883,6 +1195,8 @@ async def webhook_recibir_mensaje(
                         return {"status": "confirmar_ocr"}
 
                 if cliente_h:
+                    revision.cliente_id = cliente_h.id
+                    await db.commit()
                     estado["paso"] = "CONFIRMAR_NOMBRE_PAGO"
                     estado["cliente_id"] = cliente_h.id
                     res = f"Detecto que envías desde el celular de *{cliente_h.nombre}*.\n\nHe leído un pago por *${resultado_ocr['monto']}*.\n¿Deseas aplicar este pago a tu cuenta? (Responde *SI* o *NO*)"
@@ -931,6 +1245,15 @@ async def webhook_recibir_mensaje(
             cliente_final = (await db.execute(stmt_c)).scalars().first()
             
             if cliente_final:
+                revision_id = estado.get("revision_id")
+                revision = (
+                    await db.get(ComprobantePagoRevisionModel, revision_id)
+                    if revision_id
+                    else None
+                )
+                if revision:
+                    revision.cliente_id = cliente_final.id
+                    await db.commit()
                 estado["paso"] = "VALIDACION_FINAL_PAGO"
                 estado["cliente_id"] = cliente_final.id
                 return await procesar_validacion_final_pago("si", estado, telefono_raw, db, wa_service)
