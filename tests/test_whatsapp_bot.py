@@ -1,9 +1,11 @@
 import asyncio
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from src.application.services.ocr_service import OCRService
+from src.application.services.ai_whatsapp_service import esta_fuera_de_horario
 from src.interfaces.api.whatsapp import (
     BOT_KEYWORD,
     construir_menu_bot,
@@ -96,3 +98,12 @@ def test_bot_acepta_dia_o_fecha_completa_para_promesa():
     assert interpretar_fecha_promesa("15", hoy) == date(2026, 9, 15)
     assert interpretar_fecha_promesa("5", hoy) == date(2026, 10, 5)
     assert interpretar_fecha_promesa("20/09/2026", hoy) == date(2026, 9, 20)
+
+
+def test_agente_ia_respeta_horario_de_atencion():
+    tz = ZoneInfo("America/Mexico_City")
+    assert esta_fuera_de_horario(datetime(2026, 9, 7, 7, 59, tzinfo=tz))
+    assert not esta_fuera_de_horario(datetime(2026, 9, 7, 8, 0, tzinfo=tz))
+    assert not esta_fuera_de_horario(datetime(2026, 9, 12, 13, 59, tzinfo=tz))
+    assert esta_fuera_de_horario(datetime(2026, 9, 12, 14, 0, tzinfo=tz))
+    assert esta_fuera_de_horario(datetime(2026, 9, 13, 10, 0, tzinfo=tz))

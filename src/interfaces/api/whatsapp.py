@@ -37,12 +37,18 @@ from src.infrastructure.whatsapp_client import (
 )
 from src.infrastructure.socket_manager import manager
 
+logger = logging.getLogger(__name__)
+
 # Importaciones de Servicios
 from src.application.services.ocr_service import OCRService
 from src.application.services.billing_service import BillingService
 from src.application.services.finance_service import FinanceService
 from src.application.services.access_control_service import (
     verificar_acceso_cliente,
+)
+from src.application.services.ai_whatsapp_service import (
+    AIWhatsAppService,
+    esta_fuera_de_horario,
 )
 from src.application.services.whatsapp_outbox_service import (
     ESTADOS_SALIDA,
@@ -858,6 +864,33 @@ async def webhook_recibir_mensaje(
             
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "bot_estado_finished"}
+
+    if esta_fuera_de_horario():
+        agente = AIWhatsAppService()
+        if agente.disponible:
+            try:
+                consulta = mensaje_texto
+                if media_url and "[AUDIO]" in mensaje_texto:
+                    consulta = await agente.transcribir(media_url)
+                    nuevo_mensaje.mensaje = f"🎤 {consulta}"
+                    await db.commit()
+                respuesta = await agente.responder(consulta, cliente_h)
+                await wa_service.enviar_mensaje(
+                    telefono=telefono_raw,
+                    mensaje=respuesta,
+                    tipo_evento="agente_ia_fuera_horario",
+                )
+                return {"status": "agente_ia", "audio": bool(media_url)}
+            except Exception:
+                logger.exception("Falló el agente de IA fuera de horario")
+                await wa_service.enviar_mensaje(
+                    telefono=telefono_raw,
+                    mensaje=(
+                        "🌙 Estamos fuera del horario de atención. Guardamos tu mensaje y "
+                        "un asesor continuará contigo en el próximo horario laboral."
+                    ),
+                )
+                return {"status": "agente_ia_error"}
 
     return {"status": "chat_normal"}
 
