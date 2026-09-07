@@ -27,6 +27,7 @@ from src.infrastructure.models import (
     InventarioONUModel,
     OLTModel,
     PlanModel,
+    PlantillaFacturacionModel,
     ServicioModel,
     TipoFacturacion,
     CicloFacturacion,
@@ -893,14 +894,15 @@ class ClientService:
             cliente_db.caja_nap_id,
         )
 
-        tiene_servicios = (
+        servicios_activos = (
             await self.db.execute(
-                select(func.count(ServicioModel.id)).where(
+                select(ServicioModel).where(
                     ServicioModel.cliente_id == cliente_id,
                     ServicioModel.estado != "cancelado",
                 )
             )
-        ).scalar_one() > 0
+        ).scalars().all()
+        tiene_servicios = bool(servicios_activos)
         if (
             tiene_servicios
             and "plan_id" in update_data
@@ -919,6 +921,28 @@ class ClientService:
                 "El router pertenece a cada contrato. Realiza el cambio "
                 "desde el servicio o mediante una migración técnica."
             )
+
+        if "plantilla_id" in update_data:
+            plantilla_objetivo = update_data["plantilla_id"]
+            if plantilla_objetivo and not await self.db.get(
+                PlantillaFacturacionModel,
+                plantilla_objetivo,
+            ):
+                raise ValueError("La plantilla de facturación seleccionada no existe")
+            if len(servicios_activos) > 1:
+                if any(
+                    servicio.plantilla_id != plantilla_objetivo
+                    for servicio in servicios_activos
+                ):
+                    raise ValueError(
+                        "El cliente tiene varios servicios. Cambia la plantilla "
+                        "desde la pestaña Servicios y selecciona el domicilio correcto."
+                    )
+            elif servicios_activos:
+                # La facturación vigente pertenece al contrato. Conservamos el
+                # campo heredado del cliente sincronizado para que la edición
+                # general siga funcionando cuando sólo existe un domicilio.
+                servicios_activos[0].plantilla_id = plantilla_objetivo
 
         plan = (
             await self.db.get(PlanModel, plan_objetivo)
