@@ -1286,6 +1286,7 @@ class ClientService:
                 factura.id,
                 fecha_promesa,
                 usuario_id,
+                origen="manual",
             )
         )
 

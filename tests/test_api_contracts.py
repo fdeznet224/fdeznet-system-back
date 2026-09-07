@@ -82,3 +82,7 @@ def test_finanzas_expone_cotizacion_de_reactivacion():
     ruta = "/finanzas/facturas/{factura_id}/cotizar-reactivacion"
     assert ruta in paths
     assert "post" in paths[ruta]
+
+
+def test_finanzas_expone_historial_auditable_de_promesas():
+    assert "/finanzas/promesas-historial" in app.openapi()["paths"]

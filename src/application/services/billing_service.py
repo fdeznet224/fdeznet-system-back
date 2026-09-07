@@ -732,6 +732,13 @@ class BillingService:
                         "activo",
                     )
                     await self._sincronizar_estado_cliente(cliente.id)
+                    if servicio:
+                        servicio.ultima_reactivacion_origen = (
+                            "bot"
+                            if nuevo_pago.metodo_pago == "autovalidado"
+                            else "manual"
+                        )
+                        servicio.ultima_reactivacion_en = datetime.now()
 
         await self.db.commit()
 
@@ -1209,6 +1216,7 @@ class BillingService:
         usuario_id: int | None,
         notas: str | None = None,
         enviar_notificaciones: bool = True,
+        origen: str = "manual",
     ):
         """Registra una promesa con el mismo flujo para todos los canales."""
         factura_cobrable, _, _ = await self.preparar_factura_cobrable(
@@ -1221,6 +1229,7 @@ class BillingService:
                 fecha_promesa,
                 usuario_id,
                 notas,
+                origen,
             )
         )
 
@@ -1256,6 +1265,10 @@ class BillingService:
                     servicio,
                     fecha_reactivacion=date.today(),
                 )
+                servicio.ultima_reactivacion_origen = promesa.origen
+                servicio.ultima_reactivacion_en = datetime.now()
+            promesa.servicio_reactivado = True
+            promesa.reactivado_en = datetime.now()
             await self._sincronizar_estado_cliente(cliente.id)
 
         await self.db.commit()

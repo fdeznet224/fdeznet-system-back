@@ -2,7 +2,7 @@ import os
 import re
 import httpx
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import List, Optional
 from uuid import uuid4
@@ -65,6 +65,41 @@ NODE_HEADERS = {
 # Memoria temporal para el Bot (Estado por número de teléfono)
 bot_memory = {}
 ocr_tool = OCRService()
+BOT_KEYWORD = "fdezbot"
+BOT_SESSION_MINUTES = 15
+
+
+def construir_menu_bot() -> str:
+    return (
+        "🤖 *Bienvenido a FdezBot*\n"
+        "Soy tu asistente de pagos y servicios. Elige una opción:\n\n"
+        "1️⃣ *Reportar pago* (transferencia o depósito)\n"
+        "2️⃣ *Promesa de pago* (puede reactivar tu servicio)\n"
+        "3️⃣ *Consultar mi servicio y saldo*\n\n"
+        "👉 Responde sólo con *1*, *2* o *3*.\n"
+        "Escribe *menú* para volver aquí o *cancelar* para salir."
+    )
+
+
+def interpretar_fecha_promesa(texto: str, hoy: date | None = None) -> date:
+    hoy = hoy or date.today()
+    limpio = texto.strip()
+    if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", limpio):
+        return datetime.strptime(limpio, "%d/%m/%Y").date()
+    dia = int(limpio)
+    if dia < 1 or dia > 31:
+        raise ValueError("Escribe un día válido o una fecha DD/MM/AAAA")
+    if dia <= hoy.day:
+        mes = hoy.month + 1 if hoy.month < 12 else 1
+        ano = hoy.year if hoy.month < 12 else hoy.year + 1
+    else:
+        mes, ano = hoy.month, hoy.year
+    try:
+        return date(ano, mes, dia)
+    except ValueError as exc:
+        raise ValueError(
+            "Ese día no existe en el mes indicado; usa DD/MM/AAAA"
+        ) from exc
 
 
 async def obtener_factura_cobrable(db: AsyncSession, cliente_id: int):
@@ -505,19 +540,21 @@ async def webhook_recibir_mensaje(
     # =========================================================
     # 2. ACTIVACIÓN DEL BOT (NUEVA PALABRA CLAVE)
     # =========================================================
-    if texto_limpio == "fdezpay":
-        bot_memory[telefono_raw] = {"paso": "ESPERANDO_OPCION"}
-        menu = (
-            "🤖 *Bienvenido a FdezPay*\n"
-            "Soy tu asistente de pagos y servicios. Elige una opción:\n\n"
-            "1️⃣ *Reportar pago* (Transferencia o Depósito)\n"
-            "2️⃣ *Promesa de pago* (Reactivar servicio)\n"
-            "3️⃣ *Estado de mi servicio*\n\n"
-            "👉 _Responde solo con el número._\n\n"
-            "❌ _(Escribe *cancelar* en cualquier momento para salir)_"
-        )
+    if texto_limpio == BOT_KEYWORD:
+        bot_memory[telefono_raw] = {
+            "paso": "ESPERANDO_OPCION",
+            "iniciado_en": datetime.now(),
+        }
+        menu = construir_menu_bot()
         await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=menu)
         return {"status": "bot_iniciado"}
+
+    if texto_limpio == "fdezpay":
+        await wa_service.enviar_mensaje(
+            telefono=telefono_raw,
+            mensaje="🤖 La palabra de acceso cambió. Escribe *fdezbot* para iniciar.",
+        )
+        return {"status": "palabra_anterior"}
 
     # =========================================================
     # 3. LÓGICA DEL BOT 
@@ -525,7 +562,27 @@ async def webhook_recibir_mensaje(
     if telefono_raw in bot_memory:
         estado = bot_memory[telefono_raw]
 
-        if texto_limpio == "cancelar":
+        iniciado_en = estado.get("iniciado_en")
+        if iniciado_en and datetime.now() - iniciado_en > timedelta(
+            minutes=BOT_SESSION_MINUTES
+        ):
+            del bot_memory[telefono_raw]
+            await wa_service.enviar_mensaje(
+                telefono=telefono_raw,
+                mensaje="⌛ La sesión terminó por seguridad. Escribe *fdezbot* para iniciar otra.",
+            )
+            return {"status": "bot_expirado"}
+
+        if texto_limpio in {"menu", "menú"}:
+            estado.clear()
+            estado.update({"paso": "ESPERANDO_OPCION", "iniciado_en": datetime.now()})
+            await wa_service.enviar_mensaje(
+                telefono=telefono_raw,
+                mensaje=construir_menu_bot(),
+            )
+            return {"status": "bot_menu"}
+
+        if texto_limpio in {"cancelar", "salir"}:
             del bot_memory[telefono_raw]
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="🤖 Asistente desactivado. Un asesor humano te atenderá a la brevedad. ¡Buen día!")
             return {"status": "bot_apagado"}
@@ -662,7 +719,13 @@ async def webhook_recibir_mensaje(
                     estado["paso"] = "PEDIR_DIA_PROMESA"
                     estado["cliente_id"] = cliente_final.id
                     estado["factura_id"] = factura.id
-                    res = f"Hola {cliente_final.nombre}.\n\n¿Qué día realizarás tu pago?\n👉 Escribe *solo el número* del día (Ejemplo: 15)."
+                    res = (
+                        f"Hola, *{cliente_final.nombre}*.\n\n"
+                        f"Tu saldo pendiente es *${Decimal(factura.saldo_pendiente or 0):.2f}*.\n"
+                        "¿Qué día realizarás el pago?\n"
+                        "👉 Escribe el día (ejemplo: *15*) o la fecha completa "
+                        "(ejemplo: *15/09/2026*)."
+                    )
             else:
                 res = "❌ Cédula incorrecta. Inténtalo de nuevo o escribe 'cancelar'."
             
@@ -671,23 +734,7 @@ async def webhook_recibir_mensaje(
 
         elif estado["paso"] == "PEDIR_DIA_PROMESA":
             try:
-                dia_ingresado = int(texto_limpio)
-                if dia_ingresado < 1 or dia_ingresado > 31:
-                    raise ValueError()
-
-                hoy = datetime.now().date()
-                if dia_ingresado <= hoy.day:
-                    mes_objetivo = hoy.month + 1 if hoy.month < 12 else 1
-                    ano_objetivo = hoy.year if hoy.month < 12 else hoy.year + 1
-                else:
-                    mes_objetivo = hoy.month
-                    ano_objetivo = hoy.year
-
-                fecha_promesa = datetime(
-                    ano_objetivo,
-                    mes_objetivo,
-                    dia_ingresado,
-                ).date()
+                fecha_promesa = interpretar_fecha_promesa(texto_limpio)
 
                 cliente_final = await db.get(ClienteModel, estado["cliente_id"])
                 factura = await db.get(FacturaModel, estado["factura_id"])
@@ -705,6 +752,7 @@ async def webhook_recibir_mensaje(
                         usuario_id=None,
                         notas="Registrada por autoservicio de WhatsApp",
                         enviar_notificaciones=False,
+                        origen="bot",
                     )
                 )
 
@@ -802,7 +850,7 @@ async def webhook_recibir_mensaje(
                     f"💳 *Saldo pendiente:* ${deuda_total:.2f}\n"
                     f"📅 *Cobranza:* {fecha_financiera}\n"
                     f"💰 *Saldo a favor:* ${Decimal(cliente_final.saldo_a_favor or 0):.2f}\n\n"
-                    f"Para volver al menú escribe *fdezpay*."
+                    f"Para volver al menú escribe *fdezbot*."
                 )
                 del bot_memory[telefono_raw]
             else:

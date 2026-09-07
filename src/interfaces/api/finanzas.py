@@ -17,6 +17,7 @@ from src.infrastructure.models import (
     UsuarioModel,
     ServicioModel,
     PoliticaCobranzaModel,
+    PromesaPagoHistorialModel,
     ZonaModel,
     RouterModel,
 )
@@ -640,6 +641,7 @@ async def registrar_promesa(
                 data.nueva_fecha,
                 current_user.id,
                 data.notas,
+                origen="manual",
             )
         )
         return {
@@ -652,6 +654,52 @@ async def registrar_promesa(
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/promesas-historial")
+async def listar_promesas_historial(
+    cliente_id: Optional[int] = None,
+    origen: Optional[str] = Query(default=None, pattern=r"^(manual|bot)$"),
+    limite: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    filtros = []
+    if cliente_id:
+        filtros.append(PromesaPagoHistorialModel.cliente_id == cliente_id)
+    if origen:
+        filtros.append(PromesaPagoHistorialModel.origen == origen)
+    promesas = (
+        await db.execute(
+            select(PromesaPagoHistorialModel)
+            .options(
+                joinedload(PromesaPagoHistorialModel.cliente),
+                joinedload(PromesaPagoHistorialModel.usuario),
+            )
+            .where(*filtros)
+            .order_by(PromesaPagoHistorialModel.id.desc())
+            .limit(limite)
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": item.id,
+            "factura_id": item.factura_id,
+            "cliente_id": item.cliente_id,
+            "cliente": item.cliente.nombre if item.cliente else None,
+            "fecha_prometida": item.fecha_prometida,
+            "estado": item.estado,
+            "origen": item.origen,
+            "usuario": (
+                item.usuario.nombre_completo if item.usuario else "FdezBot"
+            ),
+            "servicio_reactivado": item.servicio_reactivado,
+            "reactivado_en": item.reactivado_en,
+            "notas": item.notas,
+            "creada_en": item.created_at,
+        }
+        for item in promesas
+    ]
 
 
 @router.get("/politicas-cobranza")

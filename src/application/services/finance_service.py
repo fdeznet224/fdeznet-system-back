@@ -700,6 +700,7 @@ class FinanceService:
         fecha_prometida: date,
         usuario_id: int | None,
         notas: str | None = None,
+        origen: str = "manual",
     ) -> tuple[PromesaPagoHistorialModel, FacturaModel, ClienteModel, PoliticaCobranzaModel]:
         factura = (
             await self.db.execute(
@@ -774,6 +775,10 @@ class FinanceService:
                 "El cliente excedió el límite de promesas incumplidas en 90 días"
             )
 
+        origen_normalizado = (origen or "manual").strip().lower()
+        if origen_normalizado not in {"manual", "bot"}:
+            raise ValueError("El origen de la promesa no es válido")
+
         promesa = PromesaPagoHistorialModel(
             factura_id=factura.id,
             cliente_id=cliente.id,
@@ -781,6 +786,7 @@ class FinanceService:
             fecha_prometida=fecha_prometida,
             fecha_anterior=factura.fecha_promesa_pago,
             notas=(notas or "").strip() or None,
+            origen=origen_normalizado,
         )
         factura.fecha_promesa_pago = fecha_prometida
         factura.es_promesa_activa = True

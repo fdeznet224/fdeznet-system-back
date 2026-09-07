@@ -1,9 +1,15 @@
 import asyncio
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from src.application.services.ocr_service import OCRService
-from src.interfaces.api.whatsapp import obtener_factura_cobrable
+from src.interfaces.api.whatsapp import (
+    BOT_KEYWORD,
+    construir_menu_bot,
+    interpretar_fecha_promesa,
+    obtener_factura_cobrable,
+)
 
 
 def test_ocr_extrae_folio_monto_y_cedula_de_transferencia():
@@ -76,3 +82,17 @@ def test_bot_busca_facturas_pendientes_y_vencidas(monkeypatch):
     preparar.assert_awaited_once()
     assert ["pendiente", "vencida"] in parametros.values()
     assert 12 in parametros.values()
+
+
+def test_bot_usa_fdezbot_como_palabra_de_acceso():
+    assert BOT_KEYWORD == "fdezbot"
+    assert "FdezBot" in construir_menu_bot()
+    assert "fdezpay" not in construir_menu_bot().lower()
+
+
+def test_bot_acepta_dia_o_fecha_completa_para_promesa():
+    hoy = date(2026, 9, 6)
+
+    assert interpretar_fecha_promesa("15", hoy) == date(2026, 9, 15)
+    assert interpretar_fecha_promesa("5", hoy) == date(2026, 10, 5)
+    assert interpretar_fecha_promesa("20/09/2026", hoy) == date(2026, 9, 20)

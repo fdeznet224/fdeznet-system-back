@@ -1195,6 +1195,8 @@ class ServicioModel(Base):
     # Se usa para no cobrar los días en los que no se prestó el servicio.
     fecha_suspension_facturacion = Column(Date, nullable=True)
     fecha_ultima_reactivacion = Column(Date, nullable=True)
+    ultima_reactivacion_origen = Column(String(20), nullable=True)
+    ultima_reactivacion_en = Column(DateTime, nullable=True)
 
     estado = Column(
         String(30),
@@ -1455,6 +1457,13 @@ class PromesaPagoHistorialModel(Base):
     fecha_anterior = Column(Date, nullable=True)
     estado = Column(String(20), nullable=False, default="activa", server_default="activa")
     notas = Column(String(500), nullable=True)
+    origen = Column(
+        String(20), nullable=False, default="manual", server_default="manual"
+    )
+    servicio_reactivado = Column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    reactivado_en = Column(DateTime, nullable=True)
     created_at = Column(
         DateTime,
         nullable=False,

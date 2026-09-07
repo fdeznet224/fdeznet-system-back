@@ -15,6 +15,7 @@ from src.infrastructure.models import (
     PagoModel,
     PagoConceptoModel,
     PlanModel,
+    PromesaPagoHistorialModel,
     ServicioModel,
     SuspensionFacturacionModel,
 )
@@ -58,6 +59,18 @@ def test_payment_keeps_reversible_balance_fields():
         "estado",
         "motivo_anulacion",
     }.issubset(PagoModel.__table__.c.keys())
+
+
+def test_promises_and_services_keep_channel_audit_fields():
+    assert {
+        "origen",
+        "servicio_reactivado",
+        "reactivado_en",
+    }.issubset(PromesaPagoHistorialModel.__table__.c.keys())
+    assert {
+        "ultima_reactivacion_origen",
+        "ultima_reactivacion_en",
+    }.issubset(ServicioModel.__table__.c.keys())
 
 
 def test_automatic_credit_pays_new_invoice_and_keeps_audit_record():
