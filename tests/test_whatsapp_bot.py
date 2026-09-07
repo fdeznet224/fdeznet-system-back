@@ -117,7 +117,8 @@ def test_bot_informa_horario_y_autoservicio_sin_ia():
     mensaje = mensaje_fuera_de_horario()
     assert "Lunes a viernes" in mensaje
     assert "FdezBot" in mensaje
-    assert "disponible ahora" in mensaje
+    assert "asistente automático" in mensaje
+    assert "voy a atenderte" in mensaje
 
 
 def test_bot_pide_texto_al_recibir_audio():

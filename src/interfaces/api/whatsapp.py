@@ -96,8 +96,9 @@ def mensaje_fuera_de_horario() -> str:
         "• Lunes a viernes: 8:00 a. m. a 8:00 p. m.\n"
         "• Sábado: 9:00 a. m. a 2:00 p. m.\n"
         "• Domingo: cerrado.\n\n"
-        "FdezBot está disponible ahora para ayudarte con pagos, saldo, "
-        "promesas y problemas de conexión."
+        "🤖 Soy *FdezBot*, el asistente automático de FdezNet. Durante este "
+        "horario voy a atenderte y puedo ayudarte con pagos, saldo, promesas "
+        "y problemas de conexión."
     )
 
 
@@ -655,11 +656,27 @@ async def webhook_recibir_mensaje(
         }
     })
 
-    # El autoservicio es únicamente por texto; no se envía audio a servicios externos.
-    if media_url and "[AUDIO]" in mensaje_texto.upper():
+    fuera_de_horario = esta_fuera_de_horario()
+    if fuera_de_horario and telefono_raw not in bot_memory:
         await wa_service.enviar_mensaje(
             telefono=telefono_raw,
-            mensaje=mensaje_audio_no_disponible(),
+            mensaje=mensaje_fuera_de_horario(),
+            tipo_evento="presentacion_bot_fuera_horario",
+        )
+
+    # El autoservicio es únicamente por texto; no se envía audio a servicios externos.
+    if media_url and "[AUDIO]" in mensaje_texto.upper():
+        if fuera_de_horario and telefono_raw not in bot_memory:
+            bot_memory[telefono_raw] = {
+                "paso": "ESPERANDO_OPCION",
+                "iniciado_en": datetime.now(),
+            }
+        await wa_service.enviar_mensaje(
+            telefono=telefono_raw,
+            mensaje=(
+                mensaje_audio_no_disponible()
+                + ("\n\n" + construir_menu_bot() if fuera_de_horario else "")
+            ),
         )
         return {"status": "audio_no_disponible"}
 
@@ -684,7 +701,7 @@ async def webhook_recibir_mensaje(
 
     # Fuera del horario, cualquier mensaje inicia el autoservicio. Una foto de
     # comprobante entra directamente al análisis, sin exigir una palabra clave.
-    if esta_fuera_de_horario() and telefono_raw not in bot_memory:
+    if fuera_de_horario and telefono_raw not in bot_memory:
         intencion = detectar_intencion_bot(
             mensaje_texto,
             es_comprobante=bool(
@@ -740,7 +757,7 @@ async def webhook_recibir_mensaje(
         if intencion == "menu":
             await wa_service.enviar_mensaje(
                 telefono=telefono_raw,
-                mensaje=mensaje_fuera_de_horario() + "\n\n" + construir_menu_bot(),
+                mensaje=construir_menu_bot(),
             )
             return {"status": "bot_automatico"}
 
