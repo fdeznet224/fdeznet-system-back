@@ -691,7 +691,9 @@ async def listar_promesas_historial(
             "estado": item.estado,
             "origen": item.origen,
             "usuario": (
-                item.usuario.nombre_completo if item.usuario else "FdezBot"
+                item.usuario.nombre_completo
+                if item.usuario
+                else ("FdezBot" if item.origen == "bot" else "Registro manual")
             ),
             "servicio_reactivado": item.servicio_reactivado,
             "reactivado_en": item.reactivado_en,
