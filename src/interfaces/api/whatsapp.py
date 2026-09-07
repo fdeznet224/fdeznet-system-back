@@ -46,10 +46,6 @@ from src.application.services.finance_service import FinanceService
 from src.application.services.access_control_service import (
     verificar_acceso_cliente,
 )
-from src.application.services.ai_whatsapp_service import (
-    AIWhatsAppService,
-    esta_fuera_de_horario,
-)
 from src.application.services.whatsapp_outbox_service import (
     ESTADOS_SALIDA,
     WhatsAppOutboxService,
@@ -73,6 +69,42 @@ bot_memory = {}
 ocr_tool = OCRService()
 BOT_KEYWORD = "fdezbot"
 BOT_SESSION_MINUTES = 15
+
+
+def esta_fuera_de_horario(ahora: datetime | None = None) -> bool:
+    """Horario de atención de FdezNet en America/Mexico_City."""
+    from datetime import time
+    from zoneinfo import ZoneInfo
+
+    zona = ZoneInfo("America/Mexico_City")
+    local = ahora.astimezone(zona) if ahora and ahora.tzinfo else (
+        ahora or datetime.now(zona)
+    )
+    if local.weekday() <= 4:
+        return not (time(8, 0) <= local.time() < time(20, 0))
+    if local.weekday() == 5:
+        return not (time(9, 0) <= local.time() < time(14, 0))
+    return True
+
+
+def mensaje_fuera_de_horario() -> str:
+    return (
+        "🌙 *Estamos fuera del horario de atención.*\n\n"
+        "Nuestro horario es:\n"
+        "• Lunes a viernes: 8:00 a. m. a 8:00 p. m.\n"
+        "• Sábado: 9:00 a. m. a 2:00 p. m.\n"
+        "• Domingo: cerrado.\n\n"
+        "Tu mensaje quedó registrado para que un asesor lo revise. "
+        "Para consultar saldo, reportar un pago o registrar una promesa, "
+        "escribe *fdezbot*."
+    )
+
+
+def mensaje_audio_no_disponible() -> str:
+    return (
+        "🎤 Por el momento FdezBot no procesa notas de voz. "
+        "Por favor escribe tu solicitud o envía *fdezbot* para usar el menú."
+    )
 
 
 def construir_menu_bot() -> str:
@@ -543,6 +575,14 @@ async def webhook_recibir_mensaje(
         }
     })
 
+    # El autoservicio es únicamente por texto; no se envía audio a servicios externos.
+    if media_url and "[AUDIO]" in mensaje_texto.upper():
+        await wa_service.enviar_mensaje(
+            telefono=telefono_raw,
+            mensaje=mensaje_audio_no_disponible(),
+        )
+        return {"status": "audio_no_disponible"}
+
     # =========================================================
     # 2. ACTIVACIÓN DEL BOT (NUEVA PALABRA CLAVE)
     # =========================================================
@@ -866,31 +906,12 @@ async def webhook_recibir_mensaje(
             return {"status": "bot_estado_finished"}
 
     if esta_fuera_de_horario():
-        agente = AIWhatsAppService()
-        if agente.disponible:
-            try:
-                consulta = mensaje_texto
-                if media_url and "[AUDIO]" in mensaje_texto:
-                    consulta = await agente.transcribir(media_url)
-                    nuevo_mensaje.mensaje = f"🎤 {consulta}"
-                    await db.commit()
-                respuesta = await agente.responder(consulta, cliente_h)
-                await wa_service.enviar_mensaje(
-                    telefono=telefono_raw,
-                    mensaje=respuesta,
-                    tipo_evento="agente_ia_fuera_horario",
-                )
-                return {"status": "agente_ia", "audio": bool(media_url)}
-            except Exception:
-                logger.exception("Falló el agente de IA fuera de horario")
-                await wa_service.enviar_mensaje(
-                    telefono=telefono_raw,
-                    mensaje=(
-                        "🌙 Estamos fuera del horario de atención. Guardamos tu mensaje y "
-                        "un asesor continuará contigo en el próximo horario laboral."
-                    ),
-                )
-                return {"status": "agente_ia_error"}
+        await wa_service.enviar_mensaje(
+            telefono=telefono_raw,
+            mensaje=mensaje_fuera_de_horario(),
+            tipo_evento="respuesta_fuera_horario",
+        )
+        return {"status": "fuera_de_horario"}
 
     return {"status": "chat_normal"}
 
