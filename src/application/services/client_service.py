@@ -924,10 +924,15 @@ class ClientService:
 
         if "plantilla_id" in update_data:
             plantilla_objetivo = update_data["plantilla_id"]
-            if plantilla_objetivo and not await self.db.get(
-                PlantillaFacturacionModel,
-                plantilla_objetivo,
-            ):
+            plantilla = (
+                await self.db.get(
+                    PlantillaFacturacionModel,
+                    plantilla_objetivo,
+                )
+                if plantilla_objetivo
+                else None
+            )
+            if plantilla_objetivo and not plantilla:
                 raise ValueError("La plantilla de facturación seleccionada no existe")
             if len(servicios_activos) > 1:
                 if any(
@@ -943,6 +948,12 @@ class ClientService:
                 # campo heredado del cliente sincronizado para que la edición
                 # general siga funcionando cuando sólo existe un domicilio.
                 servicios_activos[0].plantilla_id = plantilla_objetivo
+                servicios_activos[0].dia_vencimiento = (
+                    plantilla.dia_pago if plantilla else None
+                )
+                servicios_activos[0].dias_tolerancia = (
+                    (plantilla.dias_tolerancia or 0) if plantilla else 0
+                )
 
         plan = (
             await self.db.get(PlanModel, plan_objetivo)
