@@ -11,6 +11,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from src.infrastructure.models import (
     ClienteModel, FacturaModel, FacturaConceptoModel, PagoConceptoModel, PagoModel,
     UsuarioModel, PlanModel, RouterModel, PlantillaFacturacionModel,
+    ServicioAdicionalModel,
     ServicioModel,
     SuspensionFacturacionModel,
 )
@@ -424,6 +425,42 @@ class BillingService:
                 nueva_factura,
                 servicio,
             )
+
+            if not periodo.es_prorrateada:
+                adicionales = (
+                    await self.db.execute(
+                        select(ServicioAdicionalModel).where(
+                            ServicioAdicionalModel.cliente_id == cliente.id,
+                            ServicioAdicionalModel.activo.is_(True),
+                            ServicioAdicionalModel.fecha_inicio <= periodo.periodo_hasta,
+                            or_(
+                                ServicioAdicionalModel.servicio_id == servicio.id,
+                                ServicioAdicionalModel.servicio_id.is_(None),
+                            ),
+                        )
+                    )
+                ).scalars().all()
+                for adicional in adicionales:
+                    precio_adicional = Decimal(adicional.precio_mensual or 0)
+                    if precio_adicional <= 0:
+                        continue
+                    nueva_factura.monto = Decimal(nueva_factura.monto or 0) + precio_adicional
+                    nueva_factura.total = Decimal(nueva_factura.total or 0) + precio_adicional
+                    nueva_factura.saldo_pendiente = Decimal(nueva_factura.saldo_pendiente or 0) + precio_adicional
+                    nueva_factura.cargos_adicionales_total = Decimal(nueva_factura.cargos_adicionales_total or 0) + precio_adicional
+                    self.db.add(FacturaConceptoModel(
+                        factura_id=nueva_factura.id,
+                        cliente_id=cliente.id,
+                        servicio_id=servicio.id,
+                        tipo="servicio_adicional",
+                        concepto=adicional.nombre,
+                        descripcion=f"Servicio adicional mensual: {adicional.nombre}",
+                        monto_original=precio_adicional,
+                        saldo_pendiente=precio_adicional,
+                        estado="facturado",
+                        afecta_corte=adicional.afecta_corte,
+                        fecha_cargo=periodo.periodo_desde,
+                    ))
 
             cargos_pendientes = (
                 await self.db.execute(

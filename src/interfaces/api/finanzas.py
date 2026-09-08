@@ -20,6 +20,7 @@ from src.infrastructure.models import (
     PromesaPagoHistorialModel,
     ZonaModel,
     RouterModel,
+    ServicioAdicionalModel,
 )
 
 # Servicios
@@ -57,6 +58,16 @@ class FacturaManualRequest(BaseModel):
     fecha_vencimiento: Optional[date] = None
     afecta_corte: bool = False
     numero_cuotas: int = Field(default=1, ge=1, le=24)
+
+
+class ServicioAdicionalRequest(BaseModel):
+    cliente_id: int
+    servicio_id: Optional[int] = None
+    nombre: str = Field(min_length=2, max_length=150)
+    precio_mensual: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    fecha_inicio: date = Field(default_factory=date.today)
+    afecta_corte: bool = False
+    activo: bool = True
 
 
 class MotivoRequest(BaseModel):
@@ -459,6 +470,70 @@ async def aplicar_descuento(
 # ==========================================
 # 3.5 FACTURA MANUAL / CARGO ADICIONAL
 # ==========================================
+@router.get("/servicios-adicionales")
+async def listar_servicios_adicionales(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    return (await db.execute(
+        select(ServicioAdicionalModel)
+        .where(ServicioAdicionalModel.cliente_id == cliente_id)
+        .order_by(ServicioAdicionalModel.activo.desc(), ServicioAdicionalModel.nombre)
+    )).scalars().all()
+
+
+@router.post("/servicios-adicionales")
+async def crear_servicio_adicional(
+    data: ServicioAdicionalRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    cliente = await db.get(ClienteModel, data.cliente_id)
+    if not cliente or cliente.estado == "eliminado":
+        raise HTTPException(404, "Cliente no encontrado")
+    if data.servicio_id:
+        servicio = await db.get(ServicioModel, data.servicio_id)
+        if not servicio or servicio.cliente_id != cliente.id:
+            raise HTTPException(400, "El servicio no pertenece al cliente")
+    item = ServicioAdicionalModel(**data.model_dump())
+    db.add(item)
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
+@router.put("/servicios-adicionales/{item_id}")
+async def actualizar_servicio_adicional(
+    item_id: int,
+    data: ServicioAdicionalRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    item = await db.get(ServicioAdicionalModel, item_id)
+    if not item:
+        raise HTTPException(404, "Servicio adicional no encontrado")
+    for campo, valor in data.model_dump().items():
+        setattr(item, campo, valor)
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
+@router.delete("/servicios-adicionales/{item_id}")
+async def cancelar_servicio_adicional(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    item = await db.get(ServicioAdicionalModel, item_id)
+    if not item:
+        raise HTTPException(404, "Servicio adicional no encontrado")
+    item.activo = False
+    await db.commit()
+    return {"status": "ok", "mensaje": "Servicio adicional cancelado"}
+
+
 @router.post("/factura-manual")
 async def crear_factura_manual(
     data: FacturaManualRequest,

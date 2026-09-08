@@ -941,6 +941,26 @@ class FacturaConceptoModel(Base):
     aplicaciones_pago = relationship("PagoConceptoModel", back_populates="concepto")
 
 
+class ServicioAdicionalModel(Base):
+    """Cargo recurrente que se incorpora a la mensualidad del servicio."""
+
+    __tablename__ = "servicios_adicionales"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=False, index=True)
+    servicio_id = Column(Integer, ForeignKey("servicios.id"), nullable=True, index=True)
+    nombre = Column(String(150), nullable=False)
+    precio_mensual = Column(Numeric(12, 2), nullable=False)
+    afecta_corte = Column(Boolean, nullable=False, default=False, server_default="0")
+    activo = Column(Boolean, nullable=False, default=True, server_default="1")
+    fecha_inicio = Column(Date, nullable=False, default=date.today)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+
+    cliente = relationship("ClienteModel")
+    servicio = relationship("ServicioModel")
+
+
 class PagoConceptoModel(Base):
     __tablename__ = "pago_conceptos"
     id = Column(Integer, primary_key=True)
