@@ -461,6 +461,8 @@ class BillingService:
                         afecta_corte=adicional.afecta_corte,
                         fecha_cargo=periodo.periodo_desde,
                     ))
+                    if adicional.periodicidad == "unico":
+                        adicional.activo = False
 
             cargos_pendientes = (
                 await self.db.execute(

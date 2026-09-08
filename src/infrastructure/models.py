@@ -951,6 +951,7 @@ class ServicioAdicionalModel(Base):
     servicio_id = Column(Integer, ForeignKey("servicios.id"), nullable=True, index=True)
     nombre = Column(String(150), nullable=False)
     precio_mensual = Column(Numeric(12, 2), nullable=False)
+    periodicidad = Column(String(20), nullable=False, default="mensual", server_default="mensual")
     afecta_corte = Column(Boolean, nullable=False, default=False, server_default="0")
     activo = Column(Boolean, nullable=False, default=True, server_default="1")
     fecha_inicio = Column(Date, nullable=False, default=date.today)

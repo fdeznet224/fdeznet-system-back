@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Literal
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,6 +65,7 @@ class ServicioAdicionalRequest(BaseModel):
     servicio_id: Optional[int] = None
     nombre: str = Field(min_length=2, max_length=150)
     precio_mensual: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    periodicidad: Literal["mensual", "unico"] = "mensual"
     fecha_inicio: date = Field(default_factory=date.today)
     afecta_corte: bool = False
     activo: bool = True
