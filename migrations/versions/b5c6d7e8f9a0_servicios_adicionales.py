@@ -25,7 +25,7 @@ def upgrade() -> None:
         sa.Column("precio_mensual", sa.Numeric(12, 2), nullable=False),
         sa.Column("afecta_corte", sa.Boolean(), nullable=False, server_default="0"),
         sa.Column("activo", sa.Boolean(), nullable=False, server_default="1"),
-        sa.Column("fecha_inicio", sa.Date(), nullable=False, server_default=sa.text("CURRENT_DATE")),
+        sa.Column("fecha_inicio", sa.Date(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
         sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
         sa.ForeignKeyConstraint(["cliente_id"], ["clientes.id"], ondelete="CASCADE"),
