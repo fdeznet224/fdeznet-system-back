@@ -35,7 +35,6 @@ router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
 # =========================================================
 
 @router.get("/plantillas-facturacion", response_model=List[PlantillaResponse])
-@cache(expire=300)
 async def listar_plantillas_facturacion(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PlantillaFacturacionModel))
     return result.scalars().all()

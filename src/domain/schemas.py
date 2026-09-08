@@ -79,6 +79,12 @@ class BillingTemplateRequest(BaseModel):
     dias_antes_emision: int
     dia_pago: int
     dias_tolerancia: int
+    cargo_reconexion: Decimal = Field(
+        default=Decimal("30.00"),
+        ge=0,
+        max_digits=12,
+        decimal_places=2,
+    )
     impuesto: Decimal = Field(
         default=Decimal("0.00"),
         ge=0,

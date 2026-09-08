@@ -10,7 +10,7 @@ from sqlalchemy.orm import joinedload, selectinload
 # Modelos
 from src.infrastructure.models import (
     ClienteModel, FacturaModel, FacturaConceptoModel, PagoConceptoModel, PagoModel,
-    UsuarioModel, PlanModel, RouterModel,
+    UsuarioModel, PlanModel, RouterModel, PlantillaFacturacionModel,
     ServicioModel,
     SuspensionFacturacionModel,
 )
@@ -55,6 +55,39 @@ MESES_EN_ESPANOL = (
 class BillingService:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def _registrar_cargo_reconexion(
+        self,
+        cliente: ClienteModel,
+        servicio: ServicioModel | None,
+        origen: str,
+    ) -> None:
+        """Agenda en la próxima factura el importe definido por la plantilla."""
+        plantilla_id = (
+            servicio.plantilla_id if servicio and servicio.plantilla_id
+            else cliente.plantilla_id
+        )
+        plantilla = (
+            await self.db.get(PlantillaFacturacionModel, plantilla_id)
+            if plantilla_id else None
+        )
+        monto = Decimal(str(plantilla.cargo_reconexion or 0)) if plantilla else Decimal("0")
+        if monto <= 0:
+            return
+
+        self.db.add(FacturaConceptoModel(
+            cliente_id=cliente.id,
+            servicio_id=servicio.id if servicio else None,
+            factura_id=None,
+            tipo="reconexion",
+            concepto="Cargo por reconexión",
+            descripcion=f"Reconexión de servicio ({origen})",
+            monto_original=monto,
+            saldo_pendiente=monto,
+            estado="pendiente",
+            afecta_corte=False,
+            fecha_cargo=date.today(),
+        ))
 
     @staticmethod
     def _variables_detalle_factura(factura):
@@ -739,6 +772,9 @@ class BillingService:
                             else "manual"
                         )
                         servicio.ultima_reactivacion_en = datetime.now()
+                    await self._registrar_cargo_reconexion(
+                        cliente, servicio, "pago"
+                    )
 
         await self.db.commit()
 
@@ -1270,6 +1306,9 @@ class BillingService:
             promesa.servicio_reactivado = True
             promesa.reactivado_en = datetime.now()
             await self._sincronizar_estado_cliente(cliente.id)
+            await self._registrar_cargo_reconexion(
+                cliente, servicio, f"promesa {promesa.origen}"
+            )
 
         await self.db.commit()
 

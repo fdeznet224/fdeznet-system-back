@@ -229,6 +229,9 @@ class PlantillaFacturacionModel(Base):
     dia_pago = Column(Integer, default=1)           
     dias_antes_emision = Column(Integer, default=5) 
     dias_tolerancia = Column(Integer, default=3)    
+    cargo_reconexion = Column(
+        Numeric(12, 2), nullable=False, default=30, server_default=text("30.00")
+    )
     impuesto = Column(Numeric(5, 2), default=0, server_default=text("0.00"))
     recordatorio_whatsapp = Column(Boolean, default=True)
     aviso_factura = Column(String(50), default='whatsapp') 

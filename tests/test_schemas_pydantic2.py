@@ -70,6 +70,7 @@ def test_plantilla_facturacion_serializa_el_ciclo_completo():
         dias_antes_emision=5,
         dia_pago=15,
         dias_tolerancia=3,
+        cargo_reconexion="30.00",
         impuesto="16.00",
         recordatorio_whatsapp=True,
         aviso_factura="whatsapp",
@@ -79,4 +80,5 @@ def test_plantilla_facturacion_serializa_el_ciclo_completo():
 
     assert payload["dia_pago"] == 15
     assert payload["dias_tolerancia"] == 3
+    assert str(payload["cargo_reconexion"]) == "30.00"
     assert str(payload["impuesto"]) == "16.00"
