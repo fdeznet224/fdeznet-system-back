@@ -496,7 +496,18 @@ async def crear_servicio_adicional(
         servicio = await db.get(ServicioModel, data.servicio_id)
         if not servicio or servicio.cliente_id != cliente.id:
             raise HTTPException(400, "El servicio no pertenece al cliente")
-    item = ServicioAdicionalModel(**data.model_dump())
+        servicio_id = servicio.id
+    else:
+        servicios = (await db.execute(select(ServicioModel).where(
+            ServicioModel.cliente_id == cliente.id,
+            ServicioModel.estado != "cancelado",
+        ))).scalars().all()
+        if len(servicios) != 1:
+            raise HTTPException(400, "Selecciona el domicilio del servicio adicional")
+        servicio_id = servicios[0].id
+    valores = data.model_dump()
+    valores["servicio_id"] = servicio_id
+    item = ServicioAdicionalModel(**valores)
     db.add(item)
     await db.commit()
     await db.refresh(item)
@@ -513,7 +524,15 @@ async def actualizar_servicio_adicional(
     item = await db.get(ServicioAdicionalModel, item_id)
     if not item:
         raise HTTPException(404, "Servicio adicional no encontrado")
-    for campo, valor in data.model_dump().items():
+    if data.cliente_id != item.cliente_id:
+        raise HTTPException(400, "No se puede cambiar el cliente del servicio")
+    servicio_id = data.servicio_id or item.servicio_id
+    servicio = await db.get(ServicioModel, servicio_id) if servicio_id else None
+    if not servicio or servicio.cliente_id != item.cliente_id:
+        raise HTTPException(400, "El servicio no pertenece al cliente")
+    valores = data.model_dump()
+    valores["servicio_id"] = servicio.id
+    for campo, valor in valores.items():
         setattr(item, campo, valor)
     await db.commit()
     await db.refresh(item)
