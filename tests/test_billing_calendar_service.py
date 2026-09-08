@@ -122,3 +122,17 @@ def test_vencimiento_prepago_y_postpago():
 def test_postpago_no_emite_antes_de_terminar_periodo():
     periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(date(2026, 8, 15), 15, 310)
     assert BillingCalendarService.calcular_fecha_generacion(periodo, "postpago", dias_antes_emision=3) == date(2026, 9, 15)
+
+
+def test_prorrateo_prepago_vence_en_el_siguiente_dia_de_pago():
+    periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
+        periodo_desde=date(2026, 8, 27),
+        dia_ciclo=1,
+        precio_mensual=300,
+    )
+
+    assert periodo.es_prorrateada is True
+    assert periodo.siguiente_facturacion == date(2026, 9, 1)
+    assert BillingCalendarService.calcular_fecha_vencimiento(
+        periodo, "prepago"
+    ) == date(2026, 9, 1)

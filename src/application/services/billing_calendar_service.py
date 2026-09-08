@@ -242,7 +242,7 @@ class BillingCalendarService:
 
     @classmethod
     def calcular_fecha_vencimiento(cls, periodo: BillingPeriodCalculation, tipo_facturacion: str) -> date:
-        if tipo_facturacion == "postpago":
+        if tipo_facturacion == "postpago" or periodo.es_prorrateada:
             return periodo.siguiente_facturacion
         return periodo.periodo_desde
 
