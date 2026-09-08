@@ -89,6 +89,83 @@ class BillingService:
             fecha_cargo=date.today(),
         ))
 
+    async def _consolidar_prorrateos_en_mensualidad(
+        self,
+        factura: FacturaModel,
+        servicio: ServicioModel,
+    ) -> int:
+        """Traslada prorrateos abiertos a la primera mensualidad normal."""
+        if factura.es_prorrateada:
+            return 0
+
+        prorrateos = (
+            await self.db.execute(
+                select(FacturaModel)
+                .where(
+                    FacturaModel.servicio_id == servicio.id,
+                    FacturaModel.id != factura.id,
+                    FacturaModel.tipo_factura == "prorrateo",
+                    FacturaModel.estado.in_(["pendiente", "vencida"]),
+                    FacturaModel.saldo_pendiente > 0,
+                    FacturaModel.periodo_hasta < factura.periodo_desde,
+                )
+                .order_by(FacturaModel.periodo_desde.asc())
+                .with_for_update()
+            )
+        ).scalars().all()
+
+        total_consolidado = Decimal("0")
+        for prorrateo in prorrateos:
+            saldo = Decimal(prorrateo.saldo_pendiente or 0)
+            if saldo <= 0:
+                continue
+            total_consolidado += saldo
+            factura.monto = Decimal(factura.monto or 0) + saldo
+            factura.total = Decimal(factura.total or 0) + saldo
+            factura.saldo_pendiente = Decimal(factura.saldo_pendiente or 0) + saldo
+            factura.monto_servicio_original = (
+                Decimal(factura.monto_servicio_original or 0)
+                + saldo
+            )
+            self.db.add(FacturaConceptoModel(
+                factura_id=factura.id,
+                cliente_id=factura.cliente_id,
+                servicio_id=servicio.id,
+                tipo="internet_prorrateado",
+                concepto="Prorrateo de internet",
+                descripcion=prorrateo.descripcion or prorrateo.detalles,
+                monto_original=saldo,
+                saldo_pendiente=saldo,
+                estado="facturado",
+                afecta_corte=True,
+                fecha_cargo=prorrateo.periodo_desde,
+            ))
+            conceptos_anteriores = (
+                await self.db.execute(
+                    select(FacturaConceptoModel).where(
+                        FacturaConceptoModel.factura_id == prorrateo.id,
+                        FacturaConceptoModel.saldo_pendiente > 0,
+                    )
+                )
+            ).scalars().all()
+            for concepto in conceptos_anteriores:
+                concepto.saldo_pendiente = 0
+                concepto.estado = "consolidado"
+            prorrateo.saldo_pendiente = 0
+            prorrateo.estado = "anulada"
+            prorrateo.afecta_corte = False
+            nota = f"Consolidada en factura #{factura.id}."
+            prorrateo.descripcion = " ".join(
+                parte for parte in [prorrateo.descripcion, nota] if parte
+            )
+
+        if total_consolidado > 0:
+            detalle = f"Prorrateo anterior consolidado: ${total_consolidado:.2f}"
+            factura.detalles = "\n".join(
+                parte for parte in [factura.detalles, detalle] if parte
+            )
+        return len(prorrateos)
+
     @staticmethod
     def _variables_detalle_factura(factura):
         """Variables comunes para recibos y plantillas de WhatsApp."""
@@ -343,6 +420,11 @@ class BillingService:
             )
             self.db.add(concepto_internet)
 
+            await self._consolidar_prorrateos_en_mensualidad(
+                nueva_factura,
+                servicio,
+            )
+
             cargos_pendientes = (
                 await self.db.execute(
                     select(FacturaConceptoModel)
@@ -419,6 +501,7 @@ class BillingService:
 
             debe_notificar = (
                 nueva_factura.saldo_pendiente > 0
+                and not periodo.es_prorrateada
                 and (
                     servicio.estado != "suspendido"
                     or periodo.periodo_hasta < hoy

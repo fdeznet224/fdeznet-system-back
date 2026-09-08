@@ -33,6 +33,77 @@ def test_money_rejects_zero_and_negative_amounts():
         FinanceService.dinero("-1")
 
 
+def test_prorrateo_se_consolida_en_una_sola_mensualidad():
+    prorrateo = FacturaModel(
+        id=10,
+        cliente_id=5,
+        servicio_id=7,
+        tipo_factura="prorrateo",
+        estado="pendiente",
+        periodo_desde=date(2026, 8, 27),
+        periodo_hasta=date(2026, 8, 31),
+        monto=Decimal("50.00"),
+        impuesto=0,
+        total=Decimal("50.00"),
+        saldo_pendiente=Decimal("50.00"),
+        afecta_corte=True,
+    )
+    mensual = FacturaModel(
+        id=11,
+        cliente_id=5,
+        servicio_id=7,
+        tipo_factura="mensual",
+        es_prorrateada=False,
+        periodo_desde=date(2026, 9, 1),
+        periodo_hasta=date(2026, 9, 30),
+        monto=Decimal("300.00"),
+        impuesto=0,
+        total=Decimal("300.00"),
+        saldo_pendiente=Decimal("300.00"),
+        monto_servicio_original=Decimal("300.00"),
+        impuesto_servicio_original=0,
+        detalles="Mensualidad septiembre",
+    )
+    servicio = ServicioModel(id=7, cliente_id=5)
+
+    class Result:
+        def __init__(self, values):
+            self.values = values
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.values
+
+    class DB:
+        def __init__(self):
+            self.results = [Result([prorrateo]), Result([])]
+            self.added = []
+
+        async def execute(self, _statement):
+            return self.results.pop(0)
+
+        def add(self, value):
+            self.added.append(value)
+
+    db = DB()
+    cantidad = asyncio.run(
+        BillingService(db)._consolidar_prorrateos_en_mensualidad(
+            mensual, servicio
+        )
+    )
+
+    assert cantidad == 1
+    assert mensual.total == Decimal("350.00")
+    assert mensual.saldo_pendiente == Decimal("350.00")
+    assert prorrateo.estado == "anulada"
+    assert prorrateo.saldo_pendiente == 0
+    concepto = next(item for item in db.added if isinstance(item, FacturaConceptoModel))
+    assert concepto.concepto == "Prorrateo de internet"
+    assert concepto.saldo_pendiente == Decimal("50.00")
+
+
 def test_payment_method_normalization_supports_bot_and_transfer():
     assert FinanceService.normalizar_metodo("BOT_AUTOPAGO") == "autovalidado"
     assert FinanceService.normalizar_metodo("Transferencia bancaria") == "transferencia"
