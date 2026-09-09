@@ -47,3 +47,5 @@ def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     assert "restore_backup \"$LAST_BACKUP\"" in content
     assert 'merge-base --is-ancestor "$OLD_BACKEND" "$backend_commit"' in content
     assert 'wait_for_health' in content
+    assert "make_url" in content
+    assert "DATABASE_URL_VALUE" in content

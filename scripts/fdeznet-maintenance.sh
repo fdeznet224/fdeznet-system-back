@@ -17,6 +17,13 @@ OLD_BACKEND=""
 OLD_FRONTEND=""
 TARGET_VERSION=""
 UPDATE_ACTIVE="false"
+DB_USER_VALUE=""
+DB_PASSWORD_VALUE=""
+DB_HOST_VALUE=""
+DB_PORT_VALUE=""
+DB_NAME_VALUE=""
+CURRENT_STAGE=""
+CURRENT_ARCHIVE=""
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
@@ -58,14 +65,51 @@ report() {
     "${control_url%/}/control/update-report" >/dev/null || true
 }
 
+load_db_config() {
+  local database_url
+  local -a parsed=()
+  DB_USER_VALUE="$(env_value DB_USER)"
+  DB_PASSWORD_VALUE="$(env_value DB_PASSWORD)"
+  DB_HOST_VALUE="$(env_value DB_HOST)"
+  DB_PORT_VALUE="$(env_value DB_PORT)"
+  DB_NAME_VALUE="$(env_value DB_NAME)"
+  database_url="$(env_value DATABASE_URL)"
+  if [[ -n "$database_url" && ( -z "$DB_USER_VALUE" || -z "$DB_NAME_VALUE" ) ]]; then
+    mapfile -d '' -t parsed < <(
+      DATABASE_URL_VALUE="$database_url" "$BACKEND_DIR/venv/bin/python" -c '
+import os
+from sqlalchemy.engine import make_url
+url = make_url(os.environ["DATABASE_URL_VALUE"])
+for value in (url.username, url.password, url.host, url.port or 3306, url.database):
+    print("" if value is None else value, end="\0")
+'
+    )
+    DB_USER_VALUE="${parsed[0]:-}"
+    DB_PASSWORD_VALUE="${parsed[1]:-}"
+    DB_HOST_VALUE="${parsed[2]:-}"
+    DB_PORT_VALUE="${parsed[3]:-}"
+    DB_NAME_VALUE="${parsed[4]:-}"
+  fi
+  DB_HOST_VALUE="${DB_HOST_VALUE:-127.0.0.1}"
+  DB_PORT_VALUE="${DB_PORT_VALUE:-3306}"
+  [[ -n "$DB_USER_VALUE" && -n "$DB_NAME_VALUE" ]] || fail "Configuración de base de datos incompleta"
+}
+
+mysql_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  printf '%s' "${value//\"/\\\"}"
+}
+
 mysql_defaults() {
   local target="$1"
+  load_db_config
   cat > "$target" <<MYSQL
 [client]
-user=$(env_value DB_USER)
-password=$(env_value DB_PASSWORD)
-host=$(env_value DB_HOST)
-port=$(env_value DB_PORT)
+user="$(mysql_escape "$DB_USER_VALUE")"
+password="$(mysql_escape "$DB_PASSWORD_VALUE")"
+host="$(mysql_escape "$DB_HOST_VALUE")"
+port=${DB_PORT_VALUE}
 MYSQL
   chmod 0600 "$target"
 }
@@ -76,6 +120,8 @@ create_backup() {
   install -d -m 0700 "$BACKUP_DIR"
   stage="$(mktemp -d "$BACKUP_DIR/.stage-${timestamp}.XXXXXX")"
   archive="$BACKUP_DIR/.${timestamp}.tar.gz"
+  CURRENT_STAGE="$stage"
+  CURRENT_ARCHIVE="$archive"
   encrypted="$BACKUP_DIR/${timestamp}.tar.gz.gpg"
   mysql_config="$stage/mysql.cnf"
   mysql_defaults "$mysql_config"
@@ -84,7 +130,7 @@ create_backup() {
 
   mkdir -p "$stage/data" "$stage/config"
   mysqldump --defaults-extra-file="$mysql_config" --single-transaction \
-    --routines --events --triggers --databases "$(env_value DB_NAME)" | gzip -9 > "$stage/data/database.sql.gz"
+    --routines --events --triggers --databases "$DB_NAME_VALUE" | gzip -9 > "$stage/data/database.sql.gz"
   cp -a "$ENV_FILE" "$stage/config/backend.env"
   [[ -f "$BACKEND_DIR/bot_whatsapp/.env" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/.env" "$stage/config/bot.env"
   [[ -f /etc/nginx/sites-available/fdeznet ]] && cp -a /etc/nginx/sites-available/fdeznet "$stage/config/nginx.conf"
@@ -109,6 +155,8 @@ create_backup() {
   chmod 0600 "$encrypted" "${encrypted}.sha256"
   shred -u "$archive"
   rm -rf "$stage"
+  CURRENT_STAGE=""
+  CURRENT_ARCHIVE=""
   LAST_BACKUP="$encrypted"
 
   if [[ -n "$REMOTE_DIR" ]]; then
@@ -175,6 +223,12 @@ restore_backup() {
 on_error() {
   local code=$?
   trap - ERR
+  if [[ -n "$CURRENT_ARCHIVE" && "$CURRENT_ARCHIVE" == "$BACKUP_DIR/."*.tar.gz ]]; then
+    shred -u "$CURRENT_ARCHIVE" 2>/dev/null || true
+  fi
+  if [[ -n "$CURRENT_STAGE" && "$CURRENT_STAGE" == "$BACKUP_DIR/.stage-"* ]]; then
+    rm -rf "$CURRENT_STAGE"
+  fi
   if [[ "$UPDATE_ACTIVE" == "true" && -n "$LAST_BACKUP" ]]; then
     log "La actualización falló; iniciando reversión automática"
     if restore_backup "$LAST_BACKUP"; then
