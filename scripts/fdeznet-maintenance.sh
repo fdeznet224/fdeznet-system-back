@@ -24,6 +24,8 @@ DB_PORT_VALUE=""
 DB_NAME_VALUE=""
 CURRENT_STAGE=""
 CURRENT_ARCHIVE=""
+RECOVERY_STATUS="sin_revision"
+RECOVERY_DATE=""
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
@@ -43,7 +45,12 @@ write_status() {
     --arg fecha "$(date --iso-8601=seconds)" \
     --arg version "$TARGET_VERSION" \
     --arg respaldo "$LAST_BACKUP" \
-    '{estado:$estado,mensaje:$mensaje,fecha:$fecha,version:$version,respaldo:$respaldo}' \
+    --arg recuperacion_estado "$RECOVERY_STATUS" \
+    --arg recuperacion_fecha "$RECOVERY_DATE" \
+    --arg clave_huella "$(sha256sum "$KEY_FILE" | awk '{print $1}')" \
+    '{estado:$estado,mensaje:$mensaje,fecha:$fecha,version:$version,respaldo:$respaldo,
+      recuperacion_estado:$recuperacion_estado,recuperacion_fecha:$recuperacion_fecha,
+      clave_huella:$clave_huella}' \
     > "${STATUS_FILE}.tmp"
   chmod 0644 "${STATUS_FILE}.tmp"
   mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
@@ -112,6 +119,30 @@ host="$(mysql_escape "$DB_HOST_VALUE")"
 port=${DB_PORT_VALUE}
 MYSQL
   chmod 0600 "$target"
+}
+
+verify_backup() {
+  local encrypted="${1:-}" metadata
+  if [[ -z "$encrypted" ]]; then
+    encrypted="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' -printf '%T@ %p\n' | sort -nr | awk 'NR == 1 {print $2}')"
+  fi
+  [[ "$encrypted" == "$BACKUP_DIR/"*.tar.gz.gpg && -f "$encrypted" ]] || fail "No hay respaldo para verificar"
+  sha256sum -c "${encrypted}.sha256" >/dev/null
+  gpg --batch --quiet --decrypt --pinentry-mode loopback \
+    --passphrase-file "$KEY_FILE" "$encrypted" | tar -tzf - | \
+    grep -qx './data/database.sql.gz'
+  gpg --batch --quiet --decrypt --pinentry-mode loopback \
+    --passphrase-file "$KEY_FILE" "$encrypted" | \
+    tar -xOzf - ./data/database.sql.gz | gzip -t
+  metadata="$(gpg --batch --quiet --decrypt --pinentry-mode loopback \
+    --passphrase-file "$KEY_FILE" "$encrypted" | tar -xOzf - ./metadata.env)"
+  grep -Eq '^BACKEND_COMMIT=[0-9a-f]{40}$' <<< "$metadata"
+  grep -Eq '^FRONTEND_COMMIT=[0-9a-f]{40}$' <<< "$metadata"
+  LAST_BACKUP="$encrypted"
+  RECOVERY_STATUS="verificado"
+  RECOVERY_DATE="$(date --iso-8601=seconds)"
+  write_status "recuperacion_verificada" "El respaldo puede descifrarse y su base de datos está íntegra"
+  log "Prueba de recuperación aprobada: $encrypted"
 }
 
 create_backup() {
@@ -310,14 +341,19 @@ main() {
   RETENTION_DAYS="$(env_value FDEZNET_BACKUP_RETENTION_DAYS)"
   RETENTION_DAYS="${RETENTION_DAYS:-14}"
   REMOTE_DIR="$(env_value FDEZNET_BACKUP_REMOTE_DIR)"
+  if [[ -f "$STATUS_FILE" ]] && jq -e . "$STATUS_FILE" >/dev/null 2>&1; then
+    RECOVERY_STATUS="$(jq -r '.recuperacion_estado // "sin_revision"' "$STATUS_FILE")"
+    RECOVERY_DATE="$(jq -r '.recuperacion_fecha // ""' "$STATUS_FILE")"
+  fi
   [[ "$RETENTION_DAYS" =~ ^[0-9]{1,3}$ ]] || fail "Retención inválida"
   exec 9> "$LOCK_FILE"
   flock -n 9 || { log "Ya existe otra tarea de mantenimiento"; exit 0; }
   case "${1:-}" in
     backup) create_backup ;;
     update) perform_update ;;
+    verify) verify_backup "${2:-}" ;;
     restore) [[ -n "${2:-}" ]] || return 2; restore_backup "$2" ;;
-    *) printf 'Uso: %s {backup|update|restore ARCHIVO}\n' "$0"; return 2 ;;
+    *) printf 'Uso: %s {backup|update|verify [ARCHIVO]|restore ARCHIVO}\n' "$0"; return 2 ;;
   esac
 }
 

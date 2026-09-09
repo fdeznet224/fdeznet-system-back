@@ -1,0 +1,12 @@
+[Unit]
+Description=FdezNet - prueba no destructiva de recuperación
+After=fdeznet-backup.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/fdeznet-maintenance verify
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+

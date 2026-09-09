@@ -200,6 +200,10 @@ class MaintenanceStatus(BaseModel):
     respaldo: Optional[str] = None
     actualizacion_automatica: bool = False
     respaldo_automatico: bool = False
+    revision_automatica: bool = False
+    recuperacion_estado: str = "sin_revision"
+    recuperacion_fecha: Optional[datetime] = None
+    clave_huella: Optional[str] = None
 
 # ==========================================
 # 2. PLANTILLAS DE MENSAJES

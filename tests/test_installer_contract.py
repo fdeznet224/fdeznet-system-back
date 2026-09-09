@@ -30,7 +30,9 @@ def test_instalador_configura_respaldo_y_revision_automatica():
     assert "backup.key" in content
     assert "fdeznet-backup.timer" in content
     assert "fdeznet-update.timer" in content
+    assert "fdeznet-verify.timer" in content
     assert "FDEZNET_BACKUP_RETENTION_DAYS" in content
+    assert "rclone" not in content.lower()
 
 
 def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
@@ -42,11 +44,13 @@ def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     )
     assert result.returncode == 0, result.stderr
     content = MAINTENANCE.read_text(encoding="utf-8")
+    assert "rclone" not in content.lower()
     assert "gpg --batch" in content
     assert "sha256sum -c" in content
     assert "restore_backup \"$LAST_BACKUP\"" in content
     assert 'merge-base --is-ancestor "$OLD_BACKEND" "$backend_commit"' in content
     assert 'wait_for_health' in content
+    assert 'verify_backup' in content
     assert "make_url" in content
     assert "DATABASE_URL_VALUE" in content
     assert "exclude)bot_whatsapp/node_modules" in content

@@ -11,7 +11,9 @@ El flujo valida la firma HMAC del manifiesto, el formato de los commits, que amb
 - Estado: `GET /api/configuracion/mantenimiento`
 - Respaldo manual: `POST /api/configuracion/mantenimiento/respaldo`
 - Revisión manual: `POST /api/configuracion/mantenimiento/actualizar`
+- Prueba manual de recuperación: `POST /api/configuracion/mantenimiento/verificar`
 - Respaldo diario: `fdeznet-backup.timer`, alrededor de las 03:20.
 - Revisión de versiones: `fdeznet-update.timer`, cada 30 minutos.
+- Auditoría no destructiva: `fdeznet-verify.timer`, semanalmente.
 
-Los archivos quedan en `/var/backups/fdeznet`. La clave local está en `/etc/fdeznet/backup.key` con permisos exclusivos de root. Para protegerse contra pérdida completa de la VPS, se puede montar almacenamiento remoto y definir `FDEZNET_BACKUP_REMOTE_DIR` en `.env`; el agente copiará allí cada respaldo ya cifrado y su suma SHA-256. La clave debe resguardarse por separado en un gestor de secretos: perder la VPS y esa clave volvería irrecuperable el respaldo remoto.
+Los archivos quedan localmente en `/var/backups/fdeznet`. La clave está en `/etc/fdeznet/backup.key` con permisos exclusivos de root. La auditoría semanal comprueba la suma SHA-256, descifra el respaldo, valida su estructura, revisa el dump comprimido de MySQL y confirma los commits guardados sin reemplazar datos de producción.

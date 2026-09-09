@@ -1,0 +1,12 @@
+[Unit]
+Description=FdezNet - auditoría semanal de recuperación
+
+[Timer]
+OnCalendar=Mon *-*-* 04:10:00
+Persistent=true
+RandomizedDelaySec=20m
+Unit=fdeznet-verify.service
+
+[Install]
+WantedBy=timers.target
+

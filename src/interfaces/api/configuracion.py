@@ -109,6 +109,9 @@ async def obtener_estado_mantenimiento():
     data["respaldo_automatico"] = Path(
         "/etc/systemd/system/timers.target.wants/fdeznet-backup.timer"
     ).exists()
+    data["revision_automatica"] = Path(
+        "/etc/systemd/system/timers.target.wants/fdeznet-verify.timer"
+    ).exists()
     return MaintenanceStatus.model_validate(data)
 
 
@@ -120,6 +123,11 @@ async def iniciar_respaldo():
 @router.post("/mantenimiento/actualizar", status_code=202)
 async def iniciar_actualizacion():
     return await _iniciar_mantenimiento("fdeznet-update.service")
+
+
+@router.post("/mantenimiento/verificar", status_code=202)
+async def iniciar_revision_recuperacion():
+    return await _iniciar_mantenimiento("fdeznet-verify.service")
 
 
 # =========================================================

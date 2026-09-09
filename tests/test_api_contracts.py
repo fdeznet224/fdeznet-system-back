@@ -110,3 +110,4 @@ def test_control_de_instalaciones_separa_heartbeat_y_administracion():
     assert paths["/configuracion/mantenimiento"]["get"]["security"]
     assert paths["/configuracion/mantenimiento/respaldo"]["post"]["security"]
     assert paths["/configuracion/mantenimiento/actualizar"]["post"]["security"]
+    assert paths["/configuracion/mantenimiento/verificar"]["post"]["security"]

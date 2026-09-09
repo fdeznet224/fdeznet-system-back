@@ -242,8 +242,10 @@ install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-backup.serv
 install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-backup.timer" /etc/systemd/system/fdeznet-backup.timer
 install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-update.service" /etc/systemd/system/fdeznet-update.service
 install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-update.timer" /etc/systemd/system/fdeznet-update.timer
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-verify.service" /etc/systemd/system/fdeznet-verify.service
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-verify.timer" /etc/systemd/system/fdeznet-verify.timer
 printf '%s\n' \
-  "${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block fdeznet-backup.service, /usr/bin/systemctl start --no-block fdeznet-update.service" \
+  "${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block fdeznet-backup.service, /usr/bin/systemctl start --no-block fdeznet-update.service, /usr/bin/systemctl start --no-block fdeznet-verify.service" \
   > /etc/sudoers.d/fdeznet-maintenance
 chmod 0440 /etc/sudoers.d/fdeznet-maintenance
 visudo -cf /etc/sudoers.d/fdeznet-maintenance >/dev/null
@@ -324,7 +326,7 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl daemon-reload
 systemctl enable --now fdeznet-api fdeznet-bot nginx
-systemctl enable --now fdeznet-backup.timer fdeznet-update.timer
+systemctl enable --now fdeznet-backup.timer fdeznet-update.timer fdeznet-verify.timer
 systemctl restart fdeznet-api fdeznet-bot nginx
 
 for attempt in {1..30}; do
