@@ -23,7 +23,7 @@ Los bloques descritos en este documento ya fueron abordados:
  19. Tipado: acceso, PWA, portal del cliente, landing y herramientas móviles.
  20. Calidad final: radar OLT tipado y lint global estricto sin advertencias.
 
-La validación actual cuenta con 189 pruebas de backend aprobadas y el frontend
+La validación actual cuenta con 190 pruebas de backend aprobadas y el frontend
 supera `npm run check:release` con 84 casos E2E y cero advertencias de lint.
 La guía de publicación y la deuda técnica restante están en
 `docs/estabilizacion-despliegue.md`.

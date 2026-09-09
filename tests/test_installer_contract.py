@@ -29,6 +29,9 @@ def test_instalador_no_elimina_directorio_de_aplicacion():
     assert "rm -rf" not in content
     assert "merge --ff-only" in content
     assert "certbot --nginx" in content
+    assert 'if [[ "$USE_TLS" == "true" ]]' in content
+    assert 'ACCESS_HOST="${DOMAIN:-$PUBLIC_IP}"' in content
+    assert 'PUBLIC_SCHEME="http"' in content
     assert "FDEZNET_INSTALLATION_ID" in content
 
 
@@ -42,7 +45,7 @@ def test_instalador_configura_respaldo_y_revision_automatica():
     assert "FDEZNET_BACKUP_RETENTION_DAYS" in content
     assert "rclone" not in content.lower()
     assert "location /media/uploads/" in content
-    assert "PUBLIC_URL=https://${DOMAIN}/media" in content
+    assert "PUBLIC_URL=${PUBLIC_SCHEME}://${ACCESS_HOST}/media" in content
 
 
 def test_instalador_recibe_identidad_inicial_del_panel_central():

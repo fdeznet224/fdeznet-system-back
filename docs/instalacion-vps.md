@@ -38,6 +38,22 @@ curl -fsSL https://fdezpay.com/api/control/installer | sudo bash -s -- \
   --bootstrap-token TOKEN_DE_UN_SOLO_USO
 ```
 
+Si todavía no existe un dominio, puede realizarse un piloto temporal por la IP
+pública. En ese caso no se solicita certificado TLS:
+
+```bash
+curl -fsSL https://fdezpay.com/api/control/installer | sudo bash -s -- \
+  --bootstrap-token TOKEN_DE_UN_SOLO_USO
+```
+
+El panel quedará disponible como `http://IP_DE_LA_VPS`. Al contar con el
+dominio, cree el registro DNS A hacia esa IP y vuelva a ejecutar el instalador
+con `--domain` y `--email`; la licencia existente se conserva y Certbot activa
+HTTPS. El acceso por IP es apropiado para el piloto, pero no para operar datos
+reales ni credenciales fuera de una red confiable. La instalación PWA, cámara,
+geolocalización y otras funciones que exigen un contexto seguro deben probarse
+después de activar el dominio con HTTPS.
+
 La instalación suele tardar entre 10 y 25 minutos, principalmente por Chromium,
 las dependencias de reconocimiento y la compilación del frontend. No se debe
 cerrar la sesión SSH mientras trabaja.
@@ -59,7 +75,7 @@ También deja activos:
 
 ## Primer ingreso y entrega
 
-1. Abrir `https://sistema.proveedor.com` y entrar con las credenciales impresas.
+1. Abrir la URL impresa por el instalador y entrar con las credenciales iniciales.
 2. Cambiar la contraseña del administrador.
 3. Configurar nombre, subir logotipo y favicon, elegir colores y completar los
    datos del ISP en **Marca blanca**.

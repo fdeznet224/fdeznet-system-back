@@ -55,6 +55,16 @@ def test_instalacion_rechaza_un_dominio_peligroso():
         )
 
 
+def test_instalacion_piloto_permite_dominio_pendiente():
+    instalacion = schemas.InstallationCreate(
+        nombre_isp="ISP de prueba",
+        dominio=None,
+        contacto_email="admin@isp.com",
+    )
+
+    assert instalacion.dominio is None
+
+
 def test_bootstrap_entrega_identidad_inicial_de_la_instalacion():
     response = schemas.BootstrapExchangeResponse(
         instalacion_id="00000000-0000-0000-0000-000000000001",

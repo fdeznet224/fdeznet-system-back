@@ -91,7 +91,8 @@ class LocalLicenseStatus(LicenseHeartbeatResponse):
 
 class InstallationCreate(BaseModel):
     nombre_isp: str = Field(min_length=1, max_length=120)
-    dominio: str = Field(
+    dominio: Optional[str] = Field(
+        default=None,
         min_length=4,
         max_length=255,
         pattern=r"^(https?://)?([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}/?$",

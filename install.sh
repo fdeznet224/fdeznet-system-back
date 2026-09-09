@@ -18,6 +18,9 @@ ADMIN_EMAIL=""
 ADMIN_USER="admin"
 BOOTSTRAP_TOKEN=""
 SKIP_DNS_CHECK="false"
+ACCESS_HOST=""
+PUBLIC_SCHEME="http"
+USE_TLS="false"
 
 log() { printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
@@ -26,6 +29,7 @@ usage() {
   printf '%s\n' \
     "Uso:" \
     "  sudo bash install.sh --domain isp.ejemplo.com --email admin@ejemplo.com --bootstrap-token TOKEN" \
+    "  sudo bash install.sh --bootstrap-token TOKEN  # acceso temporal por IP" \
     "" \
     "Opciones:" \
     "  --admin-user USUARIO     Usuario administrador inicial (default: admin)" \
@@ -48,8 +52,12 @@ done
 DOMAIN="${DOMAIN#http://}"
 DOMAIN="${DOMAIN#https://}"
 DOMAIN="${DOMAIN%%/*}"
-[[ "$DOMAIN" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$ ]] || fail "Dominio inválido"
-[[ "$ADMIN_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fail "Correo inválido"
+if [[ -n "$DOMAIN" ]]; then
+  [[ "$DOMAIN" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$ ]] || fail "Dominio inválido"
+  [[ "$ADMIN_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fail "Correo inválido"
+  USE_TLS="true"
+  PUBLIC_SCHEME="https"
+fi
 [[ "$ADMIN_USER" =~ ^[a-zA-Z0-9._-]{3,50}$ ]] || fail "Usuario administrador inválido"
 
 if [[ -r /etc/os-release ]]; then
@@ -72,10 +80,13 @@ if [[ "$AVAILABLE_DISK_BYTES" -lt "$MIN_DISK_BYTES" ]]; then
 fi
 
 PUBLIC_IP="$(curl -4fsS --max-time 10 https://api.ipify.org)" || fail "No se pudo detectar la IP pública"
-if [[ "$SKIP_DNS_CHECK" != "true" ]]; then
+ACCESS_HOST="${DOMAIN:-$PUBLIC_IP}"
+if [[ "$USE_TLS" == "true" && "$SKIP_DNS_CHECK" != "true" ]]; then
   DNS_IP="$(getent ahostsv4 "$DOMAIN" | awk 'NR == 1 {print $1}')"
   [[ -n "$DNS_IP" ]] || fail "El dominio todavía no tiene un registro DNS A"
   [[ "$DNS_IP" == "$PUBLIC_IP" ]] || fail "El dominio apunta a $DNS_IP, pero esta VPS usa $PUBLIC_IP"
+elif [[ "$USE_TLS" != "true" ]]; then
+  log "Instalación temporal por IP: se usará http://${PUBLIC_IP} sin certificado TLS"
 fi
 
 existing_value() {
@@ -217,8 +228,8 @@ set_env_value "$BACKEND_DIR/.env" DB_PORT 3306
 set_env_value "$BACKEND_DIR/.env" DB_NAME "$DB_NAME"
 set_env_value "$BACKEND_DIR/.env" SECRET_KEY "$SECRET_KEY"
 set_env_value "$BACKEND_DIR/.env" WEBHOOK_SECRET "$WEBHOOK_SECRET"
-set_env_value "$BACKEND_DIR/.env" CORS_ALLOWED_ORIGINS "https://${DOMAIN}"
-set_env_value "$BACKEND_DIR/.env" PUBLIC_URL "https://${DOMAIN}"
+set_env_value "$BACKEND_DIR/.env" CORS_ALLOWED_ORIGINS "${PUBLIC_SCHEME}://${ACCESS_HOST}"
+set_env_value "$BACKEND_DIR/.env" PUBLIC_URL "${PUBLIC_SCHEME}://${ACCESS_HOST}"
 set_env_value "$BACKEND_DIR/.env" WHATSAPP_BASE_URL http://127.0.0.1:3000
 set_env_value "$BACKEND_DIR/.env" VPN_SERVER_IP "$PUBLIC_IP"
 set_env_value "$BACKEND_DIR/.env" FDEZNET_CONTROL_PLANE_MODE client
@@ -323,7 +334,7 @@ log "Instalando servicio de WhatsApp"
 runuser -u "$SERVICE_USER" -- npm --prefix "$BACKEND_DIR/bot_whatsapp" ci --omit=dev
 cat > "$BACKEND_DIR/bot_whatsapp/.env" <<BOTENV
 PORT=3000
-PUBLIC_URL=https://${DOMAIN}/media
+PUBLIC_URL=${PUBLIC_SCHEME}://${ACCESS_HOST}/media
 API_BACKEND_URL=http://127.0.0.1:8000
 WEBHOOK_SECRET=${WEBHOOK_SECRET}
 BOTENV
@@ -351,12 +362,12 @@ log "Compilando frontend"
 runuser -u "$SERVICE_USER" -- npm --prefix "$FRONTEND_DIR" ci
 runuser -u "$SERVICE_USER" -- npm --prefix "$FRONTEND_DIR" run build
 
-log "Configurando Nginx y HTTPS"
+log "Configurando Nginx"
 cat > /etc/nginx/sites-available/fdeznet <<NGINX
 server {
     listen 80;
     listen [::]:80;
-    server_name ${DOMAIN};
+    server_name ${ACCESS_HOST};
     client_max_body_size 12m;
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
@@ -392,7 +403,10 @@ for attempt in {1..30}; do
   sleep 2
 done
 
-certbot --nginx --non-interactive --agree-tos --redirect -m "$ADMIN_EMAIL" -d "$DOMAIN"
+if [[ "$USE_TLS" == "true" ]]; then
+  log "Configurando certificado HTTPS"
+  certbot --nginx --non-interactive --agree-tos --redirect -m "$ADMIN_EMAIL" -d "$DOMAIN"
+fi
 SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}')"
 SSH_PORT="${SSH_PORT:-22}"
 ufw allow "${SSH_PORT}/tcp"
@@ -405,10 +419,10 @@ if [[ -n "$ADMIN_PASSWORD" ]]; then
   systemctl restart fdeznet-api
 fi
 
-curl -fsS "https://${DOMAIN}/api/health/ready" >/dev/null
+curl -fsS "${PUBLIC_SCHEME}://${ACCESS_HOST}/api/health/ready" >/dev/null
 log "Instalación completada"
 printf '%s\n' \
-  "Panel: https://${DOMAIN}" \
+  "Panel: ${PUBLIC_SCHEME}://${ACCESS_HOST}" \
   "Usuario inicial: ${ADMIN_USER}" \
   "Contraseña inicial: ${ADMIN_PASSWORD:-la configurada anteriormente}" \
   "ID de instalación: ${INSTALLATION_ID}" \
