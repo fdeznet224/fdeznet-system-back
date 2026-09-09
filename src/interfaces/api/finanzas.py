@@ -690,14 +690,10 @@ async def cotizar_reactivacion(
     if not servicio or servicio.estado != "suspendido":
         raise HTTPException(400, "El servicio no está suspendido")
 
-    try:
-        factura, _, _ = await BillingService(db).preparar_factura_cobrable(
-            factura_id,
-            fecha_reactivacion=date.today(),
-        )
-    except ValueError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await FinanceService(db).normalizar_facturas_suspendidas(
+        servicio,
+        fecha_reactivacion=date.today(),
+    )
     await db.commit()
     await db.refresh(factura)
     return {
