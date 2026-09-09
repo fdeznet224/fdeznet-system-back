@@ -106,19 +106,21 @@ set_env_value() {
 
 apt_is_busy() {
   local lock
-  for lock in \
-    /var/lib/dpkg/lock-frontend \
-    /var/lib/dpkg/lock \
-    /var/cache/apt/archives/lock \
-    /var/lib/apt/lists/lock; do
-    if command -v fuser >/dev/null 2>&1 && fuser "$lock" >/dev/null 2>&1; then
-      return 0
-    fi
-  done
+  if command -v fuser >/dev/null 2>&1; then
+    for lock in \
+      /var/lib/dpkg/lock-frontend \
+      /var/lib/dpkg/lock \
+      /var/cache/apt/archives/lock \
+      /var/lib/apt/lists/lock; do
+      if fuser "$lock" >/dev/null 2>&1; then
+        return 0
+      fi
+    done
+    return 1
+  fi
   pgrep -x apt-get >/dev/null 2>&1 \
     || pgrep -x apt >/dev/null 2>&1 \
-    || pgrep -x dpkg >/dev/null 2>&1 \
-    || pgrep -f unattended-upgrade >/dev/null 2>&1
+    || pgrep -x dpkg >/dev/null 2>&1
 }
 
 wait_for_apt() {
