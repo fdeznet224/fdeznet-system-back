@@ -13,6 +13,7 @@ asyncmy==0.2.11
 certifi==2026.4.22
 charset-normalizer==3.4.7
 click==8.4.0
+cryptography==50.0.1
 docopt==0.6.2
 easyocr==1.7.2
 ecdsa==0.19.2

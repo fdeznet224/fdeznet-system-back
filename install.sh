@@ -324,6 +324,10 @@ if [[ ! -x "$BACKEND_DIR/venv/bin/python" ]]; then
   runuser -u "$SERVICE_USER" -- python3 -m venv "$BACKEND_DIR/venv"
 fi
 runuser -u "$SERVICE_USER" -- "$BACKEND_DIR/venv/bin/pip" install --upgrade pip
+# Una instalación reanudada puede conservar un release anterior que todavía no
+# declaraba cryptography. Instalarla aquí permite autenticar MySQL antes de que
+# el mecanismo normal de actualizaciones lleve el repositorio al release nuevo.
+runuser -u "$SERVICE_USER" -- "$BACKEND_DIR/venv/bin/pip" install cryptography==50.0.1
 runuser -u "$SERVICE_USER" -- "$BACKEND_DIR/venv/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
 (cd "$BACKEND_DIR" && runuser -u "$SERVICE_USER" -- ./venv/bin/alembic upgrade head)
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$BACKEND_DIR/static/recibos"
