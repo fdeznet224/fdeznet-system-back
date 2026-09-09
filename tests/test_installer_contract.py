@@ -16,6 +16,14 @@ def test_instalador_tiene_sintaxis_bash_valida():
     assert result.returncode == 0, result.stderr
 
 
+def test_instalador_valida_recursos_y_compatibilidad_de_mysql():
+    content = INSTALLER.read_text(encoding="utf-8")
+    assert "MIN_MEMORY_KB" in content
+    assert "MIN_DISK_BYTES" in content
+    assert "x86_64/amd64" in content
+    assert "default-mysql-server" in content
+
+
 def test_instalador_no_elimina_directorio_de_aplicacion():
     content = INSTALLER.read_text(encoding="utf-8")
     assert "rm -rf" not in content

@@ -10,6 +10,8 @@ readonly CONTROL_URL="https://fdezpay.com/api"
 readonly DB_NAME="fdeznet_db"
 readonly DB_USER="fdeznet_app"
 readonly SERVICE_USER="fdeznet"
+readonly MIN_MEMORY_KB=3800000
+readonly MIN_DISK_BYTES=30000000000
 
 DOMAIN=""
 ADMIN_EMAIL=""
@@ -57,6 +59,18 @@ else
   fail "No se pudo identificar el sistema operativo"
 fi
 
+[[ "$(uname -m)" == "x86_64" ]] || fail "Esta versión requiere una VPS x86_64/amd64"
+AVAILABLE_MEMORY_KB="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+AVAILABLE_DISK_BYTES="$(df --output=avail -B1 / | awk 'NR == 2 {print $1}')"
+[[ "$AVAILABLE_MEMORY_KB" -ge "$MIN_MEMORY_KB" ]] || fail "La VPS necesita al menos 4 GB de RAM"
+if [[ "$AVAILABLE_DISK_BYTES" -lt "$MIN_DISK_BYTES" ]]; then
+  if [[ -d "$BACKEND_DIR/.git" ]]; then
+    log "Aviso: quedan menos de 30 GB; libera espacio para conservar los respaldos"
+  else
+    fail "La VPS necesita al menos 30 GB libres"
+  fi
+fi
+
 PUBLIC_IP="$(curl -4fsS --max-time 10 https://api.ipify.org)" || fail "No se pudo detectar la IP pública"
 if [[ "$SKIP_DNS_CHECK" != "true" ]]; then
   DNS_IP="$(getent ahostsv4 "$DOMAIN" | awk 'NR == 1 {print $1}')"
@@ -82,10 +96,12 @@ set_env_value() {
 log "Instalando dependencias del sistema"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
+MYSQL_PACKAGE="mysql-server"
+if ! apt-cache show mysql-server >/dev/null 2>&1; then MYSQL_PACKAGE="default-mysql-server"; fi
 ASOUND_PACKAGE="libasound2"
 if apt-cache show libasound2t64 >/dev/null 2>&1; then ASOUND_PACKAGE="libasound2t64"; fi
 apt-get install -y ca-certificates certbot curl git gnupg jq nginx openssl python3-pip python3-venv \
-  sudo ufw wireguard mysql-server build-essential pkg-config libmysqlclient-dev \
+  sudo ufw wireguard "$MYSQL_PACKAGE" build-essential pkg-config libmysqlclient-dev \
   libnss3 libatk-bridge2.0-0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
   "$ASOUND_PACKAGE" libpangocairo-1.0-0 libcups2 libxshmfence1 libxss1 \
   fonts-liberation python3-certbot-nginx

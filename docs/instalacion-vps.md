@@ -1,22 +1,71 @@
 # Instalación de una VPS de cliente
 
-## Requisitos
+## VPS recomendada
 
-- Ubuntu 22.04/24.04 o Debian 12 limpio.
+- Ubuntu 24.04 LTS limpio, arquitectura x86_64/amd64.
+- Recomendado: 4 vCPU, 8 GB de RAM y 80 GB SSD.
+- Mínimo validado por el instalador: 4 GB de RAM y 30 GB libres.
 - Acceso `root` por SSH.
 - Un registro DNS tipo A apuntando el dominio a la IP pública de la VPS.
-- Puertos 80, 443 y UDP 51820 permitidos por el proveedor.
+- Puertos TCP 22, 80 y 443, y UDP 51820 permitidos en el firewall del proveedor.
+- No instalar previamente paneles como cPanel, Plesk o servicios que ocupen Nginx/MySQL.
+
+Debian 12 también es compatible; el instalador selecciona automáticamente el
+paquete MySQL/MariaDB disponible. Para nuevas ventas se recomienda Ubuntu 24.04
+porque será la plataforma principal de pruebas.
+
+## Preparación del dominio
+
+1. Comprar o elegir un subdominio, por ejemplo `sistema.proveedor.com`.
+2. Crear un registro DNS `A` con la IP pública de la VPS.
+3. Esperar a que `dig +short sistema.proveedor.com` muestre esa misma IP.
+4. No usar proxy de Cloudflare durante la instalación; se puede evaluar después.
 
 ## Flujo desde el panel central
 
 1. Entrar a **Configuración → Licencias y versiones**.
 2. Elegir **Nueva instalación** y capturar ISP, dominio y correo.
 3. Copiar el comando generado. El token dura 48 horas y se consume una vez.
-4. Conectarse a la nueva VPS por SSH y ejecutar el comando como `root`.
+4. Conectarse a la nueva VPS por SSH y ejecutar el comando como `root`. Tendrá
+   esta forma (el panel coloca los valores reales):
+
+```bash
+curl -fsSL https://fdezpay.com/api/control/installer | sudo bash -s -- \
+  --domain sistema.proveedor.com \
+  --email administrador@proveedor.com \
+  --bootstrap-token TOKEN_DE_UN_SOLO_USO
+```
+
+La instalación suele tardar entre 10 y 25 minutos, principalmente por Chromium,
+las dependencias de reconocimiento y la compilación del frontend. No se debe
+cerrar la sesión SSH mientras trabaja.
 
 El instalador valida el DNS antes de cambiar el servidor. Después instala MySQL,
 WireGuard, backend, bot de WhatsApp, frontend, Nginx y el certificado HTTPS. Al
 final imprime el usuario y la contraseña iniciales del administrador.
+
+También deja activos:
+
+- `fdeznet-api`: API y tareas internas.
+- `fdeznet-bot`: WhatsApp.
+- `wg-quick@wg0`: túnel hacia routers.
+- `fdeznet-backup.timer`: respaldo cifrado diario.
+- `fdeznet-update.timer`: revisión de actualizaciones cada 30 minutos.
+- `fdeznet-verify.timer`: prueba semanal de recuperación.
+
+## Primer ingreso y entrega
+
+1. Abrir `https://sistema.proveedor.com` y entrar con las credenciales impresas.
+2. Cambiar la contraseña del administrador.
+3. Configurar nombre, logotipo, colores y datos del ISP en **Marca blanca**.
+4. Vincular WhatsApp y verificar que el bot quede conectado.
+5. Registrar el primer router y comprobar el túnel WireGuard.
+6. Ejecutar **Respaldar** y luego **Probar recuperación** desde el panel.
+7. Confirmar desde el servidor central que la licencia reporta versión y conexión.
+
+La clave del respaldo queda solamente en `/etc/fdeznet/backup.key`, con permiso
+`0600`. Debe entregarse al responsable de la VPS por un canal seguro si él será
+quien administre las recuperaciones.
 
 ## Seguridad e idempotencia
 
@@ -37,4 +86,8 @@ mismo comando para continuar sin consumir otro token.
 systemctl status fdeznet-api fdeznet-bot nginx mysql wg-quick@wg0
 journalctl -u fdeznet-api -n 100 --no-pager
 curl -fsS https://DOMINIO/api/health/ready
+systemctl list-timers fdeznet-backup.timer fdeznet-update.timer fdeznet-verify.timer
 ```
+
+La respuesta esperada del health check es `{"status":"ready"}` y todos los
+servicios deben aparecer como `active`.
