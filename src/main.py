@@ -209,6 +209,7 @@ app.add_middleware(AuditMiddleware)
 # --- RUTAS ---
 app.include_router(auth.router)
 app.include_router(whatsapp.webhook_router)
+app.include_router(configuracion.public_router)
 
 authenticated = [Depends(get_current_active_user)]
 admin_only = [Depends(role_required(["admin"]))]

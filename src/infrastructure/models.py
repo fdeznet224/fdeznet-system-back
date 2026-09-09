@@ -1599,6 +1599,18 @@ class ConfiguracionSistema(Base):
     aviso_pantalla_corte = Column(Boolean, default=False)
     telefonos_alerta = Column(String(255), default="")
 
+    # --- IDENTIDAD / MARCA BLANCA ---
+    empresa_nombre = Column(String(120), nullable=False, default="FdezNet")
+    sistema_nombre = Column(String(120), nullable=False, default="FdezPay")
+    logo_url = Column(String(500), nullable=True)
+    favicon_url = Column(String(500), nullable=True)
+    color_primario = Column(String(7), nullable=False, default="#2563eb")
+    color_secundario = Column(String(7), nullable=False, default="#4f46e5")
+    empresa_telefono = Column(String(40), nullable=True)
+    empresa_email = Column(String(160), nullable=True)
+    empresa_direccion = Column(String(300), nullable=True)
+    pie_recibo = Column(String(300), nullable=True)
+
 class PlantillaMensajeModel(Base):
     __tablename__ = "plantillas_mensajes"
     id = Column(Integer, primary_key=True, index=True)

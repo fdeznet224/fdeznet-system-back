@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from src.domain import schemas
 
 
@@ -25,6 +28,22 @@ def test_esquemas_orm_usan_configuracion_pydantic_2():
     for schema in ORM_SCHEMAS:
         assert schema.model_config.get("from_attributes") is True
         assert "orm_mode" not in schema.model_config
+
+
+def test_marca_blanca_valida_colores_y_nombres():
+    marca = schemas.BrandingConfig(
+        empresa_nombre="Mi ISP",
+        sistema_nombre="Mi Panel",
+        color_primario="#123ABC",
+        color_secundario="#abcdef",
+    )
+
+    assert marca.empresa_nombre == "Mi ISP"
+
+
+def test_marca_blanca_rechaza_color_invalido():
+    with pytest.raises(ValidationError):
+        schemas.BrandingConfig(color_primario="azul")
 
 
 def test_router_ids_no_comparte_lista_entre_usuarios():

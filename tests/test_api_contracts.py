@@ -86,3 +86,10 @@ def test_finanzas_expone_cotizacion_de_reactivacion():
 
 def test_finanzas_expone_historial_auditable_de_promesas():
     assert "/finanzas/promesas-historial" in app.openapi()["paths"]
+
+
+def test_marca_blanca_es_publica_para_lectura_y_protegida_para_edicion():
+    paths = app.openapi()["paths"]
+
+    assert "security" not in paths["/public/marca"]["get"]
+    assert paths["/configuracion/marca"]["put"]["security"]

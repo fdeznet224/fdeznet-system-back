@@ -14,6 +14,7 @@ from src.infrastructure.models import (
     ServicioAdicionalModel,
     ServicioModel,
     SuspensionFacturacionModel,
+    ConfiguracionSistema,
 )
 
 # Servicios e Helpers
@@ -943,6 +944,7 @@ class BillingService:
                             .where(PagoConceptoModel.pago_id == nuevo_pago.id)
                         )
                     ).all()
+                    marca = await self.db.get(ConfiguracionSistema, 1)
                     ruta_pdf = await generar_recibo_pdf(
                         nombre_cliente=cliente.nombre,
                         monto=nuevo_pago.monto_total,
@@ -965,6 +967,10 @@ class BillingService:
                             {"concepto": fila.concepto, "monto": fila.monto_aplicado}
                             for fila in conceptos_pagados
                         ],
+                        empresa_nombre=marca.empresa_nombre if marca else "FdezNet",
+                        color_primario=marca.color_primario if marca else "#1e3a8a",
+                        color_secundario=marca.color_secundario if marca else "#2563eb",
+                        pie_recibo=marca.pie_recibo if marca else None,
                     )
                     notificacion_pago_encolada = await notificador.notificar(
                         tipo_evento="pago_recibido", 

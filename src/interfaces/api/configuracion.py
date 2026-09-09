@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, desc
 from sqlalchemy.exc import IntegrityError 
+from fastapi_cache import FastAPICache
 from fastapi_cache.decorator import cache
 
 # --- INFRAESTRUCTURA (Tus Modelos y DB) ---
@@ -23,11 +24,39 @@ from src.domain.schemas import (
     MessageTemplateRequest,
     PlantillaMensajeResponse,
     PlantillaResponse,
-    LogCronjobResponse # 👈 Importante: El schema de respuesta para Logs
+    LogCronjobResponse, # 👈 Importante: El schema de respuesta para Logs
+    BrandingConfig,
 )
 
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
 router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
+public_router = APIRouter(prefix="/public", tags=["Configuración Pública"])
+
+
+async def _obtener_configuracion(db: AsyncSession) -> ConfiguracionSistema:
+    config = await db.get(ConfiguracionSistema, 1)
+    if not config:
+        config = ConfiguracionSistema(id=1)
+        db.add(config)
+        await db.commit()
+        await db.refresh(config)
+    return config
+
+
+@public_router.get("/marca", response_model=BrandingConfig)
+async def obtener_marca_publica(db: AsyncSession = Depends(get_db)):
+    return await _obtener_configuracion(db)
+
+
+@router.put("/marca", response_model=BrandingConfig)
+async def guardar_marca(datos: BrandingConfig, db: AsyncSession = Depends(get_db)):
+    config = await _obtener_configuracion(db)
+    for campo, valor in datos.model_dump().items():
+        setattr(config, campo, valor.strip() if isinstance(valor, str) else valor)
+    await db.commit()
+    await db.refresh(config)
+    await FastAPICache.clear()
+    return config
 
 
 # =========================================================

@@ -51,6 +51,19 @@ class SystemConfigUpdate(BaseModel):
 class ConfigUpdate(BaseModel):
     valor: str
 
+
+class BrandingConfig(BaseModel):
+    empresa_nombre: str = Field(default="FdezNet", min_length=1, max_length=120)
+    sistema_nombre: str = Field(default="FdezPay", min_length=1, max_length=120)
+    logo_url: Optional[str] = Field(default=None, max_length=500)
+    favicon_url: Optional[str] = Field(default=None, max_length=500)
+    color_primario: str = Field(default="#2563eb", pattern=r"^#[0-9a-fA-F]{6}$")
+    color_secundario: str = Field(default="#4f46e5", pattern=r"^#[0-9a-fA-F]{6}$")
+    empresa_telefono: Optional[str] = Field(default=None, max_length=40)
+    empresa_email: Optional[str] = Field(default=None, max_length=160)
+    empresa_direccion: Optional[str] = Field(default=None, max_length=300)
+    pie_recibo: Optional[str] = Field(default=None, max_length=300)
+
 # ==========================================
 # 2. PLANTILLAS DE MENSAJES
 # ==========================================

@@ -54,7 +54,6 @@ def construir_detalle_facturacion(
     ajuste_suspension=None,
     cargos_adicionales=None,
     total_factura=None,
-    conceptos_pagados=None,
 ):
     """Construye las filas auditables que se muestran en el recibo."""
     filas = []
@@ -102,9 +101,13 @@ async def generar_recibo_pdf(
     cargos_adicionales=None,
     total_factura=None,
     conceptos_pagados=None,
+    empresa_nombre="FdezNet",
+    color_primario="#1e3a8a",
+    color_secundario="#2563eb",
+    pie_recibo=None,
 ):
     """
-    Genera un PDF con diseño minimalista FdezNet (Azul y Blanco) incluyendo el Método de Pago.
+    Genera un PDF con la identidad configurada incluyendo el método de pago.
     Retorna la ruta absoluta del archivo generado.
     """
     # 1. Rutas y Archivo
@@ -114,8 +117,8 @@ async def generar_recibo_pdf(
     ruta_completa = os.path.join(ruta_carpeta, nombre_archivo)
 
     # 2. Definición de Colores Minimalistas (Azules y Grises Suaves)
-    COLOR_PRIMARIO = colors.HexColor("#1e3a8a")  # Azul Marino (Blue 900) - Logos y títulos
-    COLOR_ACENTO = colors.HexColor("#2563eb")    # Azul Rey (Blue 600) - Totales y estados
+    COLOR_PRIMARIO = colors.HexColor(color_primario)
+    COLOR_ACENTO = colors.HexColor(color_secundario)
     COLOR_TEXTO = colors.HexColor("#334155")     # Gris Oscuro (Slate 700) - Textos legibles
     COLOR_LINEAS = colors.HexColor("#e2e8f0")    # Gris Muy Claro (Slate 200) - Divisiones sutiles
 
@@ -140,7 +143,7 @@ async def generar_recibo_pdf(
     # --- 4. ENCABEZADO ---
     header_data = [
         [
-            Paragraph("FDEZNET", style_header_blue), 
+            Paragraph(escape(str(empresa_nombre).upper()), style_header_blue),
             Paragraph(f"<b>COMPROBANTE DE PAGO</b><br/>Folio: #{str(folio).zfill(8)}", style_sub)
         ]
     ]
@@ -271,7 +274,7 @@ async def generar_recibo_pdf(
     elements.append(Spacer(1, 6*mm))
 
     # --- 8. FOOTER (QR y Total) ---
-    qr_data = f"FDEZNET|FOLIO:{folio}|MONTO:{monto}|FECHA:{fecha_pago.strftime('%Y%m%d')}|METODO:{metodo_pago}"
+    qr_data = f"{empresa_nombre}|FOLIO:{folio}|MONTO:{monto}|FECHA:{fecha_pago.strftime('%Y%m%d')}|METODO:{metodo_pago}"
     qr_code = qr.QrCodeWidget(qr_data)
     qr_code.barWidth = 25*mm
     qr_code.barHeight = 25*mm
@@ -293,7 +296,8 @@ async def generar_recibo_pdf(
 
     # --- 9. NOTA DE SEGURIDAD ---
     elements.append(Spacer(1, 6*mm))
-    seguridad_text = f"<font color='#94a3b8' size='7'>Este recibo es un comprobante oficial de pago emitido por FdezNet. ID Transacción: {datetime.now().timestamp()}</font>"
+    nota_recibo = pie_recibo or f"Este recibo es un comprobante oficial de pago emitido por {empresa_nombre}."
+    seguridad_text = f"<font color='#94a3b8' size='7'>{escape(str(nota_recibo))} ID Transacción: {datetime.now().timestamp()}</font>"
     elements.append(Paragraph(seguridad_text, styles['Normal']))
 
     doc.build(elements)
