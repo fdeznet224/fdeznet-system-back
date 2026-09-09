@@ -77,6 +77,7 @@ def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     content = MAINTENANCE.read_text(encoding="utf-8")
     assert "rclone" not in content.lower()
     assert "gpg --batch" in content
+    assert "--no-tablespaces" in content
     assert "sha256sum -c" in content
     assert "restore_backup \"$LAST_BACKUP\"" in content
     assert 'merge-base --is-ancestor "$OLD_BACKEND" "$backend_commit"' in content

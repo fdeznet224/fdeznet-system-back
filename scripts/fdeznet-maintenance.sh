@@ -189,7 +189,7 @@ create_backup() {
   if [[ "$bot_was_active" == "active" ]]; then systemctl stop fdeznet-bot; fi
 
   mkdir -p "$stage/data" "$stage/config"
-  mysqldump --defaults-extra-file="$mysql_config" --single-transaction \
+  mysqldump --defaults-extra-file="$mysql_config" --single-transaction --no-tablespaces \
     --routines --events --triggers --databases "$DB_NAME_VALUE" | gzip -9 > "$stage/data/database.sql.gz"
   cp -a "$ENV_FILE" "$stage/config/backend.env"
   [[ -f "$BACKEND_DIR/bot_whatsapp/.env" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/.env" "$stage/config/bot.env"
