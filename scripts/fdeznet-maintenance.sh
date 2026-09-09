@@ -266,8 +266,8 @@ perform_update() {
   signature="$(jq -er '.firma' <<< "$manifest")"
   [[ "$TARGET_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
   [[ "$backend_commit" =~ ^[0-9a-f]{40}$ && "$frontend_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
-  [[ -z "$(git -C "$BACKEND_DIR" status --porcelain --untracked-files=no)" ]] || return 1
-  [[ -z "$(git -C "$FRONTEND_DIR" status --porcelain --untracked-files=no)" ]] || return 1
+  [[ -z "$(git -C "$BACKEND_DIR" status --porcelain --untracked-files=no -- . ':(exclude)bot_whatsapp/node_modules')" ]] || return 1
+  [[ -z "$(git -C "$FRONTEND_DIR" status --porcelain --untracked-files=no -- . ':(exclude)node_modules' ':(exclude)dist')" ]] || return 1
   canonical="${TARGET_VERSION}|${backend_commit}|${frontend_commit}"
   expected="$(printf '%s' "$canonical" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$(printf '%s' "$license_key" | sha256sum | awk '{print $1}')" | awk '{print $2}')"
   [[ "$signature" == "$expected" ]] || return 1
