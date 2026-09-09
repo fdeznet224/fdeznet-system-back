@@ -71,6 +71,8 @@ class LicenseHeartbeatRequest(BaseModel):
     dominio: Optional[str] = Field(default=None, max_length=255)
     nombre_isp: Optional[str] = Field(default=None, max_length=120)
     canal: str = Field(default="stable", max_length=30)
+    uso_clientes: int = Field(default=0, ge=0)
+    uso_routers: int = Field(default=0, ge=0)
 
 
 class LicenseHeartbeatResponse(BaseModel):
@@ -80,6 +82,14 @@ class LicenseHeartbeatResponse(BaseModel):
     version_objetivo: Optional[str] = None
     actualizacion_disponible: bool = False
     notas_actualizacion: Optional[str] = None
+    plan_nombre: Optional[str] = None
+    plan_tipo: Optional[str] = None
+    vigente_hasta: Optional[datetime] = None
+    dias_gracia: int = 0
+    limite_clientes: Optional[int] = None
+    limite_routers: Optional[int] = None
+    uso_clientes: int = 0
+    uso_routers: int = 0
 
 
 class LocalLicenseStatus(LicenseHeartbeatResponse):
@@ -103,6 +113,7 @@ class InstallationCreate(BaseModel):
         pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$",
     )
     plan: str = Field(default="estandar", pattern=r"^[a-zA-Z0-9_-]{1,50}$")
+    plan_licencia_id: Optional[int] = Field(default=None, ge=1)
 
 
 class InstallationUpdate(BaseModel):
@@ -110,6 +121,7 @@ class InstallationUpdate(BaseModel):
     version_objetivo: Optional[str] = Field(default=None, max_length=30)
     notas_actualizacion: Optional[str] = Field(default=None, max_length=2000)
     actualizacion_automatica: Optional[bool] = None
+    plan_licencia_id: Optional[int] = Field(default=None, ge=1)
 
 
 class InstallationResponse(BaseModel):
@@ -121,7 +133,19 @@ class InstallationResponse(BaseModel):
     dominio: Optional[str]
     contacto_email: Optional[str]
     estado: str
+    estado_suscripcion: Optional[str] = None
     plan: str
+    plan_licencia_id: Optional[int] = None
+    plan_nombre: Optional[str] = None
+    plan_tipo: Optional[str] = None
+    precio_mensual: Optional[Decimal] = None
+    limite_clientes: Optional[int] = None
+    limite_routers: Optional[int] = None
+    dias_gracia: int = 0
+    suscripcion_inicio: Optional[datetime] = None
+    suscripcion_vence: Optional[datetime] = None
+    uso_clientes: int = 0
+    uso_routers: int = 0
     canal: str
     version_actual: Optional[str]
     version_objetivo: Optional[str]
@@ -160,6 +184,66 @@ class BootstrapExchangeResponse(BaseModel):
 class BootstrapTokenResponse(BaseModel):
     token_instalacion: str
     token_expira: datetime
+
+
+class LicensePlanBase(BaseModel):
+    codigo: str = Field(pattern=r"^[a-z0-9_-]{2,50}$")
+    nombre: str = Field(min_length=2, max_length=120)
+    tipo: str = Field(pattern=r"^(demo|mensual|permanente)$")
+    precio_mensual: Decimal = Field(default=Decimal("0.00"), ge=0, max_digits=12, decimal_places=2)
+    duracion_dias: Optional[int] = Field(default=30, ge=1, le=3660)
+    dias_gracia: int = Field(default=0, ge=0, le=60)
+    limite_clientes: Optional[int] = Field(default=None, ge=1)
+    limite_routers: Optional[int] = Field(default=None, ge=1)
+    activo: bool = True
+
+    @model_validator(mode="after")
+    def validar_duracion(self):
+        if self.tipo == "permanente":
+            self.duracion_dias = None
+        elif self.duracion_dias is None:
+            raise ValueError("La duración es obligatoria para demos y planes mensuales")
+        return self
+
+
+class LicensePlanCreate(LicensePlanBase):
+    pass
+
+
+class LicensePlanUpdate(BaseModel):
+    nombre: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    precio_mensual: Optional[Decimal] = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    duracion_dias: Optional[int] = Field(default=None, ge=1, le=3660)
+    dias_gracia: Optional[int] = Field(default=None, ge=0, le=60)
+    limite_clientes: Optional[int] = Field(default=None, ge=1)
+    limite_routers: Optional[int] = Field(default=None, ge=1)
+    activo: Optional[bool] = None
+
+
+class LicensePlanResponse(LicensePlanBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    creado_en: datetime
+
+
+class SubscriptionRenewRequest(BaseModel):
+    meses: int = Field(default=1, ge=1, le=36)
+    plan_licencia_id: Optional[int] = Field(default=None, ge=1)
+    monto: Optional[Decimal] = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    referencia: Optional[str] = Field(default=None, max_length=160)
+
+
+class LicensePaymentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    instalacion_id: int
+    plan_licencia_id: Optional[int]
+    meses: int
+    monto: Decimal
+    referencia: Optional[str]
+    registrado_en: datetime
 
 
 class SystemReleaseCreate(BaseModel):

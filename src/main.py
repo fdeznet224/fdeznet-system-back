@@ -176,7 +176,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(
         tarea_verificar_licencia,
         "interval",
-        hours=6,
+        minutes=30,
         id="license_heartbeat",
         coalesce=True,
         max_instances=1,
@@ -244,6 +244,8 @@ licensed_audit = [
     Depends(role_required(["admin", "supervisor"])),
     Depends(require_valid_license),
 ]
+
+app.include_router(configuracion.license_router, dependencies=authenticated)
 
 app.include_router(dashboard.router, dependencies=licensed)
 app.include_router(clients.router, dependencies=licensed)

@@ -42,6 +42,7 @@ from src.application.services.branding_service import get_or_create_system_confi
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
 router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
 public_router = APIRouter(prefix="/public", tags=["Configuración Pública"])
+license_router = APIRouter(prefix="/licencia", tags=["Licencia"])
 MAINTENANCE_STATUS_FILE = Path("/var/lib/fdeznet/maintenance-status.json")
 MANUAL_UPDATE_REQUEST_FILE = Path("/var/lib/fdeznet/manual-update-requested")
 BRANDING_DIR = Path(__file__).resolve().parents[3] / "static" / "branding"
@@ -198,6 +199,11 @@ async def subir_archivo_marca(
 
 @router.get("/licencia", response_model=LocalLicenseStatus)
 async def obtener_estado_licencia(db: AsyncSession = Depends(get_db)):
+    return local_status(await _obtener_configuracion(db))
+
+
+@license_router.get("/estado", response_model=LocalLicenseStatus)
+async def obtener_estado_licencia_usuario(db: AsyncSession = Depends(get_db)):
     return local_status(await _obtener_configuracion(db))
 
 

@@ -29,7 +29,12 @@ todas las pruebas deben aprobar. Después:
 5. Asignarla primero a una instalación interna, después a un grupo pequeño y al
    final al resto de clientes.
 
-Una licencia suspendida o revocada bloquea las rutas operativas y los webhooks,
-pero mantiene accesibles el inicio de sesión y el panel de licencia para poder
-diagnosticar y reactivar la instalación. Una interrupción temporal del servidor
-central no detiene una licencia que fue confirmada previamente como activa.
+Una licencia suspendida, revocada o vencida fuera del periodo de gracia bloquea
+las rutas operativas y los webhooks, pero mantiene accesibles el inicio de sesión
+y el estado de licencia para poder diagnosticar y renovar la instalación. Una
+interrupción temporal del servidor central no detiene una licencia que fue
+confirmada previamente como activa; la fecha de vencimiento guardada localmente
+sí se aplica aunque el servidor central no responda.
+
+Los planes, demos, límites y renovaciones se administran como se describe en
+`docs/planes-licencia.md`.

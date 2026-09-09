@@ -1,14 +1,15 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
 from fastapi import Depends, HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.schemas import LicenseHeartbeatRequest, LocalLicenseStatus
 from src.application.services.branding_service import get_or_create_system_config
-from src.infrastructure.models import ConfiguracionSistema
+from src.infrastructure.models import ClienteModel, ConfiguracionSistema, RouterModel
 from src.infrastructure.database import get_db
 from src.version import SYSTEM_VERSION, UPDATE_CHANNEL
 
@@ -40,6 +41,25 @@ async def _config(db: AsyncSession) -> ConfiguracionSistema:
     return await get_or_create_system_config(db)
 
 
+def effective_local_state(config: ConfiguracionSistema) -> tuple[str, str]:
+    state = config.licencia_estado
+    message = config.licencia_mensaje or "Licencia activa"
+    if state in {"suspendida", "revocada", "vencida"}:
+        return state, message
+    expiry = getattr(config, "licencia_vigente_hasta", None)
+    if getattr(config, "licencia_tipo", None) == "permanente" or expiry is None:
+        return state, message
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if now <= expiry:
+        return "activa", f"Plan vigente hasta {expiry:%d/%m/%Y}"
+    grace_until = expiry + timedelta(
+        days=getattr(config, "licencia_dias_gracia", 0) or 0
+    )
+    if now <= grace_until:
+        return "gracia", f"Mensualidad vencida; periodo de gracia hasta {grace_until:%d/%m/%Y}"
+    return "vencida", "Tu mensualidad terminó. Renueva para continuar"
+
+
 async def require_valid_license(
     db: AsyncSession = Depends(get_db),
 ) -> None:
@@ -48,10 +68,11 @@ async def require_valid_license(
     if not INSTALLATION_ID or not LICENSE_KEY:
         raise HTTPException(status_code=503, detail="Licencia no configurada")
     config = await _config(db)
-    if config.licencia_estado in {"suspendida", "revocada"}:
+    state, message = effective_local_state(config)
+    if state in {"suspendida", "revocada", "vencida"}:
         raise HTTPException(
             status_code=403,
-            detail=config.licencia_mensaje or f"Licencia {config.licencia_estado}",
+            detail=message,
         )
 
 
@@ -59,12 +80,13 @@ def local_status(config: ConfiguracionSistema) -> LocalLicenseStatus:
     is_central = CONTROL_PLANE_MODE == "central"
     configured = is_central or bool(INSTALLATION_ID and LICENSE_KEY)
     target = config.version_disponible
+    effective_state, effective_message = effective_local_state(config)
     return LocalLicenseStatus(
         configurada=configured,
         instalacion_id=INSTALLATION_ID or ("control-central" if is_central else None),
         servidor_central=CONTROL_URL,
-        estado="servidor_central" if is_central else (config.licencia_estado if configured else "sin_configurar"),
-        mensaje="Servidor central de licencias" if is_central else (config.licencia_mensaje or (
+        estado="servidor_central" if is_central else (effective_state if configured else "sin_configurar"),
+        mensaje="Servidor central de licencias" if is_central else (effective_message or (
             "Licencia lista" if configured else "Faltan las credenciales de esta instalación"
         )),
         version_actual=SYSTEM_VERSION,
@@ -72,7 +94,51 @@ def local_status(config: ConfiguracionSistema) -> LocalLicenseStatus:
         actualizacion_disponible=update_available(SYSTEM_VERSION, target),
         notas_actualizacion=config.notas_actualizacion,
         ultima_revision=config.licencia_ultima_revision,
+        plan_nombre=config.licencia_plan,
+        plan_tipo=config.licencia_tipo,
+        vigente_hasta=config.licencia_vigente_hasta,
+        dias_gracia=config.licencia_dias_gracia or 0,
+        limite_clientes=config.licencia_limite_clientes,
+        limite_routers=config.licencia_limite_routers,
+        uso_clientes=config.licencia_uso_clientes or 0,
+        uso_routers=config.licencia_uso_routers or 0,
     )
+
+
+async def remaining_client_capacity(db: AsyncSession) -> Optional[int]:
+    if CONTROL_PLANE_MODE == "central":
+        return None
+    config = await _config(db)
+    limit = config.licencia_limite_clientes
+    if limit is None:
+        return None
+    current = await db.scalar(select(func.count(ClienteModel.id))) or 0
+    return max(0, limit - current)
+
+
+async def ensure_client_capacity(db: AsyncSession = Depends(get_db)) -> None:
+    remaining = await remaining_client_capacity(db)
+    if remaining == 0:
+        config = await _config(db)
+        raise HTTPException(
+            status_code=403,
+            detail=f"Tu plan permite máximo {config.licencia_limite_clientes} abonados",
+        )
+
+
+async def ensure_router_capacity(db: AsyncSession = Depends(get_db)) -> None:
+    if CONTROL_PLANE_MODE == "central":
+        return
+    config = await _config(db)
+    limit = config.licencia_limite_routers
+    if limit is None:
+        return
+    current = await db.scalar(select(func.count(RouterModel.id))) or 0
+    if current >= limit:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Tu plan permite máximo {limit} routers",
+        )
 
 
 async def verify_license(db: AsyncSession) -> LocalLicenseStatus:
@@ -85,12 +151,16 @@ async def verify_license(db: AsyncSession) -> LocalLicenseStatus:
         await db.commit()
         return local_status(config)
 
+    client_count = await db.scalar(select(func.count(ClienteModel.id))) or 0
+    router_count = await db.scalar(select(func.count(RouterModel.id))) or 0
     payload = LicenseHeartbeatRequest(
         instalacion_id=INSTALLATION_ID,
         version_actual=SYSTEM_VERSION,
         dominio=PUBLIC_URL,
         nombre_isp=config.empresa_nombre,
         canal=UPDATE_CHANNEL,
+        uso_clientes=client_count,
+        uso_routers=router_count,
     )
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -105,6 +175,19 @@ async def verify_license(db: AsyncSession) -> LocalLicenseStatus:
         config.licencia_mensaje = result["mensaje"]
         config.version_disponible = result.get("version_objetivo")
         config.notas_actualizacion = result.get("notas_actualizacion")
+        config.licencia_plan = result.get("plan_nombre")
+        config.licencia_tipo = result.get("plan_tipo")
+        expiry = result.get("vigente_hasta")
+        config.licencia_vigente_hasta = (
+            datetime.fromisoformat(expiry.replace("Z", "+00:00")).replace(tzinfo=None)
+            if isinstance(expiry, str) and expiry
+            else expiry
+        )
+        config.licencia_dias_gracia = result.get("dias_gracia", 0)
+        config.licencia_limite_clientes = result.get("limite_clientes")
+        config.licencia_limite_routers = result.get("limite_routers")
+        config.licencia_uso_clientes = client_count
+        config.licencia_uso_routers = router_count
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         config.licencia_mensaje = f"No se pudo consultar el servidor central: {type(exc).__name__}"
         if config.licencia_estado == "sin_configurar":

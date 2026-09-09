@@ -44,6 +44,10 @@ from src.application.services.mikrotik_reconciliation_service import (
 from src.application.services.access_control_service import (
     verificar_acceso_cliente,
 )
+from src.application.services.license_service import (
+    ensure_router_capacity,
+    remaining_client_capacity,
+)
 
 router = APIRouter(prefix="/network", tags=["Infraestructura y Redes"])
 
@@ -65,7 +69,8 @@ async def listar_routers(
 async def crear_router(
     router_data: RouterCreate, 
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(role_required(["admin"]))
+    current_user = Depends(role_required(["admin"])),
+    _capacity: None = Depends(ensure_router_capacity),
 ):
     """Registra un nuevo router y verifica conexión básica."""
     service = NetworkService(db)
@@ -428,9 +433,15 @@ async def procesar_importacion(
         count_ok = 0
         errores = []
         caracteres_hex = "0123456789ABCDEF"
+        capacidad_restante = await remaining_client_capacity(db)
 
         for idx, row in df.iterrows():
             fila = idx + 2
+            if capacidad_restante is not None and count_ok >= capacidad_restante:
+                errores.append(
+                    f"Fila {fila}: se alcanzó el límite de abonados del plan."
+                )
+                continue
             try:
                 red_id = int(row.get('id_red', 0))
                 zona_id = int(row.get('id_zona', 0))

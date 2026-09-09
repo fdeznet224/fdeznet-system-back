@@ -1615,8 +1615,32 @@ class ConfiguracionSistema(Base):
     licencia_estado = Column(String(30), nullable=False, default="sin_configurar")
     licencia_ultima_revision = Column(DateTime, nullable=True)
     licencia_mensaje = Column(String(300), nullable=True)
+    licencia_plan = Column(String(120), nullable=True)
+    licencia_tipo = Column(String(20), nullable=True)
+    licencia_vigente_hasta = Column(DateTime, nullable=True)
+    licencia_dias_gracia = Column(Integer, nullable=False, default=0, server_default="0")
+    licencia_limite_clientes = Column(Integer, nullable=True)
+    licencia_limite_routers = Column(Integer, nullable=True)
+    licencia_uso_clientes = Column(Integer, nullable=False, default=0, server_default="0")
+    licencia_uso_routers = Column(Integer, nullable=False, default=0, server_default="0")
     version_disponible = Column(String(30), nullable=True)
     notas_actualizacion = Column(Text, nullable=True)
+
+
+class PlanLicenciaModel(Base):
+    __tablename__ = "planes_licencia"
+
+    id = Column(Integer, primary_key=True)
+    codigo = Column(String(50), unique=True, index=True, nullable=False)
+    nombre = Column(String(120), nullable=False)
+    tipo = Column(String(20), nullable=False, default="mensual")
+    precio_mensual = Column(Numeric(12, 2), nullable=False, default=0)
+    duracion_dias = Column(Integer, nullable=True)
+    dias_gracia = Column(Integer, nullable=False, default=0)
+    limite_clientes = Column(Integer, nullable=True)
+    limite_routers = Column(Integer, nullable=True)
+    activo = Column(Boolean, nullable=False, default=True)
+    creado_en = Column(DateTime, nullable=False, server_default=func.now())
 
 
 class InstalacionSistemaModel(Base):
@@ -1636,6 +1660,17 @@ class InstalacionSistemaModel(Base):
     bootstrap_usado_en = Column(DateTime, nullable=True)
     estado = Column(String(30), nullable=False, default="activa")
     plan = Column(String(50), nullable=False, default="estandar")
+    plan_licencia_id = Column(Integer, ForeignKey("planes_licencia.id"), nullable=True)
+    plan_nombre = Column(String(120), nullable=True)
+    plan_tipo = Column(String(20), nullable=True)
+    precio_mensual = Column(Numeric(12, 2), nullable=True)
+    limite_clientes = Column(Integer, nullable=True)
+    limite_routers = Column(Integer, nullable=True)
+    dias_gracia = Column(Integer, nullable=False, default=0)
+    suscripcion_inicio = Column(DateTime, nullable=True)
+    suscripcion_vence = Column(DateTime, nullable=True)
+    uso_clientes = Column(Integer, nullable=False, default=0)
+    uso_routers = Column(Integer, nullable=False, default=0)
     canal = Column(String(30), nullable=False, default="stable")
     version_actual = Column(String(30), nullable=True)
     version_objetivo = Column(String(30), nullable=True)
@@ -1653,6 +1688,24 @@ class InstalacionSistemaModel(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+    plan_licencia = relationship("PlanLicenciaModel")
+
+
+class PagoLicenciaModel(Base):
+    __tablename__ = "pagos_licencia"
+
+    id = Column(Integer, primary_key=True)
+    instalacion_id = Column(
+        Integer,
+        ForeignKey("instalaciones_sistema.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    plan_licencia_id = Column(Integer, ForeignKey("planes_licencia.id"), nullable=True)
+    meses = Column(Integer, nullable=False, default=1)
+    monto = Column(Numeric(12, 2), nullable=False, default=0)
+    referencia = Column(String(160), nullable=True)
+    registrado_en = Column(DateTime, nullable=False, server_default=func.now())
 
 
 class VersionSistemaModel(Base):

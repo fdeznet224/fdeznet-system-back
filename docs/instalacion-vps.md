@@ -26,7 +26,8 @@ porque será la plataforma principal de pruebas.
 ## Flujo desde el panel central
 
 1. Entrar a **Configuración → Licencias y versiones**.
-2. Elegir **Nueva instalación** y capturar ISP, dominio y correo.
+2. Elegir **Nueva instalación**, seleccionar el plan y capturar ISP, dominio
+   opcional y correo.
 3. Copiar el comando generado. El token dura 48 horas y se consume una vez.
 4. Conectarse a la nueva VPS por SSH y ejecutar el comando como `root`. Tendrá
    esta forma (el panel coloca los valores reales):
@@ -83,6 +84,7 @@ También deja activos:
 5. Registrar el primer router y comprobar el túnel WireGuard.
 6. Ejecutar **Respaldar** y luego **Probar recuperación** desde el panel.
 7. Confirmar desde el servidor central que la licencia reporta versión y conexión.
+8. Confirmar que el uso de abonados y routers se reporta al plan asignado.
 
 La clave del respaldo queda solamente en `/etc/fdeznet/backup.key`, con permiso
 `0600`. Debe entregarse al responsable de la VPS por un canal seguro si él será

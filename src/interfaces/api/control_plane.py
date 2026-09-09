@@ -24,13 +24,23 @@ from src.domain.schemas import (
     BootstrapTokenResponse,
     LicenseHeartbeatRequest,
     LicenseHeartbeatResponse,
+    LicensePlanCreate,
+    LicensePlanResponse,
+    LicensePlanUpdate,
+    LicensePaymentResponse,
+    SubscriptionRenewRequest,
     SystemReleaseCreate,
     SystemReleaseResponse,
     UpdateManifestResponse,
     UpdateReportRequest,
 )
 from src.infrastructure.database import get_db
-from src.infrastructure.models import InstalacionSistemaModel, VersionSistemaModel
+from src.infrastructure.models import (
+    InstalacionSistemaModel,
+    PagoLicenciaModel,
+    PlanLicenciaModel,
+    VersionSistemaModel,
+)
 
 
 heartbeat_router = APIRouter(prefix="/control", tags=["Control de instalaciones"])
@@ -96,6 +106,57 @@ def _assign_bootstrap(installation: InstalacionSistemaModel) -> tuple[str, datet
     return token, expires
 
 
+def _subscription_state(installation: InstalacionSistemaModel) -> tuple[str, str]:
+    if installation.estado != "activa":
+        return installation.estado, f"Licencia {installation.estado}"
+    if (
+        getattr(installation, "plan_tipo", None) == "permanente"
+        or getattr(installation, "suscripcion_vence", None) is None
+    ):
+        return "activa", "Licencia activa"
+    now = _now()
+    expiry = installation.suscripcion_vence
+    if now <= expiry:
+        return "activa", f"Plan vigente hasta {expiry:%d/%m/%Y}"
+    gracia_hasta = expiry + timedelta(
+        days=getattr(installation, "dias_gracia", 0) or 0
+    )
+    if now <= gracia_hasta:
+        return "gracia", f"Mensualidad vencida; periodo de gracia hasta {gracia_hasta:%d/%m/%Y}"
+    return "vencida", "Tu mensualidad terminó. Renueva para continuar"
+
+
+def _apply_plan(
+    installation: InstalacionSistemaModel,
+    plan: PlanLicenciaModel,
+    *,
+    months: int = 1,
+) -> None:
+    now = _now()
+    installation.plan_licencia_id = plan.id
+    installation.plan = plan.codigo
+    installation.plan_nombre = plan.nombre
+    installation.plan_tipo = plan.tipo
+    installation.precio_mensual = plan.precio_mensual
+    installation.limite_clientes = plan.limite_clientes
+    installation.limite_routers = plan.limite_routers
+    installation.dias_gracia = plan.dias_gracia
+    installation.suscripcion_inicio = installation.suscripcion_inicio or now
+    if plan.tipo == "permanente":
+        installation.suscripcion_vence = None
+    else:
+        base = max(now, installation.suscripcion_vence or now)
+        installation.suscripcion_vence = base + timedelta(
+            days=(plan.duracion_dias or 30) * months
+        )
+
+
+def _installation_response(installation: InstalacionSistemaModel) -> dict:
+    response = InstallationResponse.model_validate(installation).model_dump()
+    response["estado_suscripcion"] = _subscription_state(installation)[0]
+    return response
+
+
 @heartbeat_router.get("/installer", response_class=FileResponse)
 async def download_installer():
     _ensure_central()
@@ -129,6 +190,7 @@ async def exchange_bootstrap(
         or installation.bootstrap_expira is None
         or installation.bootstrap_expira < now
         or installation.estado != "activa"
+        or _subscription_state(installation)[0] == "vencida"
     ):
         raise HTTPException(status_code=401, detail="Token de instalación inválido o vencido")
 
@@ -182,16 +244,19 @@ async def heartbeat(
     installation.version_actual = payload.version_actual
     installation.ultima_conexion = _now()
     installation.canal = payload.canal
+    installation.uso_clientes = payload.uso_clientes
+    installation.uso_routers = payload.uso_routers
     if payload.dominio:
         installation.dominio = payload.dominio
     if payload.nombre_isp:
         installation.nombre_isp = payload.nombre_isp
     await db.commit()
 
-    enabled = installation.estado == "activa"
+    effective_state, message = _subscription_state(installation)
+    enabled = effective_state in {"activa", "gracia"}
     return LicenseHeartbeatResponse(
-        estado=installation.estado,
-        mensaje="Licencia activa" if enabled else f"Licencia {installation.estado}",
+        estado=effective_state,
+        mensaje=message,
         version_actual=payload.version_actual,
         version_objetivo=installation.version_objetivo,
         actualizacion_disponible=enabled and update_available(
@@ -199,6 +264,14 @@ async def heartbeat(
             installation.version_objetivo,
         ),
         notas_actualizacion=installation.notas_actualizacion,
+        plan_nombre=installation.plan_nombre,
+        plan_tipo=installation.plan_tipo,
+        vigente_hasta=installation.suscripcion_vence,
+        dias_gracia=installation.dias_gracia or 0,
+        limite_clientes=installation.limite_clientes,
+        limite_routers=installation.limite_routers,
+        uso_clientes=installation.uso_clientes or 0,
+        uso_routers=installation.uso_routers or 0,
     )
 
 
@@ -216,7 +289,7 @@ async def update_manifest(
         x_license_key,
     )
     if (
-        installation.estado != "activa"
+        _subscription_state(installation)[0] not in {"activa", "gracia"}
         or not (
             installation.actualizacion_automatica
             or compare_digest(x_update_requested.strip().lower(), "true")
@@ -280,7 +353,7 @@ async def update_report(
 @router.get("/instalaciones", response_model=list[InstallationResponse])
 async def list_installations(db: AsyncSession = Depends(get_db)):
     _ensure_central()
-    return (
+    installations = (
         await db.execute(
             select(InstalacionSistemaModel).order_by(
                 desc(InstalacionSistemaModel.ultima_conexion),
@@ -288,6 +361,53 @@ async def list_installations(db: AsyncSession = Depends(get_db)):
             )
         )
     ).scalars().all()
+    return [_installation_response(item) for item in installations]
+
+
+@router.get("/planes", response_model=list[LicensePlanResponse])
+async def list_license_plans(db: AsyncSession = Depends(get_db)):
+    _ensure_central()
+    return (
+        await db.execute(
+            select(PlanLicenciaModel).order_by(
+                PlanLicenciaModel.activo.desc(), PlanLicenciaModel.id
+            )
+        )
+    ).scalars().all()
+
+
+@router.post("/planes", response_model=LicensePlanResponse, status_code=201)
+async def create_license_plan(
+    payload: LicensePlanCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_central()
+    plan = PlanLicenciaModel(**payload.model_dump())
+    db.add(plan)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="El código del plan ya existe") from exc
+    await db.refresh(plan)
+    return plan
+
+
+@router.patch("/planes/{plan_id}", response_model=LicensePlanResponse)
+async def update_license_plan(
+    plan_id: int,
+    payload: LicensePlanUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_central()
+    plan = await db.get(PlanLicenciaModel, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Plan no encontrado")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(plan, field, value)
+    await db.commit()
+    await db.refresh(plan)
+    return plan
 
 
 @router.get("/versiones", response_model=list[SystemReleaseResponse])
@@ -323,6 +443,25 @@ async def create_installation(
     db: AsyncSession = Depends(get_db),
 ):
     _ensure_central()
+    plan = None
+    if payload.plan_licencia_id:
+        plan = await db.get(PlanLicenciaModel, payload.plan_licencia_id)
+    if plan is None:
+        plan = await db.scalar(
+            select(PlanLicenciaModel).where(
+                PlanLicenciaModel.codigo == payload.plan,
+                PlanLicenciaModel.activo.is_(True),
+            )
+        )
+    if plan is None:
+        plan = await db.scalar(
+            select(PlanLicenciaModel).where(
+                PlanLicenciaModel.codigo == "demo",
+                PlanLicenciaModel.activo.is_(True),
+            )
+        )
+    if plan is None or not plan.activo:
+        raise HTTPException(status_code=400, detail="Selecciona un plan activo")
     raw_license = f"fdz_live_{secrets.token_urlsafe(32)}"
     installation = InstalacionSistemaModel(
         instalacion_id=str(uuid4()),
@@ -334,11 +473,12 @@ async def create_installation(
         estado="activa",
         canal="stable",
     )
+    _apply_plan(installation, plan)
     bootstrap_token, bootstrap_expires = _assign_bootstrap(installation)
     db.add(installation)
     await db.commit()
     await db.refresh(installation)
-    response = InstallationResponse.model_validate(installation).model_dump()
+    response = _installation_response(installation)
     return InstallationCreated(
         **response,
         licencia=raw_license,
@@ -385,8 +525,69 @@ async def update_installation(
         )
         if release_exists is None:
             raise HTTPException(status_code=400, detail="La versión no está publicada")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    update_data = payload.model_dump(exclude_unset=True)
+    plan_id = update_data.pop("plan_licencia_id", None)
+    if plan_id is not None:
+        plan = await db.get(PlanLicenciaModel, plan_id)
+        if plan is None or not plan.activo:
+            raise HTTPException(status_code=400, detail="Plan no disponible")
+        _apply_plan(installation, plan, months=1)
+    for field, value in update_data.items():
         setattr(installation, field, value.strip() if isinstance(value, str) else value)
     await db.commit()
     await db.refresh(installation)
-    return installation
+    return _installation_response(installation)
+
+
+@router.post(
+    "/instalaciones/{installation_id}/renovar",
+    response_model=InstallationResponse,
+)
+async def renew_subscription(
+    installation_id: int,
+    payload: SubscriptionRenewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_central()
+    installation = await db.get(InstalacionSistemaModel, installation_id)
+    if installation is None:
+        raise HTTPException(status_code=404, detail="Instalación no encontrada")
+    plan_id = payload.plan_licencia_id or installation.plan_licencia_id
+    plan = await db.get(PlanLicenciaModel, plan_id) if plan_id else None
+    if plan is None or not plan.activo:
+        raise HTTPException(status_code=400, detail="Selecciona un plan activo")
+    _apply_plan(installation, plan, months=payload.meses)
+    db.add(
+        PagoLicenciaModel(
+            instalacion_id=installation.id,
+            plan_licencia_id=plan.id,
+            meses=payload.meses,
+            monto=(
+                payload.monto
+                if payload.monto is not None
+                else plan.precio_mensual * payload.meses
+            ),
+            referencia=payload.referencia.strip() if payload.referencia else None,
+        )
+    )
+    await db.commit()
+    await db.refresh(installation)
+    return _installation_response(installation)
+
+
+@router.get(
+    "/instalaciones/{installation_id}/pagos",
+    response_model=list[LicensePaymentResponse],
+)
+async def list_license_payments(
+    installation_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_central()
+    return (
+        await db.execute(
+            select(PagoLicenciaModel)
+            .where(PagoLicenciaModel.instalacion_id == installation_id)
+            .order_by(desc(PagoLicenciaModel.id))
+        )
+    ).scalars().all()

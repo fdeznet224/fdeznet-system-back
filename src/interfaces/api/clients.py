@@ -28,6 +28,7 @@ from src.infrastructure.whatsapp_client import whatsapp_queue
 
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.application.services.client_service import ClientService
+from src.application.services.license_service import ensure_client_capacity
 from src.application.services.access_control_service import (
     filtro_clientes_del_tecnico,
     verificar_acceso_cliente,
@@ -382,7 +383,8 @@ async def registrar_cliente(
     cliente: ClienteCreate, 
     background_tasks: BackgroundTasks, 
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(role_required(["admin", "supervisor"]))
+    current_user = Depends(role_required(["admin", "supervisor"])),
+    _capacity: None = Depends(ensure_client_capacity),
 ):
     service = ClientService(db)
     try:
@@ -393,6 +395,8 @@ async def registrar_cliente(
         )
     except (ValueError, PermissionError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error registro API: {e}")
         raise HTTPException(status_code=500, detail="Error interno al registrar cliente")
