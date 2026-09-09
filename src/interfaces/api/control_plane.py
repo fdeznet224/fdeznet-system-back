@@ -183,6 +183,7 @@ async def heartbeat(
 async def update_manifest(
     x_installation_id: str = Header(default="", alias="X-Installation-ID"),
     x_license_key: str = Header(default="", alias="X-License-Key"),
+    x_update_requested: str = Header(default="", alias="X-Update-Requested"),
     db: AsyncSession = Depends(get_db),
 ):
     _ensure_central()
@@ -193,7 +194,10 @@ async def update_manifest(
     )
     if (
         installation.estado != "activa"
-        or not installation.actualizacion_automatica
+        or not (
+            installation.actualizacion_automatica
+            or compare_digest(x_update_requested.strip().lower(), "true")
+        )
         or not installation.version_objetivo
         or not update_available(
             installation.version_actual or "0.0.0",

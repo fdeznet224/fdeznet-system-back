@@ -111,3 +111,16 @@ def test_control_de_instalaciones_separa_heartbeat_y_administracion():
     assert paths["/configuracion/mantenimiento/respaldo"]["post"]["security"]
     assert paths["/configuracion/mantenimiento/actualizar"]["post"]["security"]
     assert paths["/configuracion/mantenimiento/verificar"]["post"]["security"]
+
+
+def test_actualizacion_manual_registra_consentimiento_del_usuario():
+    from src.interfaces.api import configuracion
+
+    assert configuracion.MANUAL_UPDATE_REQUEST_FILE.name == "manual-update-requested"
+    parameters = {
+        item["name"]
+        for item in app.openapi()["paths"]["/control/update-manifest"]["get"][
+            "parameters"
+        ]
+    }
+    assert "X-Update-Requested" in parameters

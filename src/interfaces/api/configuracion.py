@@ -38,6 +38,7 @@ from src.application.services.license_service import local_status, verify_licens
 router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
 public_router = APIRouter(prefix="/public", tags=["Configuración Pública"])
 MAINTENANCE_STATUS_FILE = Path("/var/lib/fdeznet/maintenance-status.json")
+MANUAL_UPDATE_REQUEST_FILE = Path("/var/lib/fdeznet/manual-update-requested")
 
 
 async def _iniciar_mantenimiento(service: str) -> dict[str, str]:
@@ -122,7 +123,18 @@ async def iniciar_respaldo():
 
 @router.post("/mantenimiento/actualizar", status_code=202)
 async def iniciar_actualizacion():
-    return await _iniciar_mantenimiento("fdeznet-update.service")
+    try:
+        MANUAL_UPDATE_REQUEST_FILE.write_text("requested\n", encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo registrar la solicitud manual de actualización",
+        ) from exc
+    try:
+        return await _iniciar_mantenimiento("fdeznet-update.service")
+    except Exception:
+        MANUAL_UPDATE_REQUEST_FILE.unlink(missing_ok=True)
+        raise
 
 
 @router.post("/mantenimiento/verificar", status_code=202)

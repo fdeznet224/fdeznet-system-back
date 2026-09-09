@@ -8,6 +8,7 @@ readonly ENV_FILE="$BACKEND_DIR/.env"
 readonly KEY_FILE="/etc/fdeznet/backup.key"
 readonly STATUS_FILE="/var/lib/fdeznet/maintenance-status.json"
 readonly LOCK_FILE="/run/lock/fdeznet-maintenance.lock"
+readonly MANUAL_UPDATE_REQUEST_FILE="/var/lib/fdeznet/manual-update-requested"
 
 BACKUP_DIR="/var/backups/fdeznet"
 RETENTION_DAYS="14"
@@ -281,14 +282,20 @@ trap on_error ERR
 
 perform_update() {
   local installation_id license_key control_url manifest available backend_commit frontend_commit signature canonical expected
+  local -a request_headers=()
   installation_id="$(env_value FDEZNET_INSTALLATION_ID)"
   license_key="$(env_value FDEZNET_LICENSE_KEY)"
   control_url="$(env_value FDEZNET_CONTROL_URL)"
   [[ -n "$installation_id" && -n "$license_key" && -n "$control_url" ]] || return 0
+  if [[ -f "$MANUAL_UPDATE_REQUEST_FILE" ]]; then
+    request_headers=(-H 'X-Update-Requested: true')
+  fi
   manifest="$(curl -fsS --max-time 30 \
     -H "X-Installation-ID: ${installation_id}" \
     -H "X-License-Key: ${license_key}" \
+    "${request_headers[@]}" \
     "${control_url%/}/control/update-manifest")"
+  rm -f "$MANUAL_UPDATE_REQUEST_FILE"
   available="$(jq -r '.actualizacion_disponible' <<< "$manifest")"
   [[ "$available" == "true" ]] || { write_status "sin_cambios" "No hay actualización autorizada"; return 0; }
   TARGET_VERSION="$(jq -er '.version' <<< "$manifest")"

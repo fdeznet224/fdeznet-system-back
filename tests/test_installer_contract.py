@@ -62,5 +62,7 @@ def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     assert 'END {exit !found}' in content
     assert "make_url" in content
     assert "DATABASE_URL_VALUE" in content
+    assert "X-Update-Requested: true" in content
+    assert "manual-update-requested" in content
     assert "exclude)bot_whatsapp/node_modules" in content
     assert "exclude)node_modules" in content

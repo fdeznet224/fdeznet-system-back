@@ -115,6 +115,7 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --create-home --home-dir /var/lib/fdeznet --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$APP_DIR"
+install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 /var/lib/fdeznet
 usermod -aG "$SERVICE_USER" www-data
 
 log "Descargando y preparando el código"
