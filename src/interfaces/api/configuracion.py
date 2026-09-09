@@ -1,8 +1,12 @@
 import asyncio
+import hashlib
+import io
 import json
 from pathlib import Path
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, desc
 from sqlalchemy.exc import IntegrityError 
@@ -40,6 +44,8 @@ router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
 public_router = APIRouter(prefix="/public", tags=["Configuración Pública"])
 MAINTENANCE_STATUS_FILE = Path("/var/lib/fdeznet/maintenance-status.json")
 MANUAL_UPDATE_REQUEST_FILE = Path("/var/lib/fdeznet/manual-update-requested")
+BRANDING_DIR = Path(__file__).resolve().parents[3] / "static" / "branding"
+MAX_BRAND_IMAGE_BYTES = 2 * 1024 * 1024
 
 
 async def _iniciar_mantenimiento(service: str) -> dict[str, str]:
@@ -71,11 +77,119 @@ async def obtener_marca_publica(db: AsyncSession = Depends(get_db)):
     return await _obtener_configuracion(db)
 
 
+@public_router.get("/manifest.webmanifest", response_class=JSONResponse)
+async def obtener_manifest_pwa(db: AsyncSession = Depends(get_db)):
+    marca = await _obtener_configuracion(db)
+    if marca.favicon_url and marca.favicon_url.startswith(
+        "/api/public/marca/archivo/favicon"
+    ):
+        icono_512 = marca.favicon_url
+        icono_192 = marca.favicon_url.replace(
+            "/archivo/favicon", "/archivo/favicon-192", 1
+        )
+        iconos = [
+            {"src": icono_192, "sizes": "192x192", "type": "image/png"},
+            {
+                "src": icono_512,
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any maskable",
+            },
+        ]
+    else:
+        iconos = [
+            {"src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png"},
+            {
+                "src": "/pwa-512x512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any maskable",
+            },
+        ]
+    return {
+        "name": marca.sistema_nombre,
+        "short_name": marca.empresa_nombre[:30],
+        "description": f"Gestión integral para {marca.empresa_nombre}",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "theme_color": marca.color_primario,
+        "background_color": marca.color_secundario,
+        "icons": iconos,
+    }
+
+
+@public_router.get("/marca/archivo/{tipo}", response_class=FileResponse)
+async def obtener_archivo_marca(tipo: str):
+    if tipo not in {"logo", "favicon", "favicon-192"}:
+        raise HTTPException(status_code=404, detail="Archivo de marca no encontrado")
+    path = BRANDING_DIR / f"{tipo}.png"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Archivo de marca no encontrado")
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
 @router.put("/marca", response_model=BrandingConfig)
 async def guardar_marca(datos: BrandingConfig, db: AsyncSession = Depends(get_db)):
     config = await _obtener_configuracion(db)
     for campo, valor in datos.model_dump().items():
         setattr(config, campo, valor.strip() if isinstance(valor, str) else valor)
+    await db.commit()
+    await db.refresh(config)
+    await FastAPICache.clear()
+    return config
+
+
+@router.post("/marca/{tipo}/archivo", response_model=BrandingConfig)
+async def subir_archivo_marca(
+    tipo: str,
+    archivo: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    if tipo not in {"logo", "favicon"}:
+        raise HTTPException(status_code=404, detail="Tipo de imagen no admitido")
+    contenido = await archivo.read(MAX_BRAND_IMAGE_BYTES + 1)
+    if not contenido or len(contenido) > MAX_BRAND_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="La imagen debe pesar máximo 2 MB")
+    try:
+        imagen = Image.open(io.BytesIO(contenido))
+        imagen.verify()
+        imagen = Image.open(io.BytesIO(contenido))
+        if imagen.width * imagen.height > 16_000_000:
+            raise HTTPException(status_code=400, detail="La resolución de la imagen es demasiado grande")
+        imagen = imagen.convert("RGBA")
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise HTTPException(status_code=400, detail="El archivo no es una imagen válida") from exc
+
+    BRANDING_DIR.mkdir(parents=True, exist_ok=True)
+    destino = BRANDING_DIR / f"{tipo}.png"
+    temporal = BRANDING_DIR / f".{tipo}.tmp.png"
+    if tipo == "favicon":
+        imagen.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        favicon = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+        favicon.paste(
+            imagen,
+            ((512 - imagen.width) // 2, (512 - imagen.height) // 2),
+            imagen,
+        )
+        favicon.save(temporal, format="PNG", optimize=True)
+        favicon_192 = favicon.resize((192, 192), Image.Resampling.LANCZOS)
+        temporal_192 = BRANDING_DIR / ".favicon-192.tmp.png"
+        favicon_192.save(temporal_192, format="PNG", optimize=True)
+        temporal_192.replace(BRANDING_DIR / "favicon-192.png")
+    else:
+        imagen.thumbnail((1600, 800), Image.Resampling.LANCZOS)
+        imagen.save(temporal, format="PNG", optimize=True)
+    temporal.replace(destino)
+
+    huella = hashlib.sha256(contenido).hexdigest()[:12]
+    config = await _obtener_configuracion(db)
+    url = f"/api/public/marca/archivo/{tipo}?v={huella}"
+    setattr(config, "logo_url" if tipo == "logo" else "favicon_url", url)
     await db.commit()
     await db.refresh(config)
     await FastAPICache.clear()

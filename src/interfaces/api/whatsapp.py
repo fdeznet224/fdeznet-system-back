@@ -93,29 +93,33 @@ def esta_fuera_de_horario(ahora: datetime | None = None) -> bool:
     return True
 
 
-def mensaje_fuera_de_horario() -> str:
+def mensaje_fuera_de_horario(
+    empresa_nombre: str = "FdezNet",
+    asistente_nombre: str = "FdezBot",
+) -> str:
     return (
         "🌙 *Estamos fuera del horario de atención.*\n\n"
         "Nuestro horario es:\n"
         "• Lunes a viernes: 8:00 a. m. a 8:00 p. m.\n"
         "• Sábado: 9:00 a. m. a 2:00 p. m.\n"
         "• Domingo: cerrado.\n\n"
-        "🤖 Soy *FdezBot*, el asistente automático de FdezNet. Durante este "
+        f"🤖 Soy *{asistente_nombre}*, el asistente automático de "
+        f"{empresa_nombre}. Durante este "
         "horario voy a atenderte y puedo ayudarte con pagos, saldo, promesas "
         "y problemas de conexión."
     )
 
 
-def mensaje_audio_no_disponible() -> str:
+def mensaje_audio_no_disponible(asistente_nombre: str = "FdezBot") -> str:
     return (
-        "🎤 Por el momento FdezBot no procesa notas de voz. "
+        f"🎤 Por el momento {asistente_nombre} no procesa notas de voz. "
         "Por favor escribe tu solicitud o envía *fdezbot* para usar el menú."
     )
 
 
-def construir_menu_bot() -> str:
+def construir_menu_bot(asistente_nombre: str = "FdezBot") -> str:
     return (
-        "🤖 *Bienvenido a FdezBot*\n"
+        f"🤖 *Bienvenido a {asistente_nombre}*\n"
         "Soy tu asistente de pagos y servicios. Elige una opción:\n\n"
         "1️⃣ *Reportar pago* (transferencia o depósito)\n"
         "2️⃣ *Promesa de pago* (puede reactivar tu servicio)\n"
@@ -901,6 +905,9 @@ async def webhook_recibir_mensaje(
 
     # 🔥 CARRIL RÁPIDO PARA BOT Y CHAT MANUAL 🔥
     wa_service = WhatsAppService()
+    marca = await db.get(ConfiguracionSistema, 1)
+    empresa_nombre = getattr(marca, "empresa_nombre", None) or "FdezNet"
+    asistente_nombre = getattr(marca, "sistema_nombre", None) or "FdezBot"
 
     # =========================================================
     # 1. CHAT NORMAL Y GUARDADO EN CRM 
@@ -943,7 +950,7 @@ async def webhook_recibir_mensaje(
     if fuera_de_horario and telefono_raw not in bot_memory:
         await wa_service.enviar_mensaje(
             telefono=telefono_raw,
-            mensaje=mensaje_fuera_de_horario(),
+            mensaje=mensaje_fuera_de_horario(empresa_nombre, asistente_nombre),
             tipo_evento="presentacion_bot_fuera_horario",
         )
 
@@ -957,8 +964,8 @@ async def webhook_recibir_mensaje(
         await wa_service.enviar_mensaje(
             telefono=telefono_raw,
             mensaje=(
-                mensaje_audio_no_disponible()
-                + ("\n\n" + construir_menu_bot() if fuera_de_horario else "")
+                mensaje_audio_no_disponible(asistente_nombre)
+                + ("\n\n" + construir_menu_bot(asistente_nombre) if fuera_de_horario else "")
             ),
         )
         return {"status": "audio_no_disponible"}
@@ -971,7 +978,7 @@ async def webhook_recibir_mensaje(
             "paso": "ESPERANDO_OPCION",
             "iniciado_en": datetime.now(),
         }
-        menu = construir_menu_bot()
+        menu = construir_menu_bot(asistente_nombre)
         await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=menu)
         return {"status": "bot_iniciado"}
 
@@ -1040,7 +1047,7 @@ async def webhook_recibir_mensaje(
         if intencion == "menu":
             await wa_service.enviar_mensaje(
                 telefono=telefono_raw,
-                mensaje=construir_menu_bot(),
+                mensaje=construir_menu_bot(asistente_nombre),
             )
             return {"status": "bot_automatico"}
 
@@ -1066,7 +1073,7 @@ async def webhook_recibir_mensaje(
             estado.update({"paso": "ESPERANDO_OPCION", "iniciado_en": datetime.now()})
             await wa_service.enviar_mensaje(
                 telefono=telefono_raw,
-                mensaje=construir_menu_bot(),
+                mensaje=construir_menu_bot(asistente_nombre),
             )
             return {"status": "bot_menu"}
 
@@ -1487,7 +1494,7 @@ async def webhook_recibir_mensaje(
     if esta_fuera_de_horario():
         await wa_service.enviar_mensaje(
             telefono=telefono_raw,
-            mensaje=mensaje_fuera_de_horario(),
+            mensaje=mensaje_fuera_de_horario(empresa_nombre, asistente_nombre),
             tipo_evento="respuesta_fuera_horario",
         )
         return {"status": "fuera_de_horario"}

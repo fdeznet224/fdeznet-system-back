@@ -19,7 +19,7 @@ Tras la división por rutas, el JavaScript inicial pasó de aproximadamente
 
 1. Crear un respaldo verificable de la base de datos.
 2. Publicar el backend y ejecutar `alembic upgrade head`.
-3. Ejecutar `python -m pytest -q` (68 pruebas en la validación actual).
+3. Ejecutar `python -m pytest -q` (189 pruebas en la validación actual).
 4. Comprobar `/api/health/live` y `/api/health/ready` a través del proxy.
 5. En el frontend ejecutar `npm run check:release`.
 6. Publicar el contenido generado en `dist`.

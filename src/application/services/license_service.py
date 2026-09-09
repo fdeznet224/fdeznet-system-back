@@ -3,11 +3,13 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
+from fastapi import Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.schemas import LicenseHeartbeatRequest, LocalLicenseStatus
 from src.application.services.branding_service import get_or_create_system_config
 from src.infrastructure.models import ConfiguracionSistema
+from src.infrastructure.database import get_db
 from src.version import SYSTEM_VERSION, UPDATE_CHANNEL
 
 
@@ -36,6 +38,21 @@ def update_available(current: str, target: Optional[str]) -> bool:
 
 async def _config(db: AsyncSession) -> ConfiguracionSistema:
     return await get_or_create_system_config(db)
+
+
+async def require_valid_license(
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    if CONTROL_PLANE_MODE == "central":
+        return
+    if not INSTALLATION_ID or not LICENSE_KEY:
+        raise HTTPException(status_code=503, detail="Licencia no configurada")
+    config = await _config(db)
+    if config.licencia_estado in {"suspendida", "revocada"}:
+        raise HTTPException(
+            status_code=403,
+            detail=config.licencia_mensaje or f"Licencia {config.licencia_estado}",
+        )
 
 
 def local_status(config: ConfiguracionSistema) -> LocalLicenseStatus:

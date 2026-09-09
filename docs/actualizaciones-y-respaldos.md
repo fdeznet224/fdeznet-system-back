@@ -17,3 +17,29 @@ El flujo valida la firma HMAC del manifiesto, el formato de los commits, que amb
 - Auditoría no destructiva: `fdeznet-verify.timer`, semanalmente.
 
 Los archivos quedan localmente en `/var/backups/fdeznet`. La clave está en `/etc/fdeznet/backup.key` con permisos exclusivos de root. La auditoría semanal comprueba la suma SHA-256, descifra el respaldo, valida su estructura, revisa el dump comprimido de MySQL y confirma los commits guardados sin reemplazar datos de producción.
+
+## Copia externa y recuperación total
+
+Antes de entregar una VPS debe montarse un almacenamiento externo y agregarse a
+`.env`, por ejemplo:
+
+```dotenv
+FDEZNET_BACKUP_REMOTE_DIR=/mnt/respaldo-externo/fdeznet
+```
+
+El punto de montaje debe existir, ser escribible por `root` y sobrevivir a un
+reinicio. El agente copia ahí el archivo cifrado y su suma SHA-256. La clave
+`/etc/fdeznet/backup.key` debe guardarse además fuera de la VPS, en un gestor de
+secretos o medio seguro distinto; nunca debe almacenarse junto al único respaldo.
+
+Para recuperar un respaldo en la misma instalación:
+
+```bash
+sudo /usr/local/sbin/fdeznet-maintenance verify /ruta/respaldo.tar.gz.gpg
+sudo /usr/local/sbin/fdeznet-maintenance restore /ruta/respaldo.tar.gz.gpg
+curl -fsS https://DOMINIO/api/health/ready
+```
+
+`restore` reemplaza código, base de datos, configuración y archivos por el estado
+guardado. Debe ejecutarse en una ventana de mantenimiento y sólo después de que
+`verify` termine correctamente.

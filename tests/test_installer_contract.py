@@ -41,6 +41,8 @@ def test_instalador_configura_respaldo_y_revision_automatica():
     assert "fdeznet-verify.timer" in content
     assert "FDEZNET_BACKUP_RETENTION_DAYS" in content
     assert "rclone" not in content.lower()
+    assert "location /media/uploads/" in content
+    assert "PUBLIC_URL=https://${DOMAIN}/media" in content
 
 
 def test_instalador_recibe_identidad_inicial_del_panel_central():
@@ -50,6 +52,15 @@ def test_instalador_recibe_identidad_inicial_del_panel_central():
     assert "FDEZNET_BRAND_EMAIL" in content
     assert ".nombre_isp // empty" in content
     assert ".contacto_email // empty" in content
+
+
+def test_instalador_fija_los_commits_autorizados_por_el_panel():
+    content = INSTALLER.read_text(encoding="utf-8")
+    assert "FDEZNET_RELEASE_VERSION" in content
+    assert "FDEZNET_BACKEND_COMMIT" in content
+    assert "FDEZNET_FRONTEND_COMMIT" in content
+    assert 'reset --hard "$BACKEND_COMMIT"' in content
+    assert 'reset --hard "$FRONTEND_COMMIT"' in content
 
 
 def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
@@ -73,5 +84,11 @@ def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     assert "DATABASE_URL_VALUE" in content
     assert "X-Update-Requested: true" in content
     assert "manual-update-requested" in content
+    assert "install_deployment_files" in content
+    assert "systemctl daemon-reload" in content
+    assert "location /media/uploads/" in content
+    assert "nginx -t" in content
+    assert 'config/nginx.conf" ]] && install' in content
+    assert 'config/wireguard/." /etc/wireguard/' in content
     assert "exclude)bot_whatsapp/node_modules" in content
     assert "exclude)node_modules" in content

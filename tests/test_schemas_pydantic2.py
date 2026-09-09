@@ -63,10 +63,14 @@ def test_bootstrap_entrega_identidad_inicial_de_la_instalacion():
         nombre_isp="Internet Ejemplo",
         dominio="panel.internet-ejemplo.test",
         contacto_email="admin@internet-ejemplo.test",
+        version="2.6.0",
+        backend_commit="a" * 40,
+        frontend_commit="b" * 40,
     )
 
     assert response.nombre_isp == "Internet Ejemplo"
     assert response.contacto_email == "admin@internet-ejemplo.test"
+    assert response.version == "2.6.0"
 
 
 def test_router_ids_no_comparte_lista_entre_usuarios():

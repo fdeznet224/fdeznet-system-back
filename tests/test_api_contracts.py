@@ -93,6 +93,9 @@ def test_marca_blanca_es_publica_para_lectura_y_protegida_para_edicion():
 
     assert "security" not in paths["/public/marca"]["get"]
     assert paths["/configuracion/marca"]["put"]["security"]
+    assert "security" not in paths["/public/manifest.webmanifest"]["get"]
+    assert "security" not in paths["/public/marca/archivo/{tipo}"]["get"]
+    assert paths["/configuracion/marca/{tipo}/archivo"]["post"]["security"]
 
 
 def test_control_de_instalaciones_separa_heartbeat_y_administracion():

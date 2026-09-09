@@ -36,6 +36,34 @@ env_value() {
   sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
 }
 
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  sed -i "/^${key}=/d" "$ENV_FILE"
+  printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+}
+
+install_deployment_files() {
+  local source nginx_site="/etc/nginx/sites-available/fdeznet"
+  install -o root -g root -m 0750 "$BACKEND_DIR/scripts/fdeznet-maintenance.sh" /usr/local/sbin/fdeznet-maintenance
+  for source in "$BACKEND_DIR"/deploy/systemd/fdeznet-*; do
+    [[ -f "$source" ]] || continue
+    install -o root -g root -m 0644 "$source" "/etc/systemd/system/${source##*/}"
+  done
+  if [[ -f "$nginx_site" ]] && ! grep -q 'location /media/uploads/' "$nginx_site"; then
+    sed -i '/^[[:space:]]*location \/ {/i\
+    location /media/uploads/ {\
+        proxy_pass http://127.0.0.1:3000/uploads/;\
+        proxy_http_version 1.1;\
+        proxy_set_header Host $host;\
+        proxy_set_header X-Forwarded-Proto $scheme;\
+    }\
+' "$nginx_site"
+  fi
+  systemctl daemon-reload
+  nginx -t
+}
+
 write_status() {
   local state="$1"
   local message="$2"
@@ -233,9 +261,14 @@ restore_backup() {
   systemctl stop fdeznet-api fdeznet-bot || true
   git -C "$BACKEND_DIR" reset --hard "$backend_commit"
   git -C "$FRONTEND_DIR" reset --hard "$frontend_commit"
-  install -o root -g root -m 0750 "$BACKEND_DIR/scripts/fdeznet-maintenance.sh" /usr/local/sbin/fdeznet-maintenance
   cp -a "$restore_dir/config/backend.env" "$ENV_FILE"
   [[ -f "$restore_dir/config/bot.env" ]] && cp -a "$restore_dir/config/bot.env" "$BACKEND_DIR/bot_whatsapp/.env"
+  [[ -f "$restore_dir/config/nginx.conf" ]] && install -o root -g root -m 0644 "$restore_dir/config/nginx.conf" /etc/nginx/sites-available/fdeznet
+  if [[ -d "$restore_dir/config/wireguard" ]]; then
+    install -d -o root -g root -m 0700 /etc/wireguard
+    cp -a "$restore_dir/config/wireguard/." /etc/wireguard/
+  fi
+  install_deployment_files
   mysql_config="$restore_dir/mysql.cnf"
   mysql_defaults "$mysql_config"
   gzip -dc "$restore_dir/data/database.sql.gz" | mysql --defaults-extra-file="$mysql_config"
@@ -327,7 +360,7 @@ perform_update() {
   systemctl stop fdeznet-api fdeznet-bot
   git -C "$BACKEND_DIR" reset --hard "$backend_commit"
   git -C "$FRONTEND_DIR" reset --hard "$frontend_commit"
-  install -o root -g root -m 0750 "$BACKEND_DIR/scripts/fdeznet-maintenance.sh" /usr/local/sbin/fdeznet-maintenance
+  install_deployment_files
   chown -R fdeznet:fdeznet "$BACKEND_DIR" "$FRONTEND_DIR"
   runuser -u fdeznet -- "$BACKEND_DIR/venv/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
   (cd "$BACKEND_DIR" && runuser -u fdeznet -- ./venv/bin/alembic upgrade head)
@@ -336,6 +369,9 @@ perform_update() {
   runuser -u fdeznet -- npm --prefix "$FRONTEND_DIR" run build
   systemctl restart fdeznet-api fdeznet-bot nginx
   wait_for_health
+  set_env_value FDEZNET_RELEASE_VERSION "$TARGET_VERSION"
+  set_env_value FDEZNET_BACKEND_COMMIT "$backend_commit"
+  set_env_value FDEZNET_FRONTEND_COMMIT "$frontend_commit"
   UPDATE_ACTIVE="false"
   write_status "exitosa" "Versión ${TARGET_VERSION} instalada y verificada"
   report "exitosa" "Actualización instalada y verificada"

@@ -6,6 +6,7 @@ import logging
 
 from src.infrastructure.models import (
     ClienteModel,
+    ConfiguracionSistema,
     MensajeChatModel,
     PlantillaMensajeModel,
 )
@@ -103,6 +104,13 @@ class NotificationService:
             logger.warning(f"⚠️ Cliente {cliente_id} no existe o no tiene teléfono.")
             return False
 
+        marca = (
+            await self.db.execute(
+                select(ConfiguracionSistema).where(ConfiguracionSistema.id == 1)
+            )
+        ).scalar_one_or_none()
+        empresa_nombre = getattr(marca, "empresa_nombre", None) or "FdezNet"
+
         # =========================================================
         # 3. CÁLCULOS INTELIGENTES (Las nuevas super variables)
         # =========================================================
@@ -129,7 +137,7 @@ class NotificationService:
         # 4. EL DICCIONARIO MAESTRO BLINDADO
         # =========================================================
         datos_base = {
-            "empresa": "FdezNet",
+            "empresa": empresa_nombre,
             "fecha_actual": datetime.now().strftime("%d/%m/%Y"),
             "mes_actual": mes_actual_nombre,
             "nombre": cliente.nombre,

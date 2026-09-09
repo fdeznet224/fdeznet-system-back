@@ -151,6 +151,9 @@ class BootstrapExchangeResponse(BaseModel):
     nombre_isp: Optional[str] = None
     dominio: Optional[str] = None
     contacto_email: Optional[str] = None
+    version: str = Field(pattern=r"^\d+\.\d+\.\d+$", max_length=30)
+    backend_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    frontend_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
 class BootstrapTokenResponse(BaseModel):

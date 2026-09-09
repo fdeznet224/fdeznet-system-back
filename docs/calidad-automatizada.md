@@ -13,7 +13,7 @@ python -m pytest -q
 python -m compileall -q src
 ```
 
-La validación actual contiene 68 pruebas. Los avisos de configuración de
+La validación actual contiene 189 pruebas. Los avisos de configuración de
 Pydantic 1 fueron eliminados; permanecen avisos externos de Passlib y EasyOCR.
 
 ## Frontend

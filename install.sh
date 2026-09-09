@@ -153,6 +153,9 @@ WEBHOOK_SECRET="$(existing_value WEBHOOK_SECRET "$BACKEND_DIR/.env")"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-$(openssl rand -hex 32)}"
 INSTALLATION_ID="$(existing_value FDEZNET_INSTALLATION_ID "$BACKEND_DIR/.env")"
 LICENSE_KEY="$(existing_value FDEZNET_LICENSE_KEY "$BACKEND_DIR/.env")"
+RELEASE_VERSION="$(existing_value FDEZNET_RELEASE_VERSION "$BACKEND_DIR/.env")"
+BACKEND_COMMIT="$(existing_value FDEZNET_BACKEND_COMMIT "$BACKEND_DIR/.env")"
+FRONTEND_COMMIT="$(existing_value FDEZNET_FRONTEND_COMMIT "$BACKEND_DIR/.env")"
 BRAND_NAME="$(existing_value FDEZNET_BRAND_NAME "$BACKEND_DIR/.env")"
 BRAND_SYSTEM_NAME="$(existing_value FDEZNET_BRAND_SYSTEM_NAME "$BACKEND_DIR/.env")"
 BRAND_EMAIL="$(existing_value FDEZNET_BRAND_EMAIL "$BACKEND_DIR/.env")"
@@ -173,12 +176,27 @@ if [[ -z "$INSTALLATION_ID" || -z "$LICENSE_KEY" ]]; then
     "$CONTROL_URL/control/bootstrap")" || fail "El token fue rechazado o el servidor central no respondió"
   INSTALLATION_ID="$(jq -er '.instalacion_id' <<< "$BOOTSTRAP_RESPONSE")"
   LICENSE_KEY="$(jq -er '.licencia' <<< "$BOOTSTRAP_RESPONSE")"
+  RELEASE_VERSION="$(jq -er '.version' <<< "$BOOTSTRAP_RESPONSE")"
+  BACKEND_COMMIT="$(jq -er '.backend_commit' <<< "$BOOTSTRAP_RESPONSE")"
+  FRONTEND_COMMIT="$(jq -er '.frontend_commit' <<< "$BOOTSTRAP_RESPONSE")"
   BRAND_NAME="$(jq -r '.nombre_isp // empty' <<< "$BOOTSTRAP_RESPONSE")"
   BRAND_SYSTEM_NAME="$BRAND_NAME"
   BRAND_EMAIL="$(jq -r '.contacto_email // empty' <<< "$BOOTSTRAP_RESPONSE")"
   set_env_value "$BACKEND_DIR/.env" FDEZNET_INSTALLATION_ID "$INSTALLATION_ID"
   set_env_value "$BACKEND_DIR/.env" FDEZNET_LICENSE_KEY "$LICENSE_KEY"
+  set_env_value "$BACKEND_DIR/.env" FDEZNET_RELEASE_VERSION "$RELEASE_VERSION"
+  set_env_value "$BACKEND_DIR/.env" FDEZNET_BACKEND_COMMIT "$BACKEND_COMMIT"
+  set_env_value "$BACKEND_DIR/.env" FDEZNET_FRONTEND_COMMIT "$FRONTEND_COMMIT"
 fi
+
+[[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "La versión inicial no es válida"
+[[ "$BACKEND_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "El commit inicial del backend no es válido"
+[[ "$FRONTEND_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "El commit inicial del frontend no es válido"
+log "Fijando la versión ${RELEASE_VERSION} autorizada por el panel central"
+runuser -u "$SERVICE_USER" -- git -C "$BACKEND_DIR" fetch origin "$BACKEND_COMMIT"
+runuser -u "$SERVICE_USER" -- git -C "$FRONTEND_DIR" fetch origin "$FRONTEND_COMMIT"
+runuser -u "$SERVICE_USER" -- git -C "$BACKEND_DIR" reset --hard "$BACKEND_COMMIT"
+runuser -u "$SERVICE_USER" -- git -C "$FRONTEND_DIR" reset --hard "$FRONTEND_COMMIT"
 
 log "Configurando MySQL"
 systemctl enable --now mysql
@@ -207,6 +225,9 @@ set_env_value "$BACKEND_DIR/.env" FDEZNET_CONTROL_PLANE_MODE client
 set_env_value "$BACKEND_DIR/.env" FDEZNET_CONTROL_URL "$CONTROL_URL"
 set_env_value "$BACKEND_DIR/.env" FDEZNET_INSTALLATION_ID "$INSTALLATION_ID"
 set_env_value "$BACKEND_DIR/.env" FDEZNET_LICENSE_KEY "$LICENSE_KEY"
+set_env_value "$BACKEND_DIR/.env" FDEZNET_RELEASE_VERSION "$RELEASE_VERSION"
+set_env_value "$BACKEND_DIR/.env" FDEZNET_BACKEND_COMMIT "$BACKEND_COMMIT"
+set_env_value "$BACKEND_DIR/.env" FDEZNET_FRONTEND_COMMIT "$FRONTEND_COMMIT"
 if [[ -n "$BRAND_NAME" ]]; then
   set_env_value "$BACKEND_DIR/.env" FDEZNET_BRAND_NAME "$BRAND_NAME"
   set_env_value "$BACKEND_DIR/.env" FDEZNET_BRAND_SYSTEM_NAME "${BRAND_SYSTEM_NAME:-$BRAND_NAME}"
@@ -302,7 +323,7 @@ log "Instalando servicio de WhatsApp"
 runuser -u "$SERVICE_USER" -- npm --prefix "$BACKEND_DIR/bot_whatsapp" ci --omit=dev
 cat > "$BACKEND_DIR/bot_whatsapp/.env" <<BOTENV
 PORT=3000
-PUBLIC_URL=http://127.0.0.1:3000
+PUBLIC_URL=https://${DOMAIN}/media
 API_BACKEND_URL=http://127.0.0.1:8000
 WEBHOOK_SECRET=${WEBHOOK_SECRET}
 BOTENV
@@ -343,6 +364,12 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    location /media/uploads/ {
+        proxy_pass http://127.0.0.1:3000/uploads/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
     location / {

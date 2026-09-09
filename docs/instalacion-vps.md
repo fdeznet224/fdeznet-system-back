@@ -8,6 +8,8 @@
 - Acceso `root` por SSH.
 - Un registro DNS tipo A apuntando el dominio a la IP pública de la VPS.
 - Puertos TCP 22, 80 y 443, y UDP 51820 permitidos en el firewall del proveedor.
+- Salida HTTPS y DNS hacia GitHub, PyPI, npm, NodeSource, Let's Encrypt,
+  `api.ipify.org` y el servidor central `fdezpay.com`.
 - No instalar previamente paneles como cPanel, Plesk o servicios que ocupen Nginx/MySQL.
 
 Debian 12 también es compatible; el instalador selecciona automáticamente el
@@ -59,7 +61,8 @@ También deja activos:
 
 1. Abrir `https://sistema.proveedor.com` y entrar con las credenciales impresas.
 2. Cambiar la contraseña del administrador.
-3. Configurar nombre, logotipo, colores y datos del ISP en **Marca blanca**.
+3. Configurar nombre, subir logotipo y favicon, elegir colores y completar los
+   datos del ISP en **Marca blanca**.
 4. Vincular WhatsApp y verificar que el bot quede conectado.
 5. Registrar el primer router y comprobar el túnel WireGuard.
 6. Ejecutar **Respaldar** y luego **Probar recuperación** desde el panel.
@@ -93,3 +96,18 @@ systemctl list-timers fdeznet-backup.timer fdeznet-update.timer fdeznet-verify.t
 
 La respuesta esperada del health check es `{"status":"ready"}` y todos los
 servicios deben aparecer como `active`.
+
+## Prueba de aceptación antes de entregar
+
+1. Confirmar que la versión instalada coincide con la versión publicada.
+2. Volver a ejecutar el mismo instalador y comprobar que no cambia credenciales
+   ni elimina información.
+3. Crear un cliente de prueba, una factura y un pago con recibo PDF.
+4. Enviar y recibir un mensaje de WhatsApp, incluida una imagen.
+5. Subir logo y favicon y comprobar login, panel y PWA.
+6. Suspender temporalmente la licencia desde el panel central y confirmar que
+   la operación queda bloqueada; reactivarla y verificar la recuperación.
+7. Crear, verificar y restaurar un respaldo de prueba.
+8. Reiniciar la VPS y confirmar nuevamente servicios, temporizadores y health.
+
+No se debe entregar la instalación mientras cualquiera de estas pruebas falle.

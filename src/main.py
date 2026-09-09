@@ -28,6 +28,7 @@ from src.infrastructure.whatsapp_client import whatsapp_queue
 # Servicios y Schemas
 from src.application.services.user_service import UserService
 from src.application.services.branding_service import get_or_create_system_config
+from src.application.services.license_service import require_valid_license
 from src.domain.schemas import UsuarioCreate
 from src.version import SYSTEM_VERSION
 
@@ -224,36 +225,47 @@ app.add_middleware(AuditMiddleware)
 
 # --- RUTAS ---
 app.include_router(auth.router)
-app.include_router(whatsapp.webhook_router)
+app.include_router(
+    whatsapp.webhook_router,
+    dependencies=[Depends(require_valid_license)],
+)
 app.include_router(configuracion.public_router)
 app.include_router(control_plane.heartbeat_router)
 
 authenticated = [Depends(get_current_active_user)]
+licensed = [Depends(get_current_active_user), Depends(require_valid_license)]
 admin_only = [Depends(role_required(["admin"]))]
-audit_readers = [Depends(role_required(["admin", "supervisor"]))]
-financial_roles = [Depends(role_required(["admin", "supervisor", "cajero"]))]
+licensed_admin = [Depends(role_required(["admin"])), Depends(require_valid_license)]
+licensed_financial = [
+    Depends(role_required(["admin", "supervisor", "cajero"])),
+    Depends(require_valid_license),
+]
+licensed_audit = [
+    Depends(role_required(["admin", "supervisor"])),
+    Depends(require_valid_license),
+]
 
-app.include_router(dashboard.router, dependencies=authenticated)
-app.include_router(clients.router, dependencies=authenticated)
-app.include_router(planes.router, dependencies=authenticated)
-app.include_router(servicios.router, dependencies=authenticated)
-app.include_router(finanzas.router, dependencies=financial_roles)
-app.include_router(network.router, dependencies=authenticated)
-app.include_router(usuarios.router, dependencies=admin_only)
-app.include_router(zonas.router, dependencies=authenticated)
+app.include_router(dashboard.router, dependencies=licensed)
+app.include_router(clients.router, dependencies=licensed)
+app.include_router(planes.router, dependencies=licensed)
+app.include_router(servicios.router, dependencies=licensed)
+app.include_router(finanzas.router, dependencies=licensed_financial)
+app.include_router(network.router, dependencies=licensed)
+app.include_router(usuarios.router, dependencies=licensed_admin)
+app.include_router(zonas.router, dependencies=licensed)
 app.include_router(configuracion.router, dependencies=admin_only)
 app.include_router(control_plane.router, dependencies=admin_only)
-app.include_router(whatsapp.router, dependencies=authenticated)
-app.include_router(naps.router, dependencies=authenticated)
-app.include_router(vpn.router, dependencies=admin_only)
-app.include_router(olts.router, dependencies=authenticated)
-app.include_router(inventario.router, dependencies=authenticated)
-app.include_router(auditoria.router, dependencies=audit_readers)
-app.include_router(ordenes.router, dependencies=authenticated)
-app.include_router(ftth.router, dependencies=authenticated)
-app.include_router(support.router, dependencies=authenticated)
-app.include_router(sync.router, dependencies=authenticated)
-app.include_router(bajas.router, dependencies=authenticated)
+app.include_router(whatsapp.router, dependencies=licensed)
+app.include_router(naps.router, dependencies=licensed)
+app.include_router(vpn.router, dependencies=licensed_admin)
+app.include_router(olts.router, dependencies=licensed)
+app.include_router(inventario.router, dependencies=licensed)
+app.include_router(auditoria.router, dependencies=licensed_audit)
+app.include_router(ordenes.router, dependencies=licensed)
+app.include_router(ftth.router, dependencies=licensed)
+app.include_router(support.router, dependencies=licensed)
+app.include_router(sync.router, dependencies=licensed)
+app.include_router(bajas.router, dependencies=licensed)
 
 @app.get("/")
 def home():

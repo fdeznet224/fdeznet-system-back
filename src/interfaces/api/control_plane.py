@@ -132,9 +132,26 @@ async def exchange_bootstrap(
     ):
         raise HTTPException(status_code=401, detail="Token de instalación inválido o vencido")
 
+    release_query = select(VersionSistemaModel).where(
+        VersionSistemaModel.activa.is_(True)
+    )
+    if installation.version_objetivo:
+        release_query = release_query.where(
+            VersionSistemaModel.version == installation.version_objetivo
+        )
+    else:
+        release_query = release_query.order_by(desc(VersionSistemaModel.id)).limit(1)
+    release = (await db.execute(release_query)).scalar_one_or_none()
+    if release is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No existe una versión activa para instalar",
+        )
+
     raw_license = f"fdz_live_{secrets.token_urlsafe(32)}"
     installation.licencia_hash = _hash_license(raw_license)
     installation.bootstrap_usado_en = now
+    installation.version_objetivo = release.version
     await db.commit()
     return BootstrapExchangeResponse(
         instalacion_id=installation.instalacion_id,
@@ -143,6 +160,9 @@ async def exchange_bootstrap(
         nombre_isp=installation.nombre_isp,
         dominio=installation.dominio,
         contacto_email=installation.contacto_email,
+        version=release.version,
+        backend_commit=release.backend_commit,
+        frontend_commit=release.frontend_commit,
     )
 
 
