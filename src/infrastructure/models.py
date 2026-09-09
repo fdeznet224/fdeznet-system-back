@@ -1611,6 +1611,41 @@ class ConfiguracionSistema(Base):
     empresa_direccion = Column(String(300), nullable=True)
     pie_recibo = Column(String(300), nullable=True)
 
+    # --- LICENCIA / ACTUALIZACIONES ---
+    licencia_estado = Column(String(30), nullable=False, default="sin_configurar")
+    licencia_ultima_revision = Column(DateTime, nullable=True)
+    licencia_mensaje = Column(String(300), nullable=True)
+    version_disponible = Column(String(30), nullable=True)
+    notas_actualizacion = Column(Text, nullable=True)
+
+
+class InstalacionSistemaModel(Base):
+    __tablename__ = "instalaciones_sistema"
+    __table_args__ = (
+        Index("ix_instalaciones_estado_ultima_conexion", "estado", "ultima_conexion"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    instalacion_id = Column(String(36), unique=True, index=True, nullable=False)
+    nombre_isp = Column(String(120), nullable=False)
+    dominio = Column(String(255), nullable=True)
+    contacto_email = Column(String(160), nullable=True)
+    licencia_hash = Column(String(64), unique=True, nullable=False)
+    estado = Column(String(30), nullable=False, default="activa")
+    plan = Column(String(50), nullable=False, default="estandar")
+    canal = Column(String(30), nullable=False, default="stable")
+    version_actual = Column(String(30), nullable=True)
+    version_objetivo = Column(String(30), nullable=True)
+    notas_actualizacion = Column(Text, nullable=True)
+    ultima_conexion = Column(DateTime, nullable=True)
+    creada_en = Column(DateTime, nullable=False, server_default=func.now())
+    actualizada_en = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
 class PlantillaMensajeModel(Base):
     __tablename__ = "plantillas_mensajes"
     id = Column(Integer, primary_key=True, index=True)

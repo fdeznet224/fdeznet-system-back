@@ -1,6 +1,7 @@
 import os
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
@@ -14,6 +15,7 @@ from src.jobs import (
     tarea_cron_unificada,
     tarea_monitoreo_routers,
     tarea_sincronizar_clientes,
+    tarea_verificar_licencia,
 )
 
 # Base de Datos
@@ -26,6 +28,7 @@ from src.infrastructure.whatsapp_client import whatsapp_queue
 # Servicios y Schemas
 from src.application.services.user_service import UserService
 from src.domain.schemas import UsuarioCreate
+from src.version import SYSTEM_VERSION
 
 # Importar Routers
 from src.interfaces.api import (
@@ -34,6 +37,7 @@ from src.interfaces.api import (
     bajas,
     clients,
     configuracion,
+    control_plane,
     dashboard,
     finanzas,
     ftth,
@@ -166,6 +170,15 @@ async def lifespan(app: FastAPI):
         coalesce=True,
         max_instances=1,
     )
+    scheduler.add_job(
+        tarea_verificar_licencia,
+        "interval",
+        hours=6,
+        id="license_heartbeat",
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(),
+    )
     
     scheduler.start()
     print("✅ Planificador Activo (Facturación, Red, Estados).")
@@ -182,7 +195,7 @@ async def lifespan(app: FastAPI):
 # ==========================================
 app = FastAPI(
     title="FdezNet System", 
-    version="2.2.0 Real-time System",
+    version=SYSTEM_VERSION,
     lifespan=lifespan,
     root_path="/api"
 )
@@ -199,6 +212,7 @@ app.add_middleware(
         "Authorization",
         "Content-Type",
         "X-Webhook-Secret",
+        "X-License-Key",
         "Cache-Control",
         "Pragma",
         "Expires",
@@ -210,6 +224,7 @@ app.add_middleware(AuditMiddleware)
 app.include_router(auth.router)
 app.include_router(whatsapp.webhook_router)
 app.include_router(configuracion.public_router)
+app.include_router(control_plane.heartbeat_router)
 
 authenticated = [Depends(get_current_active_user)]
 admin_only = [Depends(role_required(["admin"]))]
@@ -225,6 +240,7 @@ app.include_router(network.router, dependencies=authenticated)
 app.include_router(usuarios.router, dependencies=admin_only)
 app.include_router(zonas.router, dependencies=authenticated)
 app.include_router(configuracion.router, dependencies=admin_only)
+app.include_router(control_plane.router, dependencies=admin_only)
 app.include_router(whatsapp.router, dependencies=authenticated)
 app.include_router(naps.router, dependencies=authenticated)
 app.include_router(vpn.router, dependencies=admin_only)
@@ -241,7 +257,7 @@ app.include_router(bajas.router, dependencies=authenticated)
 def home():
     return {
         "status": "online",
-        "system": "FdezNet v2.2.0",
+        "system": f"FdezNet v{SYSTEM_VERSION}",
         "cron_status": "active"
     }
 

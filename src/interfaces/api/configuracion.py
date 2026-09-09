@@ -26,7 +26,9 @@ from src.domain.schemas import (
     PlantillaResponse,
     LogCronjobResponse, # 👈 Importante: El schema de respuesta para Logs
     BrandingConfig,
+    LocalLicenseStatus,
 )
+from src.application.services.license_service import local_status, verify_license
 
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
 router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
@@ -57,6 +59,16 @@ async def guardar_marca(datos: BrandingConfig, db: AsyncSession = Depends(get_db
     await db.refresh(config)
     await FastAPICache.clear()
     return config
+
+
+@router.get("/licencia", response_model=LocalLicenseStatus)
+async def obtener_estado_licencia(db: AsyncSession = Depends(get_db)):
+    return local_status(await _obtener_configuracion(db))
+
+
+@router.post("/licencia/verificar", response_model=LocalLicenseStatus)
+async def verificar_estado_licencia(db: AsyncSession = Depends(get_db)):
+    return await verify_license(db)
 
 
 # =========================================================

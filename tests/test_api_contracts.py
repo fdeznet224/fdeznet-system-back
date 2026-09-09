@@ -93,3 +93,11 @@ def test_marca_blanca_es_publica_para_lectura_y_protegida_para_edicion():
 
     assert "security" not in paths["/public/marca"]["get"]
     assert paths["/configuracion/marca"]["put"]["security"]
+
+
+def test_control_de_instalaciones_separa_heartbeat_y_administracion():
+    paths = app.openapi()["paths"]
+
+    assert "security" not in paths["/control/heartbeat"]["post"]
+    assert paths["/control/instalaciones"]["get"]["security"]
+    assert paths["/configuracion/licencia"]["get"]["security"]

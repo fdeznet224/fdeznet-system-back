@@ -19,6 +19,12 @@ from src.application.services.billing_service import BillingService
 from src.application.services.mikrotik_reconciliation_service import (
     MikrotikReconciliationService,
 )
+from src.application.services.license_service import verify_license
+
+
+async def tarea_verificar_licencia():
+    async with SessionLocal() as db:
+        await verify_license(db)
 
 # ==========================================
 # 📱 NOTIFICACIÓN DE WHATSAPP (Asíncrona)

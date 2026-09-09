@@ -64,6 +64,65 @@ class BrandingConfig(BaseModel):
     empresa_direccion: Optional[str] = Field(default=None, max_length=300)
     pie_recibo: Optional[str] = Field(default=None, max_length=300)
 
+
+class LicenseHeartbeatRequest(BaseModel):
+    instalacion_id: str = Field(min_length=36, max_length=36)
+    version_actual: str = Field(min_length=1, max_length=30)
+    dominio: Optional[str] = Field(default=None, max_length=255)
+    nombre_isp: Optional[str] = Field(default=None, max_length=120)
+    canal: str = Field(default="stable", max_length=30)
+
+
+class LicenseHeartbeatResponse(BaseModel):
+    estado: str
+    mensaje: str
+    version_actual: str
+    version_objetivo: Optional[str] = None
+    actualizacion_disponible: bool = False
+    notas_actualizacion: Optional[str] = None
+
+
+class LocalLicenseStatus(LicenseHeartbeatResponse):
+    configurada: bool
+    instalacion_id: Optional[str] = None
+    servidor_central: str
+    ultima_revision: Optional[datetime] = None
+
+
+class InstallationCreate(BaseModel):
+    nombre_isp: str = Field(min_length=1, max_length=120)
+    dominio: Optional[str] = Field(default=None, max_length=255)
+    contacto_email: Optional[str] = Field(default=None, max_length=160)
+    plan: str = Field(default="estandar", max_length=50)
+
+
+class InstallationUpdate(BaseModel):
+    estado: Optional[str] = Field(default=None, pattern=r"^(activa|suspendida|revocada)$")
+    version_objetivo: Optional[str] = Field(default=None, max_length=30)
+    notas_actualizacion: Optional[str] = Field(default=None, max_length=2000)
+
+
+class InstallationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    instalacion_id: str
+    nombre_isp: str
+    dominio: Optional[str]
+    contacto_email: Optional[str]
+    estado: str
+    plan: str
+    canal: str
+    version_actual: Optional[str]
+    version_objetivo: Optional[str]
+    notas_actualizacion: Optional[str]
+    ultima_conexion: Optional[datetime]
+    creada_en: datetime
+
+
+class InstallationCreated(InstallationResponse):
+    licencia: str
+
 # ==========================================
 # 2. PLANTILLAS DE MENSAJES
 # ==========================================
