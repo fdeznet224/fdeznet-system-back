@@ -84,7 +84,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 ASOUND_PACKAGE="libasound2"
 if apt-cache show libasound2t64 >/dev/null 2>&1; then ASOUND_PACKAGE="libasound2t64"; fi
-apt-get install -y ca-certificates certbot curl git jq nginx openssl python3-pip python3-venv \
+apt-get install -y ca-certificates certbot curl git gnupg jq nginx openssl python3-pip python3-venv \
   sudo ufw wireguard mysql-server build-essential pkg-config libmysqlclient-dev \
   libnss3 libatk-bridge2.0-0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
   "$ASOUND_PACKAGE" libpangocairo-1.0-0 libcups2 libxshmfence1 libxss1 \
@@ -184,6 +184,8 @@ set_env_value "$BACKEND_DIR/.env" FDEZNET_CONTROL_PLANE_MODE client
 set_env_value "$BACKEND_DIR/.env" FDEZNET_CONTROL_URL "$CONTROL_URL"
 set_env_value "$BACKEND_DIR/.env" FDEZNET_INSTALLATION_ID "$INSTALLATION_ID"
 set_env_value "$BACKEND_DIR/.env" FDEZNET_LICENSE_KEY "$LICENSE_KEY"
+set_env_value "$BACKEND_DIR/.env" FDEZNET_BACKUP_DIR /var/backups/fdeznet
+set_env_value "$BACKEND_DIR/.env" FDEZNET_BACKUP_RETENTION_DAYS 14
 if [[ -n "$ADMIN_PASSWORD" ]]; then
   set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_USER "$ADMIN_USER"
   set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_NAME Administrador
@@ -227,6 +229,24 @@ runuser -u "$SERVICE_USER" -- "$BACKEND_DIR/venv/bin/pip" install --upgrade pip
 runuser -u "$SERVICE_USER" -- "$BACKEND_DIR/venv/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
 (cd "$BACKEND_DIR" && runuser -u "$SERVICE_USER" -- ./venv/bin/alembic upgrade head)
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$BACKEND_DIR/static/recibos"
+
+log "Configurando respaldos y actualizaciones seguras"
+install -d -m 0700 /etc/fdeznet /var/backups/fdeznet
+if [[ ! -f /etc/fdeznet/backup.key ]]; then
+  umask 077
+  openssl rand -hex 32 > /etc/fdeznet/backup.key
+fi
+chmod 0600 /etc/fdeznet/backup.key
+install -o root -g root -m 0750 "$BACKEND_DIR/scripts/fdeznet-maintenance.sh" /usr/local/sbin/fdeznet-maintenance
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-backup.service" /etc/systemd/system/fdeznet-backup.service
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-backup.timer" /etc/systemd/system/fdeznet-backup.timer
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-update.service" /etc/systemd/system/fdeznet-update.service
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-update.timer" /etc/systemd/system/fdeznet-update.timer
+printf '%s\n' \
+  "${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block fdeznet-backup.service, /usr/bin/systemctl start --no-block fdeznet-update.service" \
+  > /etc/sudoers.d/fdeznet-maintenance
+chmod 0440 /etc/sudoers.d/fdeznet-maintenance
+visudo -cf /etc/sudoers.d/fdeznet-maintenance >/dev/null
 
 cat > /etc/systemd/system/fdeznet-api.service <<UNIT
 [Unit]
@@ -304,6 +324,7 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl daemon-reload
 systemctl enable --now fdeznet-api fdeznet-bot nginx
+systemctl enable --now fdeznet-backup.timer fdeznet-update.timer
 systemctl restart fdeznet-api fdeznet-bot nginx
 
 for attempt in {1..30}; do

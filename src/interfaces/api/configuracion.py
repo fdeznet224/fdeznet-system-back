@@ -1,3 +1,6 @@
+import asyncio
+import json
+from pathlib import Path
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,12 +30,34 @@ from src.domain.schemas import (
     LogCronjobResponse, # 👈 Importante: El schema de respuesta para Logs
     BrandingConfig,
     LocalLicenseStatus,
+    MaintenanceStatus,
 )
 from src.application.services.license_service import local_status, verify_license
 
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
 router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
 public_router = APIRouter(prefix="/public", tags=["Configuración Pública"])
+MAINTENANCE_STATUS_FILE = Path("/var/lib/fdeznet/maintenance-status.json")
+
+
+async def _iniciar_mantenimiento(service: str) -> dict[str, str]:
+    process = await asyncio.create_subprocess_exec(
+        "sudo",
+        "/usr/bin/systemctl",
+        "start",
+        "--no-block",
+        service,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+    if process.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip()
+        raise HTTPException(
+            status_code=503,
+            detail=detail or "El servicio de mantenimiento no está disponible",
+        )
+    return {"status": "ok", "mensaje": "La tarea inició en segundo plano"}
 
 
 async def _obtener_configuracion(db: AsyncSession) -> ConfiguracionSistema:
@@ -69,6 +94,32 @@ async def obtener_estado_licencia(db: AsyncSession = Depends(get_db)):
 @router.post("/licencia/verificar", response_model=LocalLicenseStatus)
 async def verificar_estado_licencia(db: AsyncSession = Depends(get_db)):
     return await verify_license(db)
+
+
+@router.get("/mantenimiento", response_model=MaintenanceStatus)
+async def obtener_estado_mantenimiento():
+    data: dict = {}
+    try:
+        data = json.loads(MAINTENANCE_STATUS_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        pass
+    data["actualizacion_automatica"] = Path(
+        "/etc/systemd/system/timers.target.wants/fdeznet-update.timer"
+    ).exists()
+    data["respaldo_automatico"] = Path(
+        "/etc/systemd/system/timers.target.wants/fdeznet-backup.timer"
+    ).exists()
+    return MaintenanceStatus.model_validate(data)
+
+
+@router.post("/mantenimiento/respaldo", status_code=202)
+async def iniciar_respaldo():
+    return await _iniciar_mantenimiento("fdeznet-backup.service")
+
+
+@router.post("/mantenimiento/actualizar", status_code=202)
+async def iniciar_actualizacion():
+    return await _iniciar_mantenimiento("fdeznet-update.service")
 
 
 # =========================================================

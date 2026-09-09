@@ -1,0 +1,11 @@
+[Unit]
+Description=FdezNet - actualización segura
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/fdeznet-maintenance update
+TimeoutStartSec=45min
+

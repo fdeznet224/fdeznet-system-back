@@ -1640,6 +1640,11 @@ class InstalacionSistemaModel(Base):
     version_actual = Column(String(30), nullable=True)
     version_objetivo = Column(String(30), nullable=True)
     notas_actualizacion = Column(Text, nullable=True)
+    actualizacion_automatica = Column(Boolean, nullable=False, default=False)
+    actualizacion_estado = Column(String(30), nullable=False, default="sin_actividad")
+    actualizacion_mensaje = Column(String(500), nullable=True)
+    actualizacion_fecha = Column(DateTime, nullable=True)
+    ultimo_respaldo = Column(String(255), nullable=True)
     ultima_conexion = Column(DateTime, nullable=True)
     creada_en = Column(DateTime, nullable=False, server_default=func.now())
     actualizada_en = Column(
@@ -1648,6 +1653,18 @@ class InstalacionSistemaModel(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class VersionSistemaModel(Base):
+    __tablename__ = "versiones_sistema"
+
+    id = Column(Integer, primary_key=True)
+    version = Column(String(30), unique=True, index=True, nullable=False)
+    backend_commit = Column(String(40), nullable=False)
+    frontend_commit = Column(String(40), nullable=False)
+    notas = Column(Text, nullable=True)
+    activa = Column(Boolean, nullable=False, default=True)
+    creada_en = Column(DateTime, nullable=False, server_default=func.now())
 
 class PlantillaMensajeModel(Base):
     __tablename__ = "plantillas_mensajes"

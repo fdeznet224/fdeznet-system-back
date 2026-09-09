@@ -108,6 +108,7 @@ class InstallationUpdate(BaseModel):
     estado: Optional[str] = Field(default=None, pattern=r"^(activa|suspendida|revocada)$")
     version_objetivo: Optional[str] = Field(default=None, max_length=30)
     notas_actualizacion: Optional[str] = Field(default=None, max_length=2000)
+    actualizacion_automatica: Optional[bool] = None
 
 
 class InstallationResponse(BaseModel):
@@ -124,6 +125,11 @@ class InstallationResponse(BaseModel):
     version_actual: Optional[str]
     version_objetivo: Optional[str]
     notas_actualizacion: Optional[str]
+    actualizacion_automatica: bool
+    actualizacion_estado: str
+    actualizacion_mensaje: Optional[str]
+    actualizacion_fecha: Optional[datetime]
+    ultimo_respaldo: Optional[str]
     ultima_conexion: Optional[datetime]
     creada_en: datetime
 
@@ -147,6 +153,53 @@ class BootstrapExchangeResponse(BaseModel):
 class BootstrapTokenResponse(BaseModel):
     token_instalacion: str
     token_expira: datetime
+
+
+class SystemReleaseCreate(BaseModel):
+    version: str = Field(pattern=r"^\d+\.\d+\.\d+$", max_length=30)
+    backend_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    frontend_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    notas: Optional[str] = Field(default=None, max_length=5000)
+
+
+class SystemReleaseResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    version: str
+    backend_commit: str
+    frontend_commit: str
+    notas: Optional[str]
+    activa: bool
+    creada_en: datetime
+
+
+class UpdateManifestResponse(BaseModel):
+    actualizacion_disponible: bool
+    version: Optional[str] = None
+    backend_commit: Optional[str] = None
+    frontend_commit: Optional[str] = None
+    notas: Optional[str] = None
+    firma: Optional[str] = None
+
+
+class UpdateReportRequest(BaseModel):
+    estado: str = Field(
+        pattern=r"^(iniciando|respaldado|exitosa|revertida|fallida)$"
+    )
+    version: Optional[str] = Field(default=None, max_length=30)
+    mensaje: Optional[str] = Field(default=None, max_length=500)
+    respaldo: Optional[str] = Field(default=None, max_length=255)
+
+
+class MaintenanceStatus(BaseModel):
+    estado: str = "sin_actividad"
+    mensaje: str = "Todavía no se ha ejecutado mantenimiento"
+    fecha: Optional[datetime] = None
+    version: Optional[str] = None
+    respaldo: Optional[str] = None
+    actualizacion_automatica: bool = False
+    respaldo_automatico: bool = False
 
 # ==========================================
 # 2. PLANTILLAS DE MENSAJES

@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from src.application.services.license_service import update_available
 from src.domain.schemas import (
@@ -22,9 +24,13 @@ from src.domain.schemas import (
     BootstrapTokenResponse,
     LicenseHeartbeatRequest,
     LicenseHeartbeatResponse,
+    SystemReleaseCreate,
+    SystemReleaseResponse,
+    UpdateManifestResponse,
+    UpdateReportRequest,
 )
 from src.infrastructure.database import get_db
-from src.infrastructure.models import InstalacionSistemaModel
+from src.infrastructure.models import InstalacionSistemaModel, VersionSistemaModel
 
 
 heartbeat_router = APIRouter(prefix="/control", tags=["Control de instalaciones"])
@@ -43,8 +49,42 @@ def _hash_license(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _sign_update_manifest(
+    license_hash: str,
+    version: str,
+    backend_commit: str,
+    frontend_commit: str,
+) -> str:
+    canonical = f"{version}|{backend_commit}|{frontend_commit}"
+    return hmac.new(
+        bytes.fromhex(license_hash),
+        canonical.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def _authenticate_installation(
+    db: AsyncSession,
+    installation_id: str,
+    license_key: str,
+) -> InstalacionSistemaModel:
+    installation = (
+        await db.execute(
+            select(InstalacionSistemaModel).where(
+                InstalacionSistemaModel.instalacion_id == installation_id
+            )
+        )
+    ).scalar_one_or_none()
+    if installation is None or not license_key or not compare_digest(
+        installation.licencia_hash,
+        _hash_license(license_key),
+    ):
+        raise HTTPException(status_code=401, detail="Licencia inválida")
+    return installation
 
 
 def _assign_bootstrap(installation: InstalacionSistemaModel) -> tuple[str, datetime]:
@@ -110,18 +150,11 @@ async def heartbeat(
     db: AsyncSession = Depends(get_db),
 ):
     _ensure_central()
-    installation = (
-        await db.execute(
-            select(InstalacionSistemaModel).where(
-                InstalacionSistemaModel.instalacion_id == payload.instalacion_id
-            )
-        )
-    ).scalar_one_or_none()
-    if installation is None or not x_license_key or not compare_digest(
-        installation.licencia_hash,
-        _hash_license(x_license_key),
-    ):
-        raise HTTPException(status_code=401, detail="Licencia inválida")
+    installation = await _authenticate_installation(
+        db,
+        payload.instalacion_id,
+        x_license_key,
+    )
 
     installation.version_actual = payload.version_actual
     installation.ultima_conexion = _now()
@@ -146,6 +179,77 @@ async def heartbeat(
     )
 
 
+@heartbeat_router.get("/update-manifest", response_model=UpdateManifestResponse)
+async def update_manifest(
+    x_installation_id: str = Header(default="", alias="X-Installation-ID"),
+    x_license_key: str = Header(default="", alias="X-License-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_central()
+    installation = await _authenticate_installation(
+        db,
+        x_installation_id,
+        x_license_key,
+    )
+    if (
+        installation.estado != "activa"
+        or not installation.actualizacion_automatica
+        or not installation.version_objetivo
+        or not update_available(
+            installation.version_actual or "0.0.0",
+            installation.version_objetivo,
+        )
+    ):
+        return UpdateManifestResponse(actualizacion_disponible=False)
+    release = (
+        await db.execute(
+            select(VersionSistemaModel).where(
+                VersionSistemaModel.version == installation.version_objetivo,
+                VersionSistemaModel.activa.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if release is None:
+        return UpdateManifestResponse(actualizacion_disponible=False)
+    signature = _sign_update_manifest(
+        installation.licencia_hash,
+        release.version,
+        release.backend_commit,
+        release.frontend_commit,
+    )
+    return UpdateManifestResponse(
+        actualizacion_disponible=True,
+        version=release.version,
+        backend_commit=release.backend_commit,
+        frontend_commit=release.frontend_commit,
+        notas=release.notas,
+        firma=signature,
+    )
+
+
+@heartbeat_router.post("/update-report", status_code=204)
+async def update_report(
+    payload: UpdateReportRequest,
+    x_installation_id: str = Header(default="", alias="X-Installation-ID"),
+    x_license_key: str = Header(default="", alias="X-License-Key"),
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_central()
+    installation = await _authenticate_installation(
+        db,
+        x_installation_id,
+        x_license_key,
+    )
+    installation.actualizacion_estado = payload.estado
+    installation.actualizacion_mensaje = payload.mensaje
+    installation.actualizacion_fecha = _now()
+    if payload.respaldo:
+        installation.ultimo_respaldo = payload.respaldo
+    if payload.estado == "exitosa" and payload.version:
+        installation.version_actual = payload.version
+    await db.commit()
+
+
 @router.get("/instalaciones", response_model=list[InstallationResponse])
 async def list_installations(db: AsyncSession = Depends(get_db)):
     _ensure_central()
@@ -157,6 +261,33 @@ async def list_installations(db: AsyncSession = Depends(get_db)):
             )
         )
     ).scalars().all()
+
+
+@router.get("/versiones", response_model=list[SystemReleaseResponse])
+async def list_releases(db: AsyncSession = Depends(get_db)):
+    _ensure_central()
+    return (
+        await db.execute(
+            select(VersionSistemaModel).order_by(desc(VersionSistemaModel.id))
+        )
+    ).scalars().all()
+
+
+@router.post("/versiones", response_model=SystemReleaseResponse, status_code=201)
+async def create_release(
+    payload: SystemReleaseCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_central()
+    release = VersionSistemaModel(**payload.model_dump(), activa=True)
+    db.add(release)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="La versión ya existe") from exc
+    await db.refresh(release)
+    return release
 
 
 @router.post("/instalaciones", response_model=InstallationCreated, status_code=201)
@@ -218,6 +349,15 @@ async def update_installation(
     installation = await db.get(InstalacionSistemaModel, installation_id)
     if installation is None:
         raise HTTPException(status_code=404, detail="Instalación no encontrada")
+    if payload.version_objetivo:
+        release_exists = await db.scalar(
+            select(VersionSistemaModel.id).where(
+                VersionSistemaModel.version == payload.version_objetivo,
+                VersionSistemaModel.activa.is_(True),
+            )
+        )
+        if release_exists is None:
+            raise HTTPException(status_code=400, detail="La versión no está publicada")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(installation, field, value.strip() if isinstance(value, str) else value)
     await db.commit()

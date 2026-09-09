@@ -1,0 +1,13 @@
+[Unit]
+Description=FdezNet - revisión automática de actualizaciones
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=30m
+RandomizedDelaySec=5m
+Persistent=true
+Unit=fdeznet-update.service
+
+[Install]
+WantedBy=timers.target
+
