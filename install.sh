@@ -104,8 +104,41 @@ set_env_value() {
   printf '%s=%s\n' "$key" "$value" >> "$file"
 }
 
+apt_is_busy() {
+  local lock
+  for lock in \
+    /var/lib/dpkg/lock-frontend \
+    /var/lib/dpkg/lock \
+    /var/cache/apt/archives/lock \
+    /var/lib/apt/lists/lock; do
+    if command -v fuser >/dev/null 2>&1 && fuser "$lock" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  pgrep -x apt-get >/dev/null 2>&1 \
+    || pgrep -x apt >/dev/null 2>&1 \
+    || pgrep -x dpkg >/dev/null 2>&1 \
+    || pgrep -f unattended-upgrade >/dev/null 2>&1
+}
+
+wait_for_apt() {
+  local waited=0
+  while apt_is_busy; do
+    if ((waited == 0 || waited % 30 == 0)); then
+      log "Ubuntu está aplicando actualizaciones; esperando el bloqueo de apt (${waited}s)"
+    fi
+    ((waited >= 900)) && fail "apt continúa ocupado después de 15 minutos; vuelve a ejecutar el mismo comando"
+    sleep 5
+    ((waited += 5))
+  done
+  if ((waited > 0)); then
+    log "apt quedó disponible; continuando la instalación"
+  fi
+}
+
 log "Instalando dependencias del sistema"
 export DEBIAN_FRONTEND=noninteractive
+wait_for_apt
 apt-get update
 MYSQL_PACKAGE="mysql-server"
 if ! apt-cache show mysql-server >/dev/null 2>&1; then MYSQL_PACKAGE="default-mysql-server"; fi
@@ -119,6 +152,7 @@ apt-get install -y ca-certificates certbot curl git gnupg jq nginx openssl pytho
 
 if ! command -v node >/dev/null 2>&1 || [[ "$(node --version | tr -d v | cut -d. -f1)" -lt 20 ]]; then
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  wait_for_apt
   apt-get install -y nodejs
 fi
 

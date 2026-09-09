@@ -59,6 +59,12 @@ La instalación suele tardar entre 10 y 25 minutos, principalmente por Chromium,
 las dependencias de reconocimiento y la compilación del frontend. No se debe
 cerrar la sesión SSH mientras trabaja.
 
+En VPS recién creadas, Ubuntu o el proveedor pueden estar instalando
+actualizaciones automáticas y mantener ocupado `apt`. El instalador espera hasta
+15 minutos a que termine y continúa solo. No elimine manualmente los archivos
+`/var/lib/dpkg/lock*`; si el tiempo se agota, confirme que ya no exista un proceso
+`apt-get` o `unattended-upgrade` activo y ejecute exactamente el mismo comando.
+
 El instalador valida el DNS antes de cambiar el servidor. Después instala MySQL,
 WireGuard, backend, bot de WhatsApp, frontend, Nginx y el certificado HTTPS. Al
 final imprime el usuario y la contraseña iniciales del administrador. La primera
