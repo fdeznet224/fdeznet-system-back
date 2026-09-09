@@ -1,11 +1,13 @@
 import hashlib
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hmac import compare_digest
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +17,9 @@ from src.domain.schemas import (
     InstallationCreated,
     InstallationResponse,
     InstallationUpdate,
+    BootstrapExchangeRequest,
+    BootstrapExchangeResponse,
+    BootstrapTokenResponse,
     LicenseHeartbeatRequest,
     LicenseHeartbeatResponse,
 )
@@ -25,6 +30,8 @@ from src.infrastructure.models import InstalacionSistemaModel
 heartbeat_router = APIRouter(prefix="/control", tags=["Control de instalaciones"])
 router = APIRouter(prefix="/control", tags=["Control de instalaciones"])
 CONTROL_PLANE_MODE = os.getenv("FDEZNET_CONTROL_PLANE_MODE", "client").strip().lower()
+CONTROL_PUBLIC_URL = os.getenv("FDEZNET_CONTROL_URL", "https://fdezpay.com/api").rstrip("/")
+INSTALLER_PATH = Path(__file__).resolve().parents[3] / "install.sh"
 
 
 def _ensure_central() -> None:
@@ -38,6 +45,62 @@ def _hash_license(value: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _assign_bootstrap(installation: InstalacionSistemaModel) -> tuple[str, datetime]:
+    token = f"fdz_setup_{secrets.token_urlsafe(32)}"
+    expires = _now() + timedelta(hours=48)
+    installation.bootstrap_hash = _hash_license(token)
+    installation.bootstrap_expira = expires
+    installation.bootstrap_usado_en = None
+    return token, expires
+
+
+@heartbeat_router.get("/installer", response_class=FileResponse)
+async def download_installer():
+    _ensure_central()
+    if not INSTALLER_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Instalador no disponible")
+    return FileResponse(
+        INSTALLER_PATH,
+        media_type="text/x-shellscript",
+        filename="fdeznet-install.sh",
+    )
+
+
+@heartbeat_router.post("/bootstrap", response_model=BootstrapExchangeResponse)
+async def exchange_bootstrap(
+    payload: BootstrapExchangeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_central()
+    token_hash = _hash_license(payload.token)
+    installation = (
+        await db.execute(
+            select(InstalacionSistemaModel)
+            .where(InstalacionSistemaModel.bootstrap_hash == token_hash)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    now = _now()
+    if (
+        installation is None
+        or installation.bootstrap_usado_en is not None
+        or installation.bootstrap_expira is None
+        or installation.bootstrap_expira < now
+        or installation.estado != "activa"
+    ):
+        raise HTTPException(status_code=401, detail="Token de instalación inválido o vencido")
+
+    raw_license = f"fdz_live_{secrets.token_urlsafe(32)}"
+    installation.licencia_hash = _hash_license(raw_license)
+    installation.bootstrap_usado_en = now
+    await db.commit()
+    return BootstrapExchangeResponse(
+        instalacion_id=installation.instalacion_id,
+        licencia=raw_license,
+        servidor_central=CONTROL_PUBLIC_URL,
+    )
 
 
 @heartbeat_router.post("/heartbeat", response_model=LicenseHeartbeatResponse)
@@ -113,11 +176,36 @@ async def create_installation(
         estado="activa",
         canal="stable",
     )
+    bootstrap_token, bootstrap_expires = _assign_bootstrap(installation)
     db.add(installation)
     await db.commit()
     await db.refresh(installation)
     response = InstallationResponse.model_validate(installation).model_dump()
-    return InstallationCreated(**response, licencia=raw_license)
+    return InstallationCreated(
+        **response,
+        licencia=raw_license,
+        token_instalacion=bootstrap_token,
+        token_expira=bootstrap_expires,
+    )
+
+
+@router.post(
+    "/instalaciones/{installation_id}/bootstrap",
+    response_model=BootstrapTokenResponse,
+)
+async def regenerate_bootstrap(
+    installation_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_central()
+    installation = await db.get(InstalacionSistemaModel, installation_id)
+    if installation is None:
+        raise HTTPException(status_code=404, detail="Instalación no encontrada")
+    if installation.estado != "activa":
+        raise HTTPException(status_code=409, detail="La instalación no está activa")
+    token, expires = _assign_bootstrap(installation)
+    await db.commit()
+    return BootstrapTokenResponse(token_instalacion=token, token_expira=expires)
 
 
 @router.patch("/instalaciones/{installation_id}", response_model=InstallationResponse)

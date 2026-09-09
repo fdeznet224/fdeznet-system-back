@@ -91,9 +91,17 @@ class LocalLicenseStatus(LicenseHeartbeatResponse):
 
 class InstallationCreate(BaseModel):
     nombre_isp: str = Field(min_length=1, max_length=120)
-    dominio: Optional[str] = Field(default=None, max_length=255)
-    contacto_email: Optional[str] = Field(default=None, max_length=160)
-    plan: str = Field(default="estandar", max_length=50)
+    dominio: str = Field(
+        min_length=4,
+        max_length=255,
+        pattern=r"^(https?://)?([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}/?$",
+    )
+    contacto_email: str = Field(
+        min_length=5,
+        max_length=160,
+        pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$",
+    )
+    plan: str = Field(default="estandar", pattern=r"^[a-zA-Z0-9_-]{1,50}$")
 
 
 class InstallationUpdate(BaseModel):
@@ -122,6 +130,23 @@ class InstallationResponse(BaseModel):
 
 class InstallationCreated(InstallationResponse):
     licencia: str
+    token_instalacion: str
+    token_expira: datetime
+
+
+class BootstrapExchangeRequest(BaseModel):
+    token: str = Field(min_length=30, max_length=200)
+
+
+class BootstrapExchangeResponse(BaseModel):
+    instalacion_id: str
+    licencia: str
+    servidor_central: str
+
+
+class BootstrapTokenResponse(BaseModel):
+    token_instalacion: str
+    token_expira: datetime
 
 # ==========================================
 # 2. PLANTILLAS DE MENSAJES

@@ -46,6 +46,15 @@ def test_marca_blanca_rechaza_color_invalido():
         schemas.BrandingConfig(color_primario="azul")
 
 
+def test_instalacion_rechaza_un_dominio_peligroso():
+    with pytest.raises(ValidationError):
+        schemas.InstallationCreate(
+            nombre_isp="ISP de prueba",
+            dominio="isp.com;curl atacante.test",
+            contacto_email="admin@isp.com",
+        )
+
+
 def test_router_ids_no_comparte_lista_entre_usuarios():
     first = schemas.UsuarioCreate(
         nombre_completo="Usuario Primero",

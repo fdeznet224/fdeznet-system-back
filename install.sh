@@ -1,225 +1,335 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# =========================================================================
-# 🚀 INSTALADOR INTEGRAL - FDEZNET SYSTEM v1.2 (Producción)
-# =========================================================================
+readonly APP_DIR="/opt/fdeznet"
+readonly BACKEND_DIR="$APP_DIR/backend"
+readonly FRONTEND_DIR="$APP_DIR/frontend"
+readonly BACKEND_REPO="https://github.com/fdeznet224/fdeznet-system-back.git"
+readonly FRONTEND_REPO="https://github.com/fdeznet224/fdeznet-system-frontend.git"
+readonly CONTROL_URL="https://fdezpay.com/api"
+readonly DB_NAME="fdeznet_db"
+readonly DB_USER="fdeznet_app"
+readonly SERVICE_USER="fdeznet"
 
-# Forzar que el script se detenga si cualquier comando falla
-set -e
+DOMAIN=""
+ADMIN_EMAIL=""
+ADMIN_USER="admin"
+BOOTSTRAP_TOKEN=""
+SKIP_DNS_CHECK="false"
 
-GREEN='\033;32m'
-BLUE='\033;34m'
-YELLOW='\033[1;33m'
-RED='\033;0;31m'
-NC='\033[0m' 
+log() { printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
+fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 
-# ⚠️ CONFIGURACIÓN DE REPOSITORIOS
-BACKEND_REPO="https://github.com/fdeznet224/fdeznet-system-back.git"
-FRONTEND_REPO="https://github.com/fdeznet224/fdeznet-system-frontend.git"
+usage() {
+  printf '%s\n' \
+    "Uso:" \
+    "  sudo bash install.sh --domain isp.ejemplo.com --email admin@ejemplo.com --bootstrap-token TOKEN" \
+    "" \
+    "Opciones:" \
+    "  --admin-user USUARIO     Usuario administrador inicial (default: admin)" \
+    "  --skip-dns-check         Omite la validación DNS previa al certificado"
+}
 
-APP_DIR="/opt/fdeznet"
-SERVER_IP=$(curl -s ifconfig.me || echo "127.0.0.1")
+while (($#)); do
+  case "$1" in
+    --domain) DOMAIN="${2:-}"; shift 2 ;;
+    --email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
+    --admin-user) ADMIN_USER="${2:-}"; shift 2 ;;
+    --bootstrap-token) BOOTSTRAP_TOKEN="${2:-}"; shift 2 ;;
+    --skip-dns-check) SKIP_DNS_CHECK="true"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "Opción desconocida: $1" ;;
+  esac
+done
 
-echo -e "${BLUE}Iniciando despliegue de infraestructura FdezNet...${NC}"
+[[ "${EUID}" -eq 0 ]] || fail "Ejecuta el instalador como root o con sudo"
+DOMAIN="${DOMAIN#http://}"
+DOMAIN="${DOMAIN#https://}"
+DOMAIN="${DOMAIN%%/*}"
+[[ "$DOMAIN" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$ ]] || fail "Dominio inválido"
+[[ "$ADMIN_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fail "Correo inválido"
+[[ "$ADMIN_USER" =~ ^[a-zA-Z0-9._-]{3,50}$ ]] || fail "Usuario administrador inválido"
 
-# Verificar si se ejecuta como root
-if [ "$EUID" -ne 0 ]; then 
-  echo -e "${RED}❌ Por favor, ejecuta este script como root (sudo ./install.sh)${NC}"
-  exit 1
+if [[ -r /etc/os-release ]]; then
+  . /etc/os-release
+  [[ "${ID:-}" == "ubuntu" || "${ID:-}" == "debian" ]] || fail "Solo se admite Ubuntu o Debian"
+else
+  fail "No se pudo identificar el sistema operativo"
 fi
 
-# 1. ACTUALIZAR E INSTALAR DEPENDENCIAS
-echo -e "${GREEN}[1/9] Instalando dependencias del sistema y librerías de Chromium...${NC}"
+PUBLIC_IP="$(curl -4fsS --max-time 10 https://api.ipify.org)" || fail "No se pudo detectar la IP pública"
+if [[ "$SKIP_DNS_CHECK" != "true" ]]; then
+  DNS_IP="$(getent ahostsv4 "$DOMAIN" | awk 'NR == 1 {print $1}')"
+  [[ -n "$DNS_IP" ]] || fail "El dominio todavía no tiene un registro DNS A"
+  [[ "$DNS_IP" == "$PUBLIC_IP" ]] || fail "El dominio apunta a $DNS_IP, pero esta VPS usa $PUBLIC_IP"
+fi
+
+existing_value() {
+  local key="$1"
+  local file="$2"
+  [[ -f "$file" ]] || return 0
+  sed -n "s/^${key}=//p" "$file" | tail -n 1
+}
+
+set_env_value() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  sed -i "/^${key}=/d" "$file"
+  printf '%s=%s\n' "$key" "$value" >> "$file"
+}
+
+log "Instalando dependencias del sistema"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get upgrade -y
+apt-get update
+ASOUND_PACKAGE="libasound2"
+if apt-cache show libasound2t64 >/dev/null 2>&1; then ASOUND_PACKAGE="libasound2t64"; fi
+apt-get install -y ca-certificates certbot curl git jq nginx openssl python3-pip python3-venv \
+  sudo ufw wireguard mysql-server build-essential pkg-config libmysqlclient-dev \
+  libnss3 libatk-bridge2.0-0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
+  "$ASOUND_PACKAGE" libpangocairo-1.0-0 libcups2 libxshmfence1 libxss1 \
+  fonts-liberation python3-certbot-nginx
 
-# Instalamos dependencias de sistema + librerías necesarias para Puppeteer/WhatsApp sin entorno gráfico
-apt-get install -y python3-venv python3-pip git wireguard iptables ufw nginx curl \
-mysql-server libmysqlclient-dev pkg-config build-essential \
-libnss3 libatk-bridge2.0-0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 \
-libpangocairo-1.0-0 libcups2 libxshmfence1 libglu1 libxss1 fonts-liberation libegl1
-
-# Instalar Node.js 20.x
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt-get install -y nodejs
-
-# 2. CONFIGURAR MYSQL
-echo -e "${GREEN}[2/9] Configurando Base de Datos MySQL...${NC}"
-DB_PASS="${DB_PASS:-$(openssl rand -hex 24)}"
-SECRET_KEY=$(openssl rand -hex 32)
-WEBHOOK_SECRET=$(openssl rand -hex 32)
-
-systemctl start mysql
-systemctl enable mysql
-
-mysql -e "CREATE DATABASE IF NOT EXISTS fdeznet_db;"
-mysql -e "CREATE USER IF NOT EXISTS 'admin_isp'@'localhost' IDENTIFIED WITH mysql_native_password BY '$DB_PASS';"
-mysql -e "GRANT ALL PRIVILEGES ON fdeznet_db.* TO 'admin_isp'@'localhost';"
-mysql -e "FLUSH PRIVILEGES;"
-
-# 3. CONFIGURAR WIREGUARD
-echo -e "${GREEN}[3/9] Configurando Servidor VPN WireGuard...${NC}"
-WG_DIR="/etc/wireguard"
-mkdir -p $WG_DIR
-cd $WG_DIR
-umask 077
-
-# Generar llaves si no existen
-if [ ! -f server_private.key ]; then
-    wg genkey | tee server_private.key | wg pubkey > server_public.key
+if ! command -v node >/dev/null 2>&1 || [[ "$(node --version | tr -d v | cut -d. -f1)" -lt 20 ]]; then
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt-get install -y nodejs
 fi
 
-PRIV_KEY=$(cat server_private.key)
-MAIN_IFACE=$(ip route ls default | awk '{print $5}' | head -n 1)
+if ! id "$SERVICE_USER" >/dev/null 2>&1; then
+  useradd --system --create-home --home-dir /var/lib/fdeznet --shell /usr/sbin/nologin "$SERVICE_USER"
+fi
+install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$APP_DIR"
+usermod -aG "$SERVICE_USER" www-data
 
-cat <<EOF > $WG_DIR/wg0.conf
+log "Descargando y preparando el código"
+if [[ -d "$BACKEND_DIR/.git" ]]; then
+  runuser -u "$SERVICE_USER" -- git -C "$BACKEND_DIR" fetch origin main
+  runuser -u "$SERVICE_USER" -- git -C "$BACKEND_DIR" merge --ff-only origin/main
+elif [[ -e "$BACKEND_DIR" ]]; then
+  fail "$BACKEND_DIR existe pero no es un repositorio Git"
+else
+  runuser -u "$SERVICE_USER" -- git clone --branch main "$BACKEND_REPO" "$BACKEND_DIR"
+fi
+
+if [[ -d "$FRONTEND_DIR/.git" ]]; then
+  runuser -u "$SERVICE_USER" -- git -C "$FRONTEND_DIR" fetch origin main
+  runuser -u "$SERVICE_USER" -- git -C "$FRONTEND_DIR" merge --ff-only origin/main
+elif [[ -e "$FRONTEND_DIR" ]]; then
+  fail "$FRONTEND_DIR existe pero no es un repositorio Git"
+else
+  runuser -u "$SERVICE_USER" -- git clone --branch main "$FRONTEND_REPO" "$FRONTEND_DIR"
+fi
+
+NEW_INSTALL="false"
+if [[ ! -f "$BACKEND_DIR/.env" ]]; then
+  NEW_INSTALL="true"
+  umask 077
+  touch "$BACKEND_DIR/.env"
+  chown "$SERVICE_USER:$SERVICE_USER" "$BACKEND_DIR/.env"
+fi
+
+DB_PASSWORD="$(existing_value DB_PASSWORD "$BACKEND_DIR/.env")"
+DB_PASSWORD="${DB_PASSWORD:-$(openssl rand -hex 24)}"
+SECRET_KEY="$(existing_value SECRET_KEY "$BACKEND_DIR/.env")"
+SECRET_KEY="${SECRET_KEY:-$(openssl rand -hex 32)}"
+WEBHOOK_SECRET="$(existing_value WEBHOOK_SECRET "$BACKEND_DIR/.env")"
+WEBHOOK_SECRET="${WEBHOOK_SECRET:-$(openssl rand -hex 32)}"
+INSTALLATION_ID="$(existing_value FDEZNET_INSTALLATION_ID "$BACKEND_DIR/.env")"
+LICENSE_KEY="$(existing_value FDEZNET_LICENSE_KEY "$BACKEND_DIR/.env")"
+ADMIN_PASSWORD="$(existing_value ADMIN_BOOTSTRAP_PASSWORD "$BACKEND_DIR/.env")"
+if [[ "$NEW_INSTALL" == "true" && -z "$ADMIN_PASSWORD" ]]; then
+  ADMIN_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
+  set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_USER "$ADMIN_USER"
+  set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_NAME Administrador
+  set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_PASSWORD "$ADMIN_PASSWORD"
+fi
+
+if [[ -z "$INSTALLATION_ID" || -z "$LICENSE_KEY" ]]; then
+  [[ -n "$BOOTSTRAP_TOKEN" ]] || fail "Falta --bootstrap-token para activar esta instalación"
+  log "Canjeando el token de instalación de un solo uso"
+  BOOTSTRAP_RESPONSE="$(curl -fsS --max-time 30 \
+    -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg token "$BOOTSTRAP_TOKEN" '{token: $token}')" \
+    "$CONTROL_URL/control/bootstrap")" || fail "El token fue rechazado o el servidor central no respondió"
+  INSTALLATION_ID="$(jq -er '.instalacion_id' <<< "$BOOTSTRAP_RESPONSE")"
+  LICENSE_KEY="$(jq -er '.licencia' <<< "$BOOTSTRAP_RESPONSE")"
+  set_env_value "$BACKEND_DIR/.env" FDEZNET_INSTALLATION_ID "$INSTALLATION_ID"
+  set_env_value "$BACKEND_DIR/.env" FDEZNET_LICENSE_KEY "$LICENSE_KEY"
+fi
+
+log "Configurando MySQL"
+systemctl enable --now mysql
+mysql --protocol=socket <<SQL
+CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASSWORD}';
+ALTER USER '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASSWORD}';
+GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'127.0.0.1';
+FLUSH PRIVILEGES;
+SQL
+
+set_env_value "$BACKEND_DIR/.env" ENVIRONMENT production
+set_env_value "$BACKEND_DIR/.env" DATABASE_URL "mysql+asyncmy://${DB_USER}:${DB_PASSWORD}@127.0.0.1/${DB_NAME}"
+set_env_value "$BACKEND_DIR/.env" DB_USER "$DB_USER"
+set_env_value "$BACKEND_DIR/.env" DB_PASSWORD "$DB_PASSWORD"
+set_env_value "$BACKEND_DIR/.env" DB_HOST 127.0.0.1
+set_env_value "$BACKEND_DIR/.env" DB_PORT 3306
+set_env_value "$BACKEND_DIR/.env" DB_NAME "$DB_NAME"
+set_env_value "$BACKEND_DIR/.env" SECRET_KEY "$SECRET_KEY"
+set_env_value "$BACKEND_DIR/.env" WEBHOOK_SECRET "$WEBHOOK_SECRET"
+set_env_value "$BACKEND_DIR/.env" CORS_ALLOWED_ORIGINS "https://${DOMAIN}"
+set_env_value "$BACKEND_DIR/.env" PUBLIC_URL "https://${DOMAIN}"
+set_env_value "$BACKEND_DIR/.env" WHATSAPP_BASE_URL http://127.0.0.1:3000
+set_env_value "$BACKEND_DIR/.env" VPN_SERVER_IP "$PUBLIC_IP"
+set_env_value "$BACKEND_DIR/.env" FDEZNET_CONTROL_PLANE_MODE client
+set_env_value "$BACKEND_DIR/.env" FDEZNET_CONTROL_URL "$CONTROL_URL"
+set_env_value "$BACKEND_DIR/.env" FDEZNET_INSTALLATION_ID "$INSTALLATION_ID"
+set_env_value "$BACKEND_DIR/.env" FDEZNET_LICENSE_KEY "$LICENSE_KEY"
+if [[ -n "$ADMIN_PASSWORD" ]]; then
+  set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_USER "$ADMIN_USER"
+  set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_NAME Administrador
+  set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_PASSWORD "$ADMIN_PASSWORD"
+fi
+chown "$SERVICE_USER:$SERVICE_USER" "$BACKEND_DIR/.env"
+chmod 0600 "$BACKEND_DIR/.env"
+
+log "Configurando WireGuard"
+install -d -m 0700 /etc/wireguard
+if [[ ! -f /etc/wireguard/server_private.key ]]; then
+  umask 077
+  wg genkey | tee /etc/wireguard/server_private.key | wg pubkey > /etc/wireguard/server_public.key
+fi
+if [[ ! -f /etc/wireguard/wg0.conf ]]; then
+  PRIVATE_KEY="$(< /etc/wireguard/server_private.key)"
+  MAIN_INTERFACE="$(ip route show default | awk 'NR == 1 {print $5}')"
+  cat > /etc/wireguard/wg0.conf <<WGCONF
 [Interface]
 Address = 10.8.0.1/24
 ListenPort = 51820
-PrivateKey = $PRIV_KEY
+PrivateKey = ${PRIVATE_KEY}
 SaveConfig = true
-PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $MAIN_IFACE -j MASQUERADE
-PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $MAIN_IFACE -j MASQUERADE
-EOF
+PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${MAIN_INTERFACE} -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${MAIN_INTERFACE} -j MASQUERADE
+WGCONF
+  chmod 0600 /etc/wireguard/wg0.conf
+fi
+printf '%s\n' 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-fdeznet.conf
+sysctl --system >/dev/null
+printf '%s\n' "${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/wg, /usr/bin/wg-quick" > /etc/sudoers.d/fdeznet-vpn
+chmod 0440 /etc/sudoers.d/fdeznet-vpn
+visudo -cf /etc/sudoers.d/fdeznet-vpn >/dev/null
+systemctl enable --now wg-quick@wg0
 
-echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-fdeznet.conf
-sysctl -p /etc/sysctl.d/99-fdeznet.conf
-systemctl enable wg-quick@wg0
-systemctl start wg-quick@wg0 || systemctl restart wg-quick@wg0
+log "Instalando backend y aplicando migraciones"
+if [[ ! -x "$BACKEND_DIR/venv/bin/python" ]]; then
+  runuser -u "$SERVICE_USER" -- python3 -m venv "$BACKEND_DIR/venv"
+fi
+runuser -u "$SERVICE_USER" -- "$BACKEND_DIR/venv/bin/pip" install --upgrade pip
+runuser -u "$SERVICE_USER" -- "$BACKEND_DIR/venv/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
+(cd "$BACKEND_DIR" && runuser -u "$SERVICE_USER" -- ./venv/bin/alembic upgrade head)
+install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$BACKEND_DIR/static/recibos"
 
-# Permisos sudo para la VPN (FastAPI)
-echo "root ALL=(ALL) NOPASSWD: /usr/bin/wg, /usr/bin/wg-quick" > /etc/sudoers.d/fdeznet_vpn
-chmod 0440 /etc/sudoers.d/fdeznet_vpn
-
-# 4. DESCARGAR CÓDIGO
-echo -e "${GREEN}[4/9] Clonando repositorios de FdezNet...${NC}"
-rm -rf $APP_DIR && mkdir -p $APP_DIR
-git clone $BACKEND_REPO $APP_DIR/backend
-git clone $FRONTEND_REPO $APP_DIR/frontend
-
-# 5. CONFIGURAR BACKEND (FastAPI)
-echo -e "${GREEN}[5/9] Instalando Backend y creando servicio...${NC}"
-cd $APP_DIR/backend
-cat <<EOT > .env
-ENVIRONMENT=production
-DATABASE_URL=mysql+asyncmy://admin_isp:$DB_PASS@127.0.0.1/fdeznet_db
-DB_USER=admin_isp
-DB_PASSWORD=$DB_PASS
-DB_HOST=127.0.0.1
-DB_PORT=3306
-DB_NAME=fdeznet_db
-SECRET_KEY=$SECRET_KEY
-WEBHOOK_SECRET=$WEBHOOK_SECRET
-CORS_ALLOWED_ORIGINS=http://$SERVER_IP
-VPN_SERVER_IP=$SERVER_IP
-WHATSAPP_BASE_URL=http://127.0.0.1:3000
-EOT
-
-python3 -m venv venv
-./venv/bin/pip install --upgrade pip
-./venv/bin/pip install -r requirements.txt
-
-# 🚀 GENERACIÓN AUTOMÁTICA DE TABLAS (Si usas Alembic o un script init)
-# Si ejecutas las tablas directo desde Python, descomenta la siguiente línea:
-# ./venv/bin/python -c "from src.infrastructure.database import Base, engine; import asyncio; from src.infrastructure.models import *; asyncio.run(engine.begin().then(lambda conn: conn.run_sync(Base.metadata.create_all)))"
-# Aplicar migraciones antes de iniciar el servicio.
-./venv/bin/alembic upgrade head
-
-cat <<EOF > /etc/systemd/system/fdeznet-api.service
+cat > /etc/systemd/system/fdeznet-api.service <<UNIT
 [Unit]
-Description=FdezNet Backend API
-After=network.target mysql.service
-
+Description=FdezNet API
+After=network-online.target mysql.service
+Wants=network-online.target
 [Service]
-User=root
-WorkingDirectory=$APP_DIR/backend
-Environment="PATH=$APP_DIR/backend/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ExecStart=$APP_DIR/backend/venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${BACKEND_DIR}
+EnvironmentFile=${BACKEND_DIR}/.env
+ExecStart=${BACKEND_DIR}/venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000
 Restart=always
-
+RestartSec=5
+PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
-EOF
+UNIT
 
-systemctl daemon-reload
-systemctl enable fdeznet-api && systemctl start fdeznet-api
-
-# 6. CONFIGURAR BOT WHATSAPP (Node.js)
-echo -e "${GREEN}[6/9] Instalando Bot de WhatsApp...${NC}"
-cd $APP_DIR/backend/bot_whatsapp
-npm install --unsafe-perm
-
-cat <<EOF > .env
+log "Instalando servicio de WhatsApp"
+runuser -u "$SERVICE_USER" -- npm --prefix "$BACKEND_DIR/bot_whatsapp" ci --omit=dev
+cat > "$BACKEND_DIR/bot_whatsapp/.env" <<BOTENV
 PORT=3000
 PUBLIC_URL=http://127.0.0.1:3000
 API_BACKEND_URL=http://127.0.0.1:8000
-WEBHOOK_SECRET=$WEBHOOK_SECRET
-EOF
-
-cat <<EOF > /etc/systemd/system/fdeznet-bot.service
+WEBHOOK_SECRET=${WEBHOOK_SECRET}
+BOTENV
+chown "$SERVICE_USER:$SERVICE_USER" "$BACKEND_DIR/bot_whatsapp/.env"
+chmod 0600 "$BACKEND_DIR/bot_whatsapp/.env"
+cat > /etc/systemd/system/fdeznet-bot.service <<UNIT
 [Unit]
 Description=FdezNet WhatsApp Bot
-After=network.target fdeznet-api.service
-
+After=network-online.target fdeznet-api.service
 [Service]
-User=root
-WorkingDirectory=$APP_DIR/backend/bot_whatsapp
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${BACKEND_DIR}/bot_whatsapp
+Environment=NODE_ENV=production
+EnvironmentFile=${BACKEND_DIR}/bot_whatsapp/.env
 ExecStart=/usr/bin/node index.js
 Restart=always
-Environment=NODE_ENV=production
-
+RestartSec=5
+PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
-EOF
+UNIT
 
-systemctl enable fdeznet-bot && systemctl start fdeznet-bot
+log "Compilando frontend"
+runuser -u "$SERVICE_USER" -- npm --prefix "$FRONTEND_DIR" ci
+runuser -u "$SERVICE_USER" -- npm --prefix "$FRONTEND_DIR" run build
 
-# 7. COMPILAR FRONTEND (React)
-echo -e "${GREEN}[7/9] Compilando Frontend...${NC}"
-cd $APP_DIR/frontend
-npm install
-npm run build
-
-# 8. CONFIGURAR NGINX (REPARADO PARA LA API)
-echo -e "${GREEN}[8/9] Configurando Nginx como Proxy Reverso...${NC}"
-cat <<EOF > /etc/nginx/sites-available/fdeznet
+log "Configurando Nginx y HTTPS"
+cat > /etc/nginx/sites-available/fdeznet <<NGINX
 server {
     listen 80;
-    server_name _;
-
-    location / {
-        root $APP_DIR/frontend/dist;
-        index index.html;
-        try_files \$uri \$uri/ /index.html;
-    }
-
-    # ✅ CORREGIDO: quitamos la barra inclinada del final para mapear las rutas de FastAPI intactas
+    listen [::]:80;
+    server_name ${DOMAIN};
+    client_max_body_size 12m;
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
+    location / {
+        root ${FRONTEND_DIR}/dist;
+        try_files \$uri \$uri/ /index.html;
+    }
 }
-EOF
+NGINX
+ln -sfn /etc/nginx/sites-available/fdeznet /etc/nginx/sites-enabled/fdeznet
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl daemon-reload
+systemctl enable --now fdeznet-api fdeznet-bot nginx
+systemctl restart fdeznet-api fdeznet-bot nginx
 
-rm -f /etc/nginx/sites-enabled/default || true
-ln -sf /etc/nginx/sites-available/fdeznet /etc/nginx/sites-enabled/
-systemctl restart nginx
+for attempt in {1..30}; do
+  if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; then break; fi
+  [[ "$attempt" -lt 30 ]] || fail "La API no quedó lista; revisa journalctl -u fdeznet-api"
+  sleep 2
+done
 
-# 9. FIREWALL
-echo -e "${GREEN}[9/9] Asegurando servidor con UFW...${NC}"
-ufw allow 22/tcp
-ufw allow 80/tcp
+certbot --nginx --non-interactive --agree-tos --redirect -m "$ADMIN_EMAIL" -d "$DOMAIN"
+SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}')"
+SSH_PORT="${SSH_PORT:-22}"
+ufw allow "${SSH_PORT}/tcp"
+ufw allow 'Nginx Full'
 ufw allow 51820/udp
-echo "y" | ufw enable
+ufw --force enable
 
-echo -e "${BLUE}===================================================================${NC}"
-echo -e "${GREEN}✅ DESPLIEGUE COMPLETADO EXITOSAMENTE${NC}"
-echo -e "${BLUE}===================================================================${NC}"
-echo -e "🌐 Sistema:      http://$SERVER_IP"
-echo -e "🔐 VPN Public:   $(cat $WG_DIR/server_public.key || echo 'N/A')"
-echo -e "📱 WhatsApp:     Ver logs con 'journalctl -u fdeznet-bot -f'"
-echo -e "${BLUE}===================================================================${NC}"
+if [[ -n "$ADMIN_PASSWORD" ]]; then
+  sed -i '/^ADMIN_BOOTSTRAP_PASSWORD=/d' "$BACKEND_DIR/.env"
+  systemctl restart fdeznet-api
+fi
+
+curl -fsS "https://${DOMAIN}/api/health/ready" >/dev/null
+log "Instalación completada"
+printf '%s\n' \
+  "Panel: https://${DOMAIN}" \
+  "Usuario inicial: ${ADMIN_USER}" \
+  "Contraseña inicial: ${ADMIN_PASSWORD:-la configurada anteriormente}" \
+  "ID de instalación: ${INSTALLATION_ID}" \
+  "La VPS reportará su versión a fdezpay.com automáticamente."
