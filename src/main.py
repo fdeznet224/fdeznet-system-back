@@ -27,6 +27,7 @@ from src.infrastructure.whatsapp_client import whatsapp_queue
 
 # Servicios y Schemas
 from src.application.services.user_service import UserService
+from src.application.services.branding_service import get_or_create_system_config
 from src.domain.schemas import UsuarioCreate
 from src.version import SYSTEM_VERSION
 
@@ -98,6 +99,7 @@ async def lifespan(app: FastAPI):
     # 3. CREAR ADMIN SOLO CUANDO SE PROPORCIONAN CREDENCIALES DE BOOTSTRAP
     async with SessionLocal() as db:
         try:
+            await get_or_create_system_config(db)
             bootstrap_user = os.getenv("ADMIN_BOOTSTRAP_USER", "").strip()
             bootstrap_password = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "")
             stmt = select(UsuarioModel).where(UsuarioModel.rol == "admin")

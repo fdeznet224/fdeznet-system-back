@@ -140,6 +140,9 @@ async def exchange_bootstrap(
         instalacion_id=installation.instalacion_id,
         licencia=raw_license,
         servidor_central=CONTROL_PUBLIC_URL,
+        nombre_isp=installation.nombre_isp,
+        dominio=installation.dominio,
+        contacto_email=installation.contacto_email,
     )
 
 

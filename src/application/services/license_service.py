@@ -6,6 +6,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.schemas import LicenseHeartbeatRequest, LocalLicenseStatus
+from src.application.services.branding_service import get_or_create_system_config
 from src.infrastructure.models import ConfiguracionSistema
 from src.version import SYSTEM_VERSION, UPDATE_CHANNEL
 
@@ -34,12 +35,7 @@ def update_available(current: str, target: Optional[str]) -> bool:
 
 
 async def _config(db: AsyncSession) -> ConfiguracionSistema:
-    config = await db.get(ConfiguracionSistema, 1)
-    if config is None:
-        config = ConfiguracionSistema(id=1)
-        db.add(config)
-        await db.flush()
-    return config
+    return await get_or_create_system_config(db)
 
 
 def local_status(config: ConfiguracionSistema) -> LocalLicenseStatus:

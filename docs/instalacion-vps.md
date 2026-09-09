@@ -42,7 +42,9 @@ cerrar la sesión SSH mientras trabaja.
 
 El instalador valida el DNS antes de cambiar el servidor. Después instala MySQL,
 WireGuard, backend, bot de WhatsApp, frontend, Nginx y el certificado HTTPS. Al
-final imprime el usuario y la contraseña iniciales del administrador.
+final imprime el usuario y la contraseña iniciales del administrador. La primera
+vez que inicia la API también aplica automáticamente el nombre y correo del ISP
+registrados en el panel central; después pueden personalizarse en **Marca blanca**.
 
 También deja activos:
 

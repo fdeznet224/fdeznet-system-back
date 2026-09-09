@@ -148,6 +148,9 @@ class BootstrapExchangeResponse(BaseModel):
     instalacion_id: str
     licencia: str
     servidor_central: str
+    nombre_isp: Optional[str] = None
+    dominio: Optional[str] = None
+    contacto_email: Optional[str] = None
 
 
 class BootstrapTokenResponse(BaseModel):

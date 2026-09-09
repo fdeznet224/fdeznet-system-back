@@ -33,6 +33,7 @@ from src.domain.schemas import (
     MaintenanceStatus,
 )
 from src.application.services.license_service import local_status, verify_license
+from src.application.services.branding_service import get_or_create_system_config
 
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
 router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
@@ -62,13 +63,7 @@ async def _iniciar_mantenimiento(service: str) -> dict[str, str]:
 
 
 async def _obtener_configuracion(db: AsyncSession) -> ConfiguracionSistema:
-    config = await db.get(ConfiguracionSistema, 1)
-    if not config:
-        config = ConfiguracionSistema(id=1)
-        db.add(config)
-        await db.commit()
-        await db.refresh(config)
-    return config
+    return await get_or_create_system_config(db)
 
 
 @public_router.get("/marca", response_model=BrandingConfig)
@@ -251,17 +246,7 @@ async def eliminar_plantilla_mensaje(id: int, db: AsyncSession = Depends(get_db)
 @router.get("/sistema")
 @cache(expire=300)
 async def obtener_configuracion_sistema(db: AsyncSession = Depends(get_db)):
-    stmt = select(ConfiguracionSistema).where(ConfiguracionSistema.id == 1)
-    result = await db.execute(stmt)
-    config = result.scalar_one_or_none()
-    
-    if not config:
-        config = ConfiguracionSistema(id=1)
-        db.add(config)
-        await db.commit()
-        await db.refresh(config)
-    
-    return config
+    return await get_or_create_system_config(db)
 
 @router.put("/sistema")
 async def guardar_configuracion_sistema(datos: SystemConfigUpdate, db: AsyncSession = Depends(get_db)):

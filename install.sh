@@ -153,6 +153,9 @@ WEBHOOK_SECRET="$(existing_value WEBHOOK_SECRET "$BACKEND_DIR/.env")"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-$(openssl rand -hex 32)}"
 INSTALLATION_ID="$(existing_value FDEZNET_INSTALLATION_ID "$BACKEND_DIR/.env")"
 LICENSE_KEY="$(existing_value FDEZNET_LICENSE_KEY "$BACKEND_DIR/.env")"
+BRAND_NAME="$(existing_value FDEZNET_BRAND_NAME "$BACKEND_DIR/.env")"
+BRAND_SYSTEM_NAME="$(existing_value FDEZNET_BRAND_SYSTEM_NAME "$BACKEND_DIR/.env")"
+BRAND_EMAIL="$(existing_value FDEZNET_BRAND_EMAIL "$BACKEND_DIR/.env")"
 ADMIN_PASSWORD="$(existing_value ADMIN_BOOTSTRAP_PASSWORD "$BACKEND_DIR/.env")"
 if [[ "$NEW_INSTALL" == "true" && -z "$ADMIN_PASSWORD" ]]; then
   ADMIN_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
@@ -170,6 +173,9 @@ if [[ -z "$INSTALLATION_ID" || -z "$LICENSE_KEY" ]]; then
     "$CONTROL_URL/control/bootstrap")" || fail "El token fue rechazado o el servidor central no respondió"
   INSTALLATION_ID="$(jq -er '.instalacion_id' <<< "$BOOTSTRAP_RESPONSE")"
   LICENSE_KEY="$(jq -er '.licencia' <<< "$BOOTSTRAP_RESPONSE")"
+  BRAND_NAME="$(jq -r '.nombre_isp // empty' <<< "$BOOTSTRAP_RESPONSE")"
+  BRAND_SYSTEM_NAME="$BRAND_NAME"
+  BRAND_EMAIL="$(jq -r '.contacto_email // empty' <<< "$BOOTSTRAP_RESPONSE")"
   set_env_value "$BACKEND_DIR/.env" FDEZNET_INSTALLATION_ID "$INSTALLATION_ID"
   set_env_value "$BACKEND_DIR/.env" FDEZNET_LICENSE_KEY "$LICENSE_KEY"
 fi
@@ -201,6 +207,13 @@ set_env_value "$BACKEND_DIR/.env" FDEZNET_CONTROL_PLANE_MODE client
 set_env_value "$BACKEND_DIR/.env" FDEZNET_CONTROL_URL "$CONTROL_URL"
 set_env_value "$BACKEND_DIR/.env" FDEZNET_INSTALLATION_ID "$INSTALLATION_ID"
 set_env_value "$BACKEND_DIR/.env" FDEZNET_LICENSE_KEY "$LICENSE_KEY"
+if [[ -n "$BRAND_NAME" ]]; then
+  set_env_value "$BACKEND_DIR/.env" FDEZNET_BRAND_NAME "$BRAND_NAME"
+  set_env_value "$BACKEND_DIR/.env" FDEZNET_BRAND_SYSTEM_NAME "${BRAND_SYSTEM_NAME:-$BRAND_NAME}"
+fi
+if [[ -n "$BRAND_EMAIL" ]]; then
+  set_env_value "$BACKEND_DIR/.env" FDEZNET_BRAND_EMAIL "$BRAND_EMAIL"
+fi
 set_env_value "$BACKEND_DIR/.env" FDEZNET_BACKUP_DIR /var/backups/fdeznet
 set_env_value "$BACKEND_DIR/.env" FDEZNET_BACKUP_RETENTION_DAYS 14
 if [[ -n "$ADMIN_PASSWORD" ]]; then

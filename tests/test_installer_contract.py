@@ -43,6 +43,15 @@ def test_instalador_configura_respaldo_y_revision_automatica():
     assert "rclone" not in content.lower()
 
 
+def test_instalador_recibe_identidad_inicial_del_panel_central():
+    content = INSTALLER.read_text(encoding="utf-8")
+    assert "FDEZNET_BRAND_NAME" in content
+    assert "FDEZNET_BRAND_SYSTEM_NAME" in content
+    assert "FDEZNET_BRAND_EMAIL" in content
+    assert ".nombre_isp // empty" in content
+    assert ".contacto_email // empty" in content
+
+
 def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     result = subprocess.run(
         ["bash", "-n", str(MAINTENANCE)],

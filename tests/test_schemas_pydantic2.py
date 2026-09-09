@@ -55,6 +55,20 @@ def test_instalacion_rechaza_un_dominio_peligroso():
         )
 
 
+def test_bootstrap_entrega_identidad_inicial_de_la_instalacion():
+    response = schemas.BootstrapExchangeResponse(
+        instalacion_id="00000000-0000-0000-0000-000000000001",
+        licencia="fdz_live_prueba",
+        servidor_central="https://central.example/api",
+        nombre_isp="Internet Ejemplo",
+        dominio="panel.internet-ejemplo.test",
+        contacto_email="admin@internet-ejemplo.test",
+    )
+
+    assert response.nombre_isp == "Internet Ejemplo"
+    assert response.contacto_email == "admin@internet-ejemplo.test"
+
+
 def test_router_ids_no_comparte_lista_entre_usuarios():
     first = schemas.UsuarioCreate(
         nombre_completo="Usuario Primero",
