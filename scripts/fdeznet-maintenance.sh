@@ -130,7 +130,7 @@ verify_backup() {
   sha256sum -c "${encrypted}.sha256" >/dev/null
   gpg --batch --quiet --decrypt --pinentry-mode loopback \
     --passphrase-file "$KEY_FILE" "$encrypted" | tar -tzf - | \
-    grep -qx './data/database.sql.gz'
+    awk '$0 == "./data/database.sql.gz" {found=1} END {exit !found}'
   gpg --batch --quiet --decrypt --pinentry-mode loopback \
     --passphrase-file "$KEY_FILE" "$encrypted" | \
     tar -xOzf - ./data/database.sql.gz | gzip -t

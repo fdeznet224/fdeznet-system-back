@@ -51,6 +51,7 @@ def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     assert 'merge-base --is-ancestor "$OLD_BACKEND" "$backend_commit"' in content
     assert 'wait_for_health' in content
     assert 'verify_backup' in content
+    assert 'END {exit !found}' in content
     assert "make_url" in content
     assert "DATABASE_URL_VALUE" in content
     assert "exclude)bot_whatsapp/node_modules" in content
