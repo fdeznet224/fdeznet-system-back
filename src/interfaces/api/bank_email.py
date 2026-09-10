@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from email.utils import parseaddr
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,6 +20,17 @@ from src.infrastructure.models import TransaccionCorreoBancoModel
 
 
 router = APIRouter(prefix="/correo-bancario", tags=["Correo bancario"])
+
+
+def _normalize_senders(value: str) -> str:
+    senders = [
+        parseaddr(item.strip())[1].casefold()
+        for item in value.split(",")
+        if item.strip()
+    ]
+    if not senders or any("@" not in item for item in senders):
+        raise ValueError("Indica uno o más remitentes bancarios válidos")
+    return ",".join(dict.fromkeys(senders))
 
 
 class BankEmailConfigRequest(BaseModel):
@@ -44,16 +56,17 @@ class BankEmailConfigRequest(BaseModel):
     @field_validator("remitente_permitido")
     @classmethod
     def validate_senders(cls, value: str) -> str:
-        senders = [item.strip().casefold() for item in value.split(",") if item.strip()]
-        if not senders or any("@" not in item for item in senders):
-            raise ValueError("Indica uno o más remitentes bancarios válidos")
-        return ",".join(dict.fromkeys(senders))
+        return _normalize_senders(value)
 
 
 class BankEmailTestRequest(BaseModel):
     correo: str = Field(min_length=5, max_length=160)
     password_aplicacion: Optional[str] = Field(default=None, max_length=100)
     carpeta: str = Field(default="INBOX", min_length=1, max_length=100)
+    remitente_permitido: Optional[str] = Field(default=None, max_length=255)
+    asunto_filtro: Optional[str] = Field(default=None, max_length=255)
+    ventana_dias: int = Field(default=3, ge=1, le=30)
+    tolerancia_monto: Decimal = Field(default=Decimal("0.00"), ge=0, le=100)
 
 
 def _response(config) -> dict:
@@ -135,6 +148,12 @@ async def test_configuration(
 ):
     config = await BankEmailService().get_config(db)
     password = data.password_aplicacion
+    address = data.correo.strip().casefold()
+    if not password and address != (config.correo or "").casefold():
+        raise HTTPException(
+            status_code=400,
+            detail="La cuenta cambió; indica su contraseña de aplicación",
+        )
     if not password and config.secreto_cifrado:
         try:
             password = decrypt_mail_secret(config.secreto_cifrado)
@@ -144,22 +163,34 @@ async def test_configuration(
         raise HTTPException(status_code=400, detail="Indica la contraseña de aplicación")
     try:
         await BankEmailService().test_connection(
-            address=data.correo.strip().casefold(),
+            address=address,
             app_password=password,
             folder=data.carpeta.strip(),
         )
     except BankEmailError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    using_saved_credential = (
-        not data.password_aplicacion
-        and bool(config.secreto_cifrado)
-        and data.correo.strip().casefold() == (config.correo or "").casefold()
-    )
-    if using_saved_credential:
-        config.credencial_verificada_en = datetime.utcnow()
-        config.ultimo_error = None
-        await db.commit()
-    return {"status": "ok", "mensaje": "Conexión de solo lectura con Gmail verificada"}
+    if data.password_aplicacion:
+        config.secreto_cifrado = encrypt_mail_secret(data.password_aplicacion)
+    config.correo = address
+    config.carpeta = data.carpeta.strip()
+    if data.remitente_permitido:
+        try:
+            config.remitente_permitido = _normalize_senders(data.remitente_permitido)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    config.asunto_filtro = (data.asunto_filtro or "").strip() or None
+    config.ventana_dias = data.ventana_dias
+    config.tolerancia_monto = data.tolerancia_monto
+    config.requiere_dkim = True
+    config.credencial_verificada_en = datetime.utcnow()
+    config.ultimo_error = None
+    await db.commit()
+    await db.refresh(config)
+    return {
+        "status": "ok",
+        "mensaje": "Conexión de solo lectura con Gmail verificada",
+        "configuracion": _response(config),
+    }
 
 
 @router.post("/sincronizar")

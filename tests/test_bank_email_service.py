@@ -6,6 +6,7 @@ from src.application.services.bank_email_service import (
     normalize_reference,
     parse_bank_email,
 )
+from src.interfaces.api.bank_email import _normalize_senders
 
 
 def _email(authentication_results: str, sender: str = "avisos@banco.example") -> bytes:
@@ -107,3 +108,10 @@ def test_encrypts_gmail_app_password(monkeypatch):
 def test_normalize_reference_removes_visual_separators():
     assert normalize_reference(" azt-9081 726354 ") == "AZT9081726354"
     assert normalize_reference("123") is None
+
+
+def test_normalize_bank_sender_accepts_copied_from_header():
+    assert (
+        _normalize_senders("Banco Azteca <avisos@banco.example>")
+        == "avisos@banco.example"
+    )

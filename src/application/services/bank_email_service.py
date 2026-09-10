@@ -334,6 +334,7 @@ class BankEmailService:
     async def sync(self, db: AsyncSession) -> dict:
         config = await self.get_config(db)
         if not config.activo:
+            await db.commit()
             return {"status": "disabled", "nuevos": 0, "validos": 0}
         if not config.correo or not config.secreto_cifrado:
             raise BankEmailError("Completa la cuenta y la contraseña de aplicación de Gmail")
