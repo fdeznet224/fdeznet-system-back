@@ -1,6 +1,9 @@
+from datetime import datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 from src.application.services.bank_email_service import (
+    BankEmailService,
     decrypt_mail_secret,
     encrypt_mail_secret,
     normalize_reference,
@@ -134,6 +137,84 @@ def test_reference_match_normalizes_only_common_ocr_confusions():
     assert (
         normalize_reference_for_match("1204-1678-0901")
         != normalize_reference_for_match("1204-1678-0902")
+    )
+
+
+def test_transaction_requires_auth_reference_amount_and_datetime():
+    now = datetime(2026, 9, 10, 10, 0)
+    config = SimpleNamespace(
+        activo=True,
+        tolerancia_monto=Decimal("0.00"),
+        ventana_dias=3,
+    )
+    revision = SimpleNamespace(
+        folio_detectado="12O4-I678-O901",
+        monto_detectado=Decimal("300.00"),
+        fecha_recepcion=now,
+    )
+    transaction = SimpleNamespace(
+        autenticado=True,
+        estado="disponible",
+        referencia="1204-1678-0901",
+        monto=Decimal("300.00"),
+        fecha_correo=now - timedelta(minutes=5),
+    )
+
+    assert (
+        BankEmailService.transaction_match_reason(
+            config,
+            revision,
+            transaction,
+        )
+        == "coincidencia_exacta"
+    )
+    transaction.autenticado = False
+    assert (
+        BankEmailService.transaction_match_reason(
+            config,
+            revision,
+            transaction,
+        )
+        == "correo_bancario_no_autenticado"
+    )
+
+
+def test_transaction_rejects_reused_or_out_of_window_email():
+    now = datetime(2026, 9, 10, 10, 0)
+    config = SimpleNamespace(
+        activo=True,
+        tolerancia_monto=Decimal("0.00"),
+        ventana_dias=3,
+    )
+    revision = SimpleNamespace(
+        folio_detectado="120416780901",
+        monto_detectado=Decimal("300.00"),
+        fecha_recepcion=now,
+    )
+    transaction = SimpleNamespace(
+        autenticado=True,
+        estado="conciliada",
+        referencia="120416780901",
+        monto=Decimal("300.00"),
+        fecha_correo=now,
+    )
+    assert (
+        BankEmailService.transaction_match_reason(
+            config,
+            revision,
+            transaction,
+        )
+        == "correo_bancario_ya_utilizado"
+    )
+    transaction.estado = "disponible"
+    transaction.fecha_correo = now - timedelta(days=4)
+    assert (
+        BankEmailService.transaction_match_reason(
+            config,
+            revision,
+            transaction,
+        )
+        == "fecha_hora_bancaria_fuera_de_ventana"
     )
 
 

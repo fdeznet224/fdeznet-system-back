@@ -317,6 +317,46 @@ def _read_gmail_messages(
 
 class BankEmailService:
     @staticmethod
+    def transaction_match_reason(
+        config: ConfiguracionCorreoBancoModel,
+        revision: ComprobantePagoRevisionModel,
+        transaction: TransaccionCorreoBancoModel,
+    ) -> str:
+        if not config.activo:
+            return "correo_bancario_no_configurado"
+        if not transaction.autenticado:
+            return "correo_bancario_no_autenticado"
+        if transaction.estado not in {"disponible", "procesando"}:
+            return "correo_bancario_ya_utilizado"
+
+        expected_reference = normalize_reference_for_match(
+            revision.folio_detectado
+        )
+        bank_reference = normalize_reference_for_match(transaction.referencia)
+        if not expected_reference or expected_reference != bank_reference:
+            return "referencia_bancaria_no_coincide"
+
+        amount = Decimal(revision.monto_detectado or 0).quantize(
+            Decimal("0.01")
+        )
+        bank_amount = Decimal(transaction.monto or 0).quantize(
+            Decimal("0.01")
+        )
+        tolerance = Decimal(config.tolerancia_monto or 0)
+        if amount <= 0 or abs(bank_amount - amount) > tolerance:
+            return "monto_bancario_no_coincide"
+
+        if not revision.fecha_recepcion or not transaction.fecha_correo:
+            return "fecha_bancaria_no_disponible"
+        earliest = revision.fecha_recepcion - timedelta(
+            days=max(1, config.ventana_dias)
+        )
+        latest = revision.fecha_recepcion + timedelta(days=1)
+        if not earliest <= transaction.fecha_correo <= latest:
+            return "fecha_hora_bancaria_fuera_de_ventana"
+        return "coincidencia_exacta"
+
+    @staticmethod
     async def get_config(db: AsyncSession) -> ConfiguracionCorreoBancoModel:
         config = await db.get(ConfiguracionCorreoBancoModel, 1)
         if config is None:
@@ -463,12 +503,11 @@ class BankEmailService:
                 .with_for_update()
             )
         ).scalars().all()
-        expected_reference = normalize_reference_for_match(reference)
         candidates = [
             transaction
             for transaction in amount_and_date_candidates
-            if normalize_reference_for_match(transaction.referencia)
-            == expected_reference
+            if self.transaction_match_reason(config, revision, transaction)
+            == "coincidencia_exacta"
         ]
         if len(candidates) == 1:
             return candidates[0], "coincidencia_exacta"
@@ -491,8 +530,10 @@ class BankEmailService:
             if revision.transaccion_correo_id
             else None
         )
-        if transaction and transaction.estado in {"disponible", "procesando"}:
-            reason = "coincidencia_exacta"
+        if transaction:
+            reason = self.transaction_match_reason(config, revision, transaction)
+            if reason != "coincidencia_exacta":
+                transaction = None
         else:
             transaction, reason = await self.find_match(db, revision)
         revision.motivo_revision = reason

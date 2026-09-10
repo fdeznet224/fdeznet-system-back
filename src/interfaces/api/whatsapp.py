@@ -730,18 +730,40 @@ async def aprobar_comprobante_revision(
     if comprobante.estado in {"aprobado", "rechazado"}:
         raise HTTPException(status_code=409, detail="El comprobante ya fue revisado")
 
-    transaction = (
-        await db.get(TransaccionCorreoBancoModel, comprobante.transaccion_correo_id)
-        if comprobante.transaccion_correo_id
-        else None
-    )
-    monto = (
-        transaction.monto
-        if transaction and transaction.autenticado
-        else datos.monto or comprobante.monto_detectado
-    )
-    if not monto or Decimal(monto) <= 0:
-        raise HTTPException(status_code=400, detail="Indica el monto confirmado")
+    correo_service = BankEmailService()
+    config_correo = await correo_service.get_config(db)
+    transaction = None
+    if comprobante.transaccion_correo_id:
+        transaction = (
+            await db.execute(
+                select(TransaccionCorreoBancoModel)
+                .where(
+                    TransaccionCorreoBancoModel.id
+                    == comprobante.transaccion_correo_id
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+    if transaction is None:
+        transaction, _reason = await correo_service.find_match(db, comprobante)
+    if transaction is None or correo_service.transaction_match_reason(
+        config_correo,
+        comprobante,
+        transaction,
+    ) != "coincidencia_exacta":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "No se puede aprobar: falta una transferencia bancaria "
+                "autenticada que coincida en folio, monto, fecha y hora"
+            ),
+        )
+    if transaction.pago_id:
+        raise HTTPException(
+            status_code=409,
+            detail="La transferencia bancaria ya fue utilizada en otro pago",
+        )
+    monto = transaction.monto
     factura = (
         await db.get(FacturaModel, datos.factura_id)
         if datos.factura_id
@@ -756,8 +778,10 @@ async def aprobar_comprobante_revision(
     comprobante.estado = "procesando"
     comprobante.cliente_id = datos.cliente_id
     comprobante.factura_id = factura.id
+    comprobante.transaccion_correo_id = transaction.id
     comprobante.revisado_por_id = current_user.id
     comprobante.notas_revision = datos.notas
+    transaction.estado = "procesando"
     await db.commit()
     try:
         resultado = await BillingService(db).registrar_pago_completo(
@@ -765,13 +789,7 @@ async def aprobar_comprobante_revision(
             usuario_operador=current_user,
             metodo_pago="transferencia",
             monto=monto,
-            referencia=(
-                transaction.referencia
-                if transaction and transaction.autenticado
-                else datos.referencia
-                or comprobante.folio_detectado
-                or f"REV-{comprobante.id}"
-            ),
+            referencia=transaction.referencia,
             clave_idempotencia=f"comprobante-revision:{comprobante.id}",
         )
         await db.refresh(comprobante)
@@ -789,6 +807,9 @@ async def aprobar_comprobante_revision(
         comprobante = await db.get(ComprobantePagoRevisionModel, comprobante_id)
         comprobante.estado = "pendiente"
         comprobante.notas_revision = f"Error al aprobar: {exc}"
+        transaction = await db.get(TransaccionCorreoBancoModel, transaction.id)
+        if transaction and not transaction.pago_id:
+            transaction.estado = "disponible"
         await db.commit()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
