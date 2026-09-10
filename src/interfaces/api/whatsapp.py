@@ -52,6 +52,7 @@ from src.application.services.bank_email_service import (
     BankEmailError,
     BankEmailService,
     normalize_reference,
+    normalize_reference_for_match,
 )
 from src.application.services.billing_service import BillingService
 from src.application.services.finance_service import FinanceService
@@ -81,6 +82,31 @@ bot_memory = {}
 ocr_tool = OCRService()
 BOT_KEYWORD = "fdezbot"
 BOT_SESSION_MINUTES = 15
+
+
+def mensaje_comprobante_ya_recibido(
+    estado: str | None,
+    *,
+    pago_registrado: bool = False,
+) -> str:
+    if pago_registrado or estado == "aprobado":
+        return (
+            "✅ Este comprobante ya fue aprobado y registrado anteriormente. "
+            "No se aplicará el pago otra vez."
+        )
+    if estado in {"pendiente", "procesando"}:
+        return (
+            "⏳ Este comprobante ya fue recibido y continúa en revisión. "
+            "No es necesario enviarlo nuevamente."
+        )
+    return (
+        "⚠️ Este comprobante ya fue revisado anteriormente y no puede "
+        "registrarse otra vez. Si necesitas una aclaración, contacta a soporte."
+    )
+
+
+def referencia_canonica_sql(columna):
+    return func.replace(func.replace(func.upper(columna), "O", "0"), "I", "1")
 
 
 def esta_fuera_de_horario(ahora: datetime | None = None) -> bool:
@@ -1163,6 +1189,53 @@ async def webhook_recibir_mensaje(
                 monto_detectado = Decimal(
                     str(resultado_ocr.get("monto") or 0)
                 )
+                folio_banco = normalize_reference(resultado_ocr.get("folio"))
+
+                if resultado_ocr["exito"] and folio_banco:
+                    folio_canonico = normalize_reference_for_match(folio_banco)
+                    pago_existente = (
+                        await db.execute(
+                            select(PagoAutovalidadoModel)
+                            .where(
+                                referencia_canonica_sql(
+                                    PagoAutovalidadoModel.folio_banco
+                                ) == folio_canonico
+                            )
+                            .limit(1)
+                        )
+                    ).scalars().first()
+                    comprobante_existente = (
+                        await db.execute(
+                            select(ComprobantePagoRevisionModel)
+                            .where(
+                                ComprobantePagoRevisionModel.folio_detectado.is_not(None),
+                                referencia_canonica_sql(
+                                    ComprobantePagoRevisionModel.folio_detectado
+                                ) == folio_canonico,
+                            )
+                            .order_by(ComprobantePagoRevisionModel.id.desc())
+                            .limit(1)
+                        )
+                    ).scalars().first()
+                    if pago_existente or comprobante_existente:
+                        del bot_memory[telefono_raw]
+                        await wa_service.enviar_mensaje(
+                            telefono=telefono_raw,
+                            mensaje=mensaje_comprobante_ya_recibido(
+                                comprobante_existente.estado
+                                if comprobante_existente
+                                else None,
+                                pago_registrado=bool(
+                                    pago_existente
+                                    or (
+                                        comprobante_existente
+                                        and comprobante_existente.pago_id
+                                    )
+                                ),
+                            ),
+                        )
+                        return {"status": "comprobante_duplicado"}
+
                 revision = ComprobantePagoRevisionModel(
                     cliente_id=cliente_h.id if cliente_h else None,
                     mensaje_chat_id=nuevo_mensaje.id,
@@ -1171,7 +1244,7 @@ async def webhook_recibir_mensaje(
                     monto_detectado=(
                         monto_detectado if monto_detectado > 0 else None
                     ),
-                    folio_detectado=normalize_reference(resultado_ocr.get("folio")),
+                    folio_detectado=folio_banco,
                     cedula_detectada=resultado_ocr.get("cedula_detectada"),
                     motivo_revision=(
                         "esperando_confirmacion"

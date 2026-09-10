@@ -12,6 +12,7 @@ from src.interfaces.api.whatsapp import (
     esta_fuera_de_horario,
     interpretar_fecha_promesa,
     mensaje_audio_no_disponible,
+    mensaje_comprobante_ya_recibido,
     mensaje_fuera_de_horario,
     obtener_factura_cobrable,
     renderizar_mensaje_campana,
@@ -142,6 +143,19 @@ def test_foto_de_comprobante_tiene_prioridad_sobre_el_texto():
         "[FOTO_COMPROBANTE]",
         es_comprobante=True,
     ) == "pago"
+
+
+def test_bot_no_acepta_comprobante_duplicado_pendiente_o_aprobado():
+    pendiente = mensaje_comprobante_ya_recibido("pendiente")
+    aprobado = mensaje_comprobante_ya_recibido(
+        "pendiente",
+        pago_registrado=True,
+    )
+
+    assert "continúa en revisión" in pendiente
+    assert "No es necesario enviarlo nuevamente" in pendiente
+    assert "ya fue aprobado" in aprobado
+    assert "No se aplicará el pago otra vez" in aprobado
 
 
 def test_plantillas_usan_numero_de_contrato_sin_romper_variable_anterior():
