@@ -4,8 +4,42 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
     descargarMediaConReintentos,
-    describirError
+    describirError,
+    repararIdSerializado
 } = require('../media-utils');
+
+test('recupera el nuevo identificador $1 usado por WhatsApp Web', () => {
+    const mensaje = {
+        id: {
+            fromMe: false,
+            remote: '5215550000000@lid',
+            id: 'ABC123',
+            $1: 'false_5215550000000@lid_ABC123'
+        }
+    };
+
+    assert.equal(repararIdSerializado(mensaje), true);
+    assert.equal(
+        mensaje.id._serialized,
+        'false_5215550000000@lid_ABC123'
+    );
+});
+
+test('reconstruye el identificador cuando $1 tampoco está disponible', () => {
+    const mensaje = {
+        id: {
+            fromMe: false,
+            remote: '5215550000000@c.us',
+            id: 'XYZ789'
+        }
+    };
+
+    assert.equal(repararIdSerializado(mensaje), true);
+    assert.equal(
+        mensaje.id._serialized,
+        'false_5215550000000@c.us_XYZ789'
+    );
+});
 
 test('reintenta cuando WhatsApp aún no entrega el archivo', async () => {
     let llamadas = 0;

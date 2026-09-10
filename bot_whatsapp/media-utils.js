@@ -11,6 +11,39 @@ function describirError(error) {
     return 'error desconocido';
 }
 
+function repararIdSerializado(mensaje) {
+    const id = mensaje?.id;
+    if (!id || id._serialized) return Boolean(id?._serialized);
+
+    const remoto = typeof id.remote === 'string'
+        ? id.remote
+        : id.remote?._serialized;
+    const reconstruido = id.$1
+        || id.serialized
+        || (
+            id.fromMe !== undefined && remoto && id.id
+                ? `${id.fromMe}_${remoto}_${id.id}`
+                : null
+        );
+
+    if (!reconstruido) return false;
+
+    try {
+        id._serialized = reconstruido;
+    } catch (_error) {
+        try {
+            Object.defineProperty(id, '_serialized', {
+                value: reconstruido,
+                writable: true,
+                configurable: true
+            });
+        } catch (_defineError) {
+            return false;
+        }
+    }
+    return id._serialized === reconstruido;
+}
+
 async function descargarMediaConReintentos(
     mensaje,
     { intentos = 3, retrasoMs = 1200, esperarFn = esperar } = {}
@@ -19,6 +52,7 @@ async function descargarMediaConReintentos(
 
     for (let intento = 1; intento <= intentos; intento += 1) {
         try {
+            repararIdSerializado(mensaje);
             const media = await mensaje.downloadMedia();
             if (media?.data && media?.mimetype) return media;
             ultimoError = new Error('WhatsApp no entregó el archivo multimedia');
@@ -32,4 +66,8 @@ async function descargarMediaConReintentos(
     throw new Error(describirError(ultimoError));
 }
 
-module.exports = { descargarMediaConReintentos, describirError };
+module.exports = {
+    descargarMediaConReintentos,
+    describirError,
+    repararIdSerializado
+};
