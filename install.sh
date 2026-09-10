@@ -24,6 +24,7 @@ USE_TLS="false"
 
 log() { printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+trap 'fail "La instalación se detuvo inesperadamente en la línea ${LINENO}"' ERR
 
 usage() {
   printf '%s\n' \
@@ -511,7 +512,7 @@ if [[ "$USE_TLS" == "true" ]]; then
   log "Configurando certificado HTTPS"
   certbot --nginx --non-interactive --agree-tos --redirect -m "$ADMIN_EMAIL" -d "$DOMAIN"
 fi
-SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}')"
+SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}' || true)"
 SSH_PORT="${SSH_PORT:-22}"
 ufw allow "${SSH_PORT}/tcp"
 ufw allow 'Nginx Full'
