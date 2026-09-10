@@ -74,6 +74,15 @@ def normalize_reference(value: str | None) -> str | None:
     return normalized if len(normalized) >= 6 else None
 
 
+def normalize_reference_for_match(value: str | None) -> str | None:
+    normalized = normalize_reference(value)
+    if not normalized:
+        return None
+    # OCR confunde con frecuencia estas letras con dígitos en claves bancarias.
+    # Se normaliza la referencia completa; nunca se compara solo un fragmento.
+    return normalized.translate(str.maketrans({"O": "0", "I": "1"}))
+
+
 def _message_text(message) -> str:
     plain: list[str] = []
     html: list[str] = []
@@ -101,7 +110,7 @@ def _message_text(message) -> str:
 
 
 def _parse_amount(text: str) -> Decimal | None:
-    number = r"([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})|[0-9]+(?:\.[0-9]{2}))"
+    number = r"((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]{1,2})?|[0-9]+,[0-9]{1,2})"
     patterns = [
         rf"(?:recibiste|recibido|abono|dep[oó]sito|transferencia|monto|importe|cantidad|total)[^0-9]{{0,60}}\$?\s*{number}",
         rf"\$\s*{number}\s*(?:mxn|m\.?n\.?|pesos)?",
@@ -113,7 +122,17 @@ def _parse_amount(text: str) -> Decimal | None:
         if not match:
             continue
         try:
-            amount = Decimal(match.group(1).replace(",", "")).quantize(Decimal("0.01"))
+            raw_amount = match.group(1)
+            if "," in raw_amount and "." in raw_amount:
+                raw_amount = raw_amount.replace(",", "")
+            elif "," in raw_amount:
+                integer, decimals = raw_amount.rsplit(",", 1)
+                raw_amount = (
+                    f"{integer}.{decimals}"
+                    if len(decimals) <= 2
+                    else f"{integer}{decimals}"
+                )
+            amount = Decimal(raw_amount).quantize(Decimal("0.01"))
         except (InvalidOperation, ValueError):
             continue
         if amount > 0:
@@ -429,13 +448,12 @@ class BankEmailService:
         tolerance = Decimal(config.tolerancia_monto or 0)
         earliest = revision.fecha_recepcion - timedelta(days=max(1, config.ventana_dias))
         latest = revision.fecha_recepcion + timedelta(days=1)
-        candidates = (
+        amount_and_date_candidates = (
             await db.execute(
                 select(TransaccionCorreoBancoModel)
                 .where(
                     TransaccionCorreoBancoModel.estado == "disponible",
                     TransaccionCorreoBancoModel.autenticado.is_(True),
-                    TransaccionCorreoBancoModel.referencia == reference,
                     TransaccionCorreoBancoModel.monto >= amount - tolerance,
                     TransaccionCorreoBancoModel.monto <= amount + tolerance,
                     TransaccionCorreoBancoModel.fecha_correo >= earliest,
@@ -445,6 +463,13 @@ class BankEmailService:
                 .with_for_update()
             )
         ).scalars().all()
+        expected_reference = normalize_reference_for_match(reference)
+        candidates = [
+            transaction
+            for transaction in amount_and_date_candidates
+            if normalize_reference_for_match(transaction.referencia)
+            == expected_reference
+        ]
         if len(candidates) == 1:
             return candidates[0], "coincidencia_exacta"
         if len(candidates) > 1:

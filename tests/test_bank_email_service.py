@@ -4,6 +4,7 @@ from src.application.services.bank_email_service import (
     decrypt_mail_secret,
     encrypt_mail_secret,
     normalize_reference,
+    normalize_reference_for_match,
     parse_bank_email,
 )
 from src.interfaces.api.bank_email import _normalize_senders
@@ -40,6 +41,21 @@ def test_parse_authenticated_bank_email():
     assert parsed.reference == "AZT9081726354"
     assert parsed.concept == "CONTRATO 329B"
     assert parsed.uid == "42"
+
+
+def test_parse_integer_amount_used_by_banco_azteca():
+    raw = _email(
+        "dkim=pass header.d=banco.example; "
+        "dmarc=pass header.from=banco.example; spf=pass"
+    ).replace(b"$1,250.00 MXN", b"$300 MXN")
+
+    parsed = parse_bank_email(
+        raw,
+        uid="47",
+        allowed_senders={"avisos@banco.example"},
+    )
+
+    assert parsed.amount == Decimal("300.00")
 
 
 def test_rejects_spoofed_sender_even_with_matching_content():
@@ -108,6 +124,17 @@ def test_encrypts_gmail_app_password(monkeypatch):
 def test_normalize_reference_removes_visual_separators():
     assert normalize_reference(" azt-9081 726354 ") == "AZT9081726354"
     assert normalize_reference("123") is None
+
+
+def test_reference_match_normalizes_only_common_ocr_confusions():
+    assert (
+        normalize_reference_for_match("12O4-I678-O901")
+        == normalize_reference_for_match("1204-1678-0901")
+    )
+    assert (
+        normalize_reference_for_match("1204-1678-0901")
+        != normalize_reference_for_match("1204-1678-0902")
+    )
 
 
 def test_normalize_bank_sender_accepts_copied_from_header():
