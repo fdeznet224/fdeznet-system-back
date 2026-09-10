@@ -329,7 +329,68 @@ runuser -u "$SERVICE_USER" -- "$BACKEND_DIR/venv/bin/pip" install --upgrade pip
 # el mecanismo normal de actualizaciones lleve el repositorio al release nuevo.
 runuser -u "$SERVICE_USER" -- "$BACKEND_DIR/venv/bin/pip" install cryptography==50.0.1
 runuser -u "$SERVICE_USER" -- "$BACKEND_DIR/venv/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
-(cd "$BACKEND_DIR" && runuser -u "$SERVICE_USER" -- ./venv/bin/alembic upgrade head)
+DATABASE_STATE="$(
+  cd "$BACKEND_DIR"
+  runuser -u "$SERVICE_USER" -- ./venv/bin/python - <<'PY'
+import asyncio
+
+from sqlalchemy import inspect, text
+
+from src.infrastructure import models  # noqa: F401
+from src.infrastructure.database import Base, engine
+
+
+async def prepare_database() -> None:
+    async with engine.begin() as connection:
+        tables = await connection.run_sync(
+            lambda sync_connection: set(inspect(sync_connection).get_table_names())
+        )
+        application_tables = tables - {"alembic_version"}
+
+        if application_tables:
+            if "clientes" not in application_tables:
+                raise RuntimeError(
+                    "La base contiene tablas parciales pero no la tabla clientes; "
+                    "se requiere revisión antes de continuar"
+                )
+            print("existing")
+            return
+
+        # La primera revisión de Alembic es una línea base histórica y supone
+        # que estas tablas ya existen. En una VPS nueva se crea el esquema del
+        # release fijado y después Alembic lo registra en la revisión actual.
+        await connection.run_sync(Base.metadata.create_all)
+        await connection.execute(
+            text(
+                """
+                INSERT INTO politicas_cobranza (
+                    nombre, tipo_cliente, dias_max_promesa,
+                    max_promesas_activas, max_incumplidas_90_dias,
+                    permite_reconexion, activa
+                )
+                SELECT 'Residencial', 'residencial', 7, 1, 2, 1, 1
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM politicas_cobranza
+                    WHERE tipo_cliente = 'residencial'
+                )
+                """
+            )
+        )
+        print("fresh")
+
+
+asyncio.run(prepare_database())
+PY
+)"
+
+if [[ "$DATABASE_STATE" == "fresh" ]]; then
+  log "Base nueva detectada; registrando el esquema inicial en Alembic"
+  (cd "$BACKEND_DIR" && runuser -u "$SERVICE_USER" -- ./venv/bin/alembic stamp head)
+elif [[ "$DATABASE_STATE" == "existing" ]]; then
+  (cd "$BACKEND_DIR" && runuser -u "$SERVICE_USER" -- ./venv/bin/alembic upgrade head)
+else
+  fail "No se pudo determinar el estado de la base de datos"
+fi
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$BACKEND_DIR/static/recibos"
 
 log "Configurando respaldos y actualizaciones seguras"
