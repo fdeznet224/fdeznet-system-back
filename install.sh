@@ -191,9 +191,7 @@ fi
 NEW_INSTALL="false"
 if [[ ! -f "$BACKEND_DIR/.env" ]]; then
   NEW_INSTALL="true"
-  umask 077
-  touch "$BACKEND_DIR/.env"
-  chown "$SERVICE_USER:$SERVICE_USER" "$BACKEND_DIR/.env"
+  install -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0600 /dev/null "$BACKEND_DIR/.env"
 fi
 
 DB_PASSWORD="$(existing_value DB_PASSWORD "$BACKEND_DIR/.env")"
@@ -304,8 +302,10 @@ chmod 0600 "$BACKEND_DIR/.env"
 log "Configurando WireGuard"
 install -d -m 0700 /etc/wireguard
 if [[ ! -f /etc/wireguard/server_private.key ]]; then
-  umask 077
-  wg genkey | tee /etc/wireguard/server_private.key | wg pubkey > /etc/wireguard/server_public.key
+  (
+    umask 077
+    wg genkey | tee /etc/wireguard/server_private.key | wg pubkey > /etc/wireguard/server_public.key
+  )
 fi
 if [[ ! -f /etc/wireguard/wg0.conf ]]; then
   PRIVATE_KEY="$(< /etc/wireguard/server_private.key)"
@@ -444,8 +444,10 @@ fi
 log "Configurando respaldos y actualizaciones seguras"
 install -d -m 0700 /etc/fdeznet /var/backups/fdeznet
 if [[ ! -f /etc/fdeznet/backup.key ]]; then
-  umask 077
-  openssl rand -hex 32 > /etc/fdeznet/backup.key
+  (
+    umask 077
+    openssl rand -hex 32 > /etc/fdeznet/backup.key
+  )
 fi
 chmod 0600 /etc/fdeznet/backup.key
 install -o root -g root -m 0750 "$BACKEND_DIR/scripts/fdeznet-maintenance.sh" /usr/local/sbin/fdeznet-maintenance
@@ -510,6 +512,11 @@ UNIT
 log "Compilando frontend"
 runuser -u "$SERVICE_USER" -- npm --prefix "$FRONTEND_DIR" ci
 runuser -u "$SERVICE_USER" -- npm --prefix "$FRONTEND_DIR" run build
+# Los recursos del frontend son públicos. Nginx necesita atravesar la ruta y
+# leerlos aunque los secretos del backend permanezcan con permisos 0600.
+chmod 0755 "$APP_DIR" "$FRONTEND_DIR"
+find "$FRONTEND_DIR/dist" -type d -exec chmod 0755 {} +
+find "$FRONTEND_DIR/dist" -type f -exec chmod 0644 {} +
 
 log "Configurando Nginx"
 cat > /etc/nginx/sites-available/fdeznet <<NGINX
