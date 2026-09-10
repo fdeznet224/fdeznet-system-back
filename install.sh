@@ -18,6 +18,7 @@ ADMIN_EMAIL=""
 ADMIN_USER="admin"
 BOOTSTRAP_TOKEN=""
 SKIP_DNS_CHECK="false"
+RESET_ADMIN_PASSWORD="false"
 ACCESS_HOST=""
 PUBLIC_SCHEME="http"
 USE_TLS="false"
@@ -34,7 +35,8 @@ usage() {
     "" \
     "Opciones:" \
     "  --admin-user USUARIO     Usuario administrador inicial (default: admin)" \
-    "  --skip-dns-check         Omite la validación DNS previa al certificado"
+    "  --skip-dns-check         Omite la validación DNS previa al certificado" \
+    "  --reset-admin-password   Genera una nueva contraseña para el administrador"
 }
 
 while (($#)); do
@@ -44,6 +46,7 @@ while (($#)); do
     --admin-user) ADMIN_USER="${2:-}"; shift 2 ;;
     --bootstrap-token) BOOTSTRAP_TOKEN="${2:-}"; shift 2 ;;
     --skip-dns-check) SKIP_DNS_CHECK="true"; shift ;;
+    --reset-admin-password) RESET_ADMIN_PASSWORD="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Opción desconocida: $1" ;;
   esac
@@ -208,7 +211,12 @@ BRAND_NAME="$(existing_value FDEZNET_BRAND_NAME "$BACKEND_DIR/.env")"
 BRAND_SYSTEM_NAME="$(existing_value FDEZNET_BRAND_SYSTEM_NAME "$BACKEND_DIR/.env")"
 BRAND_EMAIL="$(existing_value FDEZNET_BRAND_EMAIL "$BACKEND_DIR/.env")"
 ADMIN_PASSWORD="$(existing_value ADMIN_BOOTSTRAP_PASSWORD "$BACKEND_DIR/.env")"
-if [[ "$NEW_INSTALL" == "true" && -z "$ADMIN_PASSWORD" ]]; then
+if [[ "$RESET_ADMIN_PASSWORD" == "true" ]]; then
+  ADMIN_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
+  set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_USER "$ADMIN_USER"
+  set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_NAME Administrador
+  set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_PASSWORD "$ADMIN_PASSWORD"
+elif [[ "$NEW_INSTALL" == "true" && -z "$ADMIN_PASSWORD" ]]; then
   ADMIN_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
   set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_USER "$ADMIN_USER"
   set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_NAME Administrador
@@ -394,6 +402,45 @@ else
 fi
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$BACKEND_DIR/static/recibos"
 
+if [[ "$RESET_ADMIN_PASSWORD" == "true" ]]; then
+  log "Restableciendo la contraseña del administrador inicial"
+  (
+    cd "$BACKEND_DIR"
+    runuser -u "$SERVICE_USER" -- ./venv/bin/python - <<'PY'
+import asyncio
+import os
+
+from sqlalchemy import select
+
+from src.application.services.user_service import UserService
+from src.infrastructure.database import SessionLocal
+from src.infrastructure.models import UsuarioModel
+
+
+async def reset_admin_password() -> None:
+    async with SessionLocal() as database:
+        admin = await database.scalar(
+            select(UsuarioModel)
+            .where(UsuarioModel.rol == "admin")
+            .order_by(UsuarioModel.id)
+            .limit(1)
+        )
+        if admin is None:
+            print("pending-bootstrap")
+            return
+        admin.password_hash = UserService(database).get_password_hash(
+            os.environ["ADMIN_BOOTSTRAP_PASSWORD"]
+        )
+        admin.activo = True
+        await database.commit()
+        print("reset")
+
+
+asyncio.run(reset_admin_password())
+PY
+  )
+fi
+
 log "Configurando respaldos y actualizaciones seguras"
 install -d -m 0700 /etc/fdeznet /var/backups/fdeznet
 if [[ ! -f /etc/fdeznet/backup.key ]]; then
@@ -522,6 +569,14 @@ ufw --force enable
 if [[ -n "$ADMIN_PASSWORD" ]]; then
   sed -i '/^ADMIN_BOOTSTRAP_PASSWORD=/d' "$BACKEND_DIR/.env"
   systemctl restart fdeznet-api
+  for attempt in {1..150}; do
+    if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null 2>&1; then break; fi
+    if ((attempt == 1 || attempt % 15 == 0)); then
+      log "Esperando el reinicio final de la API (${attempt}/150)"
+    fi
+    [[ "$attempt" -lt 150 ]] || fail "La API no volvió a quedar lista después de 5 minutos; revisa journalctl -u fdeznet-api"
+    sleep 2
+  done
 fi
 
 curl -fsS "${PUBLIC_SCHEME}://${ACCESS_HOST}/api/health/ready" >/dev/null
