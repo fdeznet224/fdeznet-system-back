@@ -498,9 +498,12 @@ systemctl enable --now fdeznet-api fdeznet-bot nginx
 systemctl enable --now fdeznet-backup.timer fdeznet-update.timer fdeznet-verify.timer
 systemctl restart fdeznet-api fdeznet-bot nginx
 
-for attempt in {1..30}; do
-  if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; then break; fi
-  [[ "$attempt" -lt 30 ]] || fail "La API no quedó lista; revisa journalctl -u fdeznet-api"
+for attempt in {1..150}; do
+  if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null 2>&1; then break; fi
+  if ((attempt == 1 || attempt % 15 == 0)); then
+    log "Esperando el primer arranque de la API (${attempt}/150)"
+  fi
+  [[ "$attempt" -lt 150 ]] || fail "La API no quedó lista después de 5 minutos; revisa journalctl -u fdeznet-api"
   sleep 2
 done
 

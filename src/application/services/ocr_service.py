@@ -1,4 +1,4 @@
-import easyocr
+import asyncio
 import re
 import httpx
 import os
@@ -10,8 +10,23 @@ logger = logging.getLogger(__name__)
 
 class OCRService:
     def __init__(self):
-        # Cargamos el modelo en español e inglés
-        self.reader = easyocr.Reader(['es', 'en'])
+        # EasyOCR carga PyTorch y descarga modelos grandes. Se inicializa solo
+        # cuando llega el primer comprobante para no retrasar el arranque de la API.
+        self._reader = None
+        self._reader_lock = asyncio.Lock()
+
+    async def _get_reader(self):
+        if self._reader is not None:
+            return self._reader
+        async with self._reader_lock:
+            if self._reader is None:
+                import easyocr
+
+                self._reader = await asyncio.to_thread(
+                    easyocr.Reader,
+                    ["es", "en"],
+                )
+        return self._reader
 
     @staticmethod
     def extraer_datos(texto_crudo: str) -> dict:
@@ -125,7 +140,12 @@ class OCRService:
                 temporal.write(contenido)
                 temp_path = temporal.name
 
-            resultados = self.reader.readtext(temp_path, detail=0)
+            reader = await self._get_reader()
+            resultados = await asyncio.to_thread(
+                reader.readtext,
+                temp_path,
+                detail=0,
+            )
             texto_crudo = " ".join(resultados)
             # No registrar el texto completo: puede contener datos bancarios,
             # nombres, cuentas o referencias personales.
