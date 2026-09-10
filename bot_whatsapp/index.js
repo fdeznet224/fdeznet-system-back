@@ -7,6 +7,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const mime = require('mime-types');
+const { descargarMediaConReintentos, describirError } = require('./media-utils');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
@@ -177,7 +178,26 @@ function iniciarMotor() {
             }
 
             if (msg.hasMedia) {
-                const media = await msg.downloadMedia();
+                let media;
+                try {
+                    media = await descargarMediaConReintentos(msg);
+                } catch (error) {
+                    console.error(
+                        `❌ No se pudo descargar media tipo=${msg.type}: ${describirError(error)}`
+                    );
+                    try {
+                        await client.sendMessage(
+                            msg.from,
+                            '⚠️ No pude descargar el archivo desde WhatsApp. '
+                            + 'Reenvía el comprobante como una foto normal, no como foto de una sola vista.'
+                        );
+                    } catch (notificationError) {
+                        console.error(
+                            `❌ No se pudo avisar del fallo de descarga: ${describirError(notificationError)}`
+                        );
+                    }
+                    return;
+                }
                 if (media) {
                     let ext = mime.extension(media.mimetype) || 'bin';
                     const fileName = `${msg.type}_${Date.now()}.${ext}`;
