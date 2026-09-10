@@ -34,6 +34,7 @@ from src.infrastructure.models import (
     ConfiguracionSistema,  # 👈 Añadido para poder alertarte de fraudes
     PlantillaMensajeModel,
     ComprobantePagoRevisionModel,
+    TransaccionCorreoBancoModel,
 )
 from src.infrastructure.whatsapp_client import (
     GLOBAL_SETTINGS,
@@ -47,6 +48,11 @@ logger = logging.getLogger(__name__)
 
 # Importaciones de Servicios
 from src.application.services.ocr_service import OCRService
+from src.application.services.bank_email_service import (
+    BankEmailError,
+    BankEmailService,
+    normalize_reference,
+)
 from src.application.services.billing_service import BillingService
 from src.application.services.finance_service import FinanceService
 from src.application.services.access_control_service import (
@@ -403,88 +409,94 @@ async def procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db
             res = f"❌ *Pago Rechazado*\n\nEl comprobante indica un pago de *${monto_ticket}*, pero tu factura es de *${deuda_real}*.\n\nSi es un error de lectura, envía una foto más clara o contacta a soporte."
             del bot_memory[telefono_raw]
         else:
+            revision_id = estado.get("revision_id")
+            revision = (
+                await db.get(ComprobantePagoRevisionModel, revision_id)
+                if revision_id
+                else None
+            )
             try:
-                stmt_u = (
-                    select(UsuarioModel)
-                    .where(
-                        UsuarioModel.rol == "admin",
-                        UsuarioModel.activo.is_(True),
-                    )
-                    .order_by(UsuarioModel.id.asc())
-                )
-                admin_user = (
-                    await db.execute(stmt_u)
-                ).scalars().first()
-                if not admin_user:
-                    raise RuntimeError(
-                        "No existe un administrador activo para "
-                        "registrar el pago automático"
-                    )
-
-                billing_service = BillingService(db)
-                resultado_pago = await billing_service.registrar_pago_completo(
-                    factura_id=factura.id,
-                    usuario_operador=admin_user,
-                    metodo_pago="BOT_AUTOPAGO",
-                    monto=estado["pago"]["monto"],
-                    referencia=estado["pago"]["folio"],
-                    clave_idempotencia=(
-                        f"bot-autopago:{estado['pago']['folio']}"
-                    ),
-                )
-                
-                db.add(PagoAutovalidadoModel(cliente_id=cliente_final.id, monto=monto_ticket, folio_banco=estado["pago"]["folio"], whatsapp_remitente=telefono_raw))
-                revision_id = estado.get("revision_id")
-                revision = (
-                    await db.get(ComprobantePagoRevisionModel, revision_id)
-                    if revision_id
-                    else None
-                )
-                if revision:
-                    revision.estado = "aprobado"
-                    revision.cliente_id = cliente_final.id
-                    revision.factura_id = factura.id
-                    revision.pago_id = resultado_pago.get("pago_id")
-                    revision.motivo_revision = "autovalidado"
-                    revision.fecha_revision = datetime.now()
+                if not revision:
+                    raise RuntimeError("No existe el comprobante para conciliar")
+                revision.cliente_id = cliente_final.id
+                revision.factura_id = factura.id
                 await db.commit()
-
-                if resultado_pago.get("reactivado"):
-                    estado_servicio = (
-                        "\nTu servicio fue reactivado y MikroTik "
-                        "confirmó el cambio. 🚀"
+                correo_service = BankEmailService()
+                try:
+                    await correo_service.sync(db)
+                except BankEmailError as exc:
+                    revision = await db.get(
+                        ComprobantePagoRevisionModel,
+                        revision_id,
                     )
-                elif cliente_final.estado == "suspendido":
-                    estado_servicio = (
-                        "\nEl pago fue aplicado, pero todavía existe otra "
-                        "deuda pendiente; el servicio continúa suspendido."
+                    revision.motivo_revision = "error_sincronizacion_correo"
+                    revision.notas_revision = str(exc)[:1000]
+                    await db.commit()
+                revision = await db.get(ComprobantePagoRevisionModel, revision_id)
+                resultado_pago = await correo_service.reconcile_revision(
+                    db,
+                    revision,
+                )
+
+                if resultado_pago.get("approved"):
+                    if resultado_pago.get("reactivado"):
+                        estado_servicio = (
+                            "\nTu servicio fue reactivado y MikroTik "
+                            "confirmó el cambio. 🚀"
+                        )
+                    elif cliente_final.estado == "suspendido":
+                        estado_servicio = (
+                            "\nEl pago fue aplicado, pero todavía existe otra "
+                            "deuda pendiente; el servicio continúa suspendido."
+                        )
+                    else:
+                        estado_servicio = "\nTu servicio permanece activo."
+                    res = (
+                        f"✅ ¡Pago confirmado por el banco, {cliente_final.nombre}!\n"
+                        f"La transferencia de *${monto_ticket}* fue conciliada "
+                        f"con el correo bancario.{estado_servicio}"
                     )
                 else:
-                    estado_servicio = (
-                        "\nTu servicio permanece activo."
-                    )
-
-                res = (
-                    f"✅ ¡Todo listo, {cliente_final.nombre}!\n"
-                    f"Tu pago de *${monto_ticket}* fue procesado "
-                    f"correctamente.{estado_servicio}"
-                )
+                    status = resultado_pago.get("status")
+                    if status == "correo_confirmado_revision_manual":
+                        res = (
+                            "✅ Encontré la transferencia en el correo bancario. "
+                            "El pago quedó listo para aprobación del administrador."
+                        )
+                    elif status == "correo_bancario_no_configurado":
+                        res = (
+                            "📨 Guardé tu comprobante, pero la validación por "
+                            "correo bancario aún no está configurada. Un asesor "
+                            "revisará el pago."
+                        )
+                    else:
+                        res = (
+                            "⏳ Recibí tu comprobante, pero todavía no encuentro "
+                            "una transferencia bancaria con la misma referencia y "
+                            "monto. Seguiré revisando el correo; no se aplicó ningún "
+                            "pago por ahora."
+                        )
                 del bot_memory[telefono_raw]
             except Exception as e:
-                print(f"Error procesando pago bot: {e}")
+                logger.exception("Error conciliando pago del bot con correo bancario")
                 await db.rollback()
-                revision_id = estado.get("revision_id")
                 revision = (
                     await db.get(ComprobantePagoRevisionModel, revision_id)
                     if revision_id
                     else None
                 )
                 if revision:
-                    revision.motivo_revision = "error_autovalidacion"
+                    revision.estado = "pendiente"
+                    revision.motivo_revision = "error_conciliacion_correo"
                     revision.notas_revision = str(e)[:1000]
                     await db.commit()
-                res = "❌ Error interno al procesar el pago. Contacta a soporte."
-                del bot_memory[telefono_raw]
+                res = (
+                    "⚠️ Tu comprobante quedó guardado para revisión, pero no "
+                    "pude consultar el correo bancario en este momento. No se "
+                    "registró ningún pago."
+                )
+                if telefono_raw in bot_memory:
+                    del bot_memory[telefono_raw]
     
     await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
     return {"status": "bot_pago_finished"}
@@ -587,6 +599,7 @@ async def listar_comprobantes_revision(
                 joinedload(ComprobantePagoRevisionModel.cliente),
                 joinedload(ComprobantePagoRevisionModel.factura),
                 joinedload(ComprobantePagoRevisionModel.revisado_por),
+                joinedload(ComprobantePagoRevisionModel.transaccion_correo),
             )
             .where(*filtros)
             .order_by(ComprobantePagoRevisionModel.fecha_recepcion.desc())
@@ -620,6 +633,18 @@ async def listar_comprobantes_revision(
                 else None
             ),
             "pago_id": item.pago_id,
+            "validacion_correo": (
+                {
+                    "id": item.transaccion_correo.id,
+                    "fecha": item.transaccion_correo.fecha_correo,
+                    "monto": item.transaccion_correo.monto,
+                    "referencia": item.transaccion_correo.referencia,
+                    "autenticado": item.transaccion_correo.autenticado,
+                    "estado": item.transaccion_correo.estado,
+                }
+                if item.transaccion_correo
+                else None
+            ),
             "factura_sugerida": (
                 {
                     "id": factura.id,
@@ -679,7 +704,16 @@ async def aprobar_comprobante_revision(
     if comprobante.estado in {"aprobado", "rechazado"}:
         raise HTTPException(status_code=409, detail="El comprobante ya fue revisado")
 
-    monto = datos.monto or comprobante.monto_detectado
+    transaction = (
+        await db.get(TransaccionCorreoBancoModel, comprobante.transaccion_correo_id)
+        if comprobante.transaccion_correo_id
+        else None
+    )
+    monto = (
+        transaction.monto
+        if transaction and transaction.autenticado
+        else datos.monto or comprobante.monto_detectado
+    )
     if not monto or Decimal(monto) <= 0:
         raise HTTPException(status_code=400, detail="Indica el monto confirmado")
     factura = (
@@ -706,7 +740,9 @@ async def aprobar_comprobante_revision(
             metodo_pago="transferencia",
             monto=monto,
             referencia=(
-                datos.referencia
+                transaction.referencia
+                if transaction and transaction.autenticado
+                else datos.referencia
                 or comprobante.folio_detectado
                 or f"REV-{comprobante.id}"
             ),
@@ -716,6 +752,10 @@ async def aprobar_comprobante_revision(
         comprobante.estado = "aprobado"
         comprobante.pago_id = resultado.get("pago_id")
         comprobante.fecha_revision = datetime.now()
+        if transaction:
+            transaction.estado = "conciliada"
+            transaction.pago_id = resultado.get("pago_id")
+            transaction.conciliada_en = datetime.now()
         await db.commit()
         return {"status": "aprobado", **resultado}
     except ValueError as exc:
@@ -1131,7 +1171,7 @@ async def webhook_recibir_mensaje(
                     monto_detectado=(
                         monto_detectado if monto_detectado > 0 else None
                     ),
-                    folio_detectado=resultado_ocr.get("folio"),
+                    folio_detectado=normalize_reference(resultado_ocr.get("folio")),
                     cedula_detectada=resultado_ocr.get("cedula_detectada"),
                     motivo_revision=(
                         "esperando_confirmacion"
@@ -1160,7 +1200,7 @@ async def webhook_recibir_mensaje(
                     return {"status": "ocr_failed"}
 
                 # 🛡️ CAPA 1: Evitar Folios Duplicados
-                folio_banco = resultado_ocr["folio"]
+                folio_banco = normalize_reference(resultado_ocr["folio"])
                 stmt_fraude = select(PagoAutovalidadoModel).where(PagoAutovalidadoModel.folio_banco == folio_banco)
                 pago_existente = (await db.execute(stmt_fraude)).scalars().first()
 

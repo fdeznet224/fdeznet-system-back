@@ -1575,6 +1575,61 @@ class ConfiguracionModel(Base):
     clave = Column(String(50), unique=True) 
     valor = Column(String(100))             
 
+
+class ConfiguracionCorreoBancoModel(Base):
+    __tablename__ = "configuracion_correo_banco"
+
+    id = Column(Integer, primary_key=True, default=1)
+    activo = Column(Boolean, nullable=False, default=False, server_default="0")
+    auto_aprobar = Column(Boolean, nullable=False, default=False, server_default="0")
+    proveedor = Column(String(30), nullable=False, default="gmail_imap", server_default="gmail_imap")
+    correo = Column(String(160), nullable=True)
+    secreto_cifrado = Column(Text, nullable=True)
+    remitente_permitido = Column(String(255), nullable=True)
+    asunto_filtro = Column(String(255), nullable=True)
+    carpeta = Column(String(100), nullable=False, default="INBOX", server_default="INBOX")
+    ventana_dias = Column(Integer, nullable=False, default=3, server_default="3")
+    tolerancia_monto = Column(Numeric(12, 2), nullable=False, default=0, server_default="0.00")
+    requiere_dkim = Column(Boolean, nullable=False, default=True, server_default="1")
+    ultimo_uid = Column(String(50), nullable=True)
+    credencial_verificada_en = Column(DateTime, nullable=True)
+    ultima_revision = Column(DateTime, nullable=True)
+    ultimo_error = Column(String(500), nullable=True)
+    actualizado_en = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class TransaccionCorreoBancoModel(Base):
+    __tablename__ = "transacciones_correo_banco"
+
+    id = Column(Integer, primary_key=True)
+    correo_message_id = Column(String(255), nullable=False, unique=True, index=True)
+    uid_buzon = Column(String(50), nullable=True)
+    remitente = Column(String(255), nullable=False)
+    asunto = Column(String(500), nullable=True)
+    fecha_correo = Column(DateTime, nullable=True, index=True)
+    monto = Column(Numeric(12, 2), nullable=True, index=True)
+    referencia = Column(String(100), nullable=True, index=True)
+    concepto = Column(String(255), nullable=True)
+    autenticado = Column(Boolean, nullable=False, default=False, server_default="0")
+    detalle_autenticacion = Column(String(500), nullable=True)
+    contenido_hash = Column(String(64), nullable=False)
+    estado = Column(String(30), nullable=False, default="disponible", server_default="disponible")
+    pago_id = Column(
+        Integer,
+        ForeignKey("pagos.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    recibida_en = Column(DateTime, nullable=False, server_default=func.now())
+    conciliada_en = Column(DateTime, nullable=True)
+
+    pago = relationship("PagoModel")
+
 class ConfiguracionSistema(Base):
     __tablename__ = "configuracion_sistema"
     id = Column(Integer, primary_key=True, index=True)
@@ -1923,6 +1978,12 @@ class ComprobantePagoRevisionModel(Base):
         ForeignKey("usuarios.id", ondelete="SET NULL"),
         nullable=True,
     )
+    transaccion_correo_id = Column(
+        Integer,
+        ForeignKey("transacciones_correo_banco.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
 
     telefono = Column(String(100), nullable=False)
     media_url = Column(Text, nullable=False)
@@ -1948,5 +2009,6 @@ class ComprobantePagoRevisionModel(Base):
     cliente = relationship("ClienteModel")
     factura = relationship("FacturaModel")
     pago = relationship("PagoModel")
+    transaccion_correo = relationship("TransaccionCorreoBancoModel")
     mensaje_chat = relationship("MensajeChatModel")
     revisado_por = relationship("UsuarioModel", foreign_keys=[revisado_por_id])

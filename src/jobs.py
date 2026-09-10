@@ -20,11 +20,26 @@ from src.application.services.mikrotik_reconciliation_service import (
     MikrotikReconciliationService,
 )
 from src.application.services.license_service import verify_license
+from src.application.services.bank_email_service import BankEmailError, BankEmailService
 
 
 async def tarea_verificar_licencia():
     async with SessionLocal() as db:
         await verify_license(db)
+
+
+async def tarea_conciliar_correos_bancarios():
+    """Importa avisos bancarios y concilia comprobantes aún pendientes."""
+    async with SessionLocal() as db:
+        service = BankEmailService()
+        try:
+            sync_result = await service.sync(db)
+            if sync_result.get("status") == "disabled":
+                return
+            await service.reconcile_pending(db)
+        except BankEmailError:
+            # El detalle ya queda guardado en configuracion_correo_banco.
+            return
 
 # ==========================================
 # 📱 NOTIFICACIÓN DE WHATSAPP (Asíncrona)
