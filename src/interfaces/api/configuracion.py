@@ -37,6 +37,7 @@ from src.domain.schemas import (
     MaintenanceStatus,
     StoragePolicyUpdate,
     BotFlowUpdate,
+    BotVisualFlowUpdate,
 )
 from src.application.services.license_service import local_status, verify_license
 from src.application.services.branding_service import get_or_create_system_config
@@ -51,6 +52,12 @@ from src.application.services.bot_flow_service import (
     config_payload,
     get_or_create_bot_config,
     normalize_options,
+)
+from src.application.services.bot_visual_flow_service import (
+    FLOW_SCOPES,
+    flow_payload,
+    get_visual_flow,
+    validate_flow_for_scope,
 )
 
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
@@ -87,6 +94,61 @@ async def guardar_flujo_bot(
     await db.commit()
     await db.refresh(config)
     return config_payload(config)
+
+
+@router.get("/bot-flujos/{alcance}")
+async def obtener_flujo_visual(
+    alcance: str,
+    db: AsyncSession = Depends(get_db),
+):
+    if alcance not in FLOW_SCOPES:
+        raise HTTPException(status_code=404, detail="Flujo no encontrado")
+    flow = await get_visual_flow(db, alcance)
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flujo no encontrado")
+    return flow_payload(flow)
+
+
+@router.put("/bot-flujos/{alcance}")
+async def guardar_flujo_visual(
+    alcance: str,
+    datos: BotVisualFlowUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    flow = await get_visual_flow(db, alcance)
+    if alcance not in FLOW_SCOPES or not flow:
+        raise HTTPException(status_code=404, detail="Flujo no encontrado")
+    nodes = [node.model_dump() for node in datos.nodos]
+    edges = [edge.model_dump() for edge in datos.conexiones]
+    try:
+        validate_flow_for_scope(alcance, nodes, edges)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    command = datos.comando.strip().lower()
+    if command in {"menu", "cancelar", "salir"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Ese comando está reservado para controlar la sesión",
+        )
+    other_scope = "tecnico" if alcance == "cliente" else "cliente"
+    other_flow = await get_visual_flow(db, other_scope)
+    if other_flow and other_flow.activo and other_flow.comando.lower() == command:
+        raise HTTPException(
+            status_code=422,
+            detail="El bot de clientes y el bot técnico deben usar comandos distintos",
+        )
+    flow.nombre = datos.nombre.strip()
+    flow.activo = datos.activo
+    flow.comando = command
+    flow.nodos_json = json.dumps(nodes, ensure_ascii=False)
+    flow.conexiones_json = json.dumps(edges, ensure_ascii=False)
+    if alcance == "cliente":
+        legacy = await get_or_create_bot_config(db)
+        legacy.activo = datos.activo
+        legacy.palabra_activacion = flow.comando
+    await db.commit()
+    await db.refresh(flow)
+    return flow_payload(flow)
 
 
 async def _iniciar_mantenimiento(service: str) -> dict[str, str]:

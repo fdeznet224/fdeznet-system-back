@@ -1511,6 +1511,13 @@ class UsuarioModel(Base):
     password_hash = Column(Text)
     rol = Column(String(20), default="tecnico") 
     activo = Column(Boolean, default=True)
+    telefono_whatsapp = Column(String(20), unique=True, nullable=True)
+    bot_whatsapp_habilitado = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+    )
     
     pagos = relationship(
         "PagoModel",
@@ -1810,6 +1817,24 @@ class ConfiguracionBotModel(Base):
     mensaje_despedida = Column(String(300), nullable=False, default="Asistente desactivado. Un asesor humano te atenderá a la brevedad.")
     opciones_json = Column(Text, nullable=False)
     actualizado_en = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class FlujoBotModel(Base):
+    __tablename__ = "flujos_bot"
+
+    id = Column(Integer, primary_key=True)
+    alcance = Column(String(20), nullable=False, unique=True)
+    nombre = Column(String(100), nullable=False)
+    activo = Column(Boolean, nullable=False, default=True, server_default="1")
+    comando = Column(String(30), nullable=False)
+    nodos_json = Column(Text, nullable=False)
+    conexiones_json = Column(Text, nullable=False)
+    actualizado_en = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 # ==========================================
 # 5. AUDITORÍA Y LOGS DE CRONJOBS

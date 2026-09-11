@@ -85,6 +85,46 @@ class BotFlowUpdate(BaseModel):
             raise ValueError("Habilita al menos una opción del bot")
         return self
 
+
+class BotVisualNode(BaseModel):
+    id: str = Field(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    type: str = Field(pattern=r"^(trigger|message|menu|action|end)$")
+    title: str = Field(min_length=1, max_length=100)
+    text: str = Field(default="", max_length=1000)
+    action: Optional[str] = Field(default=None, max_length=50)
+    x: float = Field(default=0, ge=0, le=5000)
+    y: float = Field(default=0, ge=0, le=5000)
+
+
+class BotVisualEdge(BaseModel):
+    id: str = Field(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    source: str = Field(min_length=1, max_length=50)
+    target: str = Field(min_length=1, max_length=50)
+    label: str = Field(default="", max_length=80)
+
+
+class BotVisualFlowUpdate(BaseModel):
+    nombre: str = Field(min_length=3, max_length=100)
+    activo: bool = True
+    comando: str = Field(min_length=3, max_length=30, pattern=r"^[A-Za-z0-9_-]+$")
+    nodos: list[BotVisualNode] = Field(min_length=2, max_length=100)
+    conexiones: list[BotVisualEdge] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validar_grafo(self):
+        node_ids = [node.id for node in self.nodos]
+        edge_ids = [edge.id for edge in self.conexiones]
+        if len(node_ids) != len(set(node_ids)):
+            raise ValueError("Los identificadores de los bloques no pueden repetirse")
+        if len(edge_ids) != len(set(edge_ids)):
+            raise ValueError("Las conexiones no pueden repetirse")
+        known = set(node_ids)
+        if any(edge.source not in known or edge.target not in known for edge in self.conexiones):
+            raise ValueError("Todas las conexiones deben apuntar a bloques existentes")
+        if sum(node.type == "trigger" for node in self.nodos) != 1:
+            raise ValueError("El flujo debe tener exactamente un bloque de inicio")
+        return self
+
 class ConfigUpdate(BaseModel):
     valor: str
 
@@ -574,6 +614,8 @@ class UsuarioBase(BaseModel):
     usuario: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_.-]+$")
     rol: str = Field(default="cajero", pattern=r"^(admin|cajero|tecnico|supervisor)$")
     activo: bool = True
+    telefono_whatsapp: Optional[str] = Field(default=None, max_length=20)
+    bot_whatsapp_habilitado: bool = False
 
 class UsuarioCreate(UsuarioBase):
     password: str = Field(..., min_length=10, max_length=128)
@@ -586,6 +628,8 @@ class UsuarioUpdate(BaseModel):
     rol: Optional[str] = None
     activo: Optional[bool] = None
     router_ids: Optional[List[int]] = None
+    telefono_whatsapp: Optional[str] = Field(default=None, max_length=20)
+    bot_whatsapp_habilitado: Optional[bool] = None
 
 class UsuarioResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -604,6 +648,8 @@ class UsuarioResponse(BaseModel):
     )
     activo: bool = True
     router_ids: List[int] = Field(default_factory=list)
+    telefono_whatsapp: Optional[str] = None
+    bot_whatsapp_habilitado: bool = False
 
 # ==========================================
 # 10. CLIENTES

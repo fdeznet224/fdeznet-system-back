@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from passlib.context import CryptContext
+import re
 
 # Importamos Modelos y Schemas
 from src.infrastructure.models import UsuarioModel, RouterModel
@@ -31,6 +32,15 @@ class UserService:
         if rol.strip().lower() not in ROLES_VALIDOS:
             raise ValueError("Rol inválido. Usa admin, cajero, tecnico o supervisor")
 
+    @staticmethod
+    def normalizar_telefono_whatsapp(telefono: str | None) -> str | None:
+        if not telefono:
+            return None
+        digits = re.sub(r"\D", "", telefono)
+        if len(digits) < 10 or len(digits) > 15:
+            raise ValueError("El teléfono de WhatsApp debe tener entre 10 y 15 dígitos")
+        return digits
+
     # ==========================================
     # CREAR USUARIO
     # ==========================================
@@ -42,6 +52,22 @@ class UserService:
         res = await self.db.execute(stmt)
         if res.scalar_one_or_none():
             raise ValueError(f"El usuario '{datos.usuario}' ya existe.")
+        telefono_whatsapp = self.normalizar_telefono_whatsapp(
+            datos.telefono_whatsapp
+        )
+        if datos.bot_whatsapp_habilitado and (
+            not telefono_whatsapp
+            or datos.rol not in {"admin", "supervisor", "tecnico"}
+        ):
+            raise ValueError(
+                "El bot técnico requiere teléfono y rol admin, supervisor o técnico"
+            )
+        if telefono_whatsapp and await self.db.scalar(
+            select(UsuarioModel.id).where(
+                UsuarioModel.telefono_whatsapp == telefono_whatsapp
+            )
+        ):
+            raise ValueError("Ese teléfono de WhatsApp ya pertenece a otro usuario")
 
         # 2. Crear instancia base
         nuevo_usuario = UsuarioModel(
@@ -49,7 +75,9 @@ class UserService:
             usuario=datos.usuario,
             rol=datos.rol.strip().lower(),
             activo=datos.activo,
-            password_hash=self.get_password_hash(datos.password)
+            password_hash=self.get_password_hash(datos.password),
+            telefono_whatsapp=telefono_whatsapp,
+            bot_whatsapp_habilitado=datos.bot_whatsapp_habilitado,
         )
 
         # 3. Asignar Routers Permitidos (Relación Many-to-Many)
@@ -90,6 +118,27 @@ class UserService:
             self.validar_rol(datos.rol)
             usuario_db.rol = datos.rol.strip().lower()
         if datos.activo is not None: usuario_db.activo = datos.activo
+        if datos.telefono_whatsapp is not None:
+            usuario_db.telefono_whatsapp = self.normalizar_telefono_whatsapp(
+                datos.telefono_whatsapp
+            )
+        if datos.bot_whatsapp_habilitado is not None:
+            usuario_db.bot_whatsapp_habilitado = datos.bot_whatsapp_habilitado
+
+        if usuario_db.bot_whatsapp_habilitado and (
+            not usuario_db.telefono_whatsapp
+            or usuario_db.rol not in {"admin", "supervisor", "tecnico"}
+        ):
+            raise ValueError(
+                "El bot técnico requiere teléfono y rol admin, supervisor o técnico"
+            )
+        if usuario_db.telefono_whatsapp and await self.db.scalar(
+            select(UsuarioModel.id).where(
+                UsuarioModel.telefono_whatsapp == usuario_db.telefono_whatsapp,
+                UsuarioModel.id != user_id,
+            )
+        ):
+            raise ValueError("Ese teléfono de WhatsApp ya pertenece a otro usuario")
         
         # 3. Actualizar Contraseña (si se envió)
         if datos.password and len(datos.password) > 0:

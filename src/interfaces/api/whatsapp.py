@@ -35,6 +35,10 @@ from src.infrastructure.models import (
     PlantillaMensajeModel,
     ComprobantePagoRevisionModel,
     TransaccionCorreoBancoModel,
+    FlujoBotModel,
+    ServicioModel,
+    OrdenServicioModel,
+    LogActividadModel,
 )
 from src.infrastructure.whatsapp_client import (
     GLOBAL_SETTINGS,
@@ -70,6 +74,11 @@ from src.application.services.bot_flow_service import (
     get_or_create_bot_config,
 )
 from src.application.services.support_service import SupportService
+from src.application.services.bot_visual_flow_service import (
+    execute_until_wait,
+    get_visual_flow,
+    select_menu_target,
+)
 
 router = APIRouter(prefix="/whatsapp", tags=["Configuración WhatsApp"])
 webhook_router = APIRouter(prefix="/whatsapp", tags=["Webhooks WhatsApp"])
@@ -212,6 +221,229 @@ def formatear_diagnostico_autoservicio(cliente, diagnostico: dict) -> str:
         "Si continúas sin internet, deja la ONU y el router encendidos para que soporte pueda revisarlos.",
     ])
     return "\n".join(lineas)
+
+
+def formatear_ficha_red_tecnica(cliente, servicio=None) -> str:
+    objetivo = servicio or cliente
+    router = getattr(objetivo, "router", None) or getattr(cliente, "router", None)
+    olt = getattr(objetivo, "olt", None) or getattr(cliente, "olt", None)
+    onu = getattr(objetivo, "onu", None) or getattr(cliente, "onu_asignada", None)
+    nap = getattr(objetivo, "caja_nap", None) or getattr(cliente, "caja_nap", None)
+    puerto = getattr(objetivo, "puerto_nap", None) or getattr(cliente, "puerto_nap", None)
+    return "\n".join([
+        "🧰 *FICHA TÉCNICA DEL ABONADO*",
+        "",
+        f"👤 *Cliente:* {cliente.nombre}",
+        f"🪪 *Contrato:* {cliente.cedula}",
+        f"📍 *Dirección:* {getattr(objetivo, 'direccion', None) or cliente.direccion or 'Sin registrar'}",
+        f"🔌 *Estado:* {(getattr(objetivo, 'estado', None) or cliente.estado or 'desconocido').upper()}",
+        f"🖧 *Router:* {getattr(router, 'nombre', None) or 'Sin asignar'}",
+        f"👤 *Usuario PPPoE:* {getattr(objetivo, 'user_pppoe', None) or cliente.user_pppoe or 'Sin asignar'}",
+        f"🌐 *IP asignada:* {getattr(objetivo, 'ip_asignada', None) or cliente.ip_asignada or 'Sin asignar'}",
+        f"💡 *OLT:* {getattr(olt, 'nombre', None) or 'Sin asignar'}",
+        f"🔢 *ONU:* {getattr(onu, 'identificador', None) or 'Sin asignar'}",
+        f"📦 *Caja NAP:* {getattr(nap, 'nombre', None) or 'Sin asignar'}",
+        f"🔌 *Puerto NAP:* {puerto or 'Sin asignar'}",
+    ])
+
+
+def formatear_pppoe_tecnico(cliente, diagnostico: dict) -> str:
+    datos = diagnostico.get("mikrotik") or {}
+    if not datos.get("disponible"):
+        return "⚠️ MikroTik no está disponible para consultar la sesión PPPoE."
+    conectado = "🟢 CONECTADO" if datos.get("pppoe_online") else "🔴 DESCONECTADO"
+    return "\n".join([
+        "🌐 *VERIFICACIÓN PPPoE*",
+        f"👤 *Cliente:* {cliente.nombre}",
+        f"🔌 *Estado:* {conectado}",
+        f"🌍 *IP actual:* {datos.get('ip_actual') or 'Sin sesión'}",
+        f"⏱️ *Uptime:* {datos.get('uptime') or 'No disponible'}",
+        f"📶 *Ping:* {datos.get('ping_estado') or 'No disponible'}",
+        f"📉 *Pérdida:* {datos.get('perdida_porcentaje') if datos.get('perdida_porcentaje') is not None else 'N/D'}%",
+    ])
+
+
+def formatear_optica_tecnico(cliente, diagnostico: dict) -> str:
+    datos = diagnostico.get("olt") or {}
+    if not datos.get("disponible"):
+        return "⚠️ La OLT no está disponible para consultar la ONU."
+    estado = "🟢 EN LÍNEA" if datos.get("onu_online") else "🔴 FUERA DE LÍNEA"
+    return "\n".join([
+        "💡 *VERIFICACIÓN ÓPTICA*",
+        f"👤 *Cliente:* {cliente.nombre}",
+        f"🔌 *ONU:* {estado}",
+        f"📥 *RX:* {datos.get('potencia_rx_dbm') if datos.get('potencia_rx_dbm') is not None else 'N/D'} dBm",
+        f"📤 *TX:* {datos.get('potencia_tx_dbm') if datos.get('potencia_tx_dbm') is not None else 'N/D'} dBm",
+        f"🛰️ *Origen:* {datos.get('origen') or 'No disponible'}",
+    ])
+
+
+async def ejecutar_bloque_visual(
+    db: AsyncSession,
+    wa_service: WhatsAppService,
+    telefono: str,
+    flow: FlujoBotModel,
+    result: dict,
+    *,
+    staff_id: int | None = None,
+) -> dict:
+    for message in result.get("messages", []):
+        if message.strip():
+            await wa_service.enviar_mensaje(telefono=telefono, mensaje=message)
+    if result["kind"] == "menu":
+        bot_memory[telefono] = {
+            "paso": "FLUJO_VISUAL",
+            "alcance": flow.alcance,
+            "flow_node": result["node_id"],
+            "staff_id": staff_id,
+            "iniciado_en": datetime.now(),
+        }
+        return {"status": f"flujo_{flow.alcance}_menu"}
+    if result["kind"] == "end":
+        bot_memory.pop(telefono, None)
+        return {"status": f"flujo_{flow.alcance}_finalizado"}
+
+    action = result.get("action")
+    prompts = {
+        "reportar_pago": (
+            "ESPERANDO_FOTO_PAGO",
+            "📄 Envía una foto clara del comprobante de pago.",
+        ),
+        "promesa_pago": (
+            "VALIDAR_CEDULA_PROMESA",
+            "⏳ Escribe tu número de contrato para registrar la promesa.",
+        ),
+        "estado_servicio": (
+            "VALIDAR_CEDULA_ESTADO",
+            "📊 Escribe tu número de contrato para consultar servicio y saldo.",
+        ),
+        "diagnostico_tecnico": (
+            "VALIDAR_CEDULA_SOPORTE",
+            "🛠️ Escribe tu número de contrato para diagnosticar la conexión.",
+        ),
+        "tecnico_diagnostico": (
+            "TECNICO_CONTRATO_DIAGNOSTICO",
+            "🧰 Escribe el número de contrato que deseas diagnosticar.",
+        ),
+        "tecnico_pppoe": (
+            "TECNICO_CONTRATO_PPPOE",
+            "🌐 Escribe el contrato para verificar su sesión PPPoE.",
+        ),
+        "tecnico_potencia": (
+            "TECNICO_CONTRATO_POTENCIA",
+            "💡 Escribe el contrato para verificar ONU y potencia óptica.",
+        ),
+        "tecnico_red": (
+            "TECNICO_CONTRATO_RED",
+            "📦 Escribe el número de contrato para consultar su ficha de red.",
+        ),
+    }
+    if action == "datos_pago":
+        await wa_service.enviar_mensaje(
+            telefono=telefono,
+            mensaje=await obtener_datos_pago(db),
+        )
+        bot_memory.pop(telefono, None)
+        return {"status": "flujo_datos_pago"}
+    if action not in prompts:
+        bot_memory.pop(telefono, None)
+        await wa_service.enviar_mensaje(
+            telefono=telefono,
+            mensaje="⚠️ Este bloque todavía no tiene una acción válida.",
+        )
+        return {"status": "flujo_accion_invalida"}
+    step, prompt = prompts[action]
+    bot_memory[telefono] = {
+        "paso": step,
+        "staff_id": staff_id,
+        "iniciado_en": datetime.now(),
+    }
+    await wa_service.enviar_mensaje(telefono=telefono, mensaje=prompt)
+    return {"status": f"flujo_accion_{action}"}
+
+
+async def buscar_staff_whatsapp(
+    db: AsyncSession,
+    telefono: str,
+) -> UsuarioModel | None:
+    digits = re.sub(r"\D", "", telefono or "")
+    if len(digits) < 10:
+        return None
+    return (
+        await db.execute(
+            select(UsuarioModel)
+            .options(selectinload(UsuarioModel.routers_asignados))
+            .where(
+                UsuarioModel.activo.is_(True),
+                UsuarioModel.bot_whatsapp_habilitado.is_(True),
+                UsuarioModel.rol.in_(["admin", "supervisor", "tecnico"]),
+                func.right(UsuarioModel.telefono_whatsapp, 10) == digits[-10:],
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def buscar_cliente_para_staff(
+    db: AsyncSession,
+    contrato: str,
+    staff: UsuarioModel,
+):
+    cliente = (
+        await db.execute(
+            select(ClienteModel)
+            .options(
+                joinedload(ClienteModel.router),
+                joinedload(ClienteModel.olt),
+                joinedload(ClienteModel.onu_asignada),
+                joinedload(ClienteModel.caja_nap),
+            )
+            .where(ClienteModel.cedula == contrato.upper().strip())
+        )
+    ).scalar_one_or_none()
+    if not cliente:
+        return None, None
+    servicio = (
+        await db.execute(
+            select(ServicioModel)
+            .options(
+                joinedload(ServicioModel.router),
+                joinedload(ServicioModel.olt),
+                joinedload(ServicioModel.onu),
+                joinedload(ServicioModel.caja_nap),
+            )
+            .where(
+                ServicioModel.cliente_id == cliente.id,
+                ServicioModel.estado != "cancelado",
+            )
+            .order_by(ServicioModel.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if staff.rol not in {"admin", "supervisor"}:
+        router_id = getattr(servicio, "router_id", None) or cliente.router_id
+        allowed_router_ids = {router.id for router in staff.routers_asignados}
+        assigned = (
+            cliente.tecnico_id == staff.id
+            or getattr(servicio, "tecnico_id", None) == staff.id
+            or (router_id is not None and router_id in allowed_router_ids)
+        )
+        if not assigned:
+            assigned = bool(
+                await db.scalar(
+                    select(OrdenServicioModel.id)
+                    .where(
+                        OrdenServicioModel.cliente_id == cliente.id,
+                        OrdenServicioModel.tecnico_id == staff.id,
+                        OrdenServicioModel.estado.in_(
+                            ["pendiente", "asignada", "en_camino", "trabajando"]
+                        ),
+                    )
+                    .limit(1)
+                )
+            )
+        if not assigned:
+            return False, None
+    return cliente, servicio
 
 
 def normalizar_texto_bot(texto: str) -> str:
@@ -1053,6 +1285,8 @@ async def webhook_recibir_mensaje(
     bot_config = await get_or_create_bot_config(db)
     palabra_bot = normalizar_texto_bot(bot_config.palabra_activacion)
     menu_bot = construir_menu_bot(asistente_nombre, bot_config)
+    flujo_cliente = await get_visual_flow(db, "cliente")
+    flujo_tecnico = await get_visual_flow(db, "tecnico")
 
     # =========================================================
     # 1. CHAT NORMAL Y GUARDADO EN CRM 
@@ -1091,6 +1325,44 @@ async def webhook_recibir_mensaje(
         }
     })
 
+    # El flujo técnico se evalúa primero, pero únicamente para personal cuyo
+    # número fue autorizado expresamente desde Usuarios del sistema.
+    if (
+        flujo_tecnico
+        and flujo_tecnico.activo
+        and normalizar_texto_bot(texto_limpio)
+        == normalizar_texto_bot(flujo_tecnico.comando)
+    ):
+        staff = await buscar_staff_whatsapp(db, telefono_raw)
+        if not staff:
+            await wa_service.enviar_mensaje(
+                telefono=telefono_raw,
+                mensaje="🔒 Este número no tiene acceso al asistente técnico.",
+            )
+            return {"status": "bot_tecnico_no_autorizado"}
+        return await ejecutar_bloque_visual(
+            db,
+            wa_service,
+            telefono_raw,
+            flujo_tecnico,
+            execute_until_wait(flujo_tecnico),
+            staff_id=staff.id,
+        )
+
+    if (
+        flujo_cliente
+        and flujo_cliente.activo
+        and normalizar_texto_bot(texto_limpio)
+        == normalizar_texto_bot(flujo_cliente.comando)
+    ):
+        return await ejecutar_bloque_visual(
+            db,
+            wa_service,
+            telefono_raw,
+            flujo_cliente,
+            execute_until_wait(flujo_cliente),
+        )
+
     fuera_de_horario = esta_fuera_de_horario()
     if (
         bot_config.activo
@@ -1102,6 +1374,21 @@ async def webhook_recibir_mensaje(
             telefono=telefono_raw,
             mensaje=mensaje_fuera_de_horario(empresa_nombre, asistente_nombre),
             tipo_evento="presentacion_bot_fuera_horario",
+        )
+
+    if (
+        flujo_cliente
+        and flujo_cliente.activo
+        and fuera_de_horario
+        and telefono_raw not in bot_memory
+        and not media_url
+    ):
+        return await ejecutar_bloque_visual(
+            db,
+            wa_service,
+            telefono_raw,
+            flujo_cliente,
+            execute_until_wait(flujo_cliente),
         )
 
     # El autoservicio es únicamente por texto; no se envía audio a servicios externos.
@@ -1245,6 +1532,141 @@ async def webhook_recibir_mensaje(
                 ),
             )
             return {"status": "bot_expirado"}
+
+        if estado.get("paso") == "FLUJO_VISUAL":
+            flow = await get_visual_flow(db, estado.get("alcance", ""))
+            if not flow or not flow.activo:
+                bot_memory.pop(telefono_raw, None)
+                return {"status": "flujo_no_disponible"}
+            if texto_limpio in {"cancelar", "salir"}:
+                bot_memory.pop(telefono_raw, None)
+                await wa_service.enviar_mensaje(
+                    telefono=telefono_raw,
+                    mensaje="🤖 Flujo finalizado.",
+                )
+                return {"status": "flujo_cancelado"}
+            if texto_limpio in {"menu", "menú"}:
+                return await ejecutar_bloque_visual(
+                    db,
+                    wa_service,
+                    telefono_raw,
+                    flow,
+                    execute_until_wait(flow),
+                    staff_id=estado.get("staff_id"),
+                )
+            target = select_menu_target(
+                flow,
+                estado["flow_node"],
+                texto_limpio,
+            )
+            if not target:
+                await wa_service.enviar_mensaje(
+                    telefono=telefono_raw,
+                    mensaje="❌ Selecciona uno de los números mostrados.",
+                )
+                return {"status": "flujo_opcion_invalida"}
+            return await ejecutar_bloque_visual(
+                db,
+                wa_service,
+                telefono_raw,
+                flow,
+                execute_until_wait(flow, target),
+                staff_id=estado.get("staff_id"),
+            )
+
+        if estado.get("paso") in {
+            "TECNICO_CONTRATO_DIAGNOSTICO",
+            "TECNICO_CONTRATO_PPPOE",
+            "TECNICO_CONTRATO_POTENCIA",
+            "TECNICO_CONTRATO_RED",
+        }:
+            staff = await buscar_staff_whatsapp(db, telefono_raw)
+            if not staff or staff.id != estado.get("staff_id"):
+                bot_memory.pop(telefono_raw, None)
+                await wa_service.enviar_mensaje(
+                    telefono=telefono_raw,
+                    mensaje="🔒 La autorización técnica ya no es válida.",
+                )
+                return {"status": "bot_tecnico_no_autorizado"}
+            cliente_tecnico, servicio_tecnico = await buscar_cliente_para_staff(
+                db,
+                mensaje_texto,
+                staff,
+            )
+            if cliente_tecnico is False:
+                await wa_service.enviar_mensaje(
+                    telefono=telefono_raw,
+                    mensaje=(
+                        "🔒 Ese abonado no pertenece a tus routers o trabajos "
+                        "asignados."
+                    ),
+                )
+                return {"status": "bot_tecnico_fuera_de_alcance"}
+            if not cliente_tecnico:
+                await wa_service.enviar_mensaje(
+                    telefono=telefono_raw,
+                    mensaje="❌ Contrato no encontrado. Verifica e intenta otra vez.",
+                )
+                return {"status": "bot_tecnico_contrato_invalido"}
+            bot_memory.pop(telefono_raw, None)
+            db.add(
+                LogActividadModel(
+                    usuario_id=staff.id,
+                    usuario_nombre=staff.usuario,
+                    accion="consulta_bot_tecnico",
+                    metodo="BOT",
+                    ruta="whatsapp/diagnostico-tecnico",
+                    estado_http=200,
+                    detalle=(
+                        f"Contrato {cliente_tecnico.cedula}; "
+                        f"herramienta {estado['paso']}"
+                    ),
+                    ip_cliente=None,
+                )
+            )
+            await db.commit()
+            ficha = formatear_ficha_red_tecnica(
+                cliente_tecnico,
+                servicio_tecnico,
+            )
+            if estado["paso"] == "TECNICO_CONTRATO_RED":
+                respuesta = ficha
+            else:
+                await wa_service.enviar_mensaje(
+                    telefono=telefono_raw,
+                    mensaje="🔎 Consultando MikroTik y OLT en vivo...",
+                )
+                try:
+                    diagnostico = await SupportService(
+                        db
+                    ).diagnosticar_cliente_autoservicio(cliente_tecnico.id)
+                    if estado["paso"] == "TECNICO_CONTRATO_PPPOE":
+                        respuesta = formatear_pppoe_tecnico(
+                            cliente_tecnico,
+                            diagnostico,
+                        )
+                    elif estado["paso"] == "TECNICO_CONTRATO_POTENCIA":
+                        respuesta = formatear_optica_tecnico(
+                            cliente_tecnico,
+                            diagnostico,
+                        )
+                    else:
+                        respuesta = (
+                            ficha
+                            + "\n\n"
+                            + formatear_diagnostico_autoservicio(
+                                cliente_tecnico,
+                                diagnostico,
+                            )
+                        )
+                except Exception:
+                    logger.exception("Falló diagnóstico del bot técnico")
+                    respuesta = ficha + "\n\n⚠️ Los equipos no respondieron al diagnóstico en vivo."
+            await wa_service.enviar_mensaje(
+                telefono=telefono_raw,
+                mensaje=respuesta,
+            )
+            return {"status": "bot_tecnico_consulta_finalizada"}
 
         if texto_limpio in {"menu", "menú"}:
             estado.clear()
