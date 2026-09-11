@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 from types import SimpleNamespace
@@ -117,10 +118,53 @@ def test_bot_respeta_horario_de_atencion():
 
 def test_bot_informa_horario_y_autoservicio_sin_ia():
     mensaje = mensaje_fuera_de_horario()
-    assert "Lunes a viernes" in mensaje
+    assert "Lunes: 08:00 a 20:00" in mensaje
+    assert "Domingo: cerrado" in mensaje
     assert "FdezBot" in mensaje
     assert "asistente automático" in mensaje
-    assert "voy a atenderte" in mensaje
+    assert "puedo ayudarte" in mensaje
+
+
+def test_bot_respeta_horario_semanal_personalizado_y_turno_nocturno():
+    horario = {
+        day: {"activo": False, "inicio": "08:00", "fin": "17:00"}
+        for day in (
+            "lunes", "martes", "miercoles", "jueves",
+            "viernes", "sabado", "domingo",
+        )
+    }
+    horario["lunes"] = {"activo": True, "inicio": "22:00", "fin": "02:00"}
+    config = SimpleNamespace(
+        zona_horaria="America/Mexico_City",
+        horario_atencion_json=json.dumps(horario),
+    )
+    tz = ZoneInfo("America/Mexico_City")
+
+    assert not esta_fuera_de_horario(
+        datetime(2026, 9, 7, 23, 0, tzinfo=tz),
+        config,
+    )
+    assert not esta_fuera_de_horario(
+        datetime(2026, 9, 8, 1, 30, tzinfo=tz),
+        config,
+    )
+    assert esta_fuera_de_horario(
+        datetime(2026, 9, 8, 2, 0, tzinfo=tz),
+        config,
+    )
+
+
+def test_mensaje_fuera_horario_usa_texto_y_variables_personalizadas():
+    config = SimpleNamespace(
+        mensaje_fuera_horario=(
+            "Hola, somos {empresa}. Atiende {asistente}.\n{horario}"
+        ),
+        horario_atencion_json=None,
+    )
+    mensaje = mensaje_fuera_de_horario("Mi ISP", "Ayudante", config)
+    assert "somos Mi ISP" in mensaje
+    assert "Atiende Ayudante" in mensaje
+    assert "Domingo: cerrado" in mensaje
 
 
 def test_bot_pide_texto_al_recibir_audio():

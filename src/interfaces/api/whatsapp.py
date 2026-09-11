@@ -68,10 +68,14 @@ from src.application.services.whatsapp_outbox_service import (
     WhatsAppOutboxService,
 )
 from src.application.services.bot_flow_service import (
+    DEFAULT_AWAY_MESSAGE,
+    DAYS,
     action_enabled,
     action_for_input,
     build_bot_menu,
     get_or_create_bot_config,
+    normalize_schedule,
+    schedule_summary,
 )
 from src.application.services.support_service import SupportService
 from src.application.services.bot_visual_flow_service import (
@@ -125,36 +129,61 @@ def referencia_canonica_sql(columna):
     return func.replace(func.replace(func.upper(columna), "O", "0"), "I", "1")
 
 
-def esta_fuera_de_horario(ahora: datetime | None = None) -> bool:
-    """Horario de atención de FdezNet en America/Mexico_City."""
+def esta_fuera_de_horario(
+    ahora: datetime | None = None,
+    config=None,
+) -> bool:
+    """Evalúa el horario semanal configurable, incluidos turnos nocturnos."""
     from datetime import time
     from zoneinfo import ZoneInfo
 
-    zona = ZoneInfo("America/Mexico_City")
-    local = ahora.astimezone(zona) if ahora and ahora.tzinfo else (
-        ahora or datetime.now(zona)
+    try:
+        zona = ZoneInfo(
+            getattr(config, "zona_horaria", None) or "America/Mexico_City"
+        )
+    except Exception:
+        zona = ZoneInfo("America/Mexico_City")
+    if ahora is None:
+        local = datetime.now(zona)
+    elif ahora.tzinfo:
+        local = ahora.astimezone(zona)
+    else:
+        local = ahora.replace(tzinfo=zona)
+    schedule = normalize_schedule(
+        getattr(config, "horario_atencion_json", None)
     )
-    if local.weekday() <= 4:
-        return not (time(8, 0) <= local.time() < time(20, 0))
-    if local.weekday() == 5:
-        return not (time(9, 0) <= local.time() < time(14, 0))
+    for days_ago in (0, 1):
+        work_date = local.date() - timedelta(days=days_ago)
+        rule = schedule[DAYS[work_date.weekday()]]
+        if not rule["activo"]:
+            continue
+        start_time = time.fromisoformat(rule["inicio"])
+        end_time = time.fromisoformat(rule["fin"])
+        start = datetime.combine(work_date, start_time, zona)
+        end = datetime.combine(work_date, end_time, zona)
+        if end <= start:
+            end += timedelta(days=1)
+        if start <= local < end:
+            return False
     return True
 
 
 def mensaje_fuera_de_horario(
     empresa_nombre: str = "FdezNet",
     asistente_nombre: str = "FdezBot",
+    config=None,
 ) -> str:
+    template = (
+        getattr(config, "mensaje_fuera_horario", None)
+        or DEFAULT_AWAY_MESSAGE
+    )
     return (
-        "🌙 *Estamos fuera del horario de atención.*\n\n"
-        "Nuestro horario es:\n"
-        "• Lunes a viernes: 8:00 a. m. a 8:00 p. m.\n"
-        "• Sábado: 9:00 a. m. a 2:00 p. m.\n"
-        "• Domingo: cerrado.\n\n"
-        f"🤖 Soy *{asistente_nombre}*, el asistente automático de "
-        f"{empresa_nombre}. Durante este "
-        "horario voy a atenderte y puedo ayudarte con pagos, saldo, promesas "
-        "y problemas de conexión."
+        template.replace("{empresa}", empresa_nombre)
+        .replace("{asistente}", asistente_nombre)
+        .replace(
+            "{horario}",
+            schedule_summary(getattr(config, "horario_atencion_json", None)),
+        )
     )
 
 
@@ -1391,7 +1420,7 @@ async def webhook_recibir_mensaje(
             execute_until_wait(flujo_cliente),
         )
 
-    fuera_de_horario = esta_fuera_de_horario()
+    fuera_de_horario = esta_fuera_de_horario(config=bot_config)
     if (
         bot_config.activo
         and bot_config.inicio_fuera_horario
@@ -1400,7 +1429,11 @@ async def webhook_recibir_mensaje(
     ):
         await wa_service.enviar_mensaje(
             telefono=telefono_raw,
-            mensaje=mensaje_fuera_de_horario(empresa_nombre, asistente_nombre),
+            mensaje=mensaje_fuera_de_horario(
+                empresa_nombre,
+                asistente_nombre,
+                bot_config,
+            ),
             tipo_evento="presentacion_bot_fuera_horario",
         )
 
@@ -2212,11 +2245,15 @@ async def webhook_recibir_mensaje(
     if (
         bot_config.activo
         and bot_config.inicio_fuera_horario
-        and esta_fuera_de_horario()
+        and esta_fuera_de_horario(config=bot_config)
     ):
         await wa_service.enviar_mensaje(
             telefono=telefono_raw,
-            mensaje=mensaje_fuera_de_horario(empresa_nombre, asistente_nombre),
+            mensaje=mensaje_fuera_de_horario(
+                empresa_nombre,
+                asistente_nombre,
+                bot_config,
+            ),
             tipo_evento="respuesta_fuera_horario",
         )
         return {"status": "fuera_de_horario"}

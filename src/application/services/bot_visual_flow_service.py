@@ -22,8 +22,8 @@ TECH_ACTIONS = {
 }
 
 
-def flow_payload(flow: FlujoBotModel) -> dict:
-    return {
+def flow_payload(flow: FlujoBotModel, bot_config=None) -> dict:
+    payload = {
         "alcance": flow.alcance,
         "nombre": flow.nombre,
         "activo": bool(flow.activo),
@@ -31,6 +31,11 @@ def flow_payload(flow: FlujoBotModel) -> dict:
         "nodos": json.loads(flow.nodos_json),
         "conexiones": json.loads(flow.conexiones_json),
     }
+    if bot_config is not None and flow.alcance == "cliente":
+        from src.application.services.bot_flow_service import out_of_hours_payload
+
+        payload["fuera_horario"] = out_of_hours_payload(bot_config)
+    return payload
 
 
 async def get_visual_flow(

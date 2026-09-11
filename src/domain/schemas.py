@@ -67,22 +67,72 @@ class BotFlowOption(BaseModel):
     enabled: bool = True
 
 
+class BotScheduleDay(BaseModel):
+    activo: bool = True
+    inicio: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    fin: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+    @model_validator(mode="after")
+    def validar_intervalo(self):
+        if self.inicio == self.fin:
+            raise ValueError("La hora de apertura y cierre deben ser distintas")
+        return self
+
+
+class BotOutOfHoursConfig(BaseModel):
+    habilitado: bool = True
+    zona_horaria: str = Field(default="America/Mexico_City", min_length=3, max_length=64)
+    horario: dict[str, BotScheduleDay]
+    mensaje: str = Field(min_length=5, max_length=1000)
+
+    @model_validator(mode="after")
+    def validar_configuracion(self):
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        days = {
+            "lunes", "martes", "miercoles", "jueves",
+            "viernes", "sabado", "domingo",
+        }
+        if set(self.horario) != days:
+            raise ValueError("Configura los siete días del horario de atención")
+        try:
+            ZoneInfo(self.zona_horaria)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("La zona horaria no es válida") from exc
+        return self
+
+
 class BotFlowUpdate(BaseModel):
     activo: bool = True
     palabra_activacion: str = Field(min_length=3, max_length=30, pattern=r"^[a-zA-Z0-9_-]+$")
     minutos_sesion: int = Field(default=15, ge=5, le=60)
     inicio_fuera_horario: bool = True
+    zona_horaria: Optional[str] = Field(default=None, min_length=3, max_length=64)
+    horario_atencion: Optional[dict[str, BotScheduleDay]] = None
+    mensaje_fuera_horario: Optional[str] = Field(default=None, min_length=5, max_length=1000)
     mensaje_bienvenida: str = Field(min_length=5, max_length=500)
     mensaje_despedida: str = Field(min_length=5, max_length=300)
     opciones: list[BotFlowOption] = Field(min_length=1, max_length=5)
 
     @model_validator(mode="after")
     def validar_opciones_unicas(self):
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
         ids = [item.id for item in self.opciones]
         if len(ids) != len(set(ids)):
             raise ValueError("Las opciones del bot no pueden repetirse")
         if not any(item.enabled for item in self.opciones):
             raise ValueError("Habilita al menos una opción del bot")
+        if self.horario_atencion is not None and set(self.horario_atencion) != {
+            "lunes", "martes", "miercoles", "jueves",
+            "viernes", "sabado", "domingo",
+        }:
+            raise ValueError("Configura los siete días del horario de atención")
+        if self.zona_horaria is not None:
+            try:
+                ZoneInfo(self.zona_horaria)
+            except ZoneInfoNotFoundError as exc:
+                raise ValueError("La zona horaria no es válida") from exc
         return self
 
 
@@ -109,6 +159,7 @@ class BotVisualFlowUpdate(BaseModel):
     comando: str = Field(min_length=3, max_length=30, pattern=r"^[A-Za-z0-9_-]+$")
     nodos: list[BotVisualNode] = Field(min_length=2, max_length=100)
     conexiones: list[BotVisualEdge] = Field(min_length=1, max_length=200)
+    fuera_horario: Optional[BotOutOfHoursConfig] = None
 
     @model_validator(mode="after")
     def validar_grafo(self):

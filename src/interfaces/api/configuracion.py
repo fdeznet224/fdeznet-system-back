@@ -85,6 +85,18 @@ async def guardar_flujo_bot(
     config.palabra_activacion = datos.palabra_activacion.strip().lower()
     config.minutos_sesion = datos.minutos_sesion
     config.inicio_fuera_horario = datos.inicio_fuera_horario
+    if datos.zona_horaria is not None:
+        config.zona_horaria = datos.zona_horaria
+    if datos.horario_atencion is not None:
+        config.horario_atencion_json = json.dumps(
+            {
+                day: rule.model_dump()
+                for day, rule in datos.horario_atencion.items()
+            },
+            ensure_ascii=False,
+        )
+    if datos.mensaje_fuera_horario is not None:
+        config.mensaje_fuera_horario = datos.mensaje_fuera_horario.strip()
     config.mensaje_bienvenida = datos.mensaje_bienvenida.strip()
     config.mensaje_despedida = datos.mensaje_despedida.strip()
     config.opciones_json = json.dumps(
@@ -106,7 +118,12 @@ async def obtener_flujo_visual(
     flow = await get_visual_flow(db, alcance)
     if not flow:
         raise HTTPException(status_code=404, detail="Flujo no encontrado")
-    return flow_payload(flow)
+    bot_config = (
+        await get_or_create_bot_config(db)
+        if alcance == "cliente"
+        else None
+    )
+    return flow_payload(flow, bot_config)
 
 
 @router.put("/bot-flujos/{alcance}")
@@ -146,9 +163,21 @@ async def guardar_flujo_visual(
         legacy = await get_or_create_bot_config(db)
         legacy.activo = datos.activo
         legacy.palabra_activacion = flow.comando
+        if datos.fuera_horario is not None:
+            settings = datos.fuera_horario
+            legacy.inicio_fuera_horario = settings.habilitado
+            legacy.zona_horaria = settings.zona_horaria
+            legacy.horario_atencion_json = json.dumps(
+                {
+                    day: rule.model_dump()
+                    for day, rule in settings.horario.items()
+                },
+                ensure_ascii=False,
+            )
+            legacy.mensaje_fuera_horario = settings.mensaje.strip()
     await db.commit()
     await db.refresh(flow)
-    return flow_payload(flow)
+    return flow_payload(flow, legacy if alcance == "cliente" else None)
 
 
 async def _iniciar_mantenimiento(service: str) -> dict[str, str]:

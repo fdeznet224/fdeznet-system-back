@@ -26,6 +26,38 @@ OPTION_ICONS = {
     "datos_pago": "🏦",
     "diagnostico_tecnico": "🛠️",
 }
+DAYS = (
+    "lunes",
+    "martes",
+    "miercoles",
+    "jueves",
+    "viernes",
+    "sabado",
+    "domingo",
+)
+DAY_LABELS = {
+    "lunes": "Lunes",
+    "martes": "Martes",
+    "miercoles": "Miércoles",
+    "jueves": "Jueves",
+    "viernes": "Viernes",
+    "sabado": "Sábado",
+    "domingo": "Domingo",
+}
+DEFAULT_SCHEDULE = {
+    day: {
+        "activo": day not in {"domingo"},
+        "inicio": "09:00" if day == "sabado" else "08:00",
+        "fin": "14:00" if day == "sabado" else "20:00",
+    }
+    for day in DAYS
+}
+DEFAULT_AWAY_MESSAGE = (
+    "🌙 *Estamos fuera del horario de atención.*\n\n"
+    "*Horario de atención:*\n{horario}\n\n"
+    "🤖 Soy *{asistente}*, el asistente automático de {empresa}. "
+    "Mientras regresamos puedo ayudarte con pagos, saldo, promesas y conexión."
+)
 
 
 def normalize_options(raw) -> list[dict]:
@@ -58,6 +90,62 @@ def normalize_options(raw) -> list[dict]:
     return normalized
 
 
+def normalize_schedule(raw) -> dict[str, dict]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    normalized = {}
+    for day in DAYS:
+        default = DEFAULT_SCHEDULE[day]
+        value = raw.get(day) if isinstance(raw.get(day), dict) else {}
+        inicio = str(value.get("inicio") or default["inicio"])
+        fin = str(value.get("fin") or default["fin"])
+        if not _valid_time(inicio) or not _valid_time(fin) or inicio == fin:
+            inicio, fin = default["inicio"], default["fin"]
+        normalized[day] = {
+            "activo": bool(value.get("activo", default["activo"])),
+            "inicio": inicio,
+            "fin": fin,
+        }
+    return normalized
+
+
+def _valid_time(value: str) -> bool:
+    try:
+        hours, minutes = (int(part) for part in value.split(":"))
+    except (TypeError, ValueError):
+        return False
+    return 0 <= hours <= 23 and 0 <= minutes <= 59 and len(value) == 5
+
+
+def out_of_hours_payload(config: ConfiguracionBotModel) -> dict:
+    return {
+        "habilitado": bool(config.inicio_fuera_horario),
+        "zona_horaria": config.zona_horaria or "America/Mexico_City",
+        "horario": normalize_schedule(config.horario_atencion_json),
+        "mensaje": config.mensaje_fuera_horario or DEFAULT_AWAY_MESSAGE,
+    }
+
+
+def schedule_summary(raw) -> str:
+    schedule = normalize_schedule(raw)
+    lines = []
+    for day in DAYS:
+        rule = schedule[day]
+        label = DAY_LABELS[day]
+        detail = (
+            f"{rule['inicio']} a {rule['fin']}"
+            if rule["activo"]
+            else "cerrado"
+        )
+        lines.append(f"• {label}: {detail}")
+    return "\n".join(lines)
+
+
 async def get_or_create_bot_config(db: AsyncSession) -> ConfiguracionBotModel:
     config = await db.get(ConfiguracionBotModel, 1)
     if config:
@@ -68,6 +156,9 @@ async def get_or_create_bot_config(db: AsyncSession) -> ConfiguracionBotModel:
         palabra_activacion="fdezbot",
         minutos_sesion=15,
         inicio_fuera_horario=True,
+        zona_horaria="America/Mexico_City",
+        horario_atencion_json=json.dumps(DEFAULT_SCHEDULE, ensure_ascii=False),
+        mensaje_fuera_horario=DEFAULT_AWAY_MESSAGE,
         mensaje_bienvenida="Soy tu asistente de pagos y servicios. Elige una opción:",
         mensaje_despedida="Asistente desactivado. Un asesor humano te atenderá a la brevedad.",
         opciones_json=json.dumps(DEFAULT_OPTIONS, ensure_ascii=False),
@@ -84,6 +175,10 @@ def config_payload(config: ConfiguracionBotModel) -> dict:
         "palabra_activacion": config.palabra_activacion or "fdezbot",
         "minutos_sesion": config.minutos_sesion or 15,
         "inicio_fuera_horario": bool(config.inicio_fuera_horario),
+        "zona_horaria": config.zona_horaria or "America/Mexico_City",
+        "horario_atencion": normalize_schedule(config.horario_atencion_json),
+        "mensaje_fuera_horario": config.mensaje_fuera_horario or DEFAULT_AWAY_MESSAGE,
+        "fuera_horario": out_of_hours_payload(config),
         "mensaje_bienvenida": config.mensaje_bienvenida,
         "mensaje_despedida": config.mensaje_despedida,
         "opciones": normalize_options(config.opciones_json),

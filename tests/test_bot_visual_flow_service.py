@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from src.application.services.bot_visual_flow_service import (
     execute_until_wait,
@@ -9,6 +10,7 @@ from src.application.services.bot_visual_flow_service import (
     validate_flow_for_scope,
 )
 from src.application.services.user_service import UserService
+from src.domain.schemas import BotVisualFlowUpdate
 from src.interfaces.api.whatsapp import formatear_ficha_red_tecnica
 
 
@@ -61,6 +63,33 @@ def test_normaliza_telefono_de_staff():
     assert UserService.normalizar_telefono_whatsapp("+52 55 1234-5678") == "525512345678"
     with pytest.raises(ValueError):
         UserService.normalizar_telefono_whatsapp("123")
+
+
+def test_flujo_visual_valida_zona_y_siete_dias_de_atencion():
+    schedule = {
+        day: {"activo": True, "inicio": "08:00", "fin": "17:00"}
+        for day in (
+            "lunes", "martes", "miercoles", "jueves",
+            "viernes", "sabado", "domingo",
+        )
+    }
+    payload = {
+        "nombre": "Bot clientes",
+        "activo": True,
+        "comando": "ayuda",
+        "nodos": NODES,
+        "conexiones": EDGES,
+        "fuera_horario": {
+            "habilitado": True,
+            "zona_horaria": "America/Mexico_City",
+            "horario": schedule,
+            "mensaje": "Estamos fuera de horario. {horario}",
+        },
+    }
+    assert BotVisualFlowUpdate(**payload).fuera_horario is not None
+    payload["fuera_horario"]["zona_horaria"] = "Zona/QueNoExiste"
+    with pytest.raises(ValidationError, match="zona horaria"):
+        BotVisualFlowUpdate(**payload)
 
 
 def test_ficha_tecnica_no_expone_password():
