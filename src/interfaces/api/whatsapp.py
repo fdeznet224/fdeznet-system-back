@@ -63,6 +63,13 @@ from src.application.services.whatsapp_outbox_service import (
     ESTADOS_SALIDA,
     WhatsAppOutboxService,
 )
+from src.application.services.bot_flow_service import (
+    action_enabled,
+    action_for_input,
+    build_bot_menu,
+    get_or_create_bot_config,
+)
+from src.application.services.support_service import SupportService
 
 router = APIRouter(prefix="/whatsapp", tags=["Configuración WhatsApp"])
 webhook_router = APIRouter(prefix="/whatsapp", tags=["Webhooks WhatsApp"])
@@ -142,25 +149,69 @@ def mensaje_fuera_de_horario(
     )
 
 
-def mensaje_audio_no_disponible(asistente_nombre: str = "FdezBot") -> str:
+def mensaje_audio_no_disponible(
+    asistente_nombre: str = "FdezBot",
+    palabra_activacion: str = BOT_KEYWORD,
+) -> str:
     return (
         f"🎤 Por el momento {asistente_nombre} no procesa notas de voz. "
-        "Por favor escribe tu solicitud o envía *fdezbot* para usar el menú."
+        "Por favor escribe tu solicitud o envía "
+        f"*{palabra_activacion}* para usar el menú."
     )
 
 
-def construir_menu_bot(asistente_nombre: str = "FdezBot") -> str:
-    return (
-        f"🤖 *Bienvenido a {asistente_nombre}*\n"
-        "Soy tu asistente de pagos y servicios. Elige una opción:\n\n"
-        "1️⃣ *Reportar pago* (transferencia o depósito)\n"
-        "2️⃣ *Promesa de pago* (puede reactivar tu servicio)\n"
-        "3️⃣ *Consultar mi servicio y saldo*\n"
-        "4️⃣ *Datos para depósito o transferencia*\n"
-        "5️⃣ *No tengo internet*\n\n"
-        "👉 Responde con un número del *1* al *5*.\n"
-        "Escribe *menú* para volver aquí o *cancelar* para salir."
-    )
+def construir_menu_bot(asistente_nombre: str = "FdezBot", config=None) -> str:
+    return build_bot_menu(asistente_nombre, config)
+
+
+def telefono_corresponde_cliente(telefono_entrada: str, cliente) -> bool:
+    entrada = re.sub(r"\D", "", telefono_entrada or "")
+    registrado = re.sub(r"\D", "", getattr(cliente, "telefono", "") or "")
+    if not entrada or not registrado:
+        return False
+    return entrada[-10:] == registrado[-10:]
+
+
+def formatear_diagnostico_autoservicio(cliente, diagnostico: dict) -> str:
+    mikrotik = diagnostico.get("mikrotik") or {}
+    olt = diagnostico.get("olt") or {}
+    lineas = [
+        "🛠️ *DIAGNÓSTICO EN VIVO*",
+        "",
+        f"👤 *Titular:* {cliente.nombre}",
+        f"🔌 *Cuenta:* {(cliente.estado or 'desconocido').upper()}",
+    ]
+    if mikrotik.get("disponible"):
+        conectado = "🟢 Conectado" if mikrotik.get("pppoe_online") else "🔴 Desconectado"
+        lineas.append(f"🌐 *Sesión PPPoE:* {conectado}")
+        if mikrotik.get("uptime"):
+            lineas.append(f"⏱️ *Tiempo conectado:* {mikrotik['uptime']}")
+        if mikrotik.get("ping_estado"):
+            ping = mikrotik["ping_estado"]
+            perdida = mikrotik.get("perdida_porcentaje")
+            detalle = f" ({perdida}% pérdida)" if perdida is not None else ""
+            lineas.append(f"📶 *Respuesta de red:* {ping}{detalle}")
+    else:
+        lineas.append("🌐 *Sesión PPPoE:* no fue posible consultarla ahora")
+
+    if olt.get("disponible"):
+        onu = "🟢 En línea" if olt.get("onu_online") else "🔴 Fuera de línea"
+        lineas.append(f"💡 *ONU:* {onu}")
+        rx = olt.get("potencia_rx_dbm")
+        tx = olt.get("potencia_tx_dbm")
+        if rx is not None:
+            alerta = " ⚠️ señal baja" if Decimal(str(rx)) < Decimal("-27") else " ✅"
+            lineas.append(f"📥 *Potencia RX:* {rx} dBm{alerta}")
+        if tx is not None:
+            lineas.append(f"📤 *Potencia TX:* {tx} dBm")
+    else:
+        lineas.append("💡 *Señal óptica:* no fue posible consultarla ahora")
+
+    lineas.extend([
+        "",
+        "Si continúas sin internet, deja la ONU y el router encendidos para que soporte pueda revisarlos.",
+    ])
+    return "\n".join(lineas)
 
 
 def normalizar_texto_bot(texto: str) -> str:
@@ -999,6 +1050,9 @@ async def webhook_recibir_mensaje(
     marca = await db.get(ConfiguracionSistema, 1)
     empresa_nombre = getattr(marca, "empresa_nombre", None) or "FdezNet"
     asistente_nombre = getattr(marca, "sistema_nombre", None) or "FdezBot"
+    bot_config = await get_or_create_bot_config(db)
+    palabra_bot = normalizar_texto_bot(bot_config.palabra_activacion)
+    menu_bot = construir_menu_bot(asistente_nombre, bot_config)
 
     # =========================================================
     # 1. CHAT NORMAL Y GUARDADO EN CRM 
@@ -1038,7 +1092,12 @@ async def webhook_recibir_mensaje(
     })
 
     fuera_de_horario = esta_fuera_de_horario()
-    if fuera_de_horario and telefono_raw not in bot_memory:
+    if (
+        bot_config.activo
+        and bot_config.inicio_fuera_horario
+        and fuera_de_horario
+        and telefono_raw not in bot_memory
+    ):
         await wa_service.enviar_mensaje(
             telefono=telefono_raw,
             mensaje=mensaje_fuera_de_horario(empresa_nombre, asistente_nombre),
@@ -1047,7 +1106,12 @@ async def webhook_recibir_mensaje(
 
     # El autoservicio es únicamente por texto; no se envía audio a servicios externos.
     if media_url and "[AUDIO]" in mensaje_texto.upper():
-        if fuera_de_horario and telefono_raw not in bot_memory:
+        if (
+            bot_config.activo
+            and bot_config.inicio_fuera_horario
+            and fuera_de_horario
+            and telefono_raw not in bot_memory
+        ):
             bot_memory[telefono_raw] = {
                 "paso": "ESPERANDO_OPCION",
                 "iniciado_en": datetime.now(),
@@ -1055,8 +1119,11 @@ async def webhook_recibir_mensaje(
         await wa_service.enviar_mensaje(
             telefono=telefono_raw,
             mensaje=(
-                mensaje_audio_no_disponible(asistente_nombre)
-                + ("\n\n" + construir_menu_bot(asistente_nombre) if fuera_de_horario else "")
+                mensaje_audio_no_disponible(
+                    asistente_nombre,
+                    bot_config.palabra_activacion,
+                )
+                + ("\n\n" + menu_bot if fuera_de_horario and bot_config.activo else "")
             ),
         )
         return {"status": "audio_no_disponible"}
@@ -1064,25 +1131,32 @@ async def webhook_recibir_mensaje(
     # =========================================================
     # 2. ACTIVACIÓN DEL BOT (NUEVA PALABRA CLAVE)
     # =========================================================
-    if texto_limpio == BOT_KEYWORD:
+    if bot_config.activo and normalizar_texto_bot(texto_limpio) == palabra_bot:
         bot_memory[telefono_raw] = {
             "paso": "ESPERANDO_OPCION",
             "iniciado_en": datetime.now(),
         }
-        menu = construir_menu_bot(asistente_nombre)
-        await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=menu)
+        await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=menu_bot)
         return {"status": "bot_iniciado"}
 
     if texto_limpio == "fdezpay":
         await wa_service.enviar_mensaje(
             telefono=telefono_raw,
-            mensaje="🤖 La palabra de acceso cambió. Escribe *fdezbot* para iniciar.",
+            mensaje=(
+                "🤖 La palabra de acceso cambió. Escribe "
+                f"*{bot_config.palabra_activacion}* para iniciar."
+            ),
         )
         return {"status": "palabra_anterior"}
 
     # Fuera del horario, cualquier mensaje inicia el autoservicio. Una foto de
     # comprobante entra directamente al análisis, sin exigir una palabra clave.
-    if fuera_de_horario and telefono_raw not in bot_memory:
+    if (
+        bot_config.activo
+        and bot_config.inicio_fuera_horario
+        and fuera_de_horario
+        and telefono_raw not in bot_memory
+    ):
         intencion = detectar_intencion_bot(
             mensaje_texto,
             es_comprobante=bool(
@@ -1097,6 +1171,16 @@ async def webhook_recibir_mensaje(
             "sin_internet": "VALIDAR_CEDULA_SOPORTE",
             "menu": "ESPERANDO_OPCION",
         }
+        accion_por_intencion = {
+            "pago": "reportar_pago",
+            "promesa": "promesa_pago",
+            "estado": "estado_servicio",
+            "datos_pago": "datos_pago",
+            "sin_internet": "diagnostico_tecnico",
+        }
+        accion_detectada = accion_por_intencion.get(intencion)
+        if accion_detectada and not action_enabled(bot_config, accion_detectada):
+            intencion = "menu"
         if intencion == "datos_pago":
             await wa_service.enviar_mensaje(
                 telefono=telefono_raw,
@@ -1138,7 +1222,7 @@ async def webhook_recibir_mensaje(
         if intencion == "menu":
             await wa_service.enviar_mensaje(
                 telefono=telefono_raw,
-                mensaje=construir_menu_bot(asistente_nombre),
+                mensaje=menu_bot,
             )
             return {"status": "bot_automatico"}
 
@@ -1150,12 +1234,15 @@ async def webhook_recibir_mensaje(
 
         iniciado_en = estado.get("iniciado_en")
         if iniciado_en and datetime.now() - iniciado_en > timedelta(
-            minutes=BOT_SESSION_MINUTES
+            minutes=bot_config.minutos_sesion
         ):
             del bot_memory[telefono_raw]
             await wa_service.enviar_mensaje(
                 telefono=telefono_raw,
-                mensaje="⌛ La sesión terminó por seguridad. Escribe *fdezbot* para iniciar otra.",
+                mensaje=(
+                    "⌛ La sesión terminó por seguridad. Escribe "
+                    f"*{bot_config.palabra_activacion}* para iniciar otra."
+                ),
             )
             return {"status": "bot_expirado"}
 
@@ -1164,34 +1251,38 @@ async def webhook_recibir_mensaje(
             estado.update({"paso": "ESPERANDO_OPCION", "iniciado_en": datetime.now()})
             await wa_service.enviar_mensaje(
                 telefono=telefono_raw,
-                mensaje=construir_menu_bot(asistente_nombre),
+                mensaje=menu_bot,
             )
             return {"status": "bot_menu"}
 
         if texto_limpio in {"cancelar", "salir"}:
             del bot_memory[telefono_raw]
-            await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje="🤖 Asistente desactivado. Un asesor humano te atenderá a la brevedad. ¡Buen día!")
+            await wa_service.enviar_mensaje(
+                telefono=telefono_raw,
+                mensaje=f"🤖 {bot_config.mensaje_despedida}",
+            )
             return {"status": "bot_apagado"}
 
         # --- SELECCIÓN DEL MENÚ ---
         if estado["paso"] == "ESPERANDO_OPCION":
-            if texto_limpio == "1":
+            accion = action_for_input(bot_config, texto_limpio)
+            if accion == "reportar_pago":
                 estado["paso"] = "ESPERANDO_FOTO_PAGO"
                 res = "📄 *Reporte de Pago*\nPor favor, envíame la **foto del comprobante** o ticket bien enfocada."
                 
-            elif texto_limpio == "2":
+            elif accion == "promesa_pago":
                 estado["paso"] = "VALIDAR_CEDULA_PROMESA"
                 res = "⏳ *Promesa de Pago*\nPor favor escribe tu *número de contrato* para buscar tu cuenta (Ej: 329B)."
                 
-            elif texto_limpio == "3":
+            elif accion == "estado_servicio":
                 estado["paso"] = "VALIDAR_CEDULA_ESTADO"
                 res = "📊 *Estado del Servicio*\nPor favor, escribe tu *número de contrato* para buscar tus datos."
 
-            elif texto_limpio == "4":
+            elif accion == "datos_pago":
                 res = await obtener_datos_pago(db)
                 del bot_memory[telefono_raw]
 
-            elif texto_limpio == "5":
+            elif accion == "diagnostico_tecnico":
                 estado["paso"] = "VALIDAR_CEDULA_SOPORTE"
                 res = (
                     "📡 *Revisión de conexión*\nEscribe tu "
@@ -1199,7 +1290,7 @@ async def webhook_recibir_mensaje(
                 )
                 
             else:
-                res = "❌ Opción no válida. Responde con un número del 1 al 5. (Escribe 'cancelar' para salir)."
+                res = "❌ Opción no válida. Elige uno de los números mostrados en el menú."
             
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "procesando_menu"}
@@ -1417,7 +1508,10 @@ async def webhook_recibir_mensaje(
             stmt_c = select(ClienteModel).where(ClienteModel.cedula == cedula_input)
             cliente_final = (await db.execute(stmt_c)).scalars().first()
 
-            if cliente_final:
+            if cliente_final and telefono_corresponde_cliente(
+                telefono_raw,
+                cliente_final,
+            ):
                 factura = await obtener_factura_cobrable(
                     db,
                     cliente_final.id,
@@ -1441,7 +1535,11 @@ async def webhook_recibir_mensaje(
                         "(ejemplo: *15/09/2026*)."
                     )
             else:
-                res = "❌ Número de contrato incorrecto. Inténtalo de nuevo o escribe 'cancelar'."
+                res = (
+                    "❌ Los datos no coinciden con el teléfono registrado en "
+                    "esa cuenta. Escríbenos desde el número del titular o "
+                    "contacta a un asesor."
+                )
             
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "pidiendo_dia_promesa"}
@@ -1501,10 +1599,14 @@ async def webhook_recibir_mensaje(
                     )
                 )
             ).scalars().first()
-            if not cliente_final:
+            if not cliente_final or not telefono_corresponde_cliente(
+                telefono_raw,
+                cliente_final,
+            ):
                 res = (
-                    "❌ Número de contrato incorrecto. Inténtalo nuevamente o escribe "
-                    "'cancelar'."
+                    "❌ Los datos no coinciden con el teléfono registrado en "
+                    "esa cuenta. Escríbenos desde el número del titular o "
+                    "contacta a un asesor."
                 )
             elif cliente_final.estado == "suspendido":
                 factura = await obtener_factura_cobrable(db, cliente_final.id)
@@ -1536,14 +1638,27 @@ async def webhook_recibir_mensaje(
                     )
             else:
                 del bot_memory[telefono_raw]
-                res = (
-                    f"🟢 Hola, *{cliente_final.nombre}*. Tu cuenta no aparece "
-                    "suspendida. Desconecta la ONU y el router de la corriente "
-                    "durante 30 segundos y vuelve a conectarlos.\n\n"
-                    "Si la luz *LOS* está roja o sigues sin internet después de "
-                    "5 minutos, deja ambos equipos encendidos. Tu reporte quedó "
-                    "registrado para revisión de un asesor."
+                await wa_service.enviar_mensaje(
+                    telefono=telefono_raw,
+                    mensaje="🔎 Estoy consultando tu conexión en vivo. Puede tardar unos segundos...",
                 )
+                try:
+                    diagnostico = await SupportService(
+                        db
+                    ).diagnosticar_cliente_autoservicio(cliente_final.id)
+                    res = formatear_diagnostico_autoservicio(
+                        cliente_final,
+                        diagnostico,
+                    )
+                except Exception:
+                    logger.exception(
+                        "No fue posible ejecutar el diagnóstico por WhatsApp"
+                    )
+                    res = (
+                        "⚠️ No pude consultar los equipos en este momento. "
+                        "Deja la ONU y el router encendidos para que soporte "
+                        "pueda revisarlos."
+                    )
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "soporte_basico"}
 
@@ -1553,7 +1668,10 @@ async def webhook_recibir_mensaje(
             stmt_c = select(ClienteModel).options(joinedload(ClienteModel.plan)).where(ClienteModel.cedula == cedula_input)
             cliente_final = (await db.execute(stmt_c)).scalars().first()
 
-            if cliente_final:
+            if cliente_final and telefono_corresponde_cliente(
+                telefono_raw,
+                cliente_final,
+            ):
                 nombre_plan = cliente_final.plan.nombre if cliente_final.plan else "Sin plan"
                 megas_bajada = (cliente_final.plan.velocidad_bajada / 1024) if cliente_final.plan else 0
                 etiquetas_estado = {
@@ -1620,16 +1738,25 @@ async def webhook_recibir_mensaje(
                     f"💳 *Saldo pendiente:* ${deuda_total:.2f}\n"
                     f"📅 *Cobranza:* {fecha_financiera}\n"
                     f"💰 *Saldo a favor:* ${Decimal(cliente_final.saldo_a_favor or 0):.2f}\n\n"
-                    f"Para volver al menú escribe *fdezbot*."
+                    "Para volver al menú escribe "
+                    f"*{bot_config.palabra_activacion}*."
                 )
                 del bot_memory[telefono_raw]
             else:
-                res = "❌ Número de contrato incorrecto. Inténtalo de nuevo o escribe 'cancelar'."
+                res = (
+                    "❌ Los datos no coinciden con el teléfono registrado en "
+                    "esa cuenta. Escríbenos desde el número del titular o "
+                    "contacta a un asesor."
+                )
             
             await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
             return {"status": "bot_estado_finished"}
 
-    if esta_fuera_de_horario():
+    if (
+        bot_config.activo
+        and bot_config.inicio_fuera_horario
+        and esta_fuera_de_horario()
+    ):
         await wa_service.enviar_mensaje(
             telefono=telefono_raw,
             mensaje=mensaje_fuera_de_horario(empresa_nombre, asistente_nombre),

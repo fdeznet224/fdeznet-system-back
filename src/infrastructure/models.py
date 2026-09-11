@@ -1797,6 +1797,20 @@ class PlantillaMensajeModel(Base):
     texto = Column(Text)    
     activo = Column(Boolean, default=True)
 
+
+class ConfiguracionBotModel(Base):
+    __tablename__ = "configuracion_bot"
+
+    id = Column(Integer, primary_key=True, default=1)
+    activo = Column(Boolean, nullable=False, default=True, server_default="1")
+    palabra_activacion = Column(String(30), nullable=False, default="fdezbot", server_default="fdezbot")
+    minutos_sesion = Column(Integer, nullable=False, default=15, server_default="15")
+    inicio_fuera_horario = Column(Boolean, nullable=False, default=True, server_default="1")
+    mensaje_bienvenida = Column(String(500), nullable=False, default="Soy tu asistente de pagos y servicios. Elige una opción:")
+    mensaje_despedida = Column(String(300), nullable=False, default="Asistente desactivado. Un asesor humano te atenderá a la brevedad.")
+    opciones_json = Column(Text, nullable=False)
+    actualizado_en = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
 # ==========================================
 # 5. AUDITORÍA Y LOGS DE CRONJOBS
 # ==========================================

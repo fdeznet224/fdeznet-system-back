@@ -60,6 +60,31 @@ class StoragePolicyUpdate(BaseModel):
     cierre_mensual_automatico: bool = True
     dia_cierre: int = Field(default=1, ge=1, le=28)
 
+
+class BotFlowOption(BaseModel):
+    id: str = Field(pattern=r"^(reportar_pago|promesa_pago|estado_servicio|datos_pago|diagnostico_tecnico)$")
+    label: str = Field(min_length=3, max_length=80)
+    enabled: bool = True
+
+
+class BotFlowUpdate(BaseModel):
+    activo: bool = True
+    palabra_activacion: str = Field(min_length=3, max_length=30, pattern=r"^[a-zA-Z0-9_-]+$")
+    minutos_sesion: int = Field(default=15, ge=5, le=60)
+    inicio_fuera_horario: bool = True
+    mensaje_bienvenida: str = Field(min_length=5, max_length=500)
+    mensaje_despedida: str = Field(min_length=5, max_length=300)
+    opciones: list[BotFlowOption] = Field(min_length=1, max_length=5)
+
+    @model_validator(mode="after")
+    def validar_opciones_unicas(self):
+        ids = [item.id for item in self.opciones]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Las opciones del bot no pueden repetirse")
+        if not any(item.enabled for item in self.opciones):
+            raise ValueError("Habilita al menos una opción del bot")
+        return self
+
 class ConfigUpdate(BaseModel):
     valor: str
 

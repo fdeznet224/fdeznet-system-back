@@ -40,6 +40,52 @@ class SupportService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def diagnosticar_cliente_autoservicio(self, cliente_id: int) -> dict:
+        """Consulta la red en vivo sin crear órdenes ni modificar el servicio."""
+        servicio = (
+            await self.db.execute(
+                select(ServicioModel)
+                .options(
+                    joinedload(ServicioModel.cliente),
+                    joinedload(ServicioModel.router),
+                    joinedload(ServicioModel.olt),
+                    joinedload(ServicioModel.onu),
+                )
+                .where(
+                    ServicioModel.cliente_id == cliente_id,
+                    ServicioModel.estado != "cancelado",
+                )
+                .order_by(ServicioModel.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if servicio:
+            objetivo = servicio
+        else:
+            objetivo = (
+                await self.db.execute(
+                    select(ClienteModel)
+                    .options(
+                        joinedload(ClienteModel.router),
+                        joinedload(ClienteModel.olt),
+                        joinedload(ClienteModel.onu_asignada),
+                    )
+                    .where(ClienteModel.id == cliente_id)
+                )
+            ).scalar_one_or_none()
+        if not objetivo:
+            raise ValueError("Cliente no encontrado")
+
+        mikrotik, olt = await asyncio.gather(
+            self._diagnosticar_mikrotik(objetivo),
+            self._diagnosticar_olt(objetivo),
+        )
+        return {
+            "estado_cliente": objetivo.estado,
+            "mikrotik": mikrotik,
+            "olt": olt,
+        }
+
     async def crear_incidencia(
         self,
         cliente_id: int,

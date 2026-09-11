@@ -36,6 +36,7 @@ from src.domain.schemas import (
     LocalLicenseStatus,
     MaintenanceStatus,
     StoragePolicyUpdate,
+    BotFlowUpdate,
 )
 from src.application.services.license_service import local_status, verify_license
 from src.application.services.branding_service import get_or_create_system_config
@@ -46,6 +47,11 @@ from src.application.services.storage_service import (
     storage_dashboard,
     update_backup_retention,
 )
+from src.application.services.bot_flow_service import (
+    config_payload,
+    get_or_create_bot_config,
+    normalize_options,
+)
 
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
 router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
@@ -55,6 +61,32 @@ MAINTENANCE_STATUS_FILE = Path("/var/lib/fdeznet/maintenance-status.json")
 MANUAL_UPDATE_REQUEST_FILE = Path("/var/lib/fdeznet/manual-update-requested")
 BRANDING_DIR = Path(__file__).resolve().parents[3] / "static" / "branding"
 MAX_BRAND_IMAGE_BYTES = 2 * 1024 * 1024
+
+
+@router.get("/bot-flujo")
+async def obtener_flujo_bot(db: AsyncSession = Depends(get_db)):
+    return config_payload(await get_or_create_bot_config(db))
+
+
+@router.put("/bot-flujo")
+async def guardar_flujo_bot(
+    datos: BotFlowUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    config = await get_or_create_bot_config(db)
+    config.activo = datos.activo
+    config.palabra_activacion = datos.palabra_activacion.strip().lower()
+    config.minutos_sesion = datos.minutos_sesion
+    config.inicio_fuera_horario = datos.inicio_fuera_horario
+    config.mensaje_bienvenida = datos.mensaje_bienvenida.strip()
+    config.mensaje_despedida = datos.mensaje_despedida.strip()
+    config.opciones_json = json.dumps(
+        normalize_options([item.model_dump() for item in datos.opciones]),
+        ensure_ascii=False,
+    )
+    await db.commit()
+    await db.refresh(config)
+    return config_payload(config)
 
 
 async def _iniciar_mantenimiento(service: str) -> dict[str, str]:
