@@ -28,7 +28,7 @@ def _email(authentication_results: str, sender: str = "avisos@banco.example") ->
         "\r\n"
         "Recibiste de otro banco\r\n"
         "Monto recibido: $1,250.00 MXN\r\n"
-        "A tu cuenta: Débito ***6342\r\n"
+        "A tu cuenta: Débito ***1234\r\n"
         "Clave de rastreo: AZT-9081726354\r\n"
         "Concepto: CONTRATO 329B\r\n"
     ).encode()
@@ -49,7 +49,7 @@ def test_parse_authenticated_bank_email():
     assert parsed.reference == "AZT9081726354"
     assert parsed.concept == "CONTRATO 329B"
     assert parsed.movement_direction == "entrante"
-    assert parsed.destination_account == "6342"
+    assert parsed.destination_account == "1234"
     assert parsed.uid == "42"
 
 
@@ -171,7 +171,7 @@ def test_transaction_requires_auth_reference_amount_and_datetime():
         activo=True,
         tolerancia_monto=Decimal("0.00"),
         ventana_dias=3,
-        cuentas_destino_permitidas="6342",
+        cuentas_destino_permitidas="1234",
     )
     revision = SimpleNamespace(
         folio_detectado="12O4-I678-O901",
@@ -185,7 +185,7 @@ def test_transaction_requires_auth_reference_amount_and_datetime():
         monto=Decimal("300.00"),
         fecha_correo=now - timedelta(minutes=5),
         tipo_movimiento="entrante",
-        cuenta_destino_terminacion="6342",
+        cuenta_destino_terminacion="1234",
     )
 
     assert (
@@ -213,7 +213,7 @@ def test_transaction_rejects_reused_or_out_of_window_email():
         activo=True,
         tolerancia_monto=Decimal("0.00"),
         ventana_dias=3,
-        cuentas_destino_permitidas="6342",
+        cuentas_destino_permitidas="1234",
     )
     revision = SimpleNamespace(
         folio_detectado="120416780901",
@@ -227,7 +227,7 @@ def test_transaction_rejects_reused_or_out_of_window_email():
         monto=Decimal("300.00"),
         fecha_correo=now,
         tipo_movimiento="entrante",
-        cuenta_destino_terminacion="6342",
+        cuenta_destino_terminacion="1234",
     )
     assert (
         BankEmailService.transaction_match_reason(
@@ -257,7 +257,7 @@ def test_normalize_bank_sender_accepts_copied_from_header():
 
 
 def test_normalize_authorized_account_endings():
-    assert _normalize_account_endings("6342, 1735,6342") == "6342,1735"
+    assert _normalize_account_endings("1234, 5678,1234") == "1234,5678"
 
 
 def test_transaction_rejects_outgoing_or_wrong_destination_account():
@@ -266,7 +266,7 @@ def test_transaction_rejects_outgoing_or_wrong_destination_account():
         activo=True,
         tolerancia_monto=Decimal("0.00"),
         ventana_dias=3,
-        cuentas_destino_permitidas="6342",
+        cuentas_destino_permitidas="1234",
     )
     revision = SimpleNamespace(
         folio_detectado="120416780901",
@@ -280,7 +280,7 @@ def test_transaction_rejects_outgoing_or_wrong_destination_account():
         monto=Decimal("300.00"),
         fecha_correo=now,
         tipo_movimiento="saliente",
-        cuenta_destino_terminacion="6342",
+        cuenta_destino_terminacion="1234",
     )
     assert (
         BankEmailService.transaction_match_reason(
