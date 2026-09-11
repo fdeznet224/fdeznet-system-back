@@ -173,12 +173,32 @@ def construir_menu_bot(asistente_nombre: str = "FdezBot", config=None) -> str:
     return build_bot_menu(asistente_nombre, config)
 
 
-def telefono_corresponde_cliente(telefono_entrada: str, cliente) -> bool:
-    entrada = re.sub(r"\D", "", telefono_entrada or "")
+def sufijos_identidad_whatsapp(*telefonos: str) -> set[str]:
+    """Devuelve teléfonos comparables y descarta identificadores opacos LID."""
+    sufijos = set()
+    for telefono in telefonos:
+        valor = (telefono or "").strip().lower()
+        if valor.endswith("@lid"):
+            continue
+        digits = re.sub(r"\D", "", valor)
+        if len(digits) >= 10:
+            sufijos.add(digits[-10:])
+    return sufijos
+
+
+def telefono_corresponde_cliente(
+    telefono_entrada: str,
+    cliente,
+    *telefonos_alternativos: str,
+) -> bool:
+    entradas = sufijos_identidad_whatsapp(
+        telefono_entrada,
+        *telefonos_alternativos,
+    )
     registrado = re.sub(r"\D", "", getattr(cliente, "telefono", "") or "")
-    if not entrada or not registrado:
+    if not entradas or len(registrado) < 10:
         return False
-    return entrada[-10:] == registrado[-10:]
+    return registrado[-10:] in entradas
 
 
 def formatear_diagnostico_autoservicio(cliente, diagnostico: dict) -> str:
@@ -365,9 +385,13 @@ async def ejecutar_bloque_visual(
 async def buscar_staff_whatsapp(
     db: AsyncSession,
     telefono: str,
+    *telefonos_alternativos: str,
 ) -> UsuarioModel | None:
-    digits = re.sub(r"\D", "", telefono or "")
-    if len(digits) < 10:
+    sufijos = sufijos_identidad_whatsapp(
+        telefono,
+        *telefonos_alternativos,
+    )
+    if not sufijos:
         return None
     return (
         await db.execute(
@@ -377,7 +401,7 @@ async def buscar_staff_whatsapp(
                 UsuarioModel.activo.is_(True),
                 UsuarioModel.bot_whatsapp_habilitado.is_(True),
                 UsuarioModel.rol.in_(["admin", "supervisor", "tecnico"]),
-                func.right(UsuarioModel.telefono_whatsapp, 10) == digits[-10:],
+                func.right(UsuarioModel.telefono_whatsapp, 10).in_(sufijos),
             )
         )
     ).scalar_one_or_none()
@@ -1333,7 +1357,11 @@ async def webhook_recibir_mensaje(
         and normalizar_texto_bot(texto_limpio)
         == normalizar_texto_bot(flujo_tecnico.comando)
     ):
-        staff = await buscar_staff_whatsapp(db, telefono_raw)
+        staff = await buscar_staff_whatsapp(
+            db,
+            telefono_busqueda,
+            telefono_raw,
+        )
         if not staff:
             await wa_service.enviar_mensaje(
                 telefono=telefono_raw,
@@ -1580,7 +1608,11 @@ async def webhook_recibir_mensaje(
             "TECNICO_CONTRATO_POTENCIA",
             "TECNICO_CONTRATO_RED",
         }:
-            staff = await buscar_staff_whatsapp(db, telefono_raw)
+            staff = await buscar_staff_whatsapp(
+                db,
+                telefono_busqueda,
+                telefono_raw,
+            )
             if not staff or staff.id != estado.get("staff_id"):
                 bot_memory.pop(telefono_raw, None)
                 await wa_service.enviar_mensaje(
@@ -1931,8 +1963,9 @@ async def webhook_recibir_mensaje(
             cliente_final = (await db.execute(stmt_c)).scalars().first()
 
             if cliente_final and telefono_corresponde_cliente(
-                telefono_raw,
+                telefono_busqueda,
                 cliente_final,
+                telefono_raw,
             ):
                 factura = await obtener_factura_cobrable(
                     db,
@@ -2022,8 +2055,9 @@ async def webhook_recibir_mensaje(
                 )
             ).scalars().first()
             if not cliente_final or not telefono_corresponde_cliente(
-                telefono_raw,
+                telefono_busqueda,
                 cliente_final,
+                telefono_raw,
             ):
                 res = (
                     "❌ Los datos no coinciden con el teléfono registrado en "
@@ -2091,8 +2125,9 @@ async def webhook_recibir_mensaje(
             cliente_final = (await db.execute(stmt_c)).scalars().first()
 
             if cliente_final and telefono_corresponde_cliente(
-                telefono_raw,
+                telefono_busqueda,
                 cliente_final,
+                telefono_raw,
             ):
                 nombre_plan = cliente_final.plan.nombre if cliente_final.plan else "Sin plan"
                 megas_bajada = (cliente_final.plan.velocidad_bajada / 1024) if cliente_final.plan else 0

@@ -12,6 +12,7 @@ from src.application.services.bot_flow_service import (
 from src.domain.schemas import BotFlowUpdate
 from src.interfaces.api.whatsapp import (
     formatear_diagnostico_autoservicio,
+    sufijos_identidad_whatsapp,
     telefono_corresponde_cliente,
 )
 
@@ -71,8 +72,21 @@ def test_schema_rechaza_opciones_duplicadas_o_todas_inactivas():
 def test_telefono_debe_corresponder_al_cliente():
     cliente = SimpleNamespace(telefono="55 1234-5678")
     assert telefono_corresponde_cliente("5215512345678@c.us", cliente)
+    assert telefono_corresponde_cliente(
+        "5215512345678@c.us",
+        cliente,
+        "123456789012345@lid",
+    )
     assert not telefono_corresponde_cliente("5215587654321@c.us", cliente)
     assert not telefono_corresponde_cliente("", cliente)
+
+
+def test_identidad_whatsapp_ignora_lid_y_conserva_numero_resuelto():
+    assert sufijos_identidad_whatsapp(
+        "5219613699652@c.us",
+        "123456789012345@lid",
+    ) == {"9613699652"}
+    assert sufijos_identidad_whatsapp("123456789012345@lid") == set()
 
 
 def test_diagnostico_muestra_pppoe_onu_y_potencia_sin_credenciales():
