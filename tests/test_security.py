@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from jose import JWTError
+from jwt import PyJWTError
 
 from src.application.services.user_service import UserService
 from src.infrastructure import auth
@@ -20,7 +20,7 @@ def test_token_without_access_type_is_rejected():
         auth.SECRET_KEY,
         algorithm=auth.ALGORITHM,
     )
-    with pytest.raises(JWTError):
+    with pytest.raises(PyJWTError):
         auth.decode_access_token(token)
 
 

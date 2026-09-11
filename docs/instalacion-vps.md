@@ -47,6 +47,9 @@ curl -fsSL https://fdezpay.com/api/control/installer | sudo bash -s -- \
   --bootstrap-token TOKEN_DE_UN_SOLO_USO
 ```
 
+Si el proveedor ya montó una carpeta externa de respaldo, agréguela desde la
+primera instalación con `--backup-remote-dir /mnt/respaldo-externo/fdeznet`.
+
 El panel quedará disponible como `http://IP_DE_LA_VPS`. Al contar con el
 dominio, cree el registro DNS A hacia esa IP y vuelva a ejecutar el instalador
 con `--domain` y `--email`; la licencia existente se conserva y Certbot activa

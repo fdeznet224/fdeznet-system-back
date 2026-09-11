@@ -41,7 +41,7 @@ build/
 # Archivos del Sistema Operativo
 # =========================
 .DS_Store
-Thumbs.dbbackups/
+Thumbs.db
 
 # Python
 __pycache__/

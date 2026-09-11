@@ -6,7 +6,7 @@ from src.infrastructure.models import ConfiguracionSistema
 
 
 def initial_branding_values() -> dict[str, str | None]:
-    company_name = os.getenv("FDEZNET_BRAND_NAME", "").strip() or "FdezNet"
+    company_name = os.getenv("FDEZNET_BRAND_NAME", "").strip() or "Mi ISP"
     system_name = os.getenv("FDEZNET_BRAND_SYSTEM_NAME", "").strip() or company_name
     company_email = os.getenv("FDEZNET_BRAND_EMAIL", "").strip()
     return {

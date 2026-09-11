@@ -3,14 +3,13 @@ require('dotenv').config();
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
-const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const mime = require('mime-types');
 const { descargarMediaConReintentos, describirError } = require('./media-utils');
 
 const PORT = process.env.PORT || 3000;
-const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
 const BACKEND_URL = process.env.API_BACKEND_URL || 'http://127.0.0.1:8000';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 
@@ -21,6 +20,25 @@ if (!WEBHOOK_SECRET) {
 const webhookHeaders = {
     headers: { 'X-Webhook-Secret': WEBHOOK_SECRET }
 };
+
+async function postBackend(pathname, payload) {
+    const response = await fetch(`${BACKEND_URL}${pathname}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...webhookHeaders.headers,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30000),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        const error = new Error(data.detail || data.error || `HTTP ${response.status}`);
+        error.statusCode = response.status;
+        throw error;
+    }
+    return data;
+}
 
 const app = express();
 app.use(express.json());
@@ -39,8 +57,9 @@ app.use((req, res, next) => {
 });
 
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
-if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
-app.use('/uploads', express.static(UPLOADS_DIR));
+if (!fs.existsSync(UPLOADS_DIR)) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true, mode: 0o700 });
+}
 
 let client = null; 
 let isReady = false;
@@ -200,11 +219,13 @@ function iniciarMotor() {
                 }
                 if (media) {
                     let ext = mime.extension(media.mimetype) || 'bin';
-                    const fileName = `${msg.type}_${Date.now()}.${ext}`;
+                    const fileName = `${msg.type}_${crypto.randomUUID()}.${ext}`;
                     const filePath = path.join(UPLOADS_DIR, fileName);
                     
-                    fs.writeFileSync(filePath, media.data, { encoding: 'base64' });
-                    mediaUrl = `${PUBLIC_URL}/uploads/${fileName}`;
+                    fs.writeFileSync(filePath, media.data, { encoding: 'base64', mode: 0o600 });
+                    // Identificador privado entendido por el backend. El archivo
+                    // nunca se publica directamente desde Express o Nginx.
+                    mediaUrl = `whatsapp-media://${fileName}`;
 
                     if (msg.type === 'image') {
                         contenido = `[FOTO_COMPROBANTE]`;
@@ -226,13 +247,13 @@ function iniciarMotor() {
                 console.log("⚠️ No se pudo obtener el número real del contacto:", err.message);
             }
 
-            await axios.post(`${BACKEND_URL}/whatsapp/webhook/recibir`, {
+            await postBackend('/whatsapp/webhook/recibir', {
                 telefono: numeroReal,       
                 telefono_raw: msg.from,     
                 mensaje: contenido,
                 mediaUrl: mediaUrl,
                 wa_id: msg.id.id
-            }, webhookHeaders);
+            });
 
         } catch (e) { 
             console.error("❌ Error Webhook Recibir:", e.message); 
@@ -247,12 +268,8 @@ function iniciarMotor() {
         };
         for (let intento = 0; intento < 4; intento += 1) {
             try {
-                const respuesta = await axios.post(
-                    `${BACKEND_URL}/whatsapp/webhook/ack`,
-                    payload,
-                    webhookHeaders
-                );
-                if (respuesta.data?.matched !== false) {
+                const respuesta = await postBackend('/whatsapp/webhook/ack', payload);
+                if (respuesta?.matched !== false) {
                     if (ack >= 3) backendIdPorWaId.delete(msg.id.id);
                     return;
                 }
@@ -382,7 +399,7 @@ app.post('/enviar-mensaje', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`🚀 Motor WhatsApp FdezNet en puerto ${PORT}`);
+app.listen(PORT, '127.0.0.1', () => {
+    console.log(`🚀 Motor WhatsApp en puerto ${PORT}`);
     iniciarMotor();
 });

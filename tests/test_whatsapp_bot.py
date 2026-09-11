@@ -94,7 +94,7 @@ def test_bot_busca_facturas_pendientes_y_vencidas(monkeypatch):
 
 def test_bot_usa_fdezbot_como_palabra_de_acceso():
     assert BOT_KEYWORD == "fdezbot"
-    assert "FdezBot" in construir_menu_bot()
+    assert "Asistente" in construir_menu_bot()
     assert "fdezpay" not in construir_menu_bot().lower()
     assert "No tengo internet" in construir_menu_bot()
 
@@ -120,7 +120,7 @@ def test_bot_informa_horario_y_autoservicio_sin_ia():
     mensaje = mensaje_fuera_de_horario()
     assert "Lunes: 08:00 a 20:00" in mensaje
     assert "Domingo: cerrado" in mensaje
-    assert "FdezBot" in mensaje
+    assert "Asistente" in mensaje
     assert "asistente automático" in mensaje
     assert "puedo ayudarte" in mensaje
 

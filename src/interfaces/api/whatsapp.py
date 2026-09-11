@@ -169,8 +169,8 @@ def esta_fuera_de_horario(
 
 
 def mensaje_fuera_de_horario(
-    empresa_nombre: str = "FdezNet",
-    asistente_nombre: str = "FdezBot",
+    empresa_nombre: str = "Mi ISP",
+    asistente_nombre: str = "Asistente",
     config=None,
 ) -> str:
     template = (
@@ -188,7 +188,7 @@ def mensaje_fuera_de_horario(
 
 
 def mensaje_audio_no_disponible(
-    asistente_nombre: str = "FdezBot",
+    asistente_nombre: str = "Asistente",
     palabra_activacion: str = BOT_KEYWORD,
 ) -> str:
     return (
@@ -198,7 +198,7 @@ def mensaje_audio_no_disponible(
     )
 
 
-def construir_menu_bot(asistente_nombre: str = "FdezBot", config=None) -> str:
+def construir_menu_bot(asistente_nombre: str = "Asistente", config=None) -> str:
     return build_bot_menu(asistente_nombre, config)
 
 
@@ -1051,6 +1051,36 @@ async def ver_archivo_comprobante(
     return FileResponse(archivo)
 
 
+@router.get("/chat/{cliente_id}/archivo/{nombre}")
+async def ver_archivo_chat(
+    cliente_id: int,
+    nombre: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Entrega adjuntos del chat sin publicar el directorio de WhatsApp."""
+    try:
+        await verificar_acceso_cliente(db, current_user, cliente_id)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    nombre_seguro = Path(nombre).name
+    if nombre_seguro != nombre or not nombre_seguro:
+        raise HTTPException(status_code=404, detail="Archivo no disponible")
+    vinculado = await db.scalar(
+        select(MensajeChatModel.id).where(
+            MensajeChatModel.cliente_id == cliente_id,
+            MensajeChatModel.mensaje.contains(nombre_seguro),
+        ).limit(1)
+    )
+    if vinculado is None:
+        raise HTTPException(status_code=404, detail="Archivo no disponible")
+    uploads = Path(__file__).resolve().parents[3] / "bot_whatsapp" / "uploads"
+    archivo = (uploads / nombre_seguro).resolve()
+    if archivo.parent != uploads.resolve() or not archivo.is_file() or archivo.is_symlink():
+        raise HTTPException(status_code=404, detail="Archivo no disponible")
+    return FileResponse(archivo)
+
+
 @router.post("/comprobantes-revision/{comprobante_id}/aprobar")
 async def aprobar_comprobante_revision(
     comprobante_id: int,
@@ -1333,8 +1363,8 @@ async def webhook_recibir_mensaje(
     # 🔥 CARRIL RÁPIDO PARA BOT Y CHAT MANUAL 🔥
     wa_service = WhatsAppService()
     marca = await db.get(ConfiguracionSistema, 1)
-    empresa_nombre = getattr(marca, "empresa_nombre", None) or "FdezNet"
-    asistente_nombre = getattr(marca, "sistema_nombre", None) or "FdezBot"
+    empresa_nombre = getattr(marca, "empresa_nombre", None) or "Mi ISP"
+    asistente_nombre = getattr(marca, "sistema_nombre", None) or "Asistente"
     bot_config = await get_or_create_bot_config(db)
     palabra_bot = normalizar_texto_bot(bot_config.palabra_activacion)
     menu_bot = construir_menu_bot(asistente_nombre, bot_config)
@@ -2540,7 +2570,7 @@ async def enviar_mensaje_chat(
 
 @webhook_router.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    token = websocket.query_params.get("token", "")
+    token = websocket.cookies.get("fdeznet_access", "")
     try:
         username = decode_access_token(token)
         async with SessionLocal() as db:

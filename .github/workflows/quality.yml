@@ -1,0 +1,29 @@
+name: quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend-and-bot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m compileall -q src migrations
+      - run: pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: bot_whatsapp/package-lock.json
+      - run: npm ci
+        working-directory: bot_whatsapp
+      - run: npm test
+        working-directory: bot_whatsapp
+      - run: npm audit --audit-level=high
+        working-directory: bot_whatsapp

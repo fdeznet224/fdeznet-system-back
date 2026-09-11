@@ -81,7 +81,7 @@ def _cors_origins():
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Iniciando FdezNet System...")
+    print("🚀 Iniciando sistema ISP...")
 
     # 1. INICIALIZAR CACHÉ
     FastAPICache.init(InMemoryBackend(), prefix="fdeznet-cache")
@@ -209,14 +209,14 @@ async def lifespan(app: FastAPI):
 
     print("🛑 Apagando Planificador...")
     scheduler.shutdown()
-    print("👋 FdezNet System detenido.")
+    print("👋 Sistema ISP detenido.")
 
 
 # ==========================================
 # 🚀 INSTANCIA DE LA APP
 # ==========================================
 app = FastAPI(
-    title="FdezNet System", 
+    title="Sistema ISP",
     version=SYSTEM_VERSION,
     lifespan=lifespan,
     root_path="/api"
@@ -296,7 +296,7 @@ app.include_router(bajas.router, dependencies=licensed)
 def home():
     return {
         "status": "online",
-        "system": f"FdezNet v{SYSTEM_VERSION}",
+        "system": f"Sistema ISP v{SYSTEM_VERSION}",
         "cron_status": "active"
     }
 

@@ -19,6 +19,7 @@ ADMIN_USER="admin"
 BOOTSTRAP_TOKEN=""
 SKIP_DNS_CHECK="false"
 RESET_ADMIN_PASSWORD="false"
+BACKUP_REMOTE_DIR=""
 ACCESS_HOST=""
 PUBLIC_SCHEME="http"
 USE_TLS="false"
@@ -36,7 +37,8 @@ usage() {
     "Opciones:" \
     "  --admin-user USUARIO     Usuario administrador inicial (default: admin)" \
     "  --skip-dns-check         Omite la validación DNS previa al certificado" \
-    "  --reset-admin-password   Genera una nueva contraseña para el administrador"
+    "  --reset-admin-password   Genera una nueva contraseña para el administrador" \
+    "  --backup-remote-dir RUTA Carpeta externa montada para una segunda copia"
 }
 
 while (($#)); do
@@ -47,6 +49,7 @@ while (($#)); do
     --bootstrap-token) BOOTSTRAP_TOKEN="${2:-}"; shift 2 ;;
     --skip-dns-check) SKIP_DNS_CHECK="true"; shift ;;
     --reset-admin-password) RESET_ADMIN_PASSWORD="true"; shift ;;
+    --backup-remote-dir) BACKUP_REMOTE_DIR="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Opción desconocida: $1" ;;
   esac
@@ -63,6 +66,10 @@ if [[ -n "$DOMAIN" ]]; then
   PUBLIC_SCHEME="https"
 fi
 [[ "$ADMIN_USER" =~ ^[a-zA-Z0-9._-]{3,50}$ ]] || fail "Usuario administrador inválido"
+if [[ -n "$BACKUP_REMOTE_DIR" ]]; then
+  [[ "$BACKUP_REMOTE_DIR" == /* ]] || fail "La carpeta de respaldo externo debe ser una ruta absoluta"
+  [[ -d "$BACKUP_REMOTE_DIR" && -w "$BACKUP_REMOTE_DIR" ]] || fail "La carpeta de respaldo externo no existe o no es escribible"
+fi
 
 if [[ -r /etc/os-release ]]; then
   . /etc/os-release
@@ -156,8 +163,8 @@ apt-get install -y ca-certificates certbot curl git gnupg jq nginx openssl pytho
   "$ASOUND_PACKAGE" libpangocairo-1.0-0 libcups2 libxshmfence1 libxss1 \
   fonts-liberation python3-certbot-nginx
 
-if ! command -v node >/dev/null 2>&1 || [[ "$(node --version | tr -d v | cut -d. -f1)" -lt 20 ]]; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+if ! command -v node >/dev/null 2>&1 || [[ "$(node --version | tr -d v | cut -d. -f1)" -lt 22 ]]; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   wait_for_apt
   apt-get install -y nodejs
 fi
@@ -208,6 +215,11 @@ FRONTEND_COMMIT="$(existing_value FDEZNET_FRONTEND_COMMIT "$BACKEND_DIR/.env")"
 BRAND_NAME="$(existing_value FDEZNET_BRAND_NAME "$BACKEND_DIR/.env")"
 BRAND_SYSTEM_NAME="$(existing_value FDEZNET_BRAND_SYSTEM_NAME "$BACKEND_DIR/.env")"
 BRAND_EMAIL="$(existing_value FDEZNET_BRAND_EMAIL "$BACKEND_DIR/.env")"
+BACKUP_REMOTE_DIR="${BACKUP_REMOTE_DIR:-$(existing_value FDEZNET_BACKUP_REMOTE_DIR "$BACKEND_DIR/.env")}"
+if [[ -n "$BACKUP_REMOTE_DIR" ]]; then
+  [[ -d "$BACKUP_REMOTE_DIR" && -w "$BACKUP_REMOTE_DIR" ]] \
+    || fail "La carpeta de respaldo externo configurada no existe o no es escribible"
+fi
 ADMIN_PASSWORD="$(existing_value ADMIN_BOOTSTRAP_PASSWORD "$BACKEND_DIR/.env")"
 if [[ "$RESET_ADMIN_PASSWORD" == "true" ]]; then
   ADMIN_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
@@ -290,6 +302,7 @@ if [[ -n "$BRAND_EMAIL" ]]; then
   set_env_value "$BACKEND_DIR/.env" FDEZNET_BRAND_EMAIL "$BRAND_EMAIL"
 fi
 set_env_value "$BACKEND_DIR/.env" FDEZNET_BACKUP_DIR /var/backups/fdeznet
+set_env_value "$BACKEND_DIR/.env" FDEZNET_BACKUP_REMOTE_DIR "$BACKUP_REMOTE_DIR"
 set_env_value "$BACKEND_DIR/.env" FDEZNET_BACKUP_RETENTION_DAYS 14
 if [[ -n "$ADMIN_PASSWORD" ]]; then
   set_env_value "$BACKEND_DIR/.env" ADMIN_BOOTSTRAP_USER "$ADMIN_USER"
@@ -346,7 +359,8 @@ import asyncio
 from sqlalchemy import inspect, text
 
 from src.infrastructure import models  # noqa: F401
-from src.infrastructure.database import Base, engine
+from src.application.services.installation_seed_service import seed_fresh_installation
+from src.infrastructure.database import Base, SessionLocal, engine
 
 
 async def prepare_database() -> None:
@@ -385,7 +399,9 @@ async def prepare_database() -> None:
                 """
             )
         )
-        print("fresh")
+    async with SessionLocal() as database:
+        await seed_fresh_installation(database)
+    print("fresh")
 
 
 asyncio.run(prepare_database())
@@ -478,6 +494,14 @@ ExecStart=${BACKEND_DIR}/venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8
 Restart=always
 RestartSec=5
 PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=-${BACKEND_DIR}/static -${BACKEND_DIR}/uploads -${BACKEND_DIR}/bot_whatsapp/uploads -/var/lib/fdeznet
+UMask=0077
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -486,7 +510,6 @@ log "Instalando servicio de WhatsApp"
 runuser -u "$SERVICE_USER" -- npm --prefix "$BACKEND_DIR/bot_whatsapp" ci --omit=dev
 cat > "$BACKEND_DIR/bot_whatsapp/.env" <<BOTENV
 PORT=3000
-PUBLIC_URL=${PUBLIC_SCHEME}://${ACCESS_HOST}/media
 API_BACKEND_URL=http://127.0.0.1:8000
 WEBHOOK_SECRET=${WEBHOOK_SECRET}
 BOTENV
@@ -506,6 +529,14 @@ ExecStart=/usr/bin/node index.js
 Restart=always
 RestartSec=5
 PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=-${BACKEND_DIR}/bot_whatsapp -/var/lib/fdeznet
+UMask=0077
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -525,7 +556,13 @@ server {
     listen 80;
     listen [::]:80;
     server_name ${ACCESS_HOST};
+    server_tokens off;
     client_max_body_size 12m;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(self), microphone=(self), geolocation=(self)" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' ws: wss:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'" always;
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -533,12 +570,8 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    location /media/uploads/ {
-        proxy_pass http://127.0.0.1:3000/uploads/;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
     location / {
         root ${FRONTEND_DIR}/dist;
@@ -566,6 +599,9 @@ done
 if [[ "$USE_TLS" == "true" ]]; then
   log "Configurando certificado HTTPS"
   certbot --nginx --non-interactive --agree-tos --redirect -m "$ADMIN_EMAIL" -d "$DOMAIN"
+  sed -i '/^[[:space:]]*server_name/a\    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;' /etc/nginx/sites-available/fdeznet
+  nginx -t
+  systemctl reload nginx
 fi
 SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}' || true)"
 SSH_PORT="${SSH_PORT:-22}"

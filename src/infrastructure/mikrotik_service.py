@@ -66,7 +66,7 @@ class MikroTikService:
             "rate-limit": velocidad,
             "only-one": "default", 
             "dns-server": "8.8.8.8,1.1.1.1", 
-            "comment": "FdezNet-FTTH"
+            "comment": "ISP-FTTH"
         }
         res = self._request("GET", f"/ppp/profile?name={nombre_plan}")
         
@@ -97,7 +97,7 @@ class MikroTikService:
     # ==========================================
     #  2. GESTIÓN DE ONUs / CLIENTES (SECRETS)
     # ==========================================
-    def crear_actualizar_pppoe(self, user, password, profile, remote_address=None, comment="FdezNet"):
+    def crear_actualizar_pppoe(self, user, password, profile, remote_address=None, comment="ISP-Manager"):
         payload = {
             "name": user,
             "password": password,

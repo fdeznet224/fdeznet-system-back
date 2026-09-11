@@ -359,6 +359,10 @@ async def obtener_estado_mantenimiento():
     data["revision_automatica"] = Path(
         "/etc/systemd/system/timers.target.wants/fdeznet-verify.timer"
     ).exists()
+    remote_dir = os.getenv("FDEZNET_BACKUP_REMOTE_DIR", "").strip()
+    data["respaldo_externo_configurado"] = bool(
+        remote_dir and Path(remote_dir).is_dir()
+    )
     return MaintenanceStatus.model_validate(data)
 
 

@@ -13,7 +13,7 @@ python -m pytest -q
 python -m compileall -q src
 ```
 
-La validación actual contiene 190 pruebas. Los avisos de configuración de
+La validación actual contiene 238 pruebas de backend. Los avisos de configuración de
 Pydantic 1 fueron eliminados; permanecen avisos externos de Passlib y EasyOCR.
 
 ## Frontend
@@ -80,7 +80,7 @@ npm run check:release
 ```
 
 `check:release` ejecuta lint completo, lint crítico, compilación PWA y los
-76 casos resultantes de los 38 escenarios en ambos perfiles.
+84 casos resultantes de los 42 escenarios en ambos perfiles.
 
 ## Dependencias
 

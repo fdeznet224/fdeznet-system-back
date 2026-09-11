@@ -22,6 +22,7 @@ def test_instalador_valida_recursos_y_compatibilidad_de_mysql():
     assert "MIN_DISK_BYTES" in content
     assert "x86_64/amd64" in content
     assert "default-mysql-server" in content
+    assert "setup_22.x" in content
 
 
 def test_instalador_no_elimina_directorio_de_aplicacion():
@@ -43,9 +44,16 @@ def test_instalador_configura_respaldo_y_revision_automatica():
     assert "fdeznet-update.timer" in content
     assert "fdeznet-verify.timer" in content
     assert "FDEZNET_BACKUP_RETENTION_DAYS" in content
+    assert "--backup-remote-dir" in content
+    assert "FDEZNET_BACKUP_REMOTE_DIR" in content
     assert "rclone" not in content.lower()
-    assert "location /media/uploads/" in content
-    assert "PUBLIC_URL=${PUBLIC_SCHEME}://${ACCESS_HOST}/media" in content
+    assert "proxy_pass http://127.0.0.1:3000/uploads/" not in content
+    assert "PUBLIC_URL=${PUBLIC_SCHEME}://${ACCESS_HOST}/media" not in content
+    assert "Content-Security-Policy" in content
+    assert "X-Content-Type-Options" in content
+    assert "Strict-Transport-Security" in content
+    assert "ProtectSystem=strict" in content
+    assert "NoNewPrivileges=true" in content
 
 
 def test_instalador_recibe_identidad_inicial_del_panel_central():
@@ -64,6 +72,12 @@ def test_instalador_fija_los_commits_autorizados_por_el_panel():
     assert "FDEZNET_FRONTEND_COMMIT" in content
     assert 'reset --hard "$BACKEND_COMMIT"' in content
     assert 'reset --hard "$FRONTEND_COMMIT"' in content
+
+
+def test_instalador_siembra_datos_funcionales_en_una_base_nueva():
+    content = INSTALLER.read_text(encoding="utf-8")
+    assert "seed_fresh_installation" in content
+    assert "alembic stamp head" in content
 
 
 def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
@@ -90,9 +104,15 @@ def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     assert "manual-update-requested" in content
     assert "install_deployment_files" in content
     assert "systemctl daemon-reload" in content
-    assert "location /media/uploads/" in content
+    assert "proxy_pass http://127.0.0.1:3000/uploads/" not in content
+    assert "sed -i '/^[[:space:]]*location \\/media\\/uploads" in content
+    assert "Content-Security-Policy" in content
+    assert "ProtectSystem=strict" in content
+    assert "Strict-Transport-Security" in content
     assert "nginx -t" in content
     assert 'config/nginx.conf" ]] && install' in content
     assert 'config/wireguard/." /etc/wireguard/' in content
+    assert 'data/order-evidence' in content
+    assert 'uploads/ordenes' in content
     assert "exclude)bot_whatsapp/node_modules" in content
     assert "exclude)node_modules" in content

@@ -46,21 +46,52 @@ set_env_value() {
 }
 
 install_deployment_files() {
-  local source nginx_site="/etc/nginx/sites-available/fdeznet"
+  local source unit nginx_site="/etc/nginx/sites-available/fdeznet"
   install -o root -g root -m 0750 "$BACKEND_DIR/scripts/fdeznet-maintenance.sh" /usr/local/sbin/fdeznet-maintenance
   for source in "$BACKEND_DIR"/deploy/systemd/fdeznet-*; do
     [[ -f "$source" ]] || continue
     install -o root -g root -m 0644 "$source" "/etc/systemd/system/${source##*/}"
   done
-  if [[ -f "$nginx_site" ]] && ! grep -q 'location /media/uploads/' "$nginx_site"; then
-    sed -i '/^[[:space:]]*location \/ {/i\
-    location /media/uploads/ {\
-        proxy_pass http://127.0.0.1:3000/uploads/;\
-        proxy_http_version 1.1;\
-        proxy_set_header Host $host;\
-        proxy_set_header X-Forwarded-Proto $scheme;\
-    }\
+  if [[ -f "$nginx_site" ]] && grep -q 'location /media/uploads/' "$nginx_site"; then
+    # Los comprobantes contienen datos financieros y nunca deben quedar
+    # expuestos como archivos estáticos. La API los entrega con autorización.
+    sed -i '/^[[:space:]]*location \/media\/uploads\/ {/,/^[[:space:]]*}/d' "$nginx_site"
+  fi
+  if [[ -f "$nginx_site" ]] && ! grep -q 'X-Content-Type-Options' "$nginx_site"; then
+    sed -i '/^[[:space:]]*client_max_body_size/a\
+    add_header X-Content-Type-Options "nosniff" always;\
+    add_header X-Frame-Options "SAMEORIGIN" always;\
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;\
+    add_header Permissions-Policy "camera=(self), microphone=(self), geolocation=(self)" always;\
+    add_header Content-Security-Policy "default-src '\''self'\''; script-src '\''self'\''; style-src '\''self'\'' '\''unsafe-inline'\''; img-src '\''self'\'' data: blob: https:; font-src '\''self'\'' data:; media-src '\''self'\'' blob:; connect-src '\''self'\'' ws: wss:; frame-ancestors '\''self'\''; base-uri '\''self'\''; form-action '\''self'\''" always;
 ' "$nginx_site"
+  fi
+  if [[ -f "$nginx_site" ]] && ! grep -q 'proxy_set_header Upgrade' "$nginx_site"; then
+    sed -i '/proxy_set_header X-Forwarded-Proto/a\        proxy_set_header Upgrade $http_upgrade;\
+        proxy_set_header Connection "upgrade";' "$nginx_site"
+  fi
+  if [[ -f "$nginx_site" ]] && grep -q 'listen .*443' "$nginx_site" && ! grep -q 'Strict-Transport-Security' "$nginx_site"; then
+    sed -i '/^[[:space:]]*server_name/a\    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;' "$nginx_site"
+  fi
+  for unit in /etc/systemd/system/fdeznet-api.service /etc/systemd/system/fdeznet-bot.service; do
+    [[ -f "$unit" ]] || continue
+    if ! grep -q '^ProtectSystem=strict$' "$unit"; then
+      sed -i '/^PrivateTmp=true$/a\NoNewPrivileges=true\
+ProtectSystem=strict\
+ProtectHome=true\
+PrivateDevices=true\
+LockPersonality=true\
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\
+UMask=0077' "$unit"
+    fi
+  done
+  unit=/etc/systemd/system/fdeznet-api.service
+  if [[ -f "$unit" ]] && ! grep -q '^ReadWritePaths=' "$unit"; then
+    sed -i '/^UMask=0077$/a\ReadWritePaths=-/opt/fdeznet/backend/static -/opt/fdeznet/backend/uploads -/opt/fdeznet/backend/bot_whatsapp/uploads -/var/lib/fdeznet' "$unit"
+  fi
+  unit=/etc/systemd/system/fdeznet-bot.service
+  if [[ -f "$unit" ]] && ! grep -q '^ReadWritePaths=' "$unit"; then
+    sed -i '/^UMask=0077$/a\ReadWritePaths=-/opt/fdeznet/backend/bot_whatsapp -/var/lib/fdeznet' "$unit"
   fi
   systemctl daemon-reload
   nginx -t
@@ -198,6 +229,7 @@ create_backup() {
   [[ -f /etc/nginx/sites-available/fdeznet ]] && cp -a /etc/nginx/sites-available/fdeznet "$stage/config/nginx.conf"
   [[ -d /etc/wireguard ]] && cp -a /etc/wireguard "$stage/config/wireguard"
   [[ -d "$BACKEND_DIR/static" ]] && cp -a "$BACKEND_DIR/static" "$stage/data/static"
+  [[ -d "$BACKEND_DIR/uploads/ordenes" ]] && cp -a "$BACKEND_DIR/uploads/ordenes" "$stage/data/order-evidence"
   [[ -d "$BACKEND_DIR/bot_whatsapp/.wwebjs_auth" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/.wwebjs_auth" "$stage/data/whatsapp-auth"
   [[ -d "$BACKEND_DIR/bot_whatsapp/uploads" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/uploads" "$stage/data/whatsapp-uploads"
   printf '%s\n' \
@@ -278,6 +310,7 @@ restore_backup() {
   [[ -d "$restore_dir/data/static" ]] && { rm -rf "$BACKEND_DIR/static"; cp -a "$restore_dir/data/static" "$BACKEND_DIR/static"; }
   [[ -d "$restore_dir/data/whatsapp-auth" ]] && { rm -rf "$BACKEND_DIR/bot_whatsapp/.wwebjs_auth"; cp -a "$restore_dir/data/whatsapp-auth" "$BACKEND_DIR/bot_whatsapp/.wwebjs_auth"; }
   [[ -d "$restore_dir/data/whatsapp-uploads" ]] && { rm -rf "$BACKEND_DIR/bot_whatsapp/uploads"; cp -a "$restore_dir/data/whatsapp-uploads" "$BACKEND_DIR/bot_whatsapp/uploads"; }
+  [[ -d "$restore_dir/data/order-evidence" ]] && { mkdir -p "$BACKEND_DIR/uploads"; rm -rf "$BACKEND_DIR/uploads/ordenes"; cp -a "$restore_dir/data/order-evidence" "$BACKEND_DIR/uploads/ordenes"; }
   chown -R fdeznet:fdeznet "$BACKEND_DIR" "$FRONTEND_DIR"
   runuser -u fdeznet -- "$BACKEND_DIR/venv/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
   runuser -u fdeznet -- npm --prefix "$BACKEND_DIR/bot_whatsapp" ci --omit=dev

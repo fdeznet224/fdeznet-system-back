@@ -181,7 +181,7 @@ class ConfigUpdate(BaseModel):
 
 
 class BrandingConfig(BaseModel):
-    empresa_nombre: str = Field(default="FdezNet", min_length=1, max_length=120)
+    empresa_nombre: str = Field(default="Mi ISP", min_length=1, max_length=120)
     sistema_nombre: str = Field(default="FdezPay", min_length=1, max_length=120)
     logo_url: Optional[str] = Field(default=None, max_length=500)
     favicon_url: Optional[str] = Field(default=None, max_length=500)
@@ -420,6 +420,7 @@ class MaintenanceStatus(BaseModel):
     actualizacion_automatica: bool = False
     respaldo_automatico: bool = False
     revision_automatica: bool = False
+    respaldo_externo_configurado: bool = False
     recuperacion_estado: str = "sin_revision"
     recuperacion_fecha: Optional[datetime] = None
     clave_huella: Optional[str] = None

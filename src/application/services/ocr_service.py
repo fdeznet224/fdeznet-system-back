@@ -4,9 +4,11 @@ import httpx
 import os
 import logging
 import tempfile
+from pathlib import Path
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+WHATSAPP_UPLOADS = Path(__file__).resolve().parents[3] / "bot_whatsapp" / "uploads"
 
 class OCRService:
     def __init__(self):
@@ -114,21 +116,32 @@ class OCRService:
 
         try:
             parsed = urlparse(url_imagen)
-            if parsed.scheme not in {"http", "https"}:
+            content_type = ""
+            if parsed.scheme == "whatsapp-media":
+                name = parsed.netloc or Path(parsed.path).name
+                source = (WHATSAPP_UPLOADS / name).resolve()
+                source.relative_to(WHATSAPP_UPLOADS.resolve())
+                if not source.is_file() or source.is_symlink():
+                    raise ValueError("El comprobante privado no existe")
+                contenido = await asyncio.to_thread(source.read_bytes)
+                content_type = "image/" + source.suffix.lower().lstrip(".")
+            elif parsed.scheme in {"http", "https"}:
+                # Compatibilidad temporal con comprobantes creados antes de que
+                # los archivos pasaran a servirse exclusivamente con autenticación.
+                async with httpx.AsyncClient(
+                    timeout=20.0,
+                    follow_redirects=True,
+                ) as client:
+                    resp = await client.get(url_imagen)
+                    resp.raise_for_status()
+                    contenido = resp.content
+                    content_type = resp.headers.get("content-type", "").lower()
+            else:
                 raise ValueError("URL de comprobante inválida")
-
-            async with httpx.AsyncClient(
-                timeout=20.0,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.get(url_imagen)
-                resp.raise_for_status()
-                contenido = resp.content
 
             if not contenido or len(contenido) > 10 * 1024 * 1024:
                 raise ValueError("Imagen vacía o mayor a 10 MB")
 
-            content_type = resp.headers.get("content-type", "").lower()
             if content_type and not content_type.startswith("image/"):
                 raise ValueError("El comprobante recibido no es una imagen")
 

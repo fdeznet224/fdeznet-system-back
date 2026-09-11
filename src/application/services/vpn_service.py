@@ -115,7 +115,7 @@ class VPNService:
                 interface=wg-fdeznet public-key="{self.SERVER_PUBKEY}" persistent-keepalive=25s
             /ip address add address={client_ip}/24 interface=wg-fdeznet
             /ip dns set servers=8.8.8.8,1.1.1.1
-            /system note set note="VPN Vinculada a FdezNet System"
+            /system note set note="VPN vinculada al sistema de gestión ISP"
         """).strip()
 
         # 5. Guardar en la Base de Datos

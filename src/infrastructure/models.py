@@ -22,6 +22,7 @@ from sqlalchemy.orm import relationship
 from .database import Base
 from datetime import date, datetime
 from sqlalchemy.dialects.mysql import LONGTEXT
+from .encrypted_field import EncryptedText
 
 # ==========================================
 # 1. ENUMS Y TABLAS INTERMEDIAS
@@ -93,7 +94,7 @@ class RouterModel(Base):
     nombre = Column(String(100), nullable=False)
     ip_vpn = Column(String(50), nullable=False, unique=True)
     user_api = Column(String(50), default="admin")
-    pass_api = Column(String(100), nullable=False)
+    pass_api = Column(EncryptedText(), nullable=False)
     port_api = Column(Integer, default=8728)
     tipo_seguridad = Column(Enum(TipoSeguridad), default=TipoSeguridad.pppoe)
     tipo_control = Column(Enum(TipoControl), default=TipoControl.colas_dinamicas)
@@ -199,7 +200,7 @@ class OLTModel(Base):
     api_protocol = Column(String(10), default="https", server_default="https")
     api_port = Column(Integer, default=443, server_default="443")
     api_user = Column(String(100), nullable=True)
-    api_password = Column(String(255), nullable=True)
+    api_password = Column(EncryptedText(), nullable=True)
     api_verify_ssl = Column(Boolean, default=False, server_default="0")
     
     router_id = Column(Integer, ForeignKey("routers.id"), nullable=True) # A qué MikroTik está conectada
@@ -1665,7 +1666,7 @@ class ConfiguracionSistema(Base):
     telefonos_alerta = Column(String(255), default="")
 
     # --- IDENTIDAD / MARCA BLANCA ---
-    empresa_nombre = Column(String(120), nullable=False, default="FdezNet")
+    empresa_nombre = Column(String(120), nullable=False, default="Mi ISP")
     sistema_nombre = Column(String(120), nullable=False, default="FdezPay")
     logo_url = Column(String(500), nullable=True)
     favicon_url = Column(String(500), nullable=True)

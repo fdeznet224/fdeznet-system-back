@@ -191,7 +191,7 @@ def enabled_options(config: ConfiguracionBotModel | None = None) -> list[dict]:
 
 
 def build_bot_menu(
-    assistant_name: str = "FdezBot",
+    assistant_name: str = "Asistente",
     config: ConfiguracionBotModel | None = None,
 ) -> str:
     welcome = (

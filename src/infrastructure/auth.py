@@ -9,7 +9,8 @@ from typing import Iterable, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -42,7 +43,7 @@ if not SECRET_KEY:
     )
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 
 class LoginRateLimiter:
@@ -119,14 +120,14 @@ def decode_access_token(token: str) -> str:
     payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     username = payload.get("sub")
     if not username or payload.get("type") != "access":
-        raise JWTError("Token de acceso inválido")
+        raise PyJWTError("Token de acceso inválido")
     return username
 
 # --- DEPENDENCIAS ---
 
 async def get_current_user(
     request: Request,
-    token: str = Depends(oauth2_scheme),
+    token: Optional[str] = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db)
 ) -> UsuarioModel:
     credentials_exception = HTTPException(
@@ -135,8 +136,9 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        username = decode_access_token(token)
-    except JWTError:
+        session_token = token or request.cookies.get("fdeznet_access", "")
+        username = decode_access_token(session_token)
+    except (PyJWTError, ValueError, TypeError):
         raise credentials_exception
 
     result = await db.execute(select(UsuarioModel).where(UsuarioModel.usuario == username))
