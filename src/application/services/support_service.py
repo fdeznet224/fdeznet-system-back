@@ -46,7 +46,15 @@ class SupportService:
             await self.db.execute(
                 select(ServicioModel)
                 .options(
-                    joinedload(ServicioModel.cliente),
+                    joinedload(ServicioModel.cliente).joinedload(
+                        ClienteModel.router
+                    ),
+                    joinedload(ServicioModel.cliente).joinedload(
+                        ClienteModel.olt
+                    ),
+                    joinedload(ServicioModel.cliente).joinedload(
+                        ClienteModel.onu_asignada
+                    ),
                     joinedload(ServicioModel.router),
                     joinedload(ServicioModel.olt),
                     joinedload(ServicioModel.onu),
@@ -60,7 +68,7 @@ class SupportService:
             )
         ).scalars().first()
         if servicio:
-            objetivo = servicio
+            objetivo = self.combinar_objetivo_servicio(servicio)
         else:
             objetivo = (
                 await self.db.execute(
@@ -85,6 +93,25 @@ class SupportService:
             "mikrotik": mikrotik,
             "olt": olt,
         }
+
+    @staticmethod
+    def combinar_objetivo_servicio(servicio):
+        """Completa datos de red aún no migrados desde la ficha del cliente."""
+        cliente = servicio.cliente
+        return SimpleNamespace(
+            id=servicio.id,
+            cliente_id=servicio.cliente_id,
+            cliente=cliente,
+            estado=servicio.estado or cliente.estado,
+            router=servicio.router or cliente.router,
+            router_id=servicio.router_id or cliente.router_id,
+            olt=servicio.olt or cliente.olt,
+            olt_id=servicio.olt_id or cliente.olt_id,
+            onu=servicio.onu or cliente.onu_asignada,
+            onu_id=servicio.onu_id or cliente.onu_id,
+            user_pppoe=servicio.user_pppoe or cliente.user_pppoe,
+            ip_asignada=servicio.ip_asignada or cliente.ip_asignada,
+        )
 
     async def crear_incidencia(
         self,

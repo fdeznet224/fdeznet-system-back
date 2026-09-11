@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 from src.application.services.orden_service import OrdenService
 from src.application.services.support_service import SupportService
@@ -123,6 +124,45 @@ def test_both_management_systems_down_returns_incomplete():
 def test_support_parser_accepts_dbm_and_packet_loss():
     assert SupportService.parsear_decimal("-23.45 dBm") == Decimal("-23.45")
     assert SupportService.parsear_perdida("33.33%") == Decimal("33.33")
+
+
+def test_diagnostico_completa_onu_del_servicio_desde_cliente_legado():
+    onu = SimpleNamespace(id=152, identificador="HWTC02C1C4AF")
+    olt = SimpleNamespace(id=7, nombre="Vicente Guerrero")
+    router = SimpleNamespace(id=3, nombre="Nodo Centro")
+    cliente = SimpleNamespace(
+        estado="activo",
+        router=router,
+        router_id=3,
+        olt=olt,
+        olt_id=7,
+        onu_asignada=onu,
+        onu_id=152,
+        user_pppoe="cliente4478",
+        ip_asignada="10.0.0.20",
+    )
+    servicio = SimpleNamespace(
+        id=269,
+        cliente_id=298,
+        cliente=cliente,
+        estado="activo",
+        router=None,
+        router_id=None,
+        olt=olt,
+        olt_id=7,
+        onu=None,
+        onu_id=None,
+        user_pppoe=None,
+        ip_asignada=None,
+    )
+
+    objetivo = SupportService.combinar_objetivo_servicio(servicio)
+
+    assert objetivo.onu is onu
+    assert objetivo.onu_id == 152
+    assert objetivo.olt is olt
+    assert objetivo.router is router
+    assert objetivo.user_pppoe == "cliente4478"
 
 
 def test_response_time_never_becomes_negative():
