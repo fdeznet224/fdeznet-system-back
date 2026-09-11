@@ -14,6 +14,7 @@ from src.jobs import (
     tarea_conciliar_correos_bancarios,
     tarea_conciliar_mikrotik,
     tarea_cron_unificada,
+    tarea_mantenimiento_almacenamiento,
     tarea_monitoreo_routers,
     tarea_sincronizar_clientes,
     tarea_verificar_licencia,
@@ -189,6 +190,14 @@ async def lifespan(app: FastAPI):
         "interval",
         minutes=1,
         id="bank_email_reconciler",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        tarea_mantenimiento_almacenamiento,
+        "interval",
+        minutes=30,
+        id="storage_maintenance",
         coalesce=True,
         max_instances=1,
     )

@@ -48,6 +48,18 @@ class SystemConfigUpdate(BaseModel):
     aviso_pantalla_corte: bool
     telefonos_alerta: Optional[str] = ""
 
+
+class StoragePolicyUpdate(BaseModel):
+    limpieza_automatica: bool = True
+    hora_limpieza: str = Field(default="02:30", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    comprobantes_rechazados_dias: int = Field(default=90, ge=30, le=3650)
+    comprobantes_aprobados_dias: int = Field(default=365, ge=90, le=3650)
+    recibos_pdf_dias: int = Field(default=180, ge=30, le=3650)
+    archivos_whatsapp_dias: int = Field(default=90, ge=30, le=3650)
+    respaldos_dias: int = Field(default=14, ge=3, le=365)
+    cierre_mensual_automatico: bool = True
+    dia_cierre: int = Field(default=1, ge=1, le=28)
+
 class ConfigUpdate(BaseModel):
     valor: str
 

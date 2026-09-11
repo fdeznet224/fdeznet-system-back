@@ -35,9 +35,17 @@ from src.domain.schemas import (
     BrandingConfig,
     LocalLicenseStatus,
     MaintenanceStatus,
+    StoragePolicyUpdate,
 )
 from src.application.services.license_service import local_status, verify_license
 from src.application.services.branding_service import get_or_create_system_config
+from src.infrastructure.auth import get_current_active_user
+from src.application.services.storage_service import (
+    cleanup_storage,
+    close_period,
+    storage_dashboard,
+    update_backup_retention,
+)
 
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
 router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
@@ -255,6 +263,61 @@ async def iniciar_actualizacion():
 @router.post("/mantenimiento/verificar", status_code=202)
 async def iniciar_revision_recuperacion():
     return await _iniciar_mantenimiento("fdeznet-verify.service")
+
+
+@router.get("/almacenamiento")
+async def obtener_almacenamiento(db: AsyncSession = Depends(get_db)):
+    config = await _obtener_configuracion(db)
+    return await storage_dashboard(db, config)
+
+
+@router.put("/almacenamiento/politica")
+async def guardar_politica_almacenamiento(
+    datos: StoragePolicyUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    config = await _obtener_configuracion(db)
+    config.limpieza_almacenamiento_automatica = datos.limpieza_automatica
+    config.hora_limpieza_almacenamiento = datos.hora_limpieza
+    config.dias_retencion_comprobantes_rechazados = datos.comprobantes_rechazados_dias
+    config.dias_retencion_comprobantes_aprobados = datos.comprobantes_aprobados_dias
+    config.dias_retencion_recibos_pdf = datos.recibos_pdf_dias
+    config.dias_retencion_archivos_whatsapp = datos.archivos_whatsapp_dias
+    config.dias_retencion_respaldos = datos.respaldos_dias
+    config.cierre_mensual_automatico = datos.cierre_mensual_automatico
+    config.dia_cierre_almacenamiento = datos.dia_cierre
+    await db.commit()
+    backup_updated = update_backup_retention(datos.respaldos_dias)
+    return {
+        "status": "ok",
+        "mensaje": "Política de almacenamiento guardada",
+        "retencion_respaldos_actualizada": backup_updated,
+    }
+
+
+@router.post("/almacenamiento/limpiar")
+async def ejecutar_limpieza_almacenamiento(db: AsyncSession = Depends(get_db)):
+    config = await _obtener_configuracion(db)
+    return await cleanup_storage(db, config)
+
+
+@router.post("/almacenamiento/cierres/{periodo}")
+async def cerrar_periodo_almacenamiento(
+    periodo: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
+    config = await _obtener_configuracion(db)
+    try:
+        return await close_period(
+            db,
+            config,
+            periodo,
+            closure_type="manual",
+            user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # =========================================================

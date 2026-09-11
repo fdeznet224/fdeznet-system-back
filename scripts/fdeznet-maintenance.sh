@@ -177,7 +177,7 @@ verify_backup() {
 create_backup() {
   local timestamp stage archive encrypted mysql_config bot_was_active
   timestamp="$(date '+%Y%m%d-%H%M%S')"
-  install -d -m 0700 "$BACKUP_DIR"
+  install -d -o root -g fdeznet -m 0750 "$BACKUP_DIR"
   stage="$(mktemp -d "$BACKUP_DIR/.stage-${timestamp}.XXXXXX")"
   archive="$BACKUP_DIR/.${timestamp}.tar.gz"
   CURRENT_STAGE="$stage"
@@ -212,7 +212,8 @@ create_backup() {
   gpg --batch --quiet --decrypt --pinentry-mode loopback \
     --passphrase-file "$KEY_FILE" "$encrypted" | tar -tzf - >/dev/null
   sha256sum "$encrypted" > "${encrypted}.sha256"
-  chmod 0600 "$encrypted" "${encrypted}.sha256"
+  chgrp fdeznet "$encrypted" "${encrypted}.sha256"
+  chmod 0640 "$encrypted" "${encrypted}.sha256"
   shred -u "$archive"
   rm -rf "$stage"
   CURRENT_STAGE=""

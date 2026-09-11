@@ -21,6 +21,7 @@ from src.application.services.mikrotik_reconciliation_service import (
 )
 from src.application.services.license_service import verify_license
 from src.application.services.bank_email_service import BankEmailError, BankEmailService
+from src.application.services.storage_service import cleanup_storage, close_period, previous_period
 
 
 async def tarea_verificar_licencia():
@@ -40,6 +41,57 @@ async def tarea_conciliar_correos_bancarios():
         except BankEmailError:
             # El detalle ya queda guardado en configuracion_correo_banco.
             return
+
+
+async def tarea_mantenimiento_almacenamiento():
+    """Ejecuta una vez al día el cierre y la limpieza configurados."""
+    async with SessionLocal() as db:
+        config = await db.get(ConfiguracionSistema, 1)
+        if not config:
+            return
+        now = datetime.now()
+        try:
+            hour, minute = (int(value) for value in (config.hora_limpieza_almacenamiento or "02:30").split(":"))
+        except (TypeError, ValueError):
+            hour, minute = 2, 30
+        if (now.hour, now.minute) < (hour, minute):
+            return
+        already_ran = (
+            config.ultima_limpieza_almacenamiento
+            and config.ultima_limpieza_almacenamiento.date() == now.date()
+        )
+        if already_ran:
+            return
+        try:
+            if (
+                config.cierre_mensual_automatico
+                and now.day >= (config.dia_cierre_almacenamiento or 1)
+            ):
+                period = previous_period(now)
+                await close_period(db, config, period, closure_type="automatico")
+            if config.limpieza_almacenamiento_automatica:
+                result = await cleanup_storage(db, config)
+                db.add(LogCronjobModel(
+                    nivel="INFO",
+                    origen="Almacenamiento",
+                    mensaje=(
+                        f"Limpieza automática: {result['bytes_liberados']} bytes liberados; "
+                        f"{result['comprobantes_eliminados']} comprobantes y "
+                        f"{result['pdf_eliminados']} PDF"
+                    ),
+                ))
+                await db.commit()
+            else:
+                config.ultima_limpieza_almacenamiento = now
+                await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            db.add(LogCronjobModel(
+                nivel="ERROR",
+                origen="Almacenamiento",
+                mensaje=f"Falló el mantenimiento de almacenamiento: {type(exc).__name__}",
+            ))
+            await db.commit()
 
 # ==========================================
 # 📱 NOTIFICACIÓN DE WHATSAPP (Asíncrona)

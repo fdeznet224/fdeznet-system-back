@@ -442,7 +442,8 @@ PY
 fi
 
 log "Configurando respaldos y actualizaciones seguras"
-install -d -m 0700 /etc/fdeznet /var/backups/fdeznet
+install -d -m 0700 /etc/fdeznet
+install -d -o root -g "${SERVICE_USER}" -m 0750 /var/backups/fdeznet
 if [[ ! -f /etc/fdeznet/backup.key ]]; then
   (
     umask 077

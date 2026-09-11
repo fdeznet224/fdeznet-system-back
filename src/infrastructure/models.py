@@ -1684,6 +1684,19 @@ class ConfiguracionSistema(Base):
     version_disponible = Column(String(30), nullable=True)
     notas_actualizacion = Column(Text, nullable=True)
 
+    # --- ALMACENAMIENTO / RETENCIÓN ---
+    limpieza_almacenamiento_automatica = Column(Boolean, nullable=False, default=True, server_default="1")
+    hora_limpieza_almacenamiento = Column(String(5), nullable=False, default="02:30", server_default="02:30")
+    dias_retencion_comprobantes_rechazados = Column(Integer, nullable=False, default=90, server_default="90")
+    dias_retencion_comprobantes_aprobados = Column(Integer, nullable=False, default=365, server_default="365")
+    dias_retencion_recibos_pdf = Column(Integer, nullable=False, default=180, server_default="180")
+    dias_retencion_archivos_whatsapp = Column(Integer, nullable=False, default=90, server_default="90")
+    dias_retencion_respaldos = Column(Integer, nullable=False, default=14, server_default="14")
+    cierre_mensual_automatico = Column(Boolean, nullable=False, default=True, server_default="1")
+    dia_cierre_almacenamiento = Column(Integer, nullable=False, default=1, server_default="1")
+    ultima_limpieza_almacenamiento = Column(DateTime, nullable=True)
+    ultimo_cierre_almacenamiento = Column(String(7), nullable=True)
+
 
 class PlanLicenciaModel(Base):
     __tablename__ = "planes_licencia"
@@ -2008,6 +2021,8 @@ class ComprobantePagoRevisionModel(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
     fecha_revision = Column(DateTime, nullable=True)
+    archivado_en = Column(DateTime, nullable=True)
+    archivo_eliminado_en = Column(DateTime, nullable=True)
 
     cliente = relationship("ClienteModel")
     factura = relationship("FacturaModel")
@@ -2015,3 +2030,20 @@ class ComprobantePagoRevisionModel(Base):
     transaccion_correo = relationship("TransaccionCorreoBancoModel")
     mensaje_chat = relationship("MensajeChatModel")
     revisado_por = relationship("UsuarioModel", foreign_keys=[revisado_por_id])
+
+
+class CierreAlmacenamientoModel(Base):
+    __tablename__ = "cierres_almacenamiento"
+
+    id = Column(Integer, primary_key=True)
+    periodo = Column(String(7), nullable=False, unique=True, index=True)
+    tipo = Column(String(20), nullable=False, default="manual", server_default="manual")
+    comprobantes_aprobados = Column(Integer, nullable=False, default=0, server_default="0")
+    comprobantes_rechazados = Column(Integer, nullable=False, default=0, server_default="0")
+    comprobantes_pendientes = Column(Integer, nullable=False, default=0, server_default="0")
+    bytes_comprobantes = Column(BigInteger, nullable=False, default=0, server_default="0")
+    bytes_liberados = Column(BigInteger, nullable=False, default=0, server_default="0")
+    cerrado_por_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True)
+    cerrado_en = Column(DateTime, nullable=False, server_default=func.now())
+
+    cerrado_por = relationship("UsuarioModel", foreign_keys=[cerrado_por_id])
