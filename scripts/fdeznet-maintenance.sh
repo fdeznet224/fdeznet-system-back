@@ -27,6 +27,8 @@ CURRENT_STAGE=""
 CURRENT_ARCHIVE=""
 RECOVERY_STATUS="sin_revision"
 RECOVERY_DATE=""
+APP_SERVICE_USER="root"
+APP_SERVICE_GROUP="root"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
@@ -177,7 +179,7 @@ verify_backup() {
 create_backup() {
   local timestamp stage archive encrypted mysql_config bot_was_active
   timestamp="$(date '+%Y%m%d-%H%M%S')"
-  install -d -o root -g fdeznet -m 0750 "$BACKUP_DIR"
+  install -d -o root -g "$APP_SERVICE_GROUP" -m 0750 "$BACKUP_DIR"
   stage="$(mktemp -d "$BACKUP_DIR/.stage-${timestamp}.XXXXXX")"
   archive="$BACKUP_DIR/.${timestamp}.tar.gz"
   CURRENT_STAGE="$stage"
@@ -212,7 +214,7 @@ create_backup() {
   gpg --batch --quiet --decrypt --pinentry-mode loopback \
     --passphrase-file "$KEY_FILE" "$encrypted" | tar -tzf - >/dev/null
   sha256sum "$encrypted" > "${encrypted}.sha256"
-  chgrp fdeznet "$encrypted" "${encrypted}.sha256"
+  chgrp "$APP_SERVICE_GROUP" "$encrypted" "${encrypted}.sha256"
   chmod 0640 "$encrypted" "${encrypted}.sha256"
   shred -u "$archive"
   rm -rf "$stage"
@@ -385,6 +387,10 @@ main() {
   RETENTION_DAYS="$(env_value FDEZNET_BACKUP_RETENTION_DAYS)"
   RETENTION_DAYS="${RETENTION_DAYS:-14}"
   REMOTE_DIR="$(env_value FDEZNET_BACKUP_REMOTE_DIR)"
+  APP_SERVICE_USER="$(systemctl show fdeznet-api.service -p User --value 2>/dev/null || true)"
+  APP_SERVICE_USER="${APP_SERVICE_USER:-root}"
+  id "$APP_SERVICE_USER" >/dev/null 2>&1 || APP_SERVICE_USER="root"
+  APP_SERVICE_GROUP="$(id -gn "$APP_SERVICE_USER")"
   if [[ -f "$STATUS_FILE" ]] && jq -e . "$STATUS_FILE" >/dev/null 2>&1; then
     RECOVERY_STATUS="$(jq -r '.recuperacion_estado // "sin_revision"' "$STATUS_FILE")"
     RECOVERY_DATE="$(jq -r '.recuperacion_fecha // ""' "$STATUS_FILE")"
