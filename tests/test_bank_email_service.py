@@ -10,7 +10,10 @@ from src.application.services.bank_email_service import (
     normalize_reference_for_match,
     parse_bank_email,
 )
-from src.interfaces.api.bank_email import _normalize_senders
+from src.interfaces.api.bank_email import (
+    _normalize_account_endings,
+    _normalize_senders,
+)
 
 
 def _email(authentication_results: str, sender: str = "avisos@banco.example") -> bytes:
@@ -23,7 +26,9 @@ def _email(authentication_results: str, sender: str = "avisos@banco.example") ->
         f"Authentication-Results: mx.google.com; {authentication_results}\r\n"
         "Content-Type: text/plain; charset=utf-8\r\n"
         "\r\n"
+        "Recibiste de otro banco\r\n"
         "Monto recibido: $1,250.00 MXN\r\n"
+        "A tu cuenta: Débito ***6342\r\n"
         "Clave de rastreo: AZT-9081726354\r\n"
         "Concepto: CONTRATO 329B\r\n"
     ).encode()
@@ -43,6 +48,8 @@ def test_parse_authenticated_bank_email():
     assert parsed.amount == Decimal("1250.00")
     assert parsed.reference == "AZT9081726354"
     assert parsed.concept == "CONTRATO 329B"
+    assert parsed.movement_direction == "entrante"
+    assert parsed.destination_account == "6342"
     assert parsed.uid == "42"
 
 
@@ -59,6 +66,24 @@ def test_parse_integer_amount_used_by_banco_azteca():
     )
 
     assert parsed.amount == Decimal("300.00")
+
+
+def test_parse_outgoing_bank_email_is_not_incoming():
+    raw = _email(
+        "dkim=pass header.d=banco.example; "
+        "dmarc=pass header.from=banco.example; spf=pass"
+    ).replace(
+        b"Recibiste de otro banco",
+        b"Enviaste una transferencia",
+    )
+
+    parsed = parse_bank_email(
+        raw,
+        uid="48",
+        allowed_senders={"avisos@banco.example"},
+    )
+
+    assert parsed.movement_direction == "saliente"
 
 
 def test_rejects_spoofed_sender_even_with_matching_content():
@@ -146,6 +171,7 @@ def test_transaction_requires_auth_reference_amount_and_datetime():
         activo=True,
         tolerancia_monto=Decimal("0.00"),
         ventana_dias=3,
+        cuentas_destino_permitidas="6342",
     )
     revision = SimpleNamespace(
         folio_detectado="12O4-I678-O901",
@@ -158,6 +184,8 @@ def test_transaction_requires_auth_reference_amount_and_datetime():
         referencia="1204-1678-0901",
         monto=Decimal("300.00"),
         fecha_correo=now - timedelta(minutes=5),
+        tipo_movimiento="entrante",
+        cuenta_destino_terminacion="6342",
     )
 
     assert (
@@ -185,6 +213,7 @@ def test_transaction_rejects_reused_or_out_of_window_email():
         activo=True,
         tolerancia_monto=Decimal("0.00"),
         ventana_dias=3,
+        cuentas_destino_permitidas="6342",
     )
     revision = SimpleNamespace(
         folio_detectado="120416780901",
@@ -197,6 +226,8 @@ def test_transaction_rejects_reused_or_out_of_window_email():
         referencia="120416780901",
         monto=Decimal("300.00"),
         fecha_correo=now,
+        tipo_movimiento="entrante",
+        cuenta_destino_terminacion="6342",
     )
     assert (
         BankEmailService.transaction_match_reason(
@@ -222,4 +253,50 @@ def test_normalize_bank_sender_accepts_copied_from_header():
     assert (
         _normalize_senders("Banco Azteca <avisos@banco.example>")
         == "avisos@banco.example"
+    )
+
+
+def test_normalize_authorized_account_endings():
+    assert _normalize_account_endings("6342, 1735,6342") == "6342,1735"
+
+
+def test_transaction_rejects_outgoing_or_wrong_destination_account():
+    now = datetime(2026, 9, 10, 10, 0)
+    config = SimpleNamespace(
+        activo=True,
+        tolerancia_monto=Decimal("0.00"),
+        ventana_dias=3,
+        cuentas_destino_permitidas="6342",
+    )
+    revision = SimpleNamespace(
+        folio_detectado="120416780901",
+        monto_detectado=Decimal("300.00"),
+        fecha_recepcion=now,
+    )
+    transaction = SimpleNamespace(
+        autenticado=True,
+        estado="disponible",
+        referencia="120416780901",
+        monto=Decimal("300.00"),
+        fecha_correo=now,
+        tipo_movimiento="saliente",
+        cuenta_destino_terminacion="6342",
+    )
+    assert (
+        BankEmailService.transaction_match_reason(
+            config,
+            revision,
+            transaction,
+        )
+        == "movimiento_bancario_no_es_abono"
+    )
+    transaction.tipo_movimiento = "entrante"
+    transaction.cuenta_destino_terminacion = "9999"
+    assert (
+        BankEmailService.transaction_match_reason(
+            config,
+            revision,
+            transaction,
+        )
+        == "cuenta_destino_no_autorizada"
     )

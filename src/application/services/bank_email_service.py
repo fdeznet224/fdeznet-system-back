@@ -55,6 +55,8 @@ class ParsedBankEmail:
     amount: Decimal | None
     reference: str | None
     concept: str | None
+    movement_direction: str
+    destination_account: str | None
     authenticated: bool
     authentication_detail: str
     content_hash: str
@@ -162,6 +164,37 @@ def _parse_concept(text: str) -> str | None:
     return " ".join(match.group(1).split())[:255] if match else None
 
 
+def _parse_movement_direction(text: str) -> str:
+    compact = " ".join(text.casefold().split())
+    outgoing_patterns = (
+        r"\benviaste\b",
+        r"\btransferiste\b",
+        r"\btransferencia\s+enviada\b",
+        r"\bpago\s+realizado\b",
+    )
+    if any(re.search(pattern, compact) for pattern in outgoing_patterns):
+        return "saliente"
+    incoming_patterns = (
+        r"\brecibiste\s+de\b",
+        r"\brecibiste\s+una\b",
+        r"\btransferencia\s+recibida\b",
+        r"\babono\s+recibido\b",
+    )
+    if any(re.search(pattern, compact) for pattern in incoming_patterns):
+        return "entrante"
+    return "desconocido"
+
+
+def _parse_destination_account(text: str) -> str | None:
+    compact = " ".join(text.split())
+    match = re.search(
+        r"\ba\s+tu\s+cuenta\s*[:#-]?\s*[^0-9]{0,80}([0-9]{4})(?![0-9])",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    return match.group(1) if match else None
+
+
 def parse_bank_email(
     raw_message: bytes,
     *,
@@ -240,6 +273,8 @@ def parse_bank_email(
         amount=_parse_amount(searchable),
         reference=_parse_reference(searchable),
         concept=_parse_concept(searchable),
+        movement_direction=_parse_movement_direction(searchable),
+        destination_account=_parse_destination_account(searchable),
         authenticated=authenticated,
         authentication_detail=detail[:500],
         content_hash=content_hash,
@@ -317,6 +352,16 @@ def _read_gmail_messages(
 
 class BankEmailService:
     @staticmethod
+    def allowed_destination_accounts(
+        config: ConfiguracionCorreoBancoModel,
+    ) -> set[str]:
+        return {
+            item.strip()
+            for item in (config.cuentas_destino_permitidas or "").split(",")
+            if re.fullmatch(r"[0-9]{4}", item.strip())
+        }
+
+    @staticmethod
     def transaction_match_reason(
         config: ConfiguracionCorreoBancoModel,
         revision: ComprobantePagoRevisionModel,
@@ -328,6 +373,13 @@ class BankEmailService:
             return "correo_bancario_no_autenticado"
         if transaction.estado not in {"disponible", "procesando"}:
             return "correo_bancario_ya_utilizado"
+        if transaction.tipo_movimiento != "entrante":
+            return "movimiento_bancario_no_es_abono"
+        allowed_accounts = BankEmailService.allowed_destination_accounts(config)
+        if not allowed_accounts:
+            return "cuenta_destino_no_configurada"
+        if transaction.cuenta_destino_terminacion not in allowed_accounts:
+            return "cuenta_destino_no_autorizada"
 
         expected_reference = normalize_reference_for_match(
             revision.folio_detectado
@@ -400,6 +452,11 @@ class BankEmailService:
         senders = self.allowed_senders(config)
         if not senders:
             raise BankEmailError("Configura al menos un remitente bancario permitido")
+        allowed_accounts = self.allowed_destination_accounts(config)
+        if not allowed_accounts:
+            raise BankEmailError(
+                "Configura al menos una terminación de cuenta receptora autorizada"
+            )
 
         try:
             messages = await asyncio.to_thread(
@@ -436,7 +493,19 @@ class BankEmailService:
                     parsed.authenticated
                     and parsed.amount
                     and parsed.reference
+                    and parsed.movement_direction == "entrante"
+                    and parsed.destination_account in allowed_accounts
                     and subject_matches
+                )
+                security_detail = (
+                    f"{parsed.authentication_detail}; "
+                    f"movimiento={parsed.movement_direction}; "
+                    "destino="
+                    + (
+                        "ok"
+                        if parsed.destination_account in allowed_accounts
+                        else "rechazado"
+                    )
                 )
                 db.add(
                     TransaccionCorreoBancoModel(
@@ -448,8 +517,10 @@ class BankEmailService:
                         monto=parsed.amount,
                         referencia=parsed.reference,
                         concepto=parsed.concept,
+                        tipo_movimiento=parsed.movement_direction,
+                        cuenta_destino_terminacion=parsed.destination_account,
                         autenticado=parsed.authenticated,
-                        detalle_autenticacion=parsed.authentication_detail,
+                        detalle_autenticacion=security_detail[:500],
                         contenido_hash=parsed.content_hash,
                         estado="disponible" if usable else "ignorada",
                     )

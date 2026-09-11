@@ -33,12 +33,22 @@ def _normalize_senders(value: str) -> str:
     return ",".join(dict.fromkeys(senders))
 
 
+def _normalize_account_endings(value: str) -> str:
+    endings = [item.strip() for item in value.split(",") if item.strip()]
+    if not endings or any(not item.isdigit() or len(item) != 4 for item in endings):
+        raise ValueError(
+            "Indica una o más terminaciones de cuenta de exactamente 4 dígitos"
+        )
+    return ",".join(dict.fromkeys(endings))
+
+
 class BankEmailConfigRequest(BaseModel):
     activo: bool = False
     auto_aprobar: bool = False
     correo: str = Field(min_length=5, max_length=160)
     password_aplicacion: Optional[str] = Field(default=None, max_length=100)
     remitente_permitido: str = Field(min_length=5, max_length=255)
+    cuentas_destino_permitidas: str = Field(min_length=4, max_length=255)
     asunto_filtro: Optional[str] = Field(default=None, max_length=255)
     carpeta: str = Field(default="INBOX", min_length=1, max_length=100)
     ventana_dias: int = Field(default=3, ge=1, le=30)
@@ -58,12 +68,18 @@ class BankEmailConfigRequest(BaseModel):
     def validate_senders(cls, value: str) -> str:
         return _normalize_senders(value)
 
+    @field_validator("cuentas_destino_permitidas")
+    @classmethod
+    def validate_destination_accounts(cls, value: str) -> str:
+        return _normalize_account_endings(value)
+
 
 class BankEmailTestRequest(BaseModel):
     correo: str = Field(min_length=5, max_length=160)
     password_aplicacion: Optional[str] = Field(default=None, max_length=100)
     carpeta: str = Field(default="INBOX", min_length=1, max_length=100)
     remitente_permitido: Optional[str] = Field(default=None, max_length=255)
+    cuentas_destino_permitidas: Optional[str] = Field(default=None, max_length=255)
     asunto_filtro: Optional[str] = Field(default=None, max_length=255)
     ventana_dias: int = Field(default=3, ge=1, le=30)
     tolerancia_monto: Decimal = Field(default=Decimal("0.00"), ge=0, le=100)
@@ -78,6 +94,7 @@ def _response(config) -> dict:
         "credencial_configurada": bool(config.secreto_cifrado),
         "credencial_verificada_en": config.credencial_verificada_en,
         "remitente_permitido": config.remitente_permitido,
+        "cuentas_destino_permitidas": config.cuentas_destino_permitidas,
         "asunto_filtro": config.asunto_filtro,
         "carpeta": config.carpeta,
         "ventana_dias": config.ventana_dias,
@@ -129,6 +146,7 @@ async def save_configuration(
     config.auto_aprobar = data.auto_aprobar
     config.correo = data.correo
     config.remitente_permitido = data.remitente_permitido
+    config.cuentas_destino_permitidas = data.cuentas_destino_permitidas
     config.asunto_filtro = (data.asunto_filtro or "").strip() or None
     config.carpeta = data.carpeta.strip()
     config.ventana_dias = data.ventana_dias
@@ -176,6 +194,13 @@ async def test_configuration(
     if data.remitente_permitido:
         try:
             config.remitente_permitido = _normalize_senders(data.remitente_permitido)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if data.cuentas_destino_permitidas:
+        try:
+            config.cuentas_destino_permitidas = _normalize_account_endings(
+                data.cuentas_destino_permitidas
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     config.asunto_filtro = (data.asunto_filtro or "").strip() or None
@@ -240,6 +265,8 @@ async def list_transactions(
                 "monto": item.monto,
                 "referencia": item.referencia,
                 "concepto": item.concepto,
+                "tipo_movimiento": item.tipo_movimiento,
+                "cuenta_destino_terminacion": item.cuenta_destino_terminacion,
                 "autenticado": item.autenticado,
                 "detalle_autenticacion": item.detalle_autenticacion,
                 "estado": item.estado,

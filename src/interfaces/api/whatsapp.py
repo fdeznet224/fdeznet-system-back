@@ -665,6 +665,10 @@ async def listar_comprobantes_revision(
                     "fecha": item.transaccion_correo.fecha_correo,
                     "monto": item.transaccion_correo.monto,
                     "referencia": item.transaccion_correo.referencia,
+                    "tipo_movimiento": item.transaccion_correo.tipo_movimiento,
+                    "cuenta_destino_terminacion": (
+                        item.transaccion_correo.cuenta_destino_terminacion
+                    ),
                     "autenticado": item.transaccion_correo.autenticado,
                     "estado": item.transaccion_correo.estado,
                 }
