@@ -93,6 +93,15 @@ def policy_from_config(config: ConfiguracionSistema) -> dict:
     }
 
 
+def database_size_report(rows) -> tuple[int, list[dict]]:
+    total = sum(int(row[1] or 0) for row in rows)
+    largest = [
+        {"nombre": str(row[0]), "bytes": int(row[1] or 0)}
+        for row in rows[:12]
+    ]
+    return total, largest
+
+
 async def storage_dashboard(db: AsyncSession, config: ConfiguracionSistema) -> dict:
     disk = shutil.disk_usage(APP_ROOT)
     categories = []
@@ -118,8 +127,8 @@ async def storage_dashboard(db: AsyncSession, config: ConfiguracionSistema) -> d
                 "WHERE table_schema = DATABASE() ORDER BY bytes DESC"
             )
         )
-    ).mappings().all()
-    db_bytes = sum(int(row["bytes"] or 0) for row in db_rows)
+    ).all()
+    db_bytes, largest_tables = database_size_report(db_rows)
     categories.append({
         "clave": "base_datos",
         "nombre": "Base de datos",
@@ -164,10 +173,7 @@ async def storage_dashboard(db: AsyncSession, config: ConfiguracionSistema) -> d
             "porcentaje_usado": round((disk.used / disk.total) * 100, 1) if disk.total else 0,
         },
         "categorias": sorted(categories, key=lambda item: item["bytes"], reverse=True),
-        "tablas_principales": [
-            {"nombre": row["table_name"], "bytes": int(row["bytes"] or 0)}
-            for row in db_rows[:12]
-        ],
+        "tablas_principales": largest_tables,
         "comprobantes": {
             "pendientes": int(counts.get("pendiente", 0) + counts.get("procesando", 0)),
             "aprobados": int(counts.get("aprobado", 0)),

@@ -5,6 +5,7 @@ import pytest
 from src.application.services.storage_service import (
     _period_bounds,
     _safe_file_from_url,
+    database_size_report,
     directory_stats,
     previous_period,
 )
@@ -50,3 +51,12 @@ def test_storage_policy_rejects_unsafe_retention():
         StoragePolicyUpdate(comprobantes_rechazados_dias=1)
     with pytest.raises(ValueError):
         StoragePolicyUpdate(hora_limpieza="29:00")
+
+
+def test_database_size_report_uses_positional_driver_rows():
+    total, tables = database_size_report([
+        ("facturas", 4096),
+        ("pagos", 1024),
+    ])
+    assert total == 5120
+    assert tables[0] == {"nombre": "facturas", "bytes": 4096}
