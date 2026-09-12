@@ -116,3 +116,6 @@ def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     assert 'uploads/ordenes' in content
     assert "exclude)bot_whatsapp/node_modules" in content
     assert "exclude)node_modules" in content
+    assert 'app_git() { runuser -u "$APP_SERVICE_USER" -- git "$@"; }' in content
+    assert '$(git -C "$BACKEND_DIR"' not in content
+    assert '\n  git -C "$BACKEND_DIR"' not in content

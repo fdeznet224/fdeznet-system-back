@@ -32,6 +32,7 @@ APP_SERVICE_GROUP="root"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
+app_git() { runuser -u "$APP_SERVICE_USER" -- git "$@"; }
 
 env_value() {
   local key="$1"
@@ -240,8 +241,8 @@ create_backup() {
   [[ -d "$BACKEND_DIR/bot_whatsapp/.wwebjs_auth" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/.wwebjs_auth" "$stage/data/whatsapp-auth"
   [[ -d "$BACKEND_DIR/bot_whatsapp/uploads" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/uploads" "$stage/data/whatsapp-uploads"
   printf '%s\n' \
-    "BACKEND_COMMIT=$(git -C "$BACKEND_DIR" rev-parse HEAD)" \
-    "FRONTEND_COMMIT=$(git -C "$FRONTEND_DIR" rev-parse HEAD)" \
+    "BACKEND_COMMIT=$(app_git -C "$BACKEND_DIR" rev-parse HEAD)" \
+    "FRONTEND_COMMIT=$(app_git -C "$FRONTEND_DIR" rev-parse HEAD)" \
     "CREATED_AT=$(date --iso-8601=seconds)" > "$stage/metadata.env"
   rm -f "$mysql_config"
   if [[ "$bot_was_active" == "active" ]]; then systemctl start fdeznet-bot; fi
@@ -301,8 +302,8 @@ restore_backup() {
   [[ "$backend_commit" =~ ^[0-9a-f]{40}$ && "$frontend_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
 
   systemctl stop fdeznet-api fdeznet-bot || true
-  git -C "$BACKEND_DIR" reset --hard "$backend_commit"
-  git -C "$FRONTEND_DIR" reset --hard "$frontend_commit"
+  app_git -C "$BACKEND_DIR" reset --hard "$backend_commit"
+  app_git -C "$FRONTEND_DIR" reset --hard "$frontend_commit"
   cp -a "$restore_dir/config/backend.env" "$ENV_FILE"
   [[ -f "$restore_dir/config/bot.env" ]] && cp -a "$restore_dir/config/bot.env" "$BACKEND_DIR/bot_whatsapp/.env"
   [[ -f "$restore_dir/config/nginx.conf" ]] && install -o root -g root -m 0644 "$restore_dir/config/nginx.conf" /etc/nginx/sites-available/fdeznet
@@ -380,29 +381,29 @@ perform_update() {
   signature="$(jq -er '.firma' <<< "$manifest")"
   [[ "$TARGET_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
   [[ "$backend_commit" =~ ^[0-9a-f]{40}$ && "$frontend_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
-  [[ -z "$(git -C "$BACKEND_DIR" status --porcelain --untracked-files=no -- . ':(exclude)bot_whatsapp/node_modules')" ]] || return 1
-  [[ -z "$(git -C "$FRONTEND_DIR" status --porcelain --untracked-files=no -- . ':(exclude)node_modules' ':(exclude)dist')" ]] || return 1
+  [[ -z "$(app_git -C "$BACKEND_DIR" status --porcelain --untracked-files=no -- . ':(exclude)bot_whatsapp/node_modules')" ]] || return 1
+  [[ -z "$(app_git -C "$FRONTEND_DIR" status --porcelain --untracked-files=no -- . ':(exclude)node_modules' ':(exclude)dist')" ]] || return 1
   canonical="${TARGET_VERSION}|${backend_commit}|${frontend_commit}"
   expected="$(printf '%s' "$canonical" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$(printf '%s' "$license_key" | sha256sum | awk '{print $1}')" | awk '{print $2}')"
   [[ "$signature" == "$expected" ]] || return 1
 
-  git -C "$BACKEND_DIR" fetch origin "$backend_commit"
-  git -C "$FRONTEND_DIR" fetch origin "$frontend_commit"
-  git -C "$BACKEND_DIR" cat-file -e "${backend_commit}^{commit}"
-  git -C "$FRONTEND_DIR" cat-file -e "${frontend_commit}^{commit}"
-  OLD_BACKEND="$(git -C "$BACKEND_DIR" rev-parse HEAD)"
-  OLD_FRONTEND="$(git -C "$FRONTEND_DIR" rev-parse HEAD)"
-  git -C "$BACKEND_DIR" merge-base --is-ancestor "$OLD_BACKEND" "$backend_commit"
-  git -C "$FRONTEND_DIR" merge-base --is-ancestor "$OLD_FRONTEND" "$frontend_commit"
-  git -C "$BACKEND_DIR" show "${backend_commit}:src/version.py" | \
+  app_git -C "$BACKEND_DIR" fetch origin "$backend_commit"
+  app_git -C "$FRONTEND_DIR" fetch origin "$frontend_commit"
+  app_git -C "$BACKEND_DIR" cat-file -e "${backend_commit}^{commit}"
+  app_git -C "$FRONTEND_DIR" cat-file -e "${frontend_commit}^{commit}"
+  OLD_BACKEND="$(app_git -C "$BACKEND_DIR" rev-parse HEAD)"
+  OLD_FRONTEND="$(app_git -C "$FRONTEND_DIR" rev-parse HEAD)"
+  app_git -C "$BACKEND_DIR" merge-base --is-ancestor "$OLD_BACKEND" "$backend_commit"
+  app_git -C "$FRONTEND_DIR" merge-base --is-ancestor "$OLD_FRONTEND" "$frontend_commit"
+  app_git -C "$BACKEND_DIR" show "${backend_commit}:src/version.py" | \
     grep -Eq "^SYSTEM_VERSION = [\"']${TARGET_VERSION}[\"']$"
   create_backup
   UPDATE_ACTIVE="true"
   write_status "iniciando" "Aplicando versión ${TARGET_VERSION}"
   report "iniciando" "Aplicando versión ${TARGET_VERSION}"
   systemctl stop fdeznet-api fdeznet-bot
-  git -C "$BACKEND_DIR" reset --hard "$backend_commit"
-  git -C "$FRONTEND_DIR" reset --hard "$frontend_commit"
+  app_git -C "$BACKEND_DIR" reset --hard "$backend_commit"
+  app_git -C "$FRONTEND_DIR" reset --hard "$frontend_commit"
   install_deployment_files
   chown -R fdeznet:fdeznet "$BACKEND_DIR" "$FRONTEND_DIR"
   runuser -u fdeznet -- "$BACKEND_DIR/venv/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
