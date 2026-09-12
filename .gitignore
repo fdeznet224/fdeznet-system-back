@@ -2,6 +2,7 @@
 # Entornos y Dependencias
 # =========================
 node_modules/
+.cache/
 venv/
 env/
 __pycache__/

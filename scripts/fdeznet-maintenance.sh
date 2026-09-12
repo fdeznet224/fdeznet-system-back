@@ -52,6 +52,13 @@ install_deployment_files() {
     [[ -f "$source" ]] || continue
     install -o root -g root -m 0644 "$source" "/etc/systemd/system/${source##*/}"
   done
+  install -d -o root -g root -m 0755 \
+    /etc/systemd/system/fdeznet-api.service.d \
+    /etc/systemd/system/fdeznet-bot.service.d
+  install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/api-hardening.conf" \
+    /etc/systemd/system/fdeznet-api.service.d/hardening.conf
+  install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/bot-hardening.conf" \
+    /etc/systemd/system/fdeznet-bot.service.d/hardening.conf
   if [[ -f "$nginx_site" ]] && grep -q 'location /media/uploads/' "$nginx_site"; then
     # Los comprobantes contienen datos financieros y nunca deben quedar
     # expuestos como archivos estáticos. La API los entrega con autorización.
