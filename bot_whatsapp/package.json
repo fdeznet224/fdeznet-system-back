@@ -12,6 +12,7 @@
   "license": "UNLICENSED",
   "type": "commonjs",
   "dependencies": {
+    "bare-events": "2.9.2",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "mime-types": "^3.0.2",
