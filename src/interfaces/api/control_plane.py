@@ -7,9 +7,9 @@ from hmac import compare_digest
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from fastapi.responses import FileResponse
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
@@ -30,6 +30,7 @@ from src.domain.schemas import (
     LicensePaymentResponse,
     SubscriptionRenewRequest,
     SystemReleaseCreate,
+    SystemReleasePublishResponse,
     SystemReleaseResponse,
     UpdateManifestResponse,
     UpdateReportRequest,
@@ -123,7 +124,7 @@ def _subscription_state(installation: InstalacionSistemaModel) -> tuple[str, str
     )
     if now <= gracia_hasta:
         return "gracia", f"Mensualidad vencida; periodo de gracia hasta {gracia_hasta:%d/%m/%Y}"
-    return "vencida", "Tu mensualidad terminó. Renueva para continuar"
+    return "suspendida", "Tu mensualidad terminó. Renueva para reactivar el servicio"
 
 
 def _apply_plan(
@@ -133,6 +134,7 @@ def _apply_plan(
     months: int = 1,
 ) -> None:
     now = _now()
+    installation.estado = "activa"
     installation.plan_licencia_id = plan.id
     installation.plan = plan.codigo
     installation.plan_nombre = plan.nombre
@@ -190,7 +192,7 @@ async def exchange_bootstrap(
         or installation.bootstrap_expira is None
         or installation.bootstrap_expira < now
         or installation.estado != "activa"
-        or _subscription_state(installation)[0] == "vencida"
+        or _subscription_state(installation)[0] == "suspendida"
     ):
         raise HTTPException(status_code=401, detail="Token de instalación inválido o vencido")
 
@@ -437,6 +439,39 @@ async def create_release(
     return release
 
 
+@router.post(
+    "/versiones/{release_id}/publicar-todos",
+    response_model=SystemReleasePublishResponse,
+)
+async def publish_release_to_all(
+    release_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Asigna una liberación a todas las instalaciones conservando decisión local."""
+    _ensure_central()
+    release = await db.get(VersionSistemaModel, release_id)
+    if release is None or not release.activa:
+        raise HTTPException(status_code=404, detail="Versión activa no encontrada")
+    result = await db.execute(
+        update(InstalacionSistemaModel)
+        .values(
+            version_objetivo=release.version,
+            notas_actualizacion=release.notas,
+            actualizacion_automatica=False,
+        )
+    )
+    await db.commit()
+    count = int(result.rowcount or 0)
+    return SystemReleasePublishResponse(
+        version=release.version,
+        instalaciones_asignadas=count,
+        mensaje=(
+            f"Versión {release.version} enviada a {count} instalaciones; "
+            "cada cliente decide cuándo instalarla"
+        ),
+    )
+
+
 @router.post("/instalaciones", response_model=InstallationCreated, status_code=201)
 async def create_installation(
     payload: InstallationCreate,
@@ -537,6 +572,24 @@ async def update_installation(
     await db.commit()
     await db.refresh(installation)
     return _installation_response(installation)
+
+
+@router.delete(
+    "/instalaciones/{installation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_installation(
+    installation_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Elimina definitivamente una instalación y su historial de mensualidades."""
+    _ensure_central()
+    installation = await db.get(InstalacionSistemaModel, installation_id)
+    if installation is None:
+        raise HTTPException(status_code=404, detail="Instalación no encontrada")
+    await db.delete(installation)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

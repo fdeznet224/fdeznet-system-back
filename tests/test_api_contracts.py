@@ -114,6 +114,8 @@ def test_control_de_instalaciones_separa_heartbeat_y_administracion():
     assert paths["/control/planes"]["post"]["security"]
     assert paths["/control/instalaciones/{installation_id}/renovar"]["post"]["security"]
     assert paths["/control/instalaciones/{installation_id}/pagos"]["get"]["security"]
+    assert paths["/control/instalaciones/{installation_id}"]["delete"]["security"]
+    assert paths["/control/versiones/{release_id}/publicar-todos"]["post"]["security"]
     assert paths["/licencia/estado"]["get"]["security"]
     assert paths["/configuracion/mantenimiento"]["get"]["security"]
     assert paths["/configuracion/mantenimiento/respaldo"]["post"]["security"]

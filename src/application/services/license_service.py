@@ -57,7 +57,7 @@ def effective_local_state(config: ConfiguracionSistema) -> tuple[str, str]:
     )
     if now <= grace_until:
         return "gracia", f"Mensualidad vencida; periodo de gracia hasta {grace_until:%d/%m/%Y}"
-    return "vencida", "Tu mensualidad terminó. Renueva para continuar"
+    return "suspendida", "Tu mensualidad terminó. Renueva para reactivar el servicio"
 
 
 async def require_valid_license(

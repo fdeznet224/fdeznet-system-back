@@ -1,6 +1,8 @@
 # Actualizaciones y respaldos seguros
 
-Cada instalación cliente revisa el servidor central cada 30 minutos. Solo instala una versión cuando el administrador publica los commits exactos de backend y frontend y los asigna a esa instalación. Si la actualización automática está apagada, el administrador local debe solicitarla con **Revisar actualización**; esa autorización se consume una sola vez. Si está encendida, el temporizador puede instalarla sin intervención adicional.
+Cada instalación cliente revisa el servidor central cada 30 minutos. El administrador publica una liberación con los commits exactos de backend y frontend y puede enviarla a todas las instalaciones con **Publicar a todos**. Esa acción muestra la nueva versión a los clientes, pero no la instala automáticamente: cada administrador local debe solicitarla con **Revisar actualización** y esa autorización se consume una sola vez.
+
+El historial de liberaciones funciona como una bitácora tipo Git: versión, commit de backend, commit de frontend, fecha y nota de cambios. En la ficha de cada instalación se muestran únicamente la versión instalada y la última versión ofrecida, evitando seleccionar manualmente entre liberaciones antiguas.
 
 Antes de modificar código o base de datos, el agente crea un respaldo cifrado y verifica que pueda leerse. Incluye la base de datos, configuración, recibos/archivos estáticos, evidencias de órdenes, WireGuard y la sesión/archivos de WhatsApp. La retención local predeterminada es de 14 días.
 
@@ -15,6 +17,15 @@ El flujo valida la firma HMAC del manifiesto, el formato de los commits, que amb
 - Respaldo diario: `fdeznet-backup.timer`, alrededor de las 03:20.
 - Revisión de versiones: `fdeznet-update.timer`, cada 30 minutos.
 - Auditoría no destructiva: `fdeznet-verify.timer`, semanalmente.
+
+## Clientes, vigencias y mensualidades
+
+El control central mantiene un CRUD de instalaciones. Una mensualidad vigente se
+muestra como **Activa**; al terminar la vigencia y la tolerancia se muestra como
+**Suspendida**. Registrar un pago agrega los meses contratados, conserva monto y
+referencia en el historial y reactiva la licencia. La eliminación definitiva
+borra también su historial de mensualidades e invalida inmediatamente la licencia,
+por lo que exige escribir el nombre exacto del ISP como confirmación.
 
 Los archivos quedan localmente en `/var/backups/fdeznet`. La clave está en `/etc/fdeznet/backup.key` con permisos exclusivos de root. La auditoría semanal comprueba la suma SHA-256, descifra el respaldo, valida su estructura, revisa el dump comprimido de MySQL y confirma los commits guardados sin reemplazar datos de producción.
 

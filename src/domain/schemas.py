@@ -245,7 +245,10 @@ class InstallationCreate(BaseModel):
 
 
 class InstallationUpdate(BaseModel):
-    estado: Optional[str] = Field(default=None, pattern=r"^(activa|suspendida|revocada)$")
+    nombre_isp: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    dominio: Optional[str] = Field(default=None, max_length=255)
+    contacto_email: Optional[str] = Field(default=None, max_length=160)
+    estado: Optional[str] = Field(default=None, pattern=r"^(activa|suspendida)$")
     version_objetivo: Optional[str] = Field(default=None, max_length=30)
     notas_actualizacion: Optional[str] = Field(default=None, max_length=2000)
     actualizacion_automatica: Optional[bool] = None
@@ -391,6 +394,12 @@ class SystemReleaseResponse(BaseModel):
     notas: Optional[str]
     activa: bool
     creada_en: datetime
+
+
+class SystemReleasePublishResponse(BaseModel):
+    version: str
+    instalaciones_asignadas: int
+    mensaje: str
 
 
 class UpdateManifestResponse(BaseModel):

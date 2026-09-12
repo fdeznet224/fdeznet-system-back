@@ -101,3 +101,58 @@ def test_endpoint_manual_deja_autorizacion_de_un_solo_uso(monkeypatch, tmp_path)
     assert response["status"] == "ok"
     assert request_file.read_text(encoding="utf-8") == "requested\n"
     assert started == ["fdeznet-update.service"]
+
+
+def test_publicar_version_la_asigna_a_todas_sin_forzar_instalacion(monkeypatch):
+    release = SimpleNamespace(id=7, version="2.15.0", notas="Nuevo panel", activa=True)
+
+    class Result:
+        rowcount = 4
+
+    class DB:
+        committed = False
+
+        async def get(self, _model, release_id):
+            assert release_id == 7
+            return release
+
+        async def execute(self, _statement):
+            return Result()
+
+        async def commit(self):
+            self.committed = True
+
+    monkeypatch.setattr(control_plane, "_ensure_central", lambda: None)
+    db = DB()
+    response = asyncio.run(control_plane.publish_release_to_all(7, db=db))
+
+    assert response.version == "2.15.0"
+    assert response.instalaciones_asignadas == 4
+    assert "cada cliente decide" in response.mensaje
+    assert db.committed is True
+
+
+def test_eliminar_instalacion_es_definitivo(monkeypatch):
+    installation = SimpleNamespace(id=12)
+
+    class DB:
+        deleted = None
+        committed = False
+
+        async def get(self, _model, installation_id):
+            assert installation_id == 12
+            return installation
+
+        async def delete(self, value):
+            self.deleted = value
+
+        async def commit(self):
+            self.committed = True
+
+    monkeypatch.setattr(control_plane, "_ensure_central", lambda: None)
+    db = DB()
+    response = asyncio.run(control_plane.delete_installation(12, db=db))
+
+    assert response.status_code == 204
+    assert db.deleted is installation
+    assert db.committed is True

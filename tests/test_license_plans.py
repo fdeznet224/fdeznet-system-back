@@ -31,14 +31,15 @@ def test_demo_vencida_cambia_a_gracia_y_despues_bloquea():
 
     assert _subscription_state(grace)[0] == "gracia"
     assert _subscription_state(expired) == (
-        "vencida",
-        "Tu mensualidad terminó. Renueva para continuar",
+        "suspendida",
+        "Tu mensualidad terminó. Renueva para reactivar el servicio",
     )
 
 
 def test_plan_se_copia_y_renueva_sobre_la_vigencia_actual():
     current_expiry = _now() + timedelta(days=10)
     installation = SimpleNamespace(
+        estado="suspendida",
         plan_licencia_id=None,
         plan="estandar",
         plan_nombre=None,
@@ -65,6 +66,7 @@ def test_plan_se_copia_y_renueva_sobre_la_vigencia_actual():
     _apply_plan(installation, plan, months=1)
 
     assert installation.plan_nombre == "Básico"
+    assert installation.estado == "activa"
     assert installation.limite_clientes == 300
     assert installation.suscripcion_vence >= current_expiry + timedelta(days=30)
 
