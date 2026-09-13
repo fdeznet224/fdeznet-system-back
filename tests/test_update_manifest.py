@@ -85,21 +85,18 @@ def test_usuario_puede_solicitar_actualizacion_sin_activar_automaticas(monkeypat
     assert manual_check.version == "2.5.3"
 
 
-def test_endpoint_manual_deja_autorizacion_de_un_solo_uso(monkeypatch, tmp_path):
-    request_file = tmp_path / "manual-update-requested"
+def test_endpoint_manual_solicita_actualizacion_de_un_solo_uso(monkeypatch):
     started = []
 
     async def start(service):
         started.append(service)
         return {"status": "ok", "mensaje": "La tarea inició en segundo plano"}
 
-    monkeypatch.setattr(configuracion, "MANUAL_UPDATE_REQUEST_FILE", request_file)
     monkeypatch.setattr(configuracion, "_iniciar_mantenimiento", start)
 
     response = asyncio.run(configuracion.iniciar_actualizacion())
 
     assert response["status"] == "ok"
-    assert request_file.read_text(encoding="utf-8") == "requested\n"
     assert started == ["fdeznet-update.service"]
 
 

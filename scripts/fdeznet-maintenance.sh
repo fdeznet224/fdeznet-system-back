@@ -9,6 +9,12 @@ readonly KEY_FILE="/etc/fdeznet/backup.key"
 readonly STATUS_FILE="/var/lib/fdeznet/maintenance-status.json"
 readonly LOCK_FILE="/run/lock/fdeznet-maintenance.lock"
 readonly MANUAL_UPDATE_REQUEST_FILE="/var/lib/fdeznet/manual-update-requested"
+readonly MANUAL_BACKUP_REQUEST_FILE="/var/lib/fdeznet/backup-requested"
+readonly MANUAL_VERIFY_REQUEST_FILE="/var/lib/fdeznet/verify-latest-requested"
+readonly SELECTED_VERIFY_REQUEST_FILE="/var/lib/fdeznet/verify-selected-requested"
+readonly RESTORE_REQUEST_FILE="/var/lib/fdeznet/restore-requested"
+readonly BACKUP_POLICY_FILE="/var/lib/fdeznet/backup-policy.json"
+readonly BACKUP_OPERATION_FILE="/var/lib/fdeznet/backup-operation.json"
 
 BACKUP_DIR="/var/backups/fdeznet"
 RETENTION_DAYS="14"
@@ -29,6 +35,8 @@ RECOVERY_STATUS="sin_revision"
 RECOVERY_DATE=""
 APP_SERVICE_USER="root"
 APP_SERVICE_GROUP="root"
+BACKUP_REQUEST_ACTIVE="false"
+CURRENT_REQUEST_FILE=""
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
@@ -60,6 +68,7 @@ install_deployment_files() {
     /etc/systemd/system/fdeznet-api.service.d/hardening.conf
   install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/bot-hardening.conf" \
     /etc/systemd/system/fdeznet-bot.service.d/hardening.conf
+  rm -f /etc/sudoers.d/fdeznet-maintenance
   if [[ -f "$nginx_site" ]] && grep -q 'location /media/uploads/' "$nginx_site"; then
     # Los comprobantes contienen datos financieros y nunca deben quedar
     # expuestos como archivos estáticos. La API los entrega con autorización.
@@ -102,7 +111,23 @@ UMask=0077' "$unit"
     sed -i '/^UMask=0077$/a\ReadWritePaths=-/opt/fdeznet/backend/bot_whatsapp -/var/lib/fdeznet' "$unit"
   fi
   systemctl daemon-reload
+  systemctl enable --now \
+    fdeznet-backup-request.path \
+    fdeznet-update-request.path \
+    fdeznet-verify-latest-request.path \
+    fdeznet-verify-selected-request.path \
+    fdeznet-restore-request.path
   nginx -t
+}
+
+policy_value() {
+  local key="$1" default="$2"
+  if [[ -f "$BACKUP_POLICY_FILE" ]] && jq -e . "$BACKUP_POLICY_FILE" >/dev/null 2>&1; then
+    jq -r --arg key "$key" --arg default "$default" \
+      '.[$key] // $default' "$BACKUP_POLICY_FILE"
+  else
+    printf '%s\n' "$default"
+  fi
 }
 
 write_status() {
@@ -216,7 +241,10 @@ verify_backup() {
 }
 
 create_backup() {
+  local force_full="${1:-false}"
+  local skip_retention="${2:-false}"
   local timestamp stage archive encrypted mysql_config bot_was_active
+  local include_config include_static include_evidence include_session include_whatsapp include_wireguard
   timestamp="$(date '+%Y%m%d-%H%M%S')"
   install -d -o root -g "$APP_SERVICE_GROUP" -m 0750 "$BACKUP_DIR"
   stage="$(mktemp -d "$BACKUP_DIR/.stage-${timestamp}.XXXXXX")"
@@ -226,20 +254,36 @@ create_backup() {
   encrypted="$BACKUP_DIR/${timestamp}.tar.gz.gpg"
   mysql_config="$stage/mysql.cnf"
   mysql_defaults "$mysql_config"
+  include_config="$(policy_value incluir_configuracion true)"
+  include_static="$(policy_value incluir_archivos_estaticos true)"
+  include_evidence="$(policy_value incluir_evidencias_ordenes true)"
+  include_session="$(policy_value incluir_sesion_whatsapp true)"
+  include_whatsapp="$(policy_value incluir_archivos_whatsapp true)"
+  include_wireguard="$(policy_value incluir_wireguard true)"
+  if [[ "$force_full" == "true" ]]; then
+    include_config=true
+    include_static=true
+    include_evidence=true
+    include_session=true
+    include_whatsapp=true
+    include_wireguard=true
+  fi
   bot_was_active="$(systemctl is-active fdeznet-bot 2>/dev/null || true)"
   if [[ "$bot_was_active" == "active" ]]; then systemctl stop fdeznet-bot; fi
 
   mkdir -p "$stage/data" "$stage/config"
   mysqldump --defaults-extra-file="$mysql_config" --single-transaction --no-tablespaces \
     --routines --events --triggers --databases "$DB_NAME_VALUE" | gzip -9 > "$stage/data/database.sql.gz"
-  cp -a "$ENV_FILE" "$stage/config/backend.env"
-  [[ -f "$BACKEND_DIR/bot_whatsapp/.env" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/.env" "$stage/config/bot.env"
-  [[ -f /etc/nginx/sites-available/fdeznet ]] && cp -a /etc/nginx/sites-available/fdeznet "$stage/config/nginx.conf"
-  [[ -d /etc/wireguard ]] && cp -a /etc/wireguard "$stage/config/wireguard"
-  [[ -d "$BACKEND_DIR/static" ]] && cp -a "$BACKEND_DIR/static" "$stage/data/static"
-  [[ -d "$BACKEND_DIR/uploads/ordenes" ]] && cp -a "$BACKEND_DIR/uploads/ordenes" "$stage/data/order-evidence"
-  [[ -d "$BACKEND_DIR/bot_whatsapp/.wwebjs_auth" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/.wwebjs_auth" "$stage/data/whatsapp-auth"
-  [[ -d "$BACKEND_DIR/bot_whatsapp/uploads" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/uploads" "$stage/data/whatsapp-uploads"
+  if [[ "$include_config" == "true" ]]; then
+    cp -a "$ENV_FILE" "$stage/config/backend.env"
+    [[ -f "$BACKEND_DIR/bot_whatsapp/.env" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/.env" "$stage/config/bot.env"
+    [[ -f /etc/nginx/sites-available/fdeznet ]] && cp -a /etc/nginx/sites-available/fdeznet "$stage/config/nginx.conf"
+  fi
+  [[ "$include_wireguard" == "true" && -d /etc/wireguard ]] && cp -a /etc/wireguard "$stage/config/wireguard"
+  [[ "$include_static" == "true" && -d "$BACKEND_DIR/static" ]] && cp -a "$BACKEND_DIR/static" "$stage/data/static"
+  [[ "$include_evidence" == "true" && -d "$BACKEND_DIR/uploads/ordenes" ]] && cp -a "$BACKEND_DIR/uploads/ordenes" "$stage/data/order-evidence"
+  [[ "$include_session" == "true" && -d "$BACKEND_DIR/bot_whatsapp/.wwebjs_auth" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/.wwebjs_auth" "$stage/data/whatsapp-auth"
+  [[ "$include_whatsapp" == "true" && -d "$BACKEND_DIR/bot_whatsapp/uploads" ]] && cp -a "$BACKEND_DIR/bot_whatsapp/uploads" "$stage/data/whatsapp-uploads"
   printf '%s\n' \
     "BACKEND_COMMIT=$(app_git -C "$BACKEND_DIR" rev-parse HEAD)" \
     "FRONTEND_COMMIT=$(app_git -C "$FRONTEND_DIR" rev-parse HEAD)" \
@@ -267,11 +311,55 @@ create_backup() {
     install -m 0600 "$encrypted" "$REMOTE_DIR/"
     install -m 0600 "${encrypted}.sha256" "$REMOTE_DIR/"
   fi
-  find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' -mtime "+$RETENTION_DAYS" -delete
-  find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg.sha256' -mtime "+$RETENTION_DAYS" -delete
+  if [[ "$skip_retention" != "true" ]]; then
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' -mtime "+$RETENTION_DAYS" -delete
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg.sha256' -mtime "+$RETENTION_DAYS" -delete
+  fi
   write_status "respaldado" "Respaldo cifrado y verificado"
   report "respaldado" "Respaldo cifrado y verificado"
   log "Respaldo verificado: $encrypted"
+}
+
+scheduled_backup() {
+  local active frequency latest now last
+  active="$(policy_value activo true)"
+  [[ "$active" == "true" ]] || { log "Respaldo programado desactivado"; return 0; }
+  frequency="$(policy_value frecuencia_dias 1)"
+  [[ "$frequency" =~ ^([1-9]|[12][0-9]|30)$ ]] || frequency=1
+  latest="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' -printf '%T@\n' 2>/dev/null | sort -nr | head -n 1)"
+  if [[ -n "$latest" ]]; then
+    now="$(date +%s)"
+    last="${latest%%.*}"
+    if (( now - last < frequency * 86400 )); then
+      log "Aún no corresponde crear el siguiente respaldo"
+      return 0
+    fi
+  fi
+  create_backup
+}
+
+requested_backup_operation() {
+  local expected="$1" action filename selected safety_backup
+  [[ -f "$BACKUP_OPERATION_FILE" ]] || fail "No hay una operación de respaldo solicitada"
+  action="$(jq -er '.accion' "$BACKUP_OPERATION_FILE")"
+  filename="$(jq -er '.archivo' "$BACKUP_OPERATION_FILE")"
+  [[ "$action" == "$expected" ]] || fail "La operación solicitada no coincide"
+  [[ "$filename" =~ ^[0-9]{8}-[0-9]{6}\.tar\.gz\.gpg$ ]] || fail "Nombre de respaldo inválido"
+  selected="$BACKUP_DIR/$filename"
+  [[ -f "$selected" && ! -L "$selected" ]] || fail "Respaldo no encontrado"
+  if [[ "$expected" == "verificar" ]]; then
+    verify_backup "$selected"
+    rm -f "$BACKUP_OPERATION_FILE"
+    return
+  fi
+  # No aplicar retención aquí: el punto elegido puede ser antiguo y debe
+  # conservarse hasta terminar la restauración.
+  create_backup true true
+  safety_backup="$LAST_BACKUP"
+  restore_backup "$selected"
+  LAST_BACKUP="$safety_backup"
+  write_status "restaurado" "Punto de restauración aplicado correctamente"
+  rm -f "$BACKUP_OPERATION_FILE"
 }
 
 wait_for_health() {
@@ -304,7 +392,7 @@ restore_backup() {
   systemctl stop fdeznet-api fdeznet-bot || true
   app_git -C "$BACKEND_DIR" reset --hard "$backend_commit"
   app_git -C "$FRONTEND_DIR" reset --hard "$frontend_commit"
-  cp -a "$restore_dir/config/backend.env" "$ENV_FILE"
+  [[ -f "$restore_dir/config/backend.env" ]] && cp -a "$restore_dir/config/backend.env" "$ENV_FILE"
   [[ -f "$restore_dir/config/bot.env" ]] && cp -a "$restore_dir/config/bot.env" "$BACKEND_DIR/bot_whatsapp/.env"
   [[ -f "$restore_dir/config/nginx.conf" ]] && install -o root -g root -m 0644 "$restore_dir/config/nginx.conf" /etc/nginx/sites-available/fdeznet
   if [[ -d "$restore_dir/config/wireguard" ]]; then
@@ -328,6 +416,16 @@ restore_backup() {
   rm -rf "$restore_dir"
   wait_for_health
 }
+
+cleanup_request() {
+  if [[ "$BACKUP_REQUEST_ACTIVE" == "true" ]]; then
+    rm -f "$BACKUP_OPERATION_FILE"
+  fi
+  if [[ -n "$CURRENT_REQUEST_FILE" ]]; then
+    rm -f "$CURRENT_REQUEST_FILE"
+  fi
+}
+trap cleanup_request EXIT
 
 on_error() {
   local code=$?
@@ -372,7 +470,6 @@ perform_update() {
     -H "X-License-Key: ${license_key}" \
     "${request_headers[@]}" \
     "${control_url%/}/control/update-manifest")"
-  rm -f "$MANUAL_UPDATE_REQUEST_FILE"
   available="$(jq -r '.actualizacion_disponible' <<< "$manifest")"
   [[ "$available" == "true" ]] || { write_status "sin_cambios" "No hay actualización autorizada"; return 0; }
   TARGET_VERSION="$(jq -er '.version' <<< "$manifest")"
@@ -427,6 +524,7 @@ main() {
   BACKUP_DIR="${BACKUP_DIR:-/var/backups/fdeznet}"
   RETENTION_DAYS="$(env_value FDEZNET_BACKUP_RETENTION_DAYS)"
   RETENTION_DAYS="${RETENTION_DAYS:-14}"
+  RETENTION_DAYS="$(policy_value retencion_dias "$RETENTION_DAYS")"
   REMOTE_DIR="$(env_value FDEZNET_BACKUP_REMOTE_DIR)"
   APP_SERVICE_USER="$(systemctl show fdeznet-api.service -p User --value 2>/dev/null || true)"
   APP_SERVICE_USER="${APP_SERVICE_USER:-root}"
@@ -437,15 +535,43 @@ main() {
     RECOVERY_DATE="$(jq -r '.recuperacion_fecha // ""' "$STATUS_FILE")"
   fi
   [[ "$RETENTION_DAYS" =~ ^[0-9]{1,3}$ ]] || fail "Retención inválida"
-  exec 9> "$LOCK_FILE"
-  flock -n 9 || { log "Ya existe otra tarea de mantenimiento"; exit 0; }
   case "${1:-}" in
-    backup) create_backup ;;
+    backup-request) CURRENT_REQUEST_FILE="$MANUAL_BACKUP_REQUEST_FILE" ;;
+    update)
+      if [[ -f "$MANUAL_UPDATE_REQUEST_FILE" ]]; then
+        CURRENT_REQUEST_FILE="$MANUAL_UPDATE_REQUEST_FILE"
+      fi
+      ;;
+    verify-latest-request) CURRENT_REQUEST_FILE="$MANUAL_VERIFY_REQUEST_FILE" ;;
+    verify-request)
+      CURRENT_REQUEST_FILE="$SELECTED_VERIFY_REQUEST_FILE"
+      BACKUP_REQUEST_ACTIVE="true"
+      ;;
+    restore-request)
+      CURRENT_REQUEST_FILE="$RESTORE_REQUEST_FILE"
+      BACKUP_REQUEST_ACTIVE="true"
+      ;;
+  esac
+  exec 9> "$LOCK_FILE"
+  if [[ -n "$CURRENT_REQUEST_FILE" ]]; then
+      flock -w 900 9 || fail "Otra tarea de mantenimiento sigue en curso"
+  else
+    flock -n 9 || { log "Ya existe otra tarea de mantenimiento"; exit 0; }
+  fi
+  case "${1:-}" in
+    backup|backup-request) create_backup ;;
+    scheduled-backup) scheduled_backup ;;
     update) perform_update ;;
     verify) verify_backup "${2:-}" ;;
+    verify-latest-request) verify_backup ;;
+    verify-request) requested_backup_operation verificar ;;
+    restore-request) requested_backup_operation restaurar ;;
     restore) [[ -n "${2:-}" ]] || return 2; restore_backup "$2" ;;
-    *) printf 'Uso: %s {backup|update|verify [ARCHIVO]|restore ARCHIVO}\n' "$0"; return 2 ;;
+    *) printf 'Uso: %s {backup|backup-request|scheduled-backup|update|verify [ARCHIVO]|verify-latest-request|verify-request|restore-request|restore ARCHIVO}\n' "$0"; return 2 ;;
   esac
+  if [[ -n "$CURRENT_REQUEST_FILE" ]]; then
+    rm -f "$CURRENT_REQUEST_FILE"
+  fi
 }
 
 main "$@"

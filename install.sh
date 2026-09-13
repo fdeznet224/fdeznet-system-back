@@ -469,16 +469,21 @@ fi
 chmod 0600 /etc/fdeznet/backup.key
 install -o root -g root -m 0750 "$BACKEND_DIR/scripts/fdeznet-maintenance.sh" /usr/local/sbin/fdeznet-maintenance
 install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-backup.service" /etc/systemd/system/fdeznet-backup.service
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-backup-request.path" /etc/systemd/system/fdeznet-backup-request.path
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-backup-scheduled.service" /etc/systemd/system/fdeznet-backup-scheduled.service
 install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-backup.timer" /etc/systemd/system/fdeznet-backup.timer
 install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-update.service" /etc/systemd/system/fdeznet-update.service
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-update-request.path" /etc/systemd/system/fdeznet-update-request.path
 install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-update.timer" /etc/systemd/system/fdeznet-update.timer
 install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-verify.service" /etc/systemd/system/fdeznet-verify.service
 install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-verify.timer" /etc/systemd/system/fdeznet-verify.timer
-printf '%s\n' \
-  "${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block fdeznet-backup.service, /usr/bin/systemctl start --no-block fdeznet-update.service, /usr/bin/systemctl start --no-block fdeznet-verify.service" \
-  > /etc/sudoers.d/fdeznet-maintenance
-chmod 0440 /etc/sudoers.d/fdeznet-maintenance
-visudo -cf /etc/sudoers.d/fdeznet-maintenance >/dev/null
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-verify-request.service" /etc/systemd/system/fdeznet-verify-request.service
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-verify-latest-request.service" /etc/systemd/system/fdeznet-verify-latest-request.service
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-verify-latest-request.path" /etc/systemd/system/fdeznet-verify-latest-request.path
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-verify-selected-request.path" /etc/systemd/system/fdeznet-verify-selected-request.path
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-restore.service" /etc/systemd/system/fdeznet-restore.service
+install -o root -g root -m 0644 "$BACKEND_DIR/deploy/systemd/fdeznet-restore-request.path" /etc/systemd/system/fdeznet-restore-request.path
+rm -f /etc/sudoers.d/fdeznet-maintenance
 
 cat > /etc/systemd/system/fdeznet-api.service <<UNIT
 [Unit]
@@ -585,6 +590,12 @@ nginx -t
 systemctl daemon-reload
 systemctl enable --now fdeznet-api fdeznet-bot nginx
 systemctl enable --now fdeznet-backup.timer fdeznet-update.timer fdeznet-verify.timer
+systemctl enable --now \
+  fdeznet-backup-request.path \
+  fdeznet-update-request.path \
+  fdeznet-verify-latest-request.path \
+  fdeznet-verify-selected-request.path \
+  fdeznet-restore-request.path
 systemctl restart fdeznet-api fdeznet-bot nginx
 
 for attempt in {1..150}; do

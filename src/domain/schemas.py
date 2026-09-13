@@ -61,6 +61,22 @@ class StoragePolicyUpdate(BaseModel):
     dia_cierre: int = Field(default=1, ge=1, le=28)
 
 
+class BackupPolicyUpdate(BaseModel):
+    activo: bool = True
+    frecuencia_dias: int = Field(default=1, ge=1, le=30)
+    retencion_dias: int = Field(default=14, ge=3, le=365)
+    incluir_configuracion: bool = True
+    incluir_archivos_estaticos: bool = True
+    incluir_evidencias_ordenes: bool = True
+    incluir_sesion_whatsapp: bool = True
+    incluir_archivos_whatsapp: bool = True
+    incluir_wireguard: bool = True
+
+
+class BackupRestoreRequest(BaseModel):
+    confirmacion: str = Field(min_length=10, max_length=180)
+
+
 class BotFlowOption(BaseModel):
     id: str = Field(pattern=r"^(reportar_pago|promesa_pago|estado_servicio|datos_pago|diagnostico_tecnico)$")
     label: str = Field(min_length=3, max_length=80)

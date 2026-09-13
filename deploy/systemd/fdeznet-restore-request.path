@@ -1,0 +1,9 @@
+[Unit]
+Description=FdezNet - solicitud de restauración
+
+[Path]
+PathExists=/var/lib/fdeznet/restore-requested
+Unit=fdeznet-restore.service
+
+[Install]
+WantedBy=multi-user.target

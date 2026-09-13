@@ -1,0 +1,8 @@
+[Unit]
+Description=FdezNet - verificación manual del último respaldo
+After=mysql.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/fdeznet-maintenance verify-latest-request

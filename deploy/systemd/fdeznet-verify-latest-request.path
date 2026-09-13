@@ -1,0 +1,9 @@
+[Unit]
+Description=FdezNet - solicitud de verificación del último respaldo
+
+[Path]
+PathExists=/var/lib/fdeznet/verify-latest-requested
+Unit=fdeznet-verify-latest-request.service
+
+[Install]
+WantedBy=multi-user.target

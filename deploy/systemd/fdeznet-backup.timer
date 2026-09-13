@@ -5,8 +5,7 @@ Description=FdezNet - respaldo diario
 OnCalendar=*-*-* 03:20:00
 Persistent=true
 RandomizedDelaySec=15m
-Unit=fdeznet-backup.service
+Unit=fdeznet-backup-scheduled.service
 
 [Install]
 WantedBy=timers.target
-

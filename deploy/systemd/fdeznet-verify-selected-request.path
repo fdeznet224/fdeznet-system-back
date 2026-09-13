@@ -1,0 +1,9 @@
+[Unit]
+Description=FdezNet - solicitud de verificación de respaldo seleccionado
+
+[Path]
+PathExists=/var/lib/fdeznet/verify-selected-requested
+Unit=fdeznet-verify-request.service
+
+[Install]
+WantedBy=multi-user.target

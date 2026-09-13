@@ -1,11 +1,11 @@
 [Unit]
-Description=FdezNet - respaldo cifrado y verificado
+Description=FdezNet - evaluación de respaldo programado
 After=mysql.service
 
 [Service]
 Type=oneshot
 User=root
-ExecStart=/usr/local/sbin/fdeznet-maintenance backup-request
+ExecStart=/usr/local/sbin/fdeznet-maintenance scheduled-backup
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

@@ -6,6 +6,6 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=root
+ExecStartPre=/usr/bin/systemctl enable --now fdeznet-backup-request.path fdeznet-update-request.path fdeznet-verify-latest-request.path fdeznet-verify-selected-request.path fdeznet-restore-request.path
 ExecStart=/usr/local/sbin/fdeznet-maintenance update
 TimeoutStartSec=45min
-

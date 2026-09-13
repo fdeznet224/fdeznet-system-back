@@ -41,6 +41,9 @@ def test_instalador_configura_respaldo_y_revision_automatica():
     assert "gnupg" in content
     assert "backup.key" in content
     assert "fdeznet-backup.timer" in content
+    assert "fdeznet-backup-scheduled.service" in content
+    assert "fdeznet-verify-request.service" in content
+    assert "fdeznet-restore.service" in content
     assert "fdeznet-update.timer" in content
     assert "fdeznet-verify.timer" in content
     assert "FDEZNET_BACKUP_RETENTION_DAYS" in content
@@ -54,6 +57,9 @@ def test_instalador_configura_respaldo_y_revision_automatica():
     assert "Strict-Transport-Security" in content
     assert "ProtectSystem=strict" in content
     assert "NoNewPrivileges=true" in content
+    assert "fdeznet-backup-request.path" in content
+    assert "fdeznet-update-request.path" in content
+    assert "fdeznet-restore-request.path" in content
 
 
 def test_instalador_recibe_identidad_inicial_del_panel_central():
@@ -103,6 +109,10 @@ def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     assert "X-Update-Requested: true" in content
     assert "manual-update-requested" in content
     assert "install_deployment_files" in content
+    assert "scheduled-backup" in content
+    assert "restore-request" in content
+    assert "systemctl enable --now" in content
+    assert "/usr/bin/sudo" not in content
     assert "systemctl daemon-reload" in content
     assert "proxy_pass http://127.0.0.1:3000/uploads/" not in content
     assert "sed -i '/^[[:space:]]*location \\/media\\/uploads" in content

@@ -1,0 +1,9 @@
+[Unit]
+Description=FdezNet - solicitud de respaldo manual
+
+[Path]
+PathExists=/var/lib/fdeznet/backup-requested
+Unit=fdeznet-backup.service
+
+[Install]
+WantedBy=multi-user.target

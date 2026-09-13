@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import io
 import json
@@ -36,6 +35,8 @@ from src.domain.schemas import (
     LocalLicenseStatus,
     MaintenanceStatus,
     StoragePolicyUpdate,
+    BackupPolicyUpdate,
+    BackupRestoreRequest,
     BotFlowUpdate,
     BotVisualFlowUpdate,
 )
@@ -62,6 +63,12 @@ from src.application.services.bot_visual_flow_service import (
 from src.application.services.pppoe_config_service import (
     guardar_config_pppoe,
     obtener_config_pppoe,
+)
+from src.application.services.backup_service import (
+    backup_dashboard,
+    backup_path,
+    request_backup_operation,
+    save_backup_policy,
 )
 
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
@@ -184,23 +191,40 @@ async def guardar_flujo_visual(
     return flow_payload(flow, legacy if alcance == "cliente" else None)
 
 
+MAINTENANCE_REQUESTS = {
+    "fdeznet-backup.service": Path("/var/lib/fdeznet/backup-requested"),
+    "fdeznet-update.service": MANUAL_UPDATE_REQUEST_FILE,
+    "fdeznet-verify.service": Path("/var/lib/fdeznet/verify-latest-requested"),
+    "fdeznet-verify-request.service": Path(
+        "/var/lib/fdeznet/verify-selected-requested"
+    ),
+    "fdeznet-restore.service": Path("/var/lib/fdeznet/restore-requested"),
+}
+
+
 async def _iniciar_mantenimiento(service: str) -> dict[str, str]:
-    process = await asyncio.create_subprocess_exec(
-        "sudo",
-        "/usr/bin/systemctl",
-        "start",
-        "--no-block",
-        service,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await process.communicate()
-    if process.returncode != 0:
-        detail = stderr.decode("utf-8", errors="replace").strip()
+    request_file = MAINTENANCE_REQUESTS.get(service)
+    if request_file is None:
+        raise HTTPException(status_code=400, detail="Tarea de mantenimiento inválida")
+    request_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(
+            request_file,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+    except FileExistsError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Esta tarea de mantenimiento ya está solicitada o en curso",
+        ) from exc
+    except OSError as exc:
         raise HTTPException(
             status_code=503,
-            detail=detail or "El servicio de mantenimiento no está disponible",
-        )
+            detail="No se pudo registrar la tarea de mantenimiento",
+        ) from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8") as request:
+        request.write("requested\n")
     return {"status": "ok", "mensaje": "La tarea inició en segundo plano"}
 
 
@@ -377,23 +401,67 @@ async def iniciar_respaldo():
 
 @router.post("/mantenimiento/actualizar", status_code=202)
 async def iniciar_actualizacion():
-    try:
-        MANUAL_UPDATE_REQUEST_FILE.write_text("requested\n", encoding="utf-8")
-    except OSError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="No se pudo registrar la solicitud manual de actualización",
-        ) from exc
-    try:
-        return await _iniciar_mantenimiento("fdeznet-update.service")
-    except Exception:
-        MANUAL_UPDATE_REQUEST_FILE.unlink(missing_ok=True)
-        raise
+    return await _iniciar_mantenimiento("fdeznet-update.service")
 
 
 @router.post("/mantenimiento/verificar", status_code=202)
 async def iniciar_revision_recuperacion():
     return await _iniciar_mantenimiento("fdeznet-verify.service")
+
+
+@router.get("/respaldos")
+async def obtener_respaldos():
+    return backup_dashboard()
+
+
+@router.put("/respaldos/politica")
+async def guardar_politica_respaldos(datos: BackupPolicyUpdate):
+    return {
+        "status": "ok",
+        "politica": save_backup_policy(datos),
+    }
+
+
+@router.post("/respaldos/crear", status_code=202)
+async def crear_respaldo_manual():
+    return await _iniciar_mantenimiento("fdeznet-backup.service")
+
+
+@router.post("/respaldos/{archivo}/verificar", status_code=202)
+async def verificar_respaldo(archivo: str):
+    try:
+        request_backup_operation("verificar", archivo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        return await _iniciar_mantenimiento("fdeznet-verify-request.service")
+    except Exception:
+        Path("/var/lib/fdeznet/backup-operation.json").unlink(missing_ok=True)
+        raise
+
+
+@router.post("/respaldos/{archivo}/restaurar", status_code=202)
+async def restaurar_respaldo(archivo: str, datos: BackupRestoreRequest):
+    try:
+        path = backup_path(archivo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    expected = f"RESTAURAR {path.name}"
+    if datos.confirmacion != expected:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Escribe exactamente: {expected}",
+        )
+    request_backup_operation("restaurar", path.name)
+    try:
+        return await _iniciar_mantenimiento("fdeznet-restore.service")
+    except Exception:
+        Path("/var/lib/fdeznet/backup-operation.json").unlink(missing_ok=True)
+        raise
 
 
 @router.get("/almacenamiento")

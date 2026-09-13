@@ -1,0 +1,9 @@
+[Unit]
+Description=FdezNet - solicitud de actualización manual
+
+[Path]
+PathExists=/var/lib/fdeznet/manual-update-requested
+Unit=fdeznet-update.service
+
+[Install]
+WantedBy=multi-user.target
