@@ -10,6 +10,11 @@ from src.infrastructure.models import (
 )
 from src.domain.schemas import PlanCreate
 from src.infrastructure.mikrotik_service import MikroTikService
+from src.utils.mikrotik import (
+    formatear_rate_limit_dhcp,
+    formatear_rate_limit_pppoe,
+    normalizar_mac,
+)
 
 class PlanService:
     def __init__(self, db: AsyncSession):
@@ -148,35 +153,44 @@ class PlanService:
 
             except Exception as e:
                 print(f"⚠️ Error Sincronización MK ({accion}): {e}")
+        elif "dhcp" in tipo_seguridad and accion == "editar":
+            try:
+                mk = MikroTikService(
+                    router.ip_vpn,
+                    router.user_api,
+                    router.pass_api,
+                    router.port_api,
+                )
+                servicios = (
+                    await self.db.execute(
+                        select(ServicioModel).where(
+                            ServicioModel.plan_id == plan.id,
+                            ServicioModel.estado.in_(
+                                ["activo", "suspendido"]
+                            ),
+                        )
+                    )
+                ).scalars().all()
+                rate_limit = formatear_rate_limit_dhcp(plan)
+                for servicio in servicios:
+                    mac = normalizar_mac(servicio.mac_address)
+                    if not mac or not servicio.ip_asignada:
+                        continue
+                    mk.crear_actualizar_lease_dhcp(
+                        mac=mac,
+                        address=servicio.ip_asignada,
+                        rate_limit=rate_limit,
+                        comment=f"Servicio:{servicio.id} {servicio.alias}",
+                    )
+                    mk.activar_desactivar_dhcp(
+                        mac,
+                        blocked=servicio.estado == "suspendido",
+                    )
+            except Exception as e:
+                print(f"⚠️ Error Sincronización DHCP ({accion}): {e}")
 
     # ==========================================
     # FORMATEADOR AVANZADO
     # ==========================================
     def _formatear_velocidad_completa(self, plan: PlanModel):
-        def fmt(val):
-            if val == 0: return "0"
-            if val >= 1024:
-                megas = val / 1024
-                if megas.is_integer():
-                    return f"{int(megas)}M"
-                return f"{megas:.1f}M"
-            return f"{int(val)}k"
-
-        max_limit = f"{fmt(plan.velocidad_subida)}/{fmt(plan.velocidad_bajada)}"
-
-        if plan.burst_subida > 0 or plan.burst_bajada > 0:
-            burst_limit = f"{fmt(plan.burst_subida)}/{fmt(plan.burst_bajada)}"
-            burst_threshold = max_limit 
-            time = f"{plan.burst_time}/{plan.burst_time}"
-        else:
-            burst_limit = "0/0"
-            burst_threshold = "0/0"
-            time = "0/0"
-
-        prio = str(plan.prioridad)
-
-        garantia_up = int(plan.velocidad_subida * (plan.garantia_percent / 100))
-        garantia_down = int(plan.velocidad_bajada * (plan.garantia_percent / 100))
-        limit_at = f"{fmt(garantia_up)}/{fmt(garantia_down)}"
-
-        return f"{max_limit} {burst_limit} {burst_threshold} {time} {prio} {limit_at}"
+        return formatear_rate_limit_pppoe(plan)

@@ -19,6 +19,10 @@ from src.domain.schemas import (
     ServicioUpdate,
 )
 from src.infrastructure.mikrotik_service import MikroTikService
+from src.utils.mikrotik import (
+    formatear_rate_limit_dhcp,
+    normalizar_mac,
+)
 from src.infrastructure.models import (
     CajaNapModel,
     CicloFacturacion,
@@ -40,6 +44,11 @@ class SubscriptionService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    @staticmethod
+    def _usa_dhcp(router: RouterModel) -> bool:
+        mode = getattr(router.tipo_seguridad, "value", router.tipo_seguridad)
+        return str(mode).lower() == "dhcp"
 
     @staticmethod
     def _consulta_relaciones():
@@ -288,6 +297,8 @@ class SubscriptionService:
         )
         if not servicio.router_id or not servicio.plan_id:
             raise ValueError("El servicio necesita router y plan")
+        router = await self.db.get(RouterModel, servicio.router_id)
+        plan = await self.db.get(PlanModel, servicio.plan_id)
         if (
             servicio.latitud is None
             or servicio.longitud is None
@@ -297,18 +308,51 @@ class SubscriptionService:
                 "El domicilio necesita coordenadas GPS válidas"
             )
 
-        usuario_pppoe = datos.user_pppoe.strip()
-        existente_pppoe = (
-            await self.db.execute(
-                select(ServicioModel.id).where(
-                    ServicioModel.user_pppoe == usuario_pppoe,
-                    ServicioModel.id != servicio.id,
-                    ServicioModel.estado != "cancelado",
-                )
+        if self._usa_dhcp(router):
+            mac_address = normalizar_mac(
+                datos.mac_address or servicio.mac_address
             )
-        ).scalar_one_or_none()
-        if existente_pppoe:
-            raise ValueError("El usuario PPPoE ya pertenece a otro servicio")
+            if not mac_address:
+                raise ValueError(
+                    "El acceso DHCP necesita la MAC WAN/CPE que ve MikroTik"
+                )
+            existing_mac = (
+                await self.db.execute(
+                    select(ServicioModel.id).where(
+                        ServicioModel.router_id == servicio.router_id,
+                        ServicioModel.mac_address == mac_address,
+                        ServicioModel.id != servicio.id,
+                        ServicioModel.estado != "cancelado",
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing_mac:
+                raise ValueError(
+                    "La MAC WAN/CPE ya pertenece a otro servicio del router"
+                )
+            servicio.mac_address = mac_address
+            servicio.user_pppoe = None
+            servicio.pass_pppoe = None
+        else:
+            usuario_pppoe = str(datos.user_pppoe or "").strip()
+            password_pppoe = str(datos.pass_pppoe or "").strip()
+            if not usuario_pppoe or not password_pppoe:
+                raise ValueError(
+                    "El acceso PPPoE necesita usuario y contraseña"
+                )
+            existente_pppoe = (
+                await self.db.execute(
+                    select(ServicioModel.id).where(
+                        ServicioModel.user_pppoe == usuario_pppoe,
+                        ServicioModel.id != servicio.id,
+                        ServicioModel.estado != "cancelado",
+                    )
+                )
+            ).scalar_one_or_none()
+            if existente_pppoe:
+                raise ValueError("El usuario PPPoE ya pertenece a otro servicio")
+            servicio.user_pppoe = usuario_pppoe
+            servicio.pass_pppoe = password_pppoe
 
         ip_solicitada = (
             datos.ip_asignada.strip()
@@ -340,8 +384,6 @@ class SubscriptionService:
         else:
             raise ValueError("El servicio necesita una IP asignada")
 
-        servicio.user_pppoe = usuario_pppoe
-        servicio.pass_pppoe = datos.pass_pppoe
         await self.db.flush()
 
         orden = (
@@ -419,24 +461,31 @@ class SubscriptionService:
             else 0
         )
 
-        router = await self.db.get(RouterModel, servicio.router_id)
-        plan = await self.db.get(PlanModel, servicio.plan_id)
         mk = MikroTikService(
             router.ip_vpn,
             router.user_api,
             router.pass_api,
             router.port_api,
         )
-        mk.crear_actualizar_pppoe(
-            user=servicio.user_pppoe,
-            password=servicio.pass_pppoe,
-            profile=plan.nombre,
-            remote_address=servicio.ip_asignada,
-            comment=(
-                f"{servicio.cliente.nombre} | "
-                f"Servicio:{servicio.id} {servicio.alias}"
-            ),
+        comment = (
+            f"{servicio.cliente.nombre} | "
+            f"Servicio:{servicio.id} {servicio.alias}"
         )
+        if self._usa_dhcp(router):
+            mk.crear_actualizar_lease_dhcp(
+                servicio.mac_address,
+                servicio.ip_asignada,
+                formatear_rate_limit_dhcp(plan),
+                comment,
+            )
+        else:
+            mk.crear_actualizar_pppoe(
+                user=servicio.user_pppoe,
+                password=servicio.pass_pppoe,
+                profile=plan.nombre,
+                remote_address=servicio.ip_asignada,
+                comment=comment,
+            )
 
         servicio.estado = "activo"
         servicio.is_online = False
@@ -535,16 +584,17 @@ class SubscriptionService:
         self,
         servicio: ServicioModel,
     ):
-        if (
-            not servicio.router
-            or not servicio.plan
-            or not servicio.user_pppoe
-            or not servicio.pass_pppoe
-            or not servicio.ip_asignada
-        ):
+        if not servicio.router or not servicio.plan or not servicio.ip_asignada:
             raise ValueError(
                 "El servicio no tiene completa su configuración MikroTik"
             )
+        is_dhcp = self._usa_dhcp(servicio.router)
+        if is_dhcp and not servicio.mac_address:
+            raise ValueError("El servicio DHCP no tiene MAC WAN/CPE")
+        if not is_dhcp and (
+            not servicio.user_pppoe or not servicio.pass_pppoe
+        ):
+            raise ValueError("El servicio PPPoE no tiene credenciales")
 
         mk = MikroTikService(
             servicio.router.ip_vpn,
@@ -552,26 +602,40 @@ class SubscriptionService:
             servicio.router.pass_api,
             servicio.router.port_api,
         )
-        await asyncio.to_thread(
-            mk.crear_actualizar_pppoe,
-            servicio.user_pppoe,
-            servicio.pass_pppoe,
-            servicio.plan.nombre,
-            servicio.ip_asignada,
-            (
-                f"{servicio.cliente.nombre} | "
-                f"Servicio:{servicio.id} {servicio.alias}"
-            ),
+        comment = (
+            f"{servicio.cliente.nombre} | "
+            f"Servicio:{servicio.id} {servicio.alias}"
         )
+        if is_dhcp:
+            await asyncio.to_thread(
+                mk.crear_actualizar_lease_dhcp,
+                servicio.mac_address,
+                servicio.ip_asignada,
+                formatear_rate_limit_dhcp(servicio.plan),
+                comment,
+            )
+        else:
+            await asyncio.to_thread(
+                mk.crear_actualizar_pppoe,
+                servicio.user_pppoe,
+                servicio.pass_pppoe,
+                servicio.plan.nombre,
+                servicio.ip_asignada,
+                comment,
+            )
 
         debe_suspender = servicio.estado == "suspendido"
         encontrado = await asyncio.to_thread(
-            mk.activar_desactivar_pppoe,
-            servicio.user_pppoe,
+            (
+                mk.activar_desactivar_dhcp
+                if is_dhcp
+                else mk.activar_desactivar_pppoe
+            ),
+            servicio.mac_address if is_dhcp else servicio.user_pppoe,
             debe_suspender,
         )
         if encontrado is not True:
-            raise RuntimeError("MikroTik no encontró el usuario PPPoE")
+            raise RuntimeError("MikroTik no encontró el acceso del cliente")
         confirmado = await asyncio.to_thread(
             mk.gestionar_corte_cliente,
             servicio.ip_asignada,
@@ -580,14 +644,24 @@ class SubscriptionService:
         if confirmado is not True:
             raise RuntimeError("MikroTik no confirmó el estado de corte")
 
-        secret = await asyncio.to_thread(
-            mk.obtener_pppoe_estricto,
-            servicio.user_pppoe,
-        )
-        if not secret or str(secret.get("profile", "")).strip() != (
-            servicio.plan.nombre.strip()
-        ):
-            raise RuntimeError("MikroTik no confirmó el perfil del plan")
+        if is_dhcp:
+            lease = await asyncio.to_thread(
+                mk.obtener_lease_dhcp_estricto,
+                servicio.mac_address,
+            )
+            if not lease or str(lease.get("address", "")).strip() != (
+                servicio.ip_asignada
+            ):
+                raise RuntimeError("MikroTik no confirmó el lease DHCP")
+        else:
+            secret = await asyncio.to_thread(
+                mk.obtener_pppoe_estricto,
+                servicio.user_pppoe,
+            )
+            if not secret or str(secret.get("profile", "")).strip() != (
+                servicio.plan.nombre.strip()
+            ):
+                raise RuntimeError("MikroTik no confirmó el perfil del plan")
 
     async def cambiar_estado(
         self,
@@ -599,7 +673,11 @@ class SubscriptionService:
         servicio = await self.obtener(servicio_id)
         if servicio.estado == "cancelado":
             raise ValueError("El servicio está cancelado")
-        if not servicio.router or not servicio.user_pppoe:
+        if not servicio.router:
+            raise ValueError("El servicio no tiene configuración MikroTik")
+        is_dhcp = self._usa_dhcp(servicio.router)
+        access_id = servicio.mac_address if is_dhcp else servicio.user_pppoe
+        if not access_id:
             raise ValueError("El servicio no tiene configuración MikroTik")
 
         mk = MikroTikService(
@@ -610,12 +688,16 @@ class SubscriptionService:
         )
         suspendido = estado == "suspendido"
         encontrado = await asyncio.to_thread(
-            mk.activar_desactivar_pppoe,
-            servicio.user_pppoe,
+            (
+                mk.activar_desactivar_dhcp
+                if is_dhcp
+                else mk.activar_desactivar_pppoe
+            ),
+            access_id,
             suspendido,
         )
         if encontrado is False:
-            raise ValueError("MikroTik no encontró el usuario PPPoE")
+            raise ValueError("MikroTik no encontró el acceso del cliente")
         if servicio.ip_asignada:
             confirmado = await asyncio.to_thread(
                 mk.gestionar_corte_cliente,

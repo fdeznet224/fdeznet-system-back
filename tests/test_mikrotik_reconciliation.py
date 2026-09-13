@@ -53,6 +53,7 @@ class _FakeMikrotik:
         self.cambios_estado = []
         self.cambios_corte = []
         self.configurados = []
+        self.leases = {}
 
     def obtener_todos_pppoe_estricto(self):
         self.listados += 1
@@ -98,6 +99,34 @@ class _FakeMikrotik:
             self.ips_cortadas.discard(ip)
         return True
 
+    def obtener_todos_dhcp_estricto(self):
+        self.listados += 1
+        return list(self.leases.values())
+
+    def obtener_lease_dhcp_estricto(self, mac):
+        return self.leases.get(mac)
+
+    def crear_actualizar_lease_dhcp(
+        self, mac, address, rate_limit, comment
+    ):
+        self.configurados.append(mac)
+        self.leases[mac] = {
+            ".id": f"*{len(self.leases) + 1}",
+            "mac-address": mac,
+            "address": address,
+            "rate-limit": rate_limit,
+            "block-access": "false",
+            "comment": comment,
+        }
+        return self.leases[mac]
+
+    def activar_desactivar_dhcp(self, mac, blocked):
+        self.cambios_estado.append((mac, blocked))
+        self.leases[mac]["block-access"] = (
+            "true" if blocked else "false"
+        )
+        return True
+
 
 async def _run_direct(function, *args):
     return function(*args)
@@ -117,6 +146,7 @@ def _servicio(servicio_id, estado, router, usuario, ip):
         pass_pppoe="secreto",
         ip_asignada=ip,
         is_online=True,
+        mac_address=None,
     )
 
 
@@ -295,6 +325,49 @@ def test_conciliador_no_sobrescribe_usuarios_pppoe_repetidos():
         "usuario PPPoE está repetido" in log.mensaje
         for log in db.logs
     ) == 2
+
+
+def test_conciliador_dhcp_repara_rate_limit_y_bloqueo():
+    router = SimpleNamespace(
+        id=2,
+        nombre="Nodo DHCP",
+        ip_vpn="192.0.2.2",
+        user_api="api",
+        pass_api="clave",
+        port_api=80,
+        is_active=True,
+        tipo_seguridad="dhcp",
+    )
+    servicio = _servicio(
+        10, "suspendido", router, None, "10.0.1.10"
+    )
+    servicio.mac_address = "aa-bb-cc-dd-ee-10"
+    servicio.pass_pppoe = None
+    servicio.plan = SimpleNamespace(
+        nombre="50 Megas",
+        velocidad_subida=10240,
+        velocidad_bajada=51200,
+        burst_subida=0,
+        burst_bajada=0,
+        burst_time=0,
+    )
+    mk = _FakeMikrotik([], set())
+    db = _DB([servicio])
+
+    reporte = asyncio.run(
+        MikrotikReconciliationService(
+            db,
+            mikrotik_factory=lambda *_args: mk,
+            blocking_runner=_run_direct,
+        ).ejecutar()
+    )
+
+    mac = "AA:BB:CC:DD:EE:10"
+    assert reporte["reparados"] == 1
+    assert mk.leases[mac]["address"] == "10.0.1.10"
+    assert mk.leases[mac]["rate-limit"] == "10M/50M"
+    assert mk.leases[mac]["block-access"] == "true"
+    assert ("10.0.1.10", True) in mk.cambios_corte
 
 
 def test_ruta_y_cron_de_conciliacion_estan_publicados():

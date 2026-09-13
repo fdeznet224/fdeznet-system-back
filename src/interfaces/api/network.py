@@ -96,6 +96,30 @@ async def editar_router(
     # 2. Convertir datos de entrada a diccionario (solo los que el usuario envió)
     datos_nuevos = router_data.dict(exclude_unset=True)
 
+    modo_nuevo = datos_nuevos.get("tipo_seguridad")
+    modo_actual = getattr(
+        router_db.tipo_seguridad, "value", router_db.tipo_seguridad
+    )
+    modo_nuevo_valor = getattr(modo_nuevo, "value", modo_nuevo)
+    if modo_nuevo_valor and modo_nuevo_valor != modo_actual:
+        servicio_existente = await db.execute(
+            select(ServicioModel.id)
+            .where(
+                ServicioModel.router_id == router_id,
+                ServicioModel.estado != "cancelado",
+            )
+            .limit(1)
+        )
+        if servicio_existente.scalar_one_or_none():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No se puede cambiar el modo de acceso porque el nodo "
+                    "tiene servicios vigentes. Crea otro nodo o migra primero "
+                    "los servicios."
+                ),
+            )
+
     # 3. Si se intenta cambiar la IP, verificar que no esté duplicada
     if 'ip_vpn' in datos_nuevos and datos_nuevos['ip_vpn'] != router_db.ip_vpn:
         stmt = select(RouterModel).where(RouterModel.ip_vpn == datos_nuevos['ip_vpn'])

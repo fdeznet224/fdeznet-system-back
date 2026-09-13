@@ -63,6 +63,9 @@ class ClientePortalResponse(BaseModel):
     # Técnicos
     ip_asignada: Optional[str] = None
     mac_address: Optional[str] = None
+    tipo_seguridad: str = "pppoe"
+    suggested_user: Optional[str] = None
+    suggested_pass: Optional[str] = None
     identificador_onu: Optional[str] = None # 👇 AÑADIDO PARA LA APP DEL TÉCNICO
     
     # 🚀 AÑADIDOS LOS IDs NECESARIOS PARA EL FRONTEND 🚀
@@ -191,6 +194,18 @@ async def obtener_datos_portal(
         "telefono": cliente.telefono,
         "direccion": cliente.direccion,
         "ip_asignada": cliente.ip_asignada or "Pendiente",
+        "mac_address": cliente.mac_address,
+        "tipo_seguridad": (
+            getattr(
+                cliente.router.tipo_seguridad,
+                "value",
+                cliente.router.tipo_seguridad,
+            )
+            if cliente.router
+            else "pppoe"
+        ),
+        "suggested_user": cliente.user_pppoe,
+        "suggested_pass": cliente.pass_pppoe,
         
         # 🚀 ESTOS SON LOS IDs VITALES PARA EL FRONTEND DE REACT 🚀
         "olt_id": cliente.olt_id,

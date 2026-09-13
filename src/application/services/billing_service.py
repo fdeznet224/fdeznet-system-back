@@ -19,6 +19,7 @@ from src.infrastructure.models import (
 
 # Servicios e Helpers
 from src.infrastructure.mikrotik_service import MikroTikService
+from src.utils.mikrotik import formatear_rate_limit_dhcp, normalizar_mac
 # 👇 IMPORTAMOS EL NUEVO SERVICIO UNIFICADO 👇
 from src.application.services.notification_service import NotificationService
 from src.application.helpers.pdf_generator import generar_recibo_pdf
@@ -1367,6 +1368,33 @@ class BillingService:
                 router.pass_api,
                 router.port_api,
             )
+            modo = getattr(
+                router.tipo_seguridad,
+                "value",
+                router.tipo_seguridad,
+            )
+            if str(modo).lower() == "dhcp":
+                mac = normalizar_mac(cliente.mac_address)
+                if not mac:
+                    return False
+                plan = (
+                    await self.db.get(PlanModel, cliente.plan_id)
+                    if cliente.plan_id
+                    else None
+                )
+                if not plan:
+                    return False
+                mk.crear_actualizar_lease_dhcp(
+                    mac,
+                    cliente.ip_asignada,
+                    formatear_rate_limit_dhcp(plan),
+                    f"Reactivación de servicio {getattr(cliente, 'id', '')}",
+                )
+                if not mk.activar_desactivar_dhcp(mac, blocked=False):
+                    return False
+                return mk.gestionar_corte_cliente(
+                    cliente.ip_asignada, suspender=False
+                ) is True
             return (
                 mk.reactivar_cliente(
                     cliente.ip_asignada,

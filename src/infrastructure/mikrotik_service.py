@@ -1,6 +1,8 @@
 import requests
 import urllib3
 
+from src.utils.mikrotik import normalizar_mac
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class MikroTikService:
@@ -223,6 +225,128 @@ class MikroTikService:
     def obtener_todos_active_pppoe(self):
         res = self._request("GET", "/ppp/active")
         return res if isinstance(res, list) else []
+
+    # ==========================================
+    #  3.5 ACCESO DHCP ESTÁTICO POR IP/MAC
+    # ==========================================
+    def obtener_todos_dhcp_estricto(self):
+        leases = self._request(
+            "GET",
+            "/ip/dhcp-server/lease",
+            raise_on_error=True,
+        )
+        if not isinstance(leases, list):
+            raise RuntimeError("MikroTik devolvió una lista DHCP inválida")
+        return leases
+
+    def obtener_lease_dhcp_estricto(self, mac_address):
+        mac = normalizar_mac(mac_address)
+        matches = [
+            item
+            for item in self.obtener_todos_dhcp_estricto()
+            if str(item.get("mac-address", "")).upper() == mac
+        ]
+        if len(matches) > 1:
+            raise RuntimeError(f"La MAC {mac} está repetida en DHCP")
+        return matches[0] if matches else None
+
+    def crear_actualizar_lease_dhcp(
+        self,
+        mac_address,
+        address,
+        rate_limit,
+        comment="FdezNet DHCP",
+    ):
+        mac = normalizar_mac(mac_address)
+        ip = str(address or "").strip()
+        if not ip or ip == "0.0.0.0":
+            raise ValueError("El lease DHCP necesita una IP fija")
+        leases = self.obtener_todos_dhcp_estricto()
+        by_mac = [
+            item
+            for item in leases
+            if str(item.get("mac-address", "")).upper() == mac
+        ]
+        if len(by_mac) > 1:
+            raise RuntimeError(f"La MAC {mac} está repetida en DHCP")
+        conflict = next(
+            (
+                item
+                for item in leases
+                if str(item.get("address", "")).strip() == ip
+                and str(item.get("mac-address", "")).upper() != mac
+            ),
+            None,
+        )
+        if conflict:
+            raise RuntimeError(
+                f"La IP {ip} ya pertenece a otra MAC en DHCP"
+            )
+
+        payload = {
+            "address": ip,
+            "mac-address": mac,
+            "rate-limit": str(rate_limit).strip(),
+            "comment": comment,
+            "block-access": "false",
+        }
+        lease = by_mac[0] if by_mac else None
+        if lease and str(lease.get("dynamic", "false")).lower() in {
+            "true", "yes", "1"
+        }:
+            self._request(
+                "POST",
+                "/ip/dhcp-server/lease/make-static",
+                {"numbers": lease[".id"]},
+                raise_on_error=True,
+            )
+            lease = self.obtener_lease_dhcp_estricto(mac)
+
+        if lease:
+            result = self._request(
+                "PATCH",
+                f"/ip/dhcp-server/lease/{lease['.id']}",
+                payload,
+                raise_on_error=True,
+            )
+        else:
+            result = self._request(
+                "PUT",
+                "/ip/dhcp-server/lease",
+                payload,
+                raise_on_error=True,
+            )
+        if result is None or result is False:
+            raise RuntimeError("MikroTik no confirmó el lease DHCP")
+        verified = self.obtener_lease_dhcp_estricto(mac)
+        if not verified:
+            raise RuntimeError("El lease DHCP no apareció después de guardarlo")
+        if str(verified.get("address", "")).strip() != ip:
+            raise RuntimeError("MikroTik no confirmó la IP del lease DHCP")
+        return verified
+
+    def activar_desactivar_dhcp(self, mac_address, blocked: bool):
+        lease = self.obtener_lease_dhcp_estricto(mac_address)
+        if not lease:
+            return False
+        result = self._request(
+            "PATCH",
+            f"/ip/dhcp-server/lease/{lease['.id']}",
+            {"block-access": "true" if blocked else "false"},
+            raise_on_error=True,
+        )
+        return result is not None and result is not False
+
+    def eliminar_lease_dhcp(self, mac_address):
+        lease = self.obtener_lease_dhcp_estricto(mac_address)
+        if not lease:
+            return False
+        self._request(
+            "DELETE",
+            f"/ip/dhcp-server/lease/{lease['.id']}",
+            raise_on_error=True,
+        )
+        return True
 
     # ==========================================
     #  4. FIREWALL DE CORTES (MOROSOS)

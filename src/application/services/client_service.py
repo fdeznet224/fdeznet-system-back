@@ -51,6 +51,7 @@ from src.application.services.access_control_service import (
     verificar_instalacion_asignada,
 )
 from src.application.services.pppoe_config_service import resolver_password_pppoe
+from src.utils.mikrotik import formatear_rate_limit_dhcp, normalizar_mac
 
 class ClientService:
     def __init__(self, db: AsyncSession):
@@ -207,14 +208,28 @@ class ClientService:
                     "existente."
                 )
 
-        # A. Generar Credenciales Automáticas
-        if not datos.user_pppoe and datos.nombre:
-            base = datos.nombre.lower().replace(" ", "")[:8]
-            rand = random.randint(100, 999)
-            datos.user_pppoe = f"{base}{rand}"
-        
-        if not datos.pass_pppoe:
-            datos.pass_pppoe = await resolver_password_pppoe(self.db)
+        router = (
+            await self.db.get(RouterModel, datos.router_id)
+            if datos.router_id
+            else None
+        )
+        if datos.router_id and not router:
+            raise ValueError("Router no encontrado")
+        router_mode = getattr(
+            router.tipo_seguridad, "value", router.tipo_seguridad
+        ) if router else "pppoe"
+
+        # A. Generar credenciales únicamente para nodos PPPoE.
+        if str(router_mode).lower() == "pppoe":
+            if not datos.user_pppoe and datos.nombre:
+                base = datos.nombre.lower().replace(" ", "")[:8]
+                rand = random.randint(100, 999)
+                datos.user_pppoe = f"{base}{rand}"
+            if not datos.pass_pppoe:
+                datos.pass_pppoe = await resolver_password_pppoe(self.db)
+        else:
+            datos.user_pppoe = None
+            datos.pass_pppoe = None
 
         # B. Manejo de IP
         ip_limpia = datos.ip_asignada.strip() if datos.ip_asignada else None
@@ -655,6 +670,9 @@ class ClientService:
         if ip_para_mikrotik:
             cliente.ip_asignada = ip_para_mikrotik
 
+        if datos_finales.mac_address:
+            cliente.mac_address = normalizar_mac(datos_finales.mac_address)
+
         # Credenciales PPPoE
         if datos_finales.user_pppoe: cliente.user_pppoe = datos_finales.user_pppoe
         if datos_finales.pass_pppoe: cliente.pass_pppoe = datos_finales.pass_pppoe
@@ -806,15 +824,39 @@ class ClientService:
                 cliente_rel.router.tipo_seguridad,
             )
 
-        if (
-            str(tipo_seguridad_router).lower() == "pppoe"
-            and not ip_para_mikrotik
-        ):
+        is_dhcp = str(tipo_seguridad_router).lower() == "dhcp"
+        if not ip_para_mikrotik:
             raise ValueError(
                 "Debes seleccionar una IP libre antes de activar "
-                "un cliente PPPoE. No se creará el usuario PPPoE "
-                "sin remote-address."
+                "el cliente en MikroTik."
             )
+        if is_dhcp:
+            cliente.mac_address = normalizar_mac(cliente.mac_address)
+            if not cliente.mac_address:
+                raise ValueError(
+                    "El acceso DHCP necesita la MAC WAN/CPE que ve MikroTik"
+                )
+            duplicado_mac = (
+                await self.db.execute(
+                    select(ServicioModel.id).where(
+                        ServicioModel.router_id == cliente.router_id,
+                        ServicioModel.mac_address == cliente.mac_address,
+                        ServicioModel.id != servicio.id,
+                        ServicioModel.estado != "cancelado",
+                    )
+                )
+            ).scalar_one_or_none()
+            if duplicado_mac:
+                raise ValueError(
+                    "La MAC WAN/CPE ya pertenece a otro servicio del router"
+                )
+            cliente.user_pppoe = None
+            cliente.pass_pppoe = None
+            servicio.mac_address = cliente.mac_address
+            servicio.user_pppoe = None
+            servicio.pass_pppoe = None
+        elif not cliente.user_pppoe or not cliente.pass_pppoe:
+            raise ValueError("El acceso PPPoE necesita usuario y contraseña")
 
         # F. ACTIVACIÓN EN MIKROTIK 🚀
         try:
@@ -828,13 +870,21 @@ class ClientService:
             cedula_str = cliente.cedula if cliente.cedula else "S/A"
             comentario_estandar = f"{cliente.nombre} | ID:{cedula_str}"
 
-            mk.crear_actualizar_pppoe(
-                user=cliente.user_pppoe,
-                password=cliente.pass_pppoe,
-                profile=cliente_rel.plan.nombre, 
-                remote_address=ip_para_mikrotik,
-                comment=comentario_estandar
-            )
+            if is_dhcp:
+                mk.crear_actualizar_lease_dhcp(
+                    cliente.mac_address,
+                    ip_para_mikrotik,
+                    formatear_rate_limit_dhcp(cliente_rel.plan),
+                    comentario_estandar,
+                )
+            else:
+                mk.crear_actualizar_pppoe(
+                    user=cliente.user_pppoe,
+                    password=cliente.pass_pppoe,
+                    profile=cliente_rel.plan.nombre,
+                    remote_address=ip_para_mikrotik,
+                    comment=comentario_estandar,
+                )
             
             # G. Guardar cambios en la base de datos
             cliente.estado = 'activo'
@@ -1113,7 +1163,18 @@ class ClientService:
             )
 
             try:
+                modo = getattr(
+                    cliente.router.tipo_seguridad,
+                    "value",
+                    cliente.router.tipo_seguridad,
+                )
+                es_dhcp = str(modo).lower() == "dhcp"
                 if estado_limpio in ["suspendido", "retirado", "cortado"]:
+                    if es_dhcp:
+                        mac = normalizar_mac(cliente.mac_address)
+                        if not mac:
+                            raise ValueError("Falta la MAC WAN/CPE")
+                        mk.activar_desactivar_dhcp(mac, blocked=True)
                     resultado = mk.gestionar_corte_cliente(
                         cliente.ip_asignada,
                         suspender=True,
@@ -1127,10 +1188,21 @@ class ClientService:
                             cliente.user_pppoe,
                         )
                 elif estado_limpio == "activo":
-                    resultado = mk.reactivar_cliente(
-                        cliente.ip_asignada,
-                        cliente.user_pppoe,
-                    )
+                    if es_dhcp:
+                        mac = normalizar_mac(cliente.mac_address)
+                        if not mac:
+                            raise ValueError("Falta la MAC WAN/CPE")
+                        resultado = mk.activar_desactivar_dhcp(
+                            mac, blocked=False
+                        )
+                        mk.gestionar_corte_cliente(
+                            cliente.ip_asignada, suspender=False
+                        )
+                    else:
+                        resultado = mk.reactivar_cliente(
+                            cliente.ip_asignada,
+                            cliente.user_pppoe,
+                        )
                     if resultado is not True:
                         raise RuntimeError(
                             "MikroTik no confirmó la reactivación"
@@ -1190,8 +1262,8 @@ class ClientService:
                 onu.tecnico_id = None
                 print(f"📦 ONU {onu.identificador} regresada a DISPONIBLE.")
 
-        # 2. Eliminar PPPoE del MikroTik si existe
-        if cliente.router_id and cliente.user_pppoe:
+        # 2. Eliminar el acceso administrado del MikroTik si existe.
+        if cliente.router_id and (cliente.user_pppoe or cliente.mac_address):
             try:
                 router = await self.db.get(RouterModel, cliente.router_id)
                 if router:
@@ -1201,9 +1273,17 @@ class ClientService:
                         router.pass_api,
                         router.port_api,
                     )
-                    mk.eliminar_pppoe_user(cliente.user_pppoe)
+                    mode = getattr(
+                        router.tipo_seguridad,
+                        "value",
+                        router.tipo_seguridad,
+                    )
+                    if str(mode).lower() == "dhcp" and cliente.mac_address:
+                        mk.eliminar_lease_dhcp(cliente.mac_address)
+                    elif cliente.user_pppoe:
+                        mk.eliminar_pppoe_user(cliente.user_pppoe)
             except Exception as e:
-                print(f"⚠️ No se pudo eliminar PPPoE en MikroTik: {e}")
+                print(f"⚠️ No se pudo eliminar el acceso en MikroTik: {e}")
 
         # 3. Eliminación definitiva: se borran los datos del cliente y sus
         # historiales. La baja de servicio queda como estado reversible;
@@ -1375,15 +1455,31 @@ class ClientService:
         return (await self.db.execute(stmt)).scalar_one()
 
     async def _sincronizar_mikrotik(self, cliente):
-        if not cliente.router or not cliente.plan or not cliente.user_pppoe: return
+        if not cliente.router or not cliente.plan: return
         mk = MikroTikService(cliente.router.ip_vpn, cliente.router.user_api, cliente.router.pass_api, cliente.router.port_api)
         
         cedula_str = cliente.cedula if cliente.cedula else "S/A"
-        mk.crear_actualizar_pppoe(
-            user=cliente.user_pppoe, password=cliente.pass_pppoe,
-            profile=cliente.plan.nombre, remote_address=cliente.ip_asignada,
-            comment=f"{cliente.nombre} | ID:{cedula_str}"
+        modo = getattr(
+            cliente.router.tipo_seguridad,
+            "value",
+            cliente.router.tipo_seguridad,
         )
+        if str(modo).lower() == "dhcp":
+            mac = normalizar_mac(cliente.mac_address)
+            if not mac or not cliente.ip_asignada:
+                return
+            mk.crear_actualizar_lease_dhcp(
+                mac=mac,
+                address=cliente.ip_asignada,
+                rate_limit=formatear_rate_limit_dhcp(cliente.plan),
+                comment=f"{cliente.nombre} | ID:{cedula_str}",
+            )
+        elif cliente.user_pppoe:
+            mk.crear_actualizar_pppoe(
+                user=cliente.user_pppoe, password=cliente.pass_pppoe,
+                profile=cliente.plan.nombre, remote_address=cliente.ip_asignada,
+                comment=f"{cliente.nombre} | ID:{cedula_str}"
+            )
     # 🔥 NUEVA FUNCIÓN: SWAP DE ONU POR FALLA 🔥
     async def procesar_cambio_onu(
         self,

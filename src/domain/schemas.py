@@ -10,6 +10,8 @@ from enum import Enum
 from datetime import datetime, date
 from decimal import Decimal
 
+from src.utils.mikrotik import normalizar_mac
+
 # ==========================================
 # 0. ENUMS GLOBALES
 # ==========================================
@@ -771,6 +773,11 @@ class ClienteBase(BaseModel):
     mac_address: Optional[str] = None
     estado: str = "pendiente_instalacion"
 
+    @field_validator("mac_address")
+    @classmethod
+    def validar_mac_address(cls, value):
+        return normalizar_mac(value)
+
 class ClienteCreate(ClienteBase):
     pass
 
@@ -807,8 +814,8 @@ class InstalacionRequest(BaseModel):
     plan_id: Optional[int] = None
     router_id: Optional[int] = None
 
-    user_pppoe: str
-    pass_pppoe: str
+    user_pppoe: Optional[str] = None
+    pass_pppoe: Optional[str] = None
     ip_asignada: Optional[str] = None
 
     fecha_instalacion: Optional[date] = None
@@ -819,6 +826,11 @@ class InstalacionRequest(BaseModel):
     potencia_optica_dbm: Optional[float] = Field(default=None, ge=-50, le=10)
     potencia_tx_dbm: Optional[float] = Field(default=None, ge=-50, le=20)
     observaciones_opticas: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("mac_address")
+    @classmethod
+    def validar_mac_address(cls, value):
+        return normalizar_mac(value)
 
 
 # ==========================================
@@ -871,13 +883,18 @@ class ServicioActivacion(BaseModel):
     tecnico_id: Optional[int] = None
     ip_asignada: Optional[str] = None
     mac_address: Optional[str] = None
-    user_pppoe: str = Field(min_length=1, max_length=50)
-    pass_pppoe: str = Field(min_length=3, max_length=100)
+    user_pppoe: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    pass_pppoe: Optional[str] = Field(default=None, min_length=3, max_length=100)
     fecha_instalacion: Optional[date] = None
     fecha_activacion: Optional[date] = None
     tipo_facturacion: TipoFacturacionEnum = TipoFacturacionEnum.prepago
     ciclo_facturacion: CicloFacturacionEnum = CicloFacturacionEnum.calendario
     meses_gratis: int = Field(default=0, ge=0, le=12)
+
+    @field_validator("mac_address")
+    @classmethod
+    def validar_mac_address(cls, value):
+        return normalizar_mac(value)
 
 
 class ServicioEstadoUpdate(BaseModel):

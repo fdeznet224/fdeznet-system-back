@@ -15,6 +15,11 @@ from src.infrastructure.models import (
 )
 from src.domain.schemas import RouterCreate, RedCreate
 from src.infrastructure.mikrotik_service import MikroTikService
+from src.utils.mikrotik import (
+    formatear_rate_limit_dhcp,
+    formatear_rate_limit_pppoe,
+    normalizar_mac,
+)
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -182,6 +187,10 @@ class NetworkService:
             raise ValueError(f"Error conectando al Router: {str(e)}")
 
         log_acciones = []
+        modo = getattr(
+            router.tipo_seguridad, "value", router.tipo_seguridad
+        )
+        es_dhcp = str(modo).lower() == "dhcp"
 
         try:
             # ---------------------------------------------------------
@@ -193,10 +202,10 @@ class NetworkService:
             
             contador_planes = 0
             for plan in planes_db:
+                if es_dhcp:
+                    continue
                 try:
-                    subida_k = int(plan.velocidad_subida)
-                    bajada_k = int(plan.velocidad_bajada)
-                    rate_limit = f"{subida_k}k/{bajada_k}k"
+                    rate_limit = formatear_rate_limit_pppoe(plan)
                     
                     # Usamos los nombres correctos de los argumentos
                     mk.crear_actualizar_perfil_pppoe(
@@ -207,7 +216,11 @@ class NetworkService:
                 except Exception as e:
                     logger.error(f"Error sincronizando plan {plan.nombre}: {e}")
             
-            log_acciones.append(f"{contador_planes} Perfiles PPPoE listos.")
+            log_acciones.append(
+                "DHCP usa la velocidad directamente en cada lease."
+                if es_dhcp
+                else f"{contador_planes} Perfiles PPPoE listos."
+            )
 
             # ---------------------------------------------------------
             # PASO B: ASEGURAR REGLAS DE CORTE
@@ -235,7 +248,7 @@ class NetworkService:
             contador_servicios = 0
 
             for servicio in servicios:
-                if not servicio.plan or not servicio.user_pppoe:
+                if not servicio.plan:
                     continue
 
                 cliente = servicio.cliente
@@ -245,14 +258,29 @@ class NetworkService:
                     f"{servicio.alias} | SN:{cedula_str}"
                 )
 
-                # 1. Configuración Técnica PPPoE
-                mk.crear_actualizar_pppoe(
-                    user=servicio.user_pppoe,
-                    password=servicio.pass_pppoe,
-                    profile=servicio.plan.nombre,
-                    remote_address=servicio.ip_asignada,
-                    comment=comentario_estandar
-                )
+                if es_dhcp:
+                    mac = normalizar_mac(servicio.mac_address)
+                    if not mac or not servicio.ip_asignada:
+                        continue
+                    mk.crear_actualizar_lease_dhcp(
+                        mac,
+                        servicio.ip_asignada,
+                        formatear_rate_limit_dhcp(servicio.plan),
+                        comentario_estandar,
+                    )
+                    mk.activar_desactivar_dhcp(
+                        mac, blocked=servicio.estado != "activo"
+                    )
+                else:
+                    if not servicio.user_pppoe:
+                        continue
+                    mk.crear_actualizar_pppoe(
+                        user=servicio.user_pppoe,
+                        password=servicio.pass_pppoe,
+                        profile=servicio.plan.nombre,
+                        remote_address=servicio.ip_asignada,
+                        comment=comentario_estandar
+                    )
 
                 # 2. Estado (Corte vs Activo usando la nueva función unificada)
                 suspender = servicio.estado != "activo"

@@ -18,6 +18,7 @@ from src.infrastructure.models import (
     ServicioModel,
     UsuarioModel,
 )
+from src.utils.mikrotik import formatear_rate_limit_dhcp, normalizar_mac
 
 
 ESTADOS_BAJA_ABIERTA = {"pendiente_retiro", "sin_equipo"}
@@ -486,9 +487,11 @@ class BajaService:
             if objetivo.router_id
             else None
         )
-        if not router or (
-            not objetivo.user_pppoe and not objetivo.ip_asignada
-        ):
+        modo = getattr(
+            getattr(router, "tipo_seguridad", None), "value", None
+        ) or getattr(router, "tipo_seguridad", "")
+        es_dhcp = str(modo).lower() == "dhcp"
+        if not router or not objetivo.ip_asignada:
             baja.mikrotik_estado = "no_aplica"
             baja.mikrotik_error = None
             await self.db.commit()
@@ -501,7 +504,45 @@ class BajaService:
                 router.pass_api,
                 router.port_api,
             )
-            if activar and objetivo.user_pppoe:
+            if es_dhcp:
+                mac = normalizar_mac(objetivo.mac_address)
+                if not mac:
+                    raise ValueError(
+                        "Falta la MAC WAN/CPE para sincronizar DHCP"
+                    )
+                if activar:
+                    plan = (
+                        await self.db.get(PlanModel, objetivo.plan_id)
+                        if objetivo.plan_id
+                        else None
+                    )
+                    if not plan:
+                        raise ValueError("Falta el plan para reactivar DHCP")
+                    mk.crear_actualizar_lease_dhcp(
+                        mac=mac,
+                        address=objetivo.ip_asignada,
+                        rate_limit=formatear_rate_limit_dhcp(plan),
+                        comment=(
+                            f"{cliente.nombre} | Servicio:"
+                            f"{servicio.id if servicio else 'legacy'}"
+                        ),
+                    )
+                    mk.activar_desactivar_dhcp(mac, blocked=False)
+                    mk.gestionar_corte_cliente(
+                        objetivo.ip_asignada, suspender=False
+                    )
+                    baja.mikrotik_estado = "reactivado"
+                else:
+                    encontrado = mk.activar_desactivar_dhcp(
+                        mac, blocked=True
+                    )
+                    mk.gestionar_corte_cliente(
+                        objetivo.ip_asignada, suspender=True
+                    )
+                    baja.mikrotik_estado = (
+                        "deshabilitado" if encontrado else "no_encontrado"
+                    )
+            elif activar and objetivo.user_pppoe:
                 plan = (
                     await self.db.get(PlanModel, objetivo.plan_id)
                     if objetivo.plan_id
@@ -522,12 +563,6 @@ class BajaService:
                     ),
                 )
                 baja.mikrotik_estado = "reactivado"
-            elif activar:
-                mk.gestionar_corte_cliente(
-                    objetivo.ip_asignada,
-                    suspender=False,
-                )
-                baja.mikrotik_estado = "reactivado"
             elif objetivo.user_pppoe:
                 encontrado = mk.activar_desactivar_pppoe(
                     objetivo.user_pppoe,
@@ -537,11 +572,7 @@ class BajaService:
                     "deshabilitado" if encontrado else "no_encontrado"
                 )
             else:
-                mk.gestionar_corte_cliente(
-                    objetivo.ip_asignada,
-                    suspender=True,
-                )
-                baja.mikrotik_estado = "deshabilitado"
+                raise ValueError("Faltan credenciales PPPoE")
             baja.mikrotik_error = None
         except Exception as exc:
             baja.mikrotik_estado = "error"
