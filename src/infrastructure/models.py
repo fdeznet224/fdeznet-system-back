@@ -1406,6 +1406,19 @@ class PagoModel(Base):
         nullable=True,
     )
     fecha_anulacion = Column(DateTime, nullable=True)
+    pago_origen_correccion_id = Column(
+        Integer,
+        ForeignKey("pagos.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    corregido_por_id = Column(
+        Integer,
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    motivo_correccion = Column(String(500), nullable=True)
     fecha_pago = Column(DateTime, default=datetime.now)
     created_at = Column(DateTime, default=datetime.now) 
     
@@ -1418,6 +1431,12 @@ class PagoModel(Base):
         foreign_keys=[usuario_id],
     )
     anulado_por = relationship("UsuarioModel", foreign_keys=[anulado_por_id])
+    pago_origen_correccion = relationship(
+        "PagoModel",
+        remote_side=[id],
+        foreign_keys=[pago_origen_correccion_id],
+    )
+    corregido_por = relationship("UsuarioModel", foreign_keys=[corregido_por_id])
 class DescuentoFacturaModel(Base):
     __tablename__ = "descuentos_factura"
 

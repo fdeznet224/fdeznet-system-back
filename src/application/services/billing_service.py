@@ -804,6 +804,8 @@ class BillingService:
         referencia: str = None,
         clave_idempotencia: str = None,
         concepto_ids: list[int] | None = None,
+        confirmar_transaccion: bool = True,
+        enviar_notificacion: bool = True,
     ):
         finanzas = FinanceService(self.db)
         factura_cobrable, _, _ = await self.preparar_factura_cobrable(
@@ -899,11 +901,14 @@ class BillingService:
                         cliente, servicio, "pago"
                     )
 
-        await self.db.commit()
+        if confirmar_transaccion:
+            await self.db.commit()
+        else:
+            await self.db.flush()
 
         # 👇 🚀 LOGICA DE WHATSAPP 👇
         notificacion_pago_encolada = False
-        if cliente.telefono:
+        if enviar_notificacion and cliente.telefono:
             try:
                 notificador = NotificationService(self.db)
 

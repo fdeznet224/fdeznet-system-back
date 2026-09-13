@@ -1,6 +1,7 @@
 from decimal import Decimal
 from datetime import date, timedelta
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,6 +9,7 @@ from sqlalchemy import Numeric
 
 from src.application.services.finance_service import FinanceService
 from src.application.services.billing_service import BillingService
+from src.interfaces.api import finanzas as finanzas_api
 from src.infrastructure.models import (
     ClienteModel,
     FacturaModel,
@@ -130,6 +132,98 @@ def test_payment_keeps_reversible_balance_fields():
         "estado",
         "motivo_anulacion",
     }.issubset(PagoModel.__table__.c.keys())
+
+
+def test_payment_correction_keeps_origin_operator_and_reason():
+    assert {
+        "pago_origen_correccion_id",
+        "corregido_por_id",
+        "motivo_correccion",
+    }.issubset(PagoModel.__table__.c.keys())
+
+
+def test_payment_correction_reapplies_with_original_collector_and_audit(monkeypatch):
+    original = SimpleNamespace(
+        id=41,
+        estado="aplicado",
+        factura_id=91,
+        cliente_id=7,
+        usuario_id=13,
+        metodo_pago="efectivo",
+        monto_total=Decimal("450.00"),
+        referencia="COBRO-LOCAL",
+    )
+    replacement = SimpleNamespace(
+        id=42,
+        factura_id=92,
+        cliente_id=8,
+        monto_total=Decimal("450.00"),
+        pago_origen_correccion_id=None,
+        corregido_por_id=None,
+        motivo_correccion=None,
+    )
+    collector = SimpleNamespace(id=13)
+    admin = SimpleNamespace(id=1)
+
+    class FakeDb:
+        def __init__(self):
+            self.committed = False
+            self.rolled_back = False
+
+        async def get(self, model, identifier):
+            if model is PagoModel:
+                return original if identifier == 41 else replacement
+            return collector
+
+        async def commit(self):
+            self.committed = True
+
+        async def rollback(self):
+            self.rolled_back = True
+
+    calls = {}
+
+    class FakeBilling:
+        def __init__(self, _db):
+            pass
+
+        async def preparar_factura_cobrable(self, invoice_id, **_kwargs):
+            return SimpleNamespace(id=invoice_id, cliente_id=8), None, None
+
+        async def registrar_pago_completo(self, **kwargs):
+            calls["registration"] = kwargs
+            return {"pago_id": 42}
+
+    class FakeFinance:
+        def __init__(self, _db):
+            pass
+
+        async def anular_pago(self, *args, **kwargs):
+            calls["cancellation"] = (args, kwargs)
+
+    monkeypatch.setattr(finanzas_api, "BillingService", FakeBilling)
+    monkeypatch.setattr(finanzas_api, "FinanceService", FakeFinance)
+    db = FakeDb()
+
+    result = asyncio.run(finanzas_api.corregir_pago(
+        pago_id=41,
+        data=finanzas_api.CorregirPagoRequest(
+            factura_destino_id=92,
+            motivo="Cliente con nombre similar",
+        ),
+        db=db,
+        current_user=admin,
+    ))
+
+    assert result["pago_nuevo_id"] == 42
+    assert calls["registration"]["usuario_operador"] is collector
+    assert calls["registration"]["confirmar_transaccion"] is False
+    assert calls["registration"]["enviar_notificacion"] is False
+    assert replacement.pago_origen_correccion_id == 41
+    assert replacement.corregido_por_id == 1
+    assert replacement.motivo_correccion == "Cliente con nombre similar"
+    assert db.committed is True
+    assert db.rolled_back is False
 
 
 def test_promises_and_services_keep_channel_audit_fields():

@@ -8,6 +8,7 @@ const path = require('path');
 const crypto = require('crypto');
 const mime = require('mime-types');
 const { descargarMediaConReintentos, describirError } = require('./media-utils');
+const { resolverTelefonoEntrante } = require('./phone-utils');
 
 const PORT = process.env.PORT || 3000;
 const BACKEND_URL = process.env.API_BACKEND_URL || 'http://127.0.0.1:8000';
@@ -237,14 +238,12 @@ function iniciarMotor() {
                 }
             }
 
-            let numeroReal = msg.from;
-            try {
-                const contact = await msg.getContact();
-                if (contact && contact.number) {
-                    numeroReal = `${contact.number}@c.us`; 
-                }
-            } catch (err) {
-                console.log("⚠️ No se pudo obtener el número real del contacto:", err.message);
+            const numeroReal = await resolverTelefonoEntrante(client, msg);
+            if (numeroReal.endsWith('@lid')) {
+                console.warn(
+                    '⚠️ WhatsApp no pudo resolver el LID del remitente; '
+                    + 'el backend no lo usará como identidad telefónica.'
+                );
             }
 
             await postBackend('/whatsapp/webhook/recibir', {

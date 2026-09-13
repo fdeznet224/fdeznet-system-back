@@ -75,6 +75,10 @@ class MotivoRequest(BaseModel):
     motivo: str = Field(min_length=5, max_length=500)
 
 
+class CorregirPagoRequest(MotivoRequest):
+    factura_destino_id: int = Field(gt=0)
+
+
 class AnularFacturaRequest(MotivoRequest):
     nueva_fecha_facturacion: Optional[date] = None
 
@@ -233,6 +237,7 @@ async def get_listado_completo(
         
         items_response.append({
             "id": f.id,
+            "cliente_id": f.cliente_id,
             "servicio_id": f.servicio_id,
             "estado": f.estado,
             "saldo_pendiente": f.saldo_pendiente,
@@ -414,6 +419,86 @@ async def anular_pago(
             "factura_id": factura.id,
             "saldo_restaurado": factura.saldo_pendiente,
             "saldo_a_favor": cliente.saldo_a_favor,
+        }
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/pagos/{pago_id}/corregir")
+async def corregir_pago(
+    pago_id: int,
+    data: CorregirPagoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Revierte un cobro y lo reaplica sin perder su autoría ni auditoría."""
+    try:
+        pago_original = await db.get(PagoModel, pago_id)
+        if not pago_original:
+            raise ValueError("Pago no encontrado")
+        if pago_original.estado != "aplicado":
+            raise ValueError("El pago ya no está aplicado")
+        if pago_original.factura_id == data.factura_destino_id:
+            raise ValueError("Selecciona una factura diferente a la original")
+        if pago_original.metodo_pago in {"saldo_favor", "autovalidado"}:
+            raise ValueError(
+                "Los pagos automáticos o hechos con saldo a favor deben revisarse "
+                "desde conciliación bancaria"
+            )
+
+        billing = BillingService(db)
+        factura_destino, _, _ = await billing.preparar_factura_cobrable(
+            data.factura_destino_id,
+            fecha_reactivacion=date.today(),
+        )
+        if factura_destino.id != data.factura_destino_id:
+            raise ValueError(
+                f"Primero debe cobrarse la factura #{factura_destino.id} del cliente destino"
+            )
+        if factura_destino.cliente_id == pago_original.cliente_id:
+            raise ValueError("La factura destino pertenece al mismo cliente")
+
+        operador_original = (
+            await db.get(UsuarioModel, pago_original.usuario_id)
+            if pago_original.usuario_id
+            else current_user
+        )
+        motivo = data.motivo.strip()
+        await FinanceService(db).anular_pago(
+            pago_id,
+            current_user.id,
+            (
+                f"Corrección hacia factura #{data.factura_destino_id}: "
+                f"{motivo}"
+            ),
+            confirmar_transaccion=False,
+        )
+        resultado = await billing.registrar_pago_completo(
+            factura_id=data.factura_destino_id,
+            usuario_operador=operador_original,
+            metodo_pago=pago_original.metodo_pago,
+            monto=pago_original.monto_total,
+            referencia=pago_original.referencia,
+            clave_idempotencia=f"correccion-pago:{pago_original.id}",
+            confirmar_transaccion=False,
+            enviar_notificacion=False,
+        )
+        pago_nuevo = await db.get(PagoModel, resultado["pago_id"])
+        pago_nuevo.pago_origen_correccion_id = pago_original.id
+        pago_nuevo.corregido_por_id = current_user.id
+        pago_nuevo.motivo_correccion = motivo
+        await db.commit()
+
+        return {
+            "status": "ok",
+            "pago_original_id": pago_original.id,
+            "pago_nuevo_id": pago_nuevo.id,
+            "factura_origen_id": pago_original.factura_id,
+            "factura_destino_id": pago_nuevo.factura_id,
+            "cliente_destino_id": pago_nuevo.cliente_id,
+            "monto": pago_nuevo.monto_total,
+            "requiere_revision_servicio_origen": True,
         }
     except ValueError as exc:
         await db.rollback()
@@ -912,11 +997,14 @@ async def obtener_reporte_cobranza(
 ):
     query = select(
         PagoModel.id,
+        PagoModel.cliente_id,
         PagoModel.monto_total,
         PagoModel.metodo_pago,
+        PagoModel.referencia,
         PagoModel.fecha_pago,
         PagoModel.factura_id,
         ClienteModel.nombre.label("cliente_nombre"),
+        ClienteModel.cedula.label("cliente_cedula"),
         UsuarioModel.nombre_completo.label("usuario_nombre"),
         ZonaModel.nombre.label("zona_nombre"),
         RouterModel.nombre.label("router_nombre"),
@@ -949,12 +1037,15 @@ async def obtener_reporte_cobranza(
         "detalles": [
             {
                 "id": row.id,
+                "cliente_id": row.cliente_id,
                 "monto": row.monto_total,
                 "metodo": row.metodo_pago,
+                "referencia": row.referencia,
                 "fecha": row.fecha_pago,
                 "factura_id": row.factura_id,
                 "estado": "aplicado",
                 "cliente_nombre": row.cliente_nombre,
+                "cliente_cedula": row.cliente_cedula,
                 "usuario_nombre": row.usuario_nombre or "Sistema"
                 ,"zona_nombre": row.zona_nombre or "Sin zona"
                 ,"router_nombre": row.router_nombre or "Sin MikroTik"

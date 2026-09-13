@@ -588,6 +588,8 @@ class FinanceService:
         pago_id: int,
         usuario_id: int,
         motivo: str,
+        *,
+        confirmar_transaccion: bool = True,
     ) -> tuple[PagoModel, FacturaModel, ClienteModel]:
         pago = (
             await self.db.execute(
@@ -691,7 +693,10 @@ class FinanceService:
         pago.motivo_anulacion = motivo.strip()
         pago.anulado_por_id = usuario_id
         pago.fecha_anulacion = datetime.now()
-        await self.db.commit()
+        if confirmar_transaccion:
+            await self.db.commit()
+        else:
+            await self.db.flush()
         return pago, factura, cliente
 
     async def registrar_promesa(

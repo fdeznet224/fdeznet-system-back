@@ -100,6 +100,21 @@ def test_endpoints_operativos_declaran_roles(path, method, expected):
     assert _roles(path, method) == expected
 
 
+def test_correccion_de_pago_restringe_la_operacion_a_administracion():
+    role_sets = []
+    for dependency in _route(
+        "/finanzas/pagos/{pago_id}/corregir", "POST"
+    ).dependant.dependencies:
+        closure = getattr(dependency.call, "__closure__", None) or ()
+        role_sets.extend(
+            cell.cell_contents
+            for cell in closure
+            if isinstance(cell.cell_contents, set)
+        )
+
+    assert {"admin", "supervisor"} in role_sets
+
+
 def test_tecnico_no_puede_consultar_cliente_no_asignado():
     db = _FakeDB(None)
     tecnico = SimpleNamespace(id=9, rol="tecnico")

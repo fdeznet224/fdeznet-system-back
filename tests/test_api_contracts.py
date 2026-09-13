@@ -77,6 +77,13 @@ def test_finanzas_expone_anulacion_de_factura():
     assert "post" in paths["/finanzas/facturas/{factura_id}/anular"]
 
 
+def test_finanzas_expone_correccion_auditable_de_pago():
+    paths = app.openapi()["paths"]
+    ruta = "/finanzas/pagos/{pago_id}/corregir"
+    assert ruta in paths
+    assert paths[ruta]["post"]["security"]
+
+
 def test_finanzas_expone_cotizacion_de_reactivacion():
     paths = app.openapi()["paths"]
     ruta = "/finanzas/facturas/{factura_id}/cotizar-reactivacion"
