@@ -50,6 +50,7 @@ from src.application.services.ipam_service import IPAMService
 from src.application.services.access_control_service import (
     verificar_instalacion_asignada,
 )
+from src.application.services.pppoe_config_service import resolver_password_pppoe
 
 class ClientService:
     def __init__(self, db: AsyncSession):
@@ -131,7 +132,6 @@ class ClientService:
         y genera un ID Hexadecimal Aleatorio.
         """
         import random
-        import string
         from sqlalchemy.exc import IntegrityError 
 
         if datos.nombre:
@@ -214,7 +214,7 @@ class ClientService:
             datos.user_pppoe = f"{base}{rand}"
         
         if not datos.pass_pppoe:
-            datos.pass_pppoe = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+            datos.pass_pppoe = await resolver_password_pppoe(self.db)
 
         # B. Manejo de IP
         ip_limpia = datos.ip_asignada.strip() if datos.ip_asignada else None

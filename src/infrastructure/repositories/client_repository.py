@@ -4,9 +4,10 @@ from sqlalchemy import select, desc
 from sqlalchemy.orm import selectinload 
 from typing import Optional
 
-from src.infrastructure.models import ClienteModel, ConfiguracionModel
+from src.infrastructure.models import ClienteModel
 from src.domain.schemas import ClienteCreate
-from src.utils.text_tools import generar_password_pppoe, limpiar_string_para_usuario
+from src.utils.text_tools import limpiar_string_para_usuario
+from src.application.services.pppoe_config_service import resolver_password_pppoe
 
 class ClienteRepository:
     def __init__(self, db: AsyncSession):
@@ -54,14 +55,7 @@ class ClienteRepository:
         
         # Si no hay contraseña, buscar la default en config
         if not datos.pass_pppoe or not datos.pass_pppoe.strip():
-            stmt = select(ConfiguracionModel).where(ConfiguracionModel.clave == 'pppoe_password_default')
-            res = await self.db.execute(stmt)
-            config_db = res.scalar()
-            datos.pass_pppoe = (
-                config_db.valor
-                if config_db and config_db.valor
-                else generar_password_pppoe()
-            )
+            datos.pass_pppoe = await resolver_password_pppoe(self.db)
 
         # 3. CREACIÓN (Soporta todos los campos nuevos como cedula, caja_nap_id)
         nuevo_cliente = ClienteModel(**datos.dict())

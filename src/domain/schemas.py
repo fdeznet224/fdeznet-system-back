@@ -5,7 +5,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Literal
 from enum import Enum
 from datetime import datetime, date
 from decimal import Decimal
@@ -178,6 +178,21 @@ class BotVisualFlowUpdate(BaseModel):
 
 class ConfigUpdate(BaseModel):
     valor: str
+
+
+class PppoePasswordConfig(BaseModel):
+    modo: Literal["fija", "aleatoria"] = "aleatoria"
+    password: Optional[str] = Field(default=None, max_length=100)
+    longitud: int = Field(default=12, ge=6, le=64)
+    tipo_caracteres: Literal["numeros", "letras", "alfanumerica"] = (
+        "alfanumerica"
+    )
+
+    @model_validator(mode="after")
+    def validar_password_fija(self):
+        if self.modo == "fija" and len((self.password or "").strip()) < 3:
+            raise ValueError("La contraseña fija debe tener al menos 3 caracteres")
+        return self
 
 
 class BrandingConfig(BaseModel):

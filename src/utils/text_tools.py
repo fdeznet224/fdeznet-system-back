@@ -27,11 +27,33 @@ def limpiar_string_para_usuario(texto: str) -> str:
     return texto
 
 # Esta función también la necesitas para tu Repositorio (si la usaste en el código anterior)
-def generar_password_pppoe(longitud=12) -> str:
+def generar_password_pppoe(
+    longitud: int = 12,
+    tipo_caracteres: str = "alfanumerica",
+) -> str:
     """
     Genera una contraseña aleatoria para evitar claves compartidas.
     """
     import secrets
     import string
-    caracteres = string.ascii_letters + string.digits
+    caracteres_por_tipo = {
+        "numeros": string.digits,
+        "letras": string.ascii_letters,
+        "alfanumerica": string.ascii_letters + string.digits,
+    }
+    if tipo_caracteres not in caracteres_por_tipo:
+        raise ValueError("Tipo de caracteres PPPoE inválido")
+    if not 6 <= int(longitud) <= 64:
+        raise ValueError("La contraseña PPPoE debe tener entre 6 y 64 caracteres")
+    caracteres = caracteres_por_tipo[tipo_caracteres]
+    if tipo_caracteres == "alfanumerica":
+        password = [
+            secrets.choice(string.ascii_letters),
+            secrets.choice(string.digits),
+        ]
+        password.extend(
+            secrets.choice(caracteres) for _ in range(int(longitud) - 2)
+        )
+        secrets.SystemRandom().shuffle(password)
+        return ''.join(password)
     return ''.join(secrets.choice(caracteres) for _ in range(longitud))

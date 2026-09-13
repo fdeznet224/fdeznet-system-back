@@ -1,9 +1,10 @@
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from src.infrastructure.models import RouterModel, PlanModel, ClienteModel, ConfiguracionModel
+from src.infrastructure.models import RouterModel, PlanModel, ClienteModel
 from src.domain.schemas import RouterCreate, PlanCreate, ClienteCreate
-from src.utils.text_tools import generar_password_pppoe, limpiar_string_para_usuario
+from src.utils.text_tools import limpiar_string_para_usuario
+from src.application.services.pppoe_config_service import resolver_password_pppoe
 
 class RouterRepository:
     def __init__(self, db: AsyncSession):
@@ -69,14 +70,7 @@ class ClienteRepository:
         
         # 2. Procesamiento de password (default)
         if not cliente.pass_pppoe or not cliente.pass_pppoe.strip():
-            stmt = select(ConfiguracionModel).where(ConfiguracionModel.clave == 'pppoe_password_default')
-            res = await self.db.execute(stmt)
-            config_db = res.scalar()
-            cliente.pass_pppoe = (
-                config_db.valor
-                if config_db and config_db.valor
-                else generar_password_pppoe()
-            )
+            cliente.pass_pppoe = await resolver_password_pppoe(self.db)
             
         # 3. Asignar estado por defecto
         if not cliente.estado:

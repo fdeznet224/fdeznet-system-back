@@ -83,7 +83,11 @@ def test_disponibles_excluyen_onus_referenciadas():
 
 def test_alta_rechaza_onu_ocupada_antes_del_insert_y_hace_rollback():
     db = _OccupiedOnuDB()
-    datos = ClienteCreate(nombre="Cliente nuevo", onu_id=2)
+    datos = ClienteCreate(
+        nombre="Cliente nuevo",
+        onu_id=2,
+        pass_pppoe="clave-prueba",
+    )
 
     with pytest.raises(ValueError, match="Cliente existente"):
         asyncio.run(

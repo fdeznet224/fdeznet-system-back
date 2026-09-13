@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 from typing import List
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -18,7 +19,6 @@ from src.infrastructure.database import get_db
 from src.infrastructure.models import (
     PlantillaFacturacionModel, 
     PlantillaMensajeModel, 
-    ConfiguracionModel,
     ConfiguracionSistema,
     LogCronjobModel  # 👈 Importante: El modelo de Logs
 )
@@ -26,7 +26,7 @@ from src.infrastructure.models import (
 # --- SCHEMAS (Los datos que entran y salen) ---
 from src.domain.schemas import (
     SystemConfigUpdate, 
-    ConfigUpdate, 
+    PppoePasswordConfig,
     BillingTemplateRequest, 
     MessageTemplateRequest,
     PlantillaMensajeResponse,
@@ -58,6 +58,10 @@ from src.application.services.bot_visual_flow_service import (
     flow_payload,
     get_visual_flow,
     validate_flow_for_scope,
+)
+from src.application.services.pppoe_config_service import (
+    guardar_config_pppoe,
+    obtener_config_pppoe,
 )
 
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
@@ -567,30 +571,22 @@ async def guardar_configuracion_sistema(datos: SystemConfigUpdate, db: AsyncSess
 
 
 # =========================================================
-# 4. PPPOE DEFAULT (Legacy)
+# 4. POLÍTICA DE CONTRASEÑAS PPPOE
 # =========================================================
 
 @router.get("/pppoe-default")
 @cache(expire=300)
 async def obtener_password_default(db: AsyncSession = Depends(get_db)):
-    stmt = select(ConfiguracionModel).where(ConfiguracionModel.clave == 'pppoe_password_default')
-    res = await db.execute(stmt)
-    config = res.scalar()
-    return {"password": config.valor if config else None}
+    return await obtener_config_pppoe(db)
 
 @router.post("/pppoe-default")
-async def cambiar_password_default(data: ConfigUpdate, db: AsyncSession = Depends(get_db)):
-    stmt = select(ConfiguracionModel).where(ConfiguracionModel.clave == 'pppoe_password_default')
-    res = await db.execute(stmt)
-    config_db = res.scalar()
-    
-    if not config_db:
-        db.add(ConfiguracionModel(clave='pppoe_password_default', valor=data.valor))
-    else:
-        config_db.valor = data.valor
-        
-    await db.commit()
-    return {"status": "ok"}
+async def cambiar_password_default(
+    data: PppoePasswordConfig,
+    db: AsyncSession = Depends(get_db),
+):
+    resultado = await guardar_config_pppoe(db, data)
+    await FastAPICache.clear()
+    return {"status": "ok", **resultado}
 
 
 # =========================================================

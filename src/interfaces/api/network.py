@@ -15,7 +15,7 @@ from src.domain.schemas import WireguardConfigResponse
 # Infraestructura y Auth
 from src.infrastructure.database import get_db
 from src.infrastructure.auth import role_required
-from src.utils.text_tools import generar_password_pppoe
+from src.application.services.pppoe_config_service import resolver_password_pppoe
 from src.infrastructure.models import (
     InventarioONUModel,
     RouterModel, 
@@ -517,7 +517,8 @@ async def procesar_importacion(
                 direccion=str(row.get('direccion', '')),
                 user_pppoe=user_ppp,
                 pass_pppoe=str(
-                    row.get("password_pppoe") or generar_password_pppoe()
+                    row.get("password_pppoe")
+                    or await resolver_password_pppoe(db)
                 ),
                 ip_asignada=ip if ip else None,
                 
