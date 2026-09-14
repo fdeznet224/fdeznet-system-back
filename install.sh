@@ -23,6 +23,7 @@ BACKUP_REMOTE_DIR=""
 ACCESS_HOST=""
 PUBLIC_SCHEME="http"
 USE_TLS="false"
+ACCESS_MODE=""
 
 log() { printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
@@ -31,10 +32,12 @@ trap 'fail "La instalación se detuvo inesperadamente en la línea ${LINENO}"' E
 usage() {
   printf '%s\n' \
     "Uso:" \
+    "  curl -fsSL https://fdezpay.com/api/control/installer | sudo bash -s -- --bootstrap-token TOKEN" \
     "  sudo bash install.sh --domain isp.ejemplo.com --email admin@ejemplo.com --bootstrap-token TOKEN" \
-    "  sudo bash install.sh --bootstrap-token TOKEN  # acceso temporal por IP" \
+    "  sudo bash install.sh --ip --bootstrap-token TOKEN  # acceso temporal por IP" \
     "" \
     "Opciones:" \
+    "  --ip                     Usa la IP pública sin certificado TLS" \
     "  --admin-user USUARIO     Usuario administrador inicial (default: admin)" \
     "  --skip-dns-check         Omite la validación DNS previa al certificado" \
     "  --reset-admin-password   Genera una nueva contraseña para el administrador" \
@@ -43,7 +46,8 @@ usage() {
 
 while (($#)); do
   case "$1" in
-    --domain) DOMAIN="${2:-}"; shift 2 ;;
+    --domain) DOMAIN="${2:-}"; ACCESS_MODE="domain"; shift 2 ;;
+    --ip) ACCESS_MODE="ip"; shift ;;
     --email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
     --admin-user) ADMIN_USER="${2:-}"; shift 2 ;;
     --bootstrap-token) BOOTSTRAP_TOKEN="${2:-}"; shift 2 ;;
@@ -56,14 +60,58 @@ while (($#)); do
 done
 
 [[ "${EUID}" -eq 0 ]] || fail "Ejecuta el instalador como root o con sudo"
+
+prompt_value() {
+  local prompt="$1"
+  local value=""
+  printf '%s' "$prompt" > /dev/tty
+  IFS= read -r value < /dev/tty || fail "No se pudo leer la respuesta"
+  printf '%s' "$value"
+}
+
+select_access_mode() {
+  local selection=""
+  [[ -z "$ACCESS_MODE" ]] || return
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    ACCESS_MODE="ip"
+    log "Sin terminal interactiva: se usará acceso temporal por IP"
+    return
+  fi
+
+  printf '%s\n' \
+    "" \
+    "¿Cómo accederás al panel?" \
+    "  1) Dominio con HTTPS (recomendado)" \
+    "  2) IP pública con HTTP temporal" > /dev/tty
+  while [[ -z "$ACCESS_MODE" ]]; do
+    selection="$(prompt_value "Selecciona 1 o 2: ")"
+    case "${selection,,}" in
+      1|dominio|domain) ACCESS_MODE="domain" ;;
+      2|ip) ACCESS_MODE="ip" ;;
+      *) printf '%s\n' "Opción inválida. Escribe 1 para dominio o 2 para IP." > /dev/tty ;;
+    esac
+  done
+}
+
+select_access_mode
+if [[ "$ACCESS_MODE" == "domain" && -z "$DOMAIN" ]]; then
+  DOMAIN="$(prompt_value "Dominio (ej. sistema.proveedor.com): ")"
+fi
+if [[ "$ACCESS_MODE" == "domain" && -z "$ADMIN_EMAIL" ]]; then
+  ADMIN_EMAIL="$(prompt_value "Correo para el certificado HTTPS: ")"
+fi
+
 DOMAIN="${DOMAIN#http://}"
 DOMAIN="${DOMAIN#https://}"
 DOMAIN="${DOMAIN%%/*}"
-if [[ -n "$DOMAIN" ]]; then
+if [[ "$ACCESS_MODE" == "domain" ]]; then
+  [[ -n "$DOMAIN" ]] || fail "El dominio es obligatorio para instalar con HTTPS"
   [[ "$DOMAIN" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$ ]] || fail "Dominio inválido"
   [[ "$ADMIN_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fail "Correo inválido"
   USE_TLS="true"
   PUBLIC_SCHEME="https"
+else
+  DOMAIN=""
 fi
 [[ "$ADMIN_USER" =~ ^[a-zA-Z0-9._-]{3,50}$ ]] || fail "Usuario administrador inválido"
 if [[ -n "$BACKUP_REMOTE_DIR" ]]; then
@@ -285,6 +333,9 @@ set_env_value "$BACKEND_DIR/.env" SECRET_KEY "$SECRET_KEY"
 set_env_value "$BACKEND_DIR/.env" WEBHOOK_SECRET "$WEBHOOK_SECRET"
 set_env_value "$BACKEND_DIR/.env" CORS_ALLOWED_ORIGINS "${PUBLIC_SCHEME}://${ACCESS_HOST}"
 set_env_value "$BACKEND_DIR/.env" PUBLIC_URL "${PUBLIC_SCHEME}://${ACCESS_HOST}"
+set_env_value "$BACKEND_DIR/.env" FDEZNET_ACCESS_MODE "$ACCESS_MODE"
+set_env_value "$BACKEND_DIR/.env" FDEZNET_DOMAIN "$DOMAIN"
+set_env_value "$BACKEND_DIR/.env" FDEZNET_PUBLIC_IP "$PUBLIC_IP"
 set_env_value "$BACKEND_DIR/.env" WHATSAPP_BASE_URL http://127.0.0.1:3000
 set_env_value "$BACKEND_DIR/.env" VPN_SERVER_IP "$PUBLIC_IP"
 set_env_value "$BACKEND_DIR/.env" FDEZNET_CONTROL_PLANE_MODE client

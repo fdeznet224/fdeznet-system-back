@@ -30,7 +30,20 @@ porque será la plataforma principal de pruebas.
    opcional y correo.
 3. Copiar el comando generado. El token dura 48 horas y se consume una vez.
 4. Conectarse a la nueva VPS por SSH y ejecutar el comando como `root`. Tendrá
-   esta forma (el panel coloca los valores reales):
+   esta forma:
+
+```bash
+curl -fsSL https://fdezpay.com/api/control/installer | sudo bash -s -- \
+  --bootstrap-token TOKEN_DE_UN_SOLO_USO
+```
+
+Al comenzar, el instalador pregunta si se usará un dominio con HTTPS o la IP
+pública temporal. Si se elige dominio, solicita el dominio y el correo para
+Let's Encrypt, valida que el DNS apunte a la VPS y continúa sin más
+intervención hasta dejar los servicios activos.
+
+Para una ejecución automatizada sin preguntas, se pueden seguir enviando todos
+los datos como argumentos:
 
 ```bash
 curl -fsSL https://fdezpay.com/api/control/installer | sudo bash -s -- \
@@ -39,13 +52,9 @@ curl -fsSL https://fdezpay.com/api/control/installer | sudo bash -s -- \
   --bootstrap-token TOKEN_DE_UN_SOLO_USO
 ```
 
-Si todavía no existe un dominio, puede realizarse un piloto temporal por la IP
-pública. En ese caso no se solicita certificado TLS:
-
-```bash
-curl -fsSL https://fdezpay.com/api/control/installer | sudo bash -s -- \
-  --bootstrap-token TOKEN_DE_UN_SOLO_USO
-```
+Para forzar una instalación automatizada por IP se usa `--ip` junto con el
+token. El modo elegido, el dominio y la IP detectada quedan guardados en la
+configuración de la instalación.
 
 Si el proveedor ya montó una carpeta externa de respaldo, agréguela desde la
 primera instalación con `--backup-remote-dir /mnt/respaldo-externo/fdeznet`.

@@ -36,6 +36,18 @@ def test_instalador_no_elimina_directorio_de_aplicacion():
     assert "FDEZNET_INSTALLATION_ID" in content
 
 
+def test_instalador_pregunta_si_usara_dominio_o_ip():
+    content = INSTALLER.read_text(encoding="utf-8")
+    assert 'select_access_mode' in content
+    assert 'Dominio con HTTPS (recomendado)' in content
+    assert 'IP pública con HTTP temporal' in content
+    assert 'read -r value < /dev/tty' in content
+    assert '--ip' in content
+    assert 'FDEZNET_ACCESS_MODE' in content
+    assert 'FDEZNET_DOMAIN' in content
+    assert 'FDEZNET_PUBLIC_IP' in content
+
+
 def test_instalador_configura_respaldo_y_revision_automatica():
     content = INSTALLER.read_text(encoding="utf-8")
     assert "gnupg" in content
