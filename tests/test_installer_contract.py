@@ -119,6 +119,8 @@ def test_agente_de_mantenimiento_tiene_sintaxis_y_reversion():
     assert "Content-Security-Policy" in content
     assert "ProtectSystem=strict" in content
     assert "Strict-Transport-Security" in content
+    assert "location \\/api\\/" in content
+    assert "| grep -q 'proxy_set_header Upgrade'" in content
     assert "nginx -t" in content
     assert 'config/nginx.conf" ]] && install' in content
     assert 'config/wireguard/." /etc/wireguard/' in content

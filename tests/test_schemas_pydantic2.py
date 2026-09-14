@@ -1,4 +1,6 @@
 import pytest
+from datetime import datetime
+from types import SimpleNamespace
 from pydantic import ValidationError
 
 from src.domain import schemas
@@ -28,6 +30,24 @@ def test_esquemas_orm_usan_configuracion_pydantic_2():
     for schema in ORM_SCHEMAS:
         assert schema.model_config.get("from_attributes") is True
         assert "orm_mode" not in schema.model_config
+
+
+def test_cliente_entrada_rechaza_mac_invalida_pero_respuesta_legacy_no_falla():
+    with pytest.raises(ValidationError, match="12 dígitos hexadecimales"):
+        schemas.ClienteCreate(nombre="Cliente", mac_address="HWTC2B8781AF")
+
+    cliente = schemas.ClienteResponse.model_validate(
+        SimpleNamespace(
+            id=98,
+            nombre="Miguel Santos Estrada",
+            mac_address="HWTC2B8781AF",
+            estado="activo",
+            created_at=datetime(2026, 9, 14),
+            saldo_a_favor=0,
+        )
+    )
+
+    assert cliente.mac_address == "HWTC2B8781AF"
 
 
 def test_marca_blanca_valida_colores_y_nombres():

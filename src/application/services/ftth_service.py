@@ -358,7 +358,6 @@ class FTTHService:
         onu_nueva.estado = "INSTALADO"
         onu_nueva.tecnico_id = usuario_id
         cliente.onu_id = onu_nueva.id
-        cliente.mac_address = onu_nueva.identificador
         self.registrar_movimiento(
             onu=onu_nueva,
             cliente_id=cliente.id,
@@ -435,7 +434,6 @@ class FTTHService:
         onu_nueva.estado = "INSTALADO"
         onu_nueva.tecnico_id = usuario_id
         servicio.onu_id = onu_nueva.id
-        servicio.mac_address = onu_nueva.identificador
         self.registrar_movimiento(
             onu=onu_nueva,
             cliente_id=servicio.cliente_id,

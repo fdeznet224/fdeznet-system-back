@@ -773,13 +773,11 @@ class ClienteBase(BaseModel):
     mac_address: Optional[str] = None
     estado: str = "pendiente_instalacion"
 
+class ClienteCreate(ClienteBase):
     @field_validator("mac_address")
     @classmethod
     def validar_mac_address(cls, value):
         return normalizar_mac(value)
-
-class ClienteCreate(ClienteBase):
-    pass
 
 class ClienteResponse(ClienteBase):
     model_config = ConfigDict(from_attributes=True)

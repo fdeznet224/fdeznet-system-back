@@ -10,6 +10,29 @@ from src.infrastructure.models import ClienteModel
 from src.interfaces.api.ordenes import contenido_coincide_con_mime
 
 
+class _ScalarResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
+class _AssignmentDB:
+    def __init__(self, onu):
+        self.results = iter((_ScalarResult(onu), _ScalarResult(None)))
+        self.added = []
+
+    async def execute(self, _statement):
+        return next(self.results)
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def flush(self):
+        return None
+
+
 def test_order_workflow_allows_normal_field_sequence():
     sequence = [
         ("pendiente", "asignada"),
@@ -68,6 +91,23 @@ def test_release_port_clears_assignment_and_power():
     assert port.orden_id is None
     assert port.potencia_instalacion_dbm is None
     assert port.actualizado_por_id == 3
+
+
+def test_asignar_onu_no_confunde_serial_con_mac_del_cliente():
+    onu = SimpleNamespace(id=42, estado="DISPONIBLE", tecnico_id=None)
+    db = _AssignmentDB(onu)
+    client = SimpleNamespace(id=98, onu_id=None, mac_address=None)
+
+    asyncio.run(
+        FTTHService(db).asignar_onu(
+            client,
+            onu_id=42,
+            usuario_id=1,
+        )
+    )
+
+    assert client.onu_id == 42
+    assert client.mac_address is None
 
 
 def test_evidence_content_must_match_declared_mime():

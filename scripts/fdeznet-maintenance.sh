@@ -83,7 +83,9 @@ install_deployment_files() {
     add_header Content-Security-Policy "default-src '\''self'\''; script-src '\''self'\''; style-src '\''self'\'' '\''unsafe-inline'\''; img-src '\''self'\'' data: blob: https:; font-src '\''self'\'' data:; media-src '\''self'\'' blob:; connect-src '\''self'\'' ws: wss:; frame-ancestors '\''self'\''; base-uri '\''self'\''; form-action '\''self'\''" always;
 ' "$nginx_site"
   fi
-  if [[ -f "$nginx_site" ]] && ! grep -q 'proxy_set_header Upgrade' "$nginx_site"; then
+  if [[ -f "$nginx_site" ]] && ! sed -n \
+      '/^[[:space:]]*location \/api\/ {/,/^[[:space:]]*}/p' "$nginx_site" \
+      | grep -q 'proxy_set_header Upgrade'; then
     sed -i '/proxy_set_header X-Forwarded-Proto/a\        proxy_set_header Upgrade $http_upgrade;\
         proxy_set_header Connection "upgrade";' "$nginx_site"
   fi
