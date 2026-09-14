@@ -46,6 +46,7 @@ def test_instalador_pregunta_si_usara_dominio_o_ip():
     assert 'FDEZNET_ACCESS_MODE' in content
     assert 'FDEZNET_DOMAIN' in content
     assert 'FDEZNET_PUBLIC_IP' in content
+    assert 'if [[ -n "$ACCESS_MODE" ]]; then\n    return 0\n  fi' in content
 
 
 def test_instalador_configura_respaldo_y_revision_automatica():

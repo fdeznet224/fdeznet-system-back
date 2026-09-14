@@ -71,7 +71,9 @@ prompt_value() {
 
 select_access_mode() {
   local selection=""
-  [[ -z "$ACCESS_MODE" ]] || return
+  if [[ -n "$ACCESS_MODE" ]]; then
+    return 0
+  fi
   if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
     ACCESS_MODE="ip"
     log "Sin terminal interactiva: se usará acceso temporal por IP"
