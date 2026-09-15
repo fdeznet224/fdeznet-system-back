@@ -210,8 +210,12 @@ if apt-cache show libasound2t64 >/dev/null 2>&1; then ASOUND_PACKAGE="libasound2
 apt-get install -y ca-certificates certbot curl git gnupg jq nginx openssl python3-pip python3-venv \
   sudo ufw wireguard "$MYSQL_PACKAGE" build-essential pkg-config libmysqlclient-dev \
   libnss3 libatk-bridge2.0-0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
+  libxfixes3 \
   "$ASOUND_PACKAGE" libpangocairo-1.0-0 libcups2 libxshmfence1 libxss1 \
   fonts-liberation python3-certbot-nginx unzip
+
+# Todas las VPS deben usar la misma zona horaria que el servidor central.
+timedatectl set-timezone America/Mexico_City
 
 if ! command -v node >/dev/null 2>&1 || [[ "$(node --version | tr -d v | cut -d. -f1)" -lt 22 ]]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
