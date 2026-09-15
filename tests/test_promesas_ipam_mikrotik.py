@@ -102,6 +102,20 @@ def test_promesa_se_corta_desde_el_dia_siguiente():
         for comparacion in comparaciones
     )
 
+    limites_corte = [
+        nodo
+        for nodo in visitors.iterate(db.statement)
+        if (
+            getattr(getattr(nodo, "left", None), "name", None)
+            == "fecha_limite_corte"
+        )
+    ]
+    assert any(
+        comparacion.operator is operators.lt
+        and comparacion.right.value == date.today()
+        for comparacion in limites_corte
+    )
+
 
 def test_mensaje_promesa_tiene_fallback_obligatorio(monkeypatch):
     cliente = SimpleNamespace(

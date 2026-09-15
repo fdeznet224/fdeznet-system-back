@@ -124,8 +124,8 @@ class BillingCalendarService:
         if activacion < fecha_instalacion:
             raise ValueError("La fecha de activación no puede ser anterior a la fecha de instalación.")
         if meses_gratis > 0:
-            fecha_fin_gratis = cls.add_months(activacion, meses_gratis)
-            fecha_inicio_cobro = fecha_fin_gratis + timedelta(days=1)
+            fecha_inicio_cobro = cls.add_months(activacion, meses_gratis)
+            fecha_fin_gratis = fecha_inicio_cobro - timedelta(days=1)
         else:
             fecha_fin_gratis = None
             fecha_inicio_cobro = activacion
@@ -253,6 +253,16 @@ class BillingCalendarService:
         tipo_facturacion: str,
         dias_antes_emision: int | None = 0,
     ) -> date:
+        # El prorrateo inicial debe quedar visible antes de que empiece el
+        # cobro, respetando los días de anticipación de la plantilla, aunque
+        # conserve el vencimiento y el corte del siguiente ciclo. De otro
+        # modo, un mes gratis que termina después del día de pago oculta la
+        # deuda hasta pocos días antes del mes siguiente.
+        if periodo.es_prorrateada and tipo_facturacion == "prepago":
+            return periodo.periodo_desde - timedelta(
+                days=dias_antes_emision or 0
+            )
+
         vencimiento = cls.calcular_fecha_vencimiento(periodo, tipo_facturacion)
         fecha_generacion = vencimiento - timedelta(days=dias_antes_emision or 0)
         if tipo_facturacion == "postpago":

@@ -99,11 +99,72 @@ def test_prorrateo_se_consolida_en_una_sola_mensualidad():
     assert cantidad == 1
     assert mensual.total == Decimal("350.00")
     assert mensual.saldo_pendiente == Decimal("350.00")
-    assert prorrateo.estado == "anulada"
+    assert prorrateo.estado == "consolidada"
     assert prorrateo.saldo_pendiente == 0
     concepto = next(item for item in db.added if isinstance(item, FacturaConceptoModel))
     assert concepto.concepto == "Prorrateo de internet"
     assert concepto.saldo_pendiente == Decimal("50.00")
+
+
+def test_prorrateo_inicial_es_pagable_pero_no_puede_cortar():
+    cliente = ClienteModel(id=5, nombre="Cliente")
+    servicio = ServicioModel(
+        id=7,
+        cliente_id=5,
+        proxima_facturacion=date(2026, 9, 17),
+        tipo_facturacion="prepago",
+        ciclo_facturacion="calendario",
+        dia_vencimiento=15,
+    )
+    plan = PlanModel(id=2, nombre="Plan 250", precio=Decimal("250.00"))
+    plantilla = SimpleNamespace(
+        dia_pago=15,
+        impuesto=Decimal("0.00"),
+        dias_tolerancia=10,
+    )
+
+    class Result:
+        def scalars(self):
+            return self
+
+        def first(self):
+            return None
+
+    class DB:
+        def __init__(self):
+            self.added = []
+
+        async def execute(self, _statement):
+            return Result()
+
+        def add(self, value):
+            if isinstance(value, FacturaModel) and value.id is None:
+                value.id = 101
+            self.added.append(value)
+
+        async def flush(self):
+            return None
+
+    db = DB()
+    factura = asyncio.run(
+        BillingService(db).crear_prorrateo_inicial(
+            servicio, cliente, plan, plantilla
+        )
+    )
+
+    assert factura is not None
+    assert factura.tipo_factura == "prorrateo"
+    assert factura.afecta_corte is False
+    assert factura.periodo_desde == date(2026, 9, 17)
+    assert factura.periodo_hasta == date(2026, 10, 14)
+    assert factura.fecha_vencimiento == date(2026, 10, 15)
+    assert factura.fecha_limite_corte == date(2026, 10, 25)
+    assert factura.total == Decimal("233.33")
+    assert servicio.proxima_facturacion == date(2026, 10, 15)
+    concepto = next(
+        item for item in db.added if isinstance(item, FacturaConceptoModel)
+    )
+    assert concepto.afecta_corte is False
 
 
 def test_payment_method_normalization_supports_bot_and_transfer():

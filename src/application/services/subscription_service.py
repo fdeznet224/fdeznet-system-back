@@ -490,6 +490,13 @@ class SubscriptionService:
         servicio.estado = "activo"
         servicio.is_online = False
         servicio.ultimo_cambio_estado = datetime.now()
+        from src.application.services.billing_service import BillingService
+        await BillingService(self.db).crear_prorrateo_inicial(
+            servicio,
+            servicio.cliente,
+            plan,
+            plantilla,
+        )
         if orden:
             orden.estado = "terminada"
             orden.fecha_finalizacion = datetime.now()

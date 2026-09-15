@@ -14,21 +14,21 @@ def test_mes_gratis_instalacion_dia_15():
     )
     assert resultado.fecha_instalacion == date(2026, 7, 15)
     assert resultado.fecha_activacion == date(2026, 7, 15)
-    assert resultado.fecha_fin_periodo_gratis == date(2026, 8, 15)
-    assert resultado.fecha_inicio_cobro == date(2026, 8, 16)
-    assert resultado.proxima_facturacion == date(2026, 8, 16)
+    assert resultado.fecha_fin_periodo_gratis == date(2026, 8, 14)
+    assert resultado.fecha_inicio_cobro == date(2026, 8, 15)
+    assert resultado.proxima_facturacion == date(2026, 8, 15)
 
 
 def test_instalacion_31_de_enero():
     resultado = BillingCalendarService.calcular_fechas_servicio(date(2026, 1, 31), meses_gratis=1)
-    assert resultado.fecha_fin_periodo_gratis == date(2026, 2, 28)
-    assert resultado.fecha_inicio_cobro == date(2026, 3, 1)
+    assert resultado.fecha_fin_periodo_gratis == date(2026, 2, 27)
+    assert resultado.fecha_inicio_cobro == date(2026, 2, 28)
 
 
 def test_instalacion_31_de_enero_anio_bisiesto():
     resultado = BillingCalendarService.calcular_fechas_servicio(date(2028, 1, 31), meses_gratis=1)
-    assert resultado.fecha_fin_periodo_gratis == date(2028, 2, 29)
-    assert resultado.fecha_inicio_cobro == date(2028, 3, 1)
+    assert resultado.fecha_fin_periodo_gratis == date(2028, 2, 28)
+    assert resultado.fecha_inicio_cobro == date(2028, 2, 29)
 
 
 def test_servicio_sin_mes_gratis():
@@ -136,3 +136,18 @@ def test_prorrateo_prepago_vence_en_el_siguiente_dia_de_pago():
     assert BillingCalendarService.calcular_fecha_vencimiento(
         periodo, "prepago"
     ) == date(2026, 9, 1)
+
+
+def test_prorrateo_prepago_se_genera_antes_de_iniciar_el_cobro():
+    periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
+        date(2026, 9, 17), 15, 250
+    )
+
+    assert periodo.es_prorrateada is True
+    assert periodo.periodo_hasta == date(2026, 10, 14)
+    assert BillingCalendarService.calcular_fecha_generacion(
+        periodo, "prepago", dias_antes_emision=5
+    ) == date(2026, 9, 12)
+    assert BillingCalendarService.calcular_fecha_vencimiento(
+        periodo, "prepago"
+    ) == date(2026, 10, 15)

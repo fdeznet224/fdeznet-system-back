@@ -888,7 +888,13 @@ class ClientService:
             
             # G. Guardar cambios en la base de datos
             cliente.estado = 'activo'
-            # Ya no necesitas `fecha_instalacion` si no está en tu modelo actual, si está déjalo.
+            from src.application.services.billing_service import BillingService
+            await BillingService(self.db).crear_prorrateo_inicial(
+                servicio,
+                cliente,
+                cliente_rel.plan,
+                cliente_rel.plantilla,
+            )
             
             await self.db.commit()
 

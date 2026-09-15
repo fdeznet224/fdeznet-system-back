@@ -59,6 +59,109 @@ class BillingService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def crear_prorrateo_inicial(
+        self,
+        servicio: ServicioModel,
+        cliente: ClienteModel,
+        plan: PlanModel,
+        plantilla: PlantillaFacturacionModel,
+    ) -> FacturaModel | None:
+        """Crea el prorrateo pagable sin permitir que origine un corte."""
+        if (
+            not servicio.proxima_facturacion
+            or not plan
+            or not plantilla
+            or servicio.ciclo_facturacion == CicloFacturacion.aniversario
+        ):
+            return None
+        periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
+            servicio.proxima_facturacion,
+            plantilla.dia_pago or servicio.dia_vencimiento or 1,
+            plan.precio,
+            plantilla.impuesto or 0,
+        )
+        if not periodo.es_prorrateada:
+            return None
+        existente = (
+            await self.db.execute(
+                select(FacturaModel).where(
+                    FacturaModel.servicio_id == servicio.id,
+                    FacturaModel.periodo_desde == periodo.periodo_desde,
+                    FacturaModel.periodo_hasta == periodo.periodo_hasta,
+                )
+            )
+        ).scalars().first()
+        if existente:
+            return existente
+
+        tipo_snapshot = getattr(
+            servicio.tipo_facturacion, "value", servicio.tipo_facturacion
+        )
+        ciclo_snapshot = getattr(
+            servicio.ciclo_facturacion, "value", servicio.ciclo_facturacion
+        )
+        descripcion = BillingCalendarService.describir_dias_cobrados(
+            periodo.periodo_desde, periodo.periodo_hasta
+        )
+        factura = FacturaModel(
+            cliente_id=cliente.id,
+            servicio_id=servicio.id,
+            plan_snapshot=plan.nombre,
+            tipo_factura="prorrateo",
+            concepto="Prorrateo inicial de internet",
+            detalles=f"Prorrateo Internet - {plan.nombre}",
+            descripcion=descripcion,
+            monto=periodo.subtotal,
+            impuesto=periodo.impuesto,
+            total=periodo.total,
+            saldo_pendiente=periodo.total,
+            estado="pendiente",
+            fecha_emision=date.today(),
+            fecha_vencimiento=periodo.siguiente_facturacion,
+            fecha_limite_corte=(
+                periodo.siguiente_facturacion
+                + timedelta(days=plantilla.dias_tolerancia or 0)
+            ),
+            mes_correspondiente=(
+                f"Prorrateo {periodo.periodo_desde.strftime('%d/%m/%Y')} - "
+                f"{periodo.periodo_hasta.strftime('%d/%m/%Y')}"
+            ),
+            periodo_desde=periodo.periodo_desde,
+            periodo_hasta=periodo.periodo_hasta,
+            dias_facturados=periodo.dias_facturados,
+            dias_periodo=periodo.dias_periodo,
+            precio_mensual_snapshot=periodo.precio_mensual,
+            precio_diario=periodo.precio_diario,
+            es_prorrateada=True,
+            tipo_facturacion_snapshot=str(tipo_snapshot),
+            ciclo_facturacion_snapshot=str(ciclo_snapshot),
+            monto_servicio_original=periodo.subtotal,
+            impuesto_servicio_original=periodo.impuesto,
+            cargos_adicionales_total=0,
+            dias_con_servicio=periodo.dias_facturados,
+            dias_sin_servicio=0,
+            ajuste_suspension=0,
+            afecta_corte=False,
+        )
+        self.db.add(factura)
+        await self.db.flush()
+        self.db.add(FacturaConceptoModel(
+            factura_id=factura.id,
+            cliente_id=cliente.id,
+            servicio_id=servicio.id,
+            tipo="internet_prorrateado",
+            concepto="Prorrateo de internet",
+            descripcion=descripcion,
+            monto_original=periodo.total,
+            saldo_pendiente=periodo.total,
+            estado="facturado",
+            afecta_corte=False,
+            fecha_cargo=periodo.periodo_desde,
+        ))
+        servicio.proxima_facturacion = periodo.siguiente_facturacion
+        cliente.proxima_factura = periodo.siguiente_facturacion
+        return factura
+
     async def _registrar_cargo_reconexion(
         self,
         cliente: ClienteModel,
@@ -155,7 +258,7 @@ class BillingService:
                 concepto.saldo_pendiente = 0
                 concepto.estado = "consolidado"
             prorrateo.saldo_pendiente = 0
-            prorrateo.estado = "anulada"
+            prorrateo.estado = "consolidada"
             prorrateo.afecta_corte = False
             nota = f"Consolidada en factura #{factura.id}."
             prorrateo.descripcion = " ".join(
@@ -388,6 +491,7 @@ class BillingService:
                 dias_con_servicio=periodo.dias_facturados,
                 dias_sin_servicio=0,
                 ajuste_suspension=0,
+                afecta_corte=not periodo.es_prorrateada,
             )
 
             self.db.add(nueva_factura)
@@ -418,7 +522,7 @@ class BillingService:
                 monto_original=nueva_factura.total,
                 saldo_pendiente=nueva_factura.saldo_pendiente,
                 estado="facturado",
-                afecta_corte=True,
+                afecta_corte=not periodo.es_prorrateada,
                 fecha_cargo=periodo.periodo_desde,
             )
             self.db.add(concepto_internet)
@@ -648,10 +752,13 @@ class BillingService:
                 FacturaModel.estado.in_(["pendiente", "vencida"]),
                 FacturaModel.saldo_pendiente > 0,
                 FacturaModel.afecta_corte.is_(True),
+                FacturaModel.tipo_factura != "prorrateo",
                 ClienteModel.estado != "eliminado",
                 or_(
                     and_(
-                        FacturaModel.fecha_limite_corte <= hoy,
+                        # La fecha límite es el último día completo para pagar;
+                        # el corte procede a partir del día siguiente.
+                        FacturaModel.fecha_limite_corte < hoy,
                         FacturaModel.es_promesa_activa.is_(False),
                     ),
                     and_(
