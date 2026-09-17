@@ -714,6 +714,7 @@ class UsuarioBase(BaseModel):
 class UsuarioCreate(UsuarioBase):
     password: str = Field(..., min_length=10, max_length=128)
     router_ids: List[int] = Field(default_factory=list)
+    zona_ids: List[int] = Field(default_factory=list)
 
 class UsuarioUpdate(BaseModel):
     nombre_completo: Optional[str] = None
@@ -722,6 +723,7 @@ class UsuarioUpdate(BaseModel):
     rol: Optional[str] = None
     activo: Optional[bool] = None
     router_ids: Optional[List[int]] = None
+    zona_ids: Optional[List[int]] = None
     telefono_whatsapp: Optional[str] = Field(default=None, max_length=20)
     bot_whatsapp_habilitado: Optional[bool] = None
 
@@ -742,6 +744,7 @@ class UsuarioResponse(BaseModel):
     )
     activo: bool = True
     router_ids: List[int] = Field(default_factory=list)
+    zona_ids: List[int] = Field(default_factory=list)
     telefono_whatsapp: Optional[str] = None
     bot_whatsapp_habilitado: bool = False
 

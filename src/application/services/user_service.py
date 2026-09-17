@@ -5,7 +5,7 @@ from passlib.context import CryptContext
 import re
 
 # Importamos Modelos y Schemas
-from src.infrastructure.models import UsuarioModel, RouterModel
+from src.infrastructure.models import UsuarioModel, RouterModel, ZonaModel
 from src.domain.schemas import UsuarioCreate, UsuarioUpdate
 
 ROLES_VALIDOS = {"admin", "cajero", "tecnico", "supervisor"}
@@ -87,6 +87,12 @@ class UserService:
             routers_reales = result_r.scalars().all()
             
             nuevo_usuario.routers_asignados = routers_reales
+
+        if datos.zona_ids:
+            result_z = await self.db.execute(
+                select(ZonaModel).where(ZonaModel.id.in_(datos.zona_ids))
+            )
+            nuevo_usuario.zonas_asignadas = result_z.scalars().all()
         
         # 4. Guardar
         self.db.add(nuevo_usuario)
@@ -100,7 +106,8 @@ class UserService:
     async def editar_usuario(self, user_id: int, datos: UsuarioUpdate):
         # 1. Buscar Usuario con sus routers
         stmt = select(UsuarioModel).options(
-            selectinload(UsuarioModel.routers_asignados)
+            selectinload(UsuarioModel.routers_asignados),
+            selectinload(UsuarioModel.zonas_asignadas),
         ).where(UsuarioModel.id == user_id)
         
         result = await self.db.execute(stmt)
@@ -155,6 +162,12 @@ class UserService:
             # Reemplazamos la lista completa
             usuario_db.routers_asignados = nuevos_routers
 
+        if datos.zona_ids is not None:
+            result_z = await self.db.execute(
+                select(ZonaModel).where(ZonaModel.id.in_(datos.zona_ids))
+            )
+            usuario_db.zonas_asignadas = result_z.scalars().all()
+
         await self.db.commit()
         await self.db.refresh(usuario_db)
         return usuario_db
@@ -165,7 +178,8 @@ class UserService:
     async def listar_usuarios(self):
         # Traemos también los routers asignados para mostrarlos en el frontend
         stmt = select(UsuarioModel).options(
-            selectinload(UsuarioModel.routers_asignados)
+            selectinload(UsuarioModel.routers_asignados),
+            selectinload(UsuarioModel.zonas_asignadas),
         ).order_by(UsuarioModel.id)
         
         result = await self.db.execute(stmt)

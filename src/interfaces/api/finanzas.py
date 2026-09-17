@@ -3,7 +3,7 @@ from typing import Optional, Literal
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func, desc
+from sqlalchemy import select, and_, or_, func, desc, false
 from sqlalchemy.orm import joinedload, selectinload
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,30 @@ from src.application.services.finance_service import (
 )
 
 router = APIRouter(prefix="/finanzas", tags=["Módulo Financiero"])
+
+
+def _scope_condition(current_user):
+    """Clientes accesibles por routers y/o zonas asignados al usuario."""
+    if current_user.rol == "admin":
+        return None
+    router_ids = [item.id for item in current_user.routers_asignados]
+    zona_ids = [item.id for item in current_user.zonas_asignadas]
+    conditions = []
+    if router_ids:
+        conditions.append(ClienteModel.router_id.in_(router_ids))
+    if zona_ids:
+        conditions.append(ClienteModel.zona_id.in_(zona_ids))
+    return or_(*conditions) if conditions else false()
+
+
+async def _ensure_client_scope(cliente, current_user):
+    condition = _scope_condition(current_user)
+    if condition is None:
+        return
+    router_ids = {item.id for item in current_user.routers_asignados}
+    zona_ids = {item.id for item in current_user.zonas_asignadas}
+    if cliente.router_id not in router_ids and cliente.zona_id not in zona_ids:
+        raise HTTPException(403, "No tienes permiso para operar clientes de esta zona")
 
 # ==========================================
 # 0. SCHEMAS LOCALES (Input)
@@ -136,18 +160,14 @@ async def get_listado_completo(
         )
     )
 
-    # Seguridad: Cajeros solo ven sus routers
-    if current_user.rol != 'admin':
-        allowed_router_ids = [r.id for r in current_user.routers_asignados]
-        if not allowed_router_ids:
-            return {"items": [], "resumen": {"pagadas_cant": 0, "pagadas_total": 0, "pendientes_cant": 0, "pendientes_total": 0}}
+    # Seguridad: el personal opera por sus routers y/o zonas asignados.
+    scope = _scope_condition(current_user)
+    if scope is not None:
+        router_ids = [item.id for item in current_user.routers_asignados]
         query = query.where(
             or_(
-                ServicioModel.router_id.in_(allowed_router_ids),
-                and_(
-                    FacturaModel.servicio_id.is_(None),
-                    ClienteModel.router_id.in_(allowed_router_ids),
-                ),
+                ServicioModel.router_id.in_(router_ids) if router_ids else false(),
+                scope,
             )
         )
 
@@ -384,6 +404,11 @@ async def registrar_cobro(
 ):
     service = BillingService(db)
     try:
+        factura = await db.get(FacturaModel, data.factura_id)
+        if not factura:
+            raise ValueError("Factura no encontrada")
+        cliente = await db.get(ClienteModel, factura.cliente_id)
+        await _ensure_client_scope(cliente, current_user)
         resultado = await service.registrar_pago_completo(
             factura_id=data.factura_id,
             usuario_operador=current_user,
@@ -578,6 +603,7 @@ async def crear_servicio_adicional(
     cliente = await db.get(ClienteModel, data.cliente_id)
     if not cliente or cliente.estado == "eliminado":
         raise HTTPException(404, "Cliente no encontrado")
+    await _ensure_client_scope(cliente, current_user)
     if data.servicio_id:
         servicio = await db.get(ServicioModel, data.servicio_id)
         if not servicio or servicio.cliente_id != cliente.id:
@@ -610,6 +636,8 @@ async def actualizar_servicio_adicional(
     item = await db.get(ServicioAdicionalModel, item_id)
     if not item:
         raise HTTPException(404, "Servicio adicional no encontrado")
+    cliente = await db.get(ClienteModel, item.cliente_id)
+    await _ensure_client_scope(cliente, current_user)
     if data.cliente_id != item.cliente_id:
         raise HTTPException(400, "No se puede cambiar el cliente del servicio")
     servicio_id = data.servicio_id or item.servicio_id
@@ -634,6 +662,8 @@ async def cancelar_servicio_adicional(
     item = await db.get(ServicioAdicionalModel, item_id)
     if not item:
         raise HTTPException(404, "Servicio adicional no encontrado")
+    cliente = await db.get(ClienteModel, item.cliente_id)
+    await _ensure_client_scope(cliente, current_user)
     item.activo = False
     await db.commit()
     return {"status": "ok", "mensaje": "Servicio adicional cancelado"}
@@ -648,6 +678,7 @@ async def crear_factura_manual(
     cliente = await db.get(ClienteModel, data.cliente_id)
     if not cliente:
         raise HTTPException(404, "Cliente no encontrado")
+    await _ensure_client_scope(cliente, current_user)
 
     if cliente.estado == "eliminado":
         raise HTTPException(400, "No se puede crear factura a un cliente eliminado")
@@ -683,17 +714,6 @@ async def crear_factura_manual(
                 "Indica servicio_id porque el cliente tiene varios servicios",
             )
         servicio = servicios[0] if servicios else None
-
-    if current_user.rol != "admin":
-        allowed_router_ids = [r.id for r in current_user.routers_asignados]
-        router_objetivo = (
-            servicio.router_id if servicio else cliente.router_id
-        )
-        if router_objetivo not in allowed_router_ids:
-            raise HTTPException(
-                403,
-                "No tienes permiso para facturar este servicio",
-            )
 
     cargo, consolidada = await FinanceService(db).registrar_cargo_adicional(
         cliente_id=cliente.id,
@@ -767,6 +787,8 @@ async def cotizar_reactivacion(
     factura = await db.get(FacturaModel, factura_id)
     if not factura:
         raise HTTPException(404, "Factura no encontrada")
+    cliente = await db.get(ClienteModel, factura.cliente_id)
+    await _ensure_client_scope(cliente, current_user)
     servicio = (
         await db.get(ServicioModel, factura.servicio_id)
         if factura.servicio_id
@@ -811,6 +833,11 @@ async def registrar_promesa(
     current_user = Depends(role_required(["admin", "supervisor", "cajero"]))
 ):
     try:
+        factura = await db.get(FacturaModel, data.factura_id)
+        if not factura:
+            raise ValueError("Factura no encontrada")
+        cliente = await db.get(ClienteModel, factura.cliente_id)
+        await _ensure_client_scope(cliente, current_user)
         promesa, factura, cliente, politica, reactivado = (
             await BillingService(db).registrar_promesa_y_reactivar(
                 data.factura_id,
@@ -1108,10 +1135,8 @@ async def pendientes_diarios(
         )
     )
     if current_user.rol != "admin":
-        permitidos = [router.id for router in current_user.routers_asignados]
-        if not permitidos:
-            return {"fecha": fecha, "total": Decimal("0.00"), "items": []}
-        query = query.where(ClienteModel.router_id.in_(permitidos))
+        scope = _scope_condition(current_user)
+        query = query.where(scope)
     if zona_id:
         query = query.where(ClienteModel.zona_id == zona_id)
     if router_id:

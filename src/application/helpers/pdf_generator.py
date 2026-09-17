@@ -105,6 +105,9 @@ async def generar_recibo_pdf(
     color_primario="#1e3a8a",
     color_secundario="#2563eb",
     pie_recibo=None,
+    empresa_telefono=None,
+    empresa_email=None,
+    empresa_direccion=None,
 ):
     """
     Genera un PDF con la identidad configurada incluyendo el método de pago.
@@ -177,9 +180,16 @@ async def generar_recibo_pdf(
             "<br/>Próximo vencimiento: "
             f"{escape(formatear_fecha_en_espanol(nueva_fecha_vencimiento))}"
         )
+    emisor_lineas = [f"<b>{escape(str(empresa_nombre).upper())}</b>"]
+    if empresa_direccion:
+        emisor_lineas.append(escape(str(empresa_direccion)))
+    if empresa_telefono:
+        emisor_lineas.append(f"Tel: {escape(str(empresa_telefono))}")
+    if empresa_email:
+        emisor_lineas.append(f"Email: {escape(str(empresa_email))}")
     info_data = [
         [Paragraph("EMISOR", style_label), Paragraph("CLIENTE", style_label)],
-        [Paragraph("<b>FDEZNET TELECOMUNICACIONES</b><br/>Vicente Guerrero, Chiapas.<br/>Tel: 961-363-2496", style_normal), 
+        [Paragraph("<br/>".join(emisor_lineas), style_normal),
          Paragraph(datos_cliente, style_normal)],
         
         # Espacio separador

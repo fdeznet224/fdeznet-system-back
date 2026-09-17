@@ -52,6 +52,13 @@ usuario_routers_association = Table(
     Column('router_id', Integer, ForeignKey('routers.id'), primary_key=True)
 )
 
+usuario_zonas_association = Table(
+    "usuario_zonas",
+    Base.metadata,
+    Column("usuario_id", Integer, ForeignKey("usuarios.id"), primary_key=True),
+    Column("zona_id", Integer, ForeignKey("zonas.id"), primary_key=True),
+)
+
 class EstadoEquipo(str, enum.Enum):
     INSTALADO = "instalado"
     POR_RECOGER = "por_recoger"
@@ -1557,6 +1564,13 @@ class UsuarioModel(Base):
         lazy="selectin" 
     )
 
+    zonas_asignadas = relationship(
+        "ZonaModel",
+        secondary=usuario_zonas_association,
+        backref="usuarios_asignados",
+        lazy="selectin",
+    )
+
     @property
     def router_ids(self):
         """
@@ -1564,6 +1578,10 @@ class UsuarioModel(Base):
         para llenar la lista de 'router_ids' en el JSON de respuesta.
         """
         return [router.id for router in self.routers_asignados] if self.routers_asignados else []
+
+    @property
+    def zona_ids(self):
+        return [zona.id for zona in self.zonas_asignadas] if self.zonas_asignadas else []
 
 
 class OperacionSincronizacionModel(Base):

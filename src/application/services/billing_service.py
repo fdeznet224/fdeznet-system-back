@@ -1084,6 +1084,9 @@ class BillingService:
                         color_primario=marca.color_primario if marca else "#1e3a8a",
                         color_secundario=marca.color_secundario if marca else "#2563eb",
                         pie_recibo=marca.pie_recibo if marca else None,
+                        empresa_telefono=marca.empresa_telefono if marca else None,
+                        empresa_email=marca.empresa_email if marca else None,
+                        empresa_direccion=marca.empresa_direccion if marca else None,
                     )
                     notificacion_pago_encolada = await notificador.notificar(
                         tipo_evento="pago_recibido", 
