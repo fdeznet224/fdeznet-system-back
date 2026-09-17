@@ -1,4 +1,5 @@
 import os
+import ipaddress
 import urllib.request
 import subprocess
 import textwrap
@@ -67,6 +68,103 @@ class VPNService:
                 "Instala WireGuard en la VPS (apt install wireguard) y reinicia el backend."
             ) from e
 
+    @staticmethod
+    def normalizar_subredes(subredes_remotas: str | None) -> list[str]:
+        """Valida y normaliza una lista de redes IPv4 en formato CIDR."""
+        if not subredes_remotas or not subredes_remotas.strip():
+            return []
+        redes: list[str] = []
+        vpn_network = ipaddress.ip_network("10.8.0.0/24")
+        for value in subredes_remotas.replace("\n", ",").split(","):
+            value = value.strip()
+            if not value:
+                continue
+            try:
+                network = ipaddress.ip_network(value, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"Subred inválida: {value}. Usa formato 192.168.1.0/24") from exc
+            if network.version != 4:
+                raise ValueError("Por ahora solo se admiten subredes IPv4")
+            if network.prefixlen == 0:
+                raise ValueError("No se permite anunciar la ruta predeterminada 0.0.0.0/0")
+            if network.overlaps(vpn_network):
+                raise ValueError("La subred remota no puede solaparse con la VPN 10.8.0.0/24")
+            normalized = str(network)
+            if normalized not in redes:
+                redes.append(normalized)
+        if len(redes) > 20:
+            raise ValueError("Se permiten como máximo 20 subredes remotas")
+        return redes
+
+    def _validar_rutas_disponibles(self, redes: list[str]) -> None:
+        """Evita anunciar una LAN que ya pertenece a otro peer de WireGuard."""
+        if not redes:
+            return
+        try:
+            output = self._ejecutar_comando([
+                self.SUDO_BIN,
+                self.WG_BIN,
+                "show",
+                self.WG_INTERFACE,
+                "allowed-ips",
+            ])
+        except ValueError:
+            return
+        existentes: list[ipaddress.IPv4Network] = []
+        for line in output.splitlines():
+            parts = line.split(maxsplit=1)
+            if len(parts) != 2:
+                continue
+            for value in parts[1].split(","):
+                try:
+                    network = ipaddress.ip_network(value.strip(), strict=False)
+                except ValueError:
+                    continue
+                if network.version == 4 and network.prefixlen < 32:
+                    existentes.append(network)
+        for value in redes:
+            nueva = ipaddress.ip_network(value)
+            conflicto = next((actual for actual in existentes if nueva.overlaps(actual)), None)
+            if conflicto:
+                raise ValueError(
+                    f"La subred {nueva} entra en conflicto con la ruta VPN existente {conflicto}"
+                )
+
+    async def listar_subredes_enrutadas(self) -> list[dict[str, str]]:
+        """Lista las LAN anunciadas por los peers y, si existe, su nombre guardado."""
+        try:
+            output = self._ejecutar_comando([
+                self.SUDO_BIN,
+                self.WG_BIN,
+                "show",
+                self.WG_INTERFACE,
+                "allowed-ips",
+            ])
+        except ValueError:
+            return []
+        tunnels = (await self.db.execute(select(VpnTunnelModel))).scalars().all()
+        names = {item.public_key: item.nombre for item in tunnels}
+        result: list[dict[str, str]] = []
+        for line in output.splitlines():
+            parts = line.split(maxsplit=1)
+            if len(parts) != 2:
+                continue
+            public_key, allowed = parts
+            for value in allowed.split(","):
+                try:
+                    network = ipaddress.ip_network(value.strip(), strict=False)
+                except ValueError:
+                    continue
+                if network.version != 4 or network.prefixlen == 32:
+                    continue
+                if network.overlaps(ipaddress.ip_network("10.8.0.0/24")):
+                    continue
+                result.append({
+                    "subred": str(network),
+                    "tunnel_nombre": names.get(public_key, "MikroTik existente"),
+                })
+        return result
+
     async def obtener_siguiente_ip(self) -> str:
         """Busca en la tabla vpn_tunnels la siguiente IP disponible"""
         stmt = select(VpnTunnelModel.ip_asignada).where(VpnTunnelModel.ip_asignada.like(f"{self.VPN_SUBNET_BASE}%"))
@@ -84,8 +182,10 @@ class VPNService:
 
         return f"{self.VPN_SUBNET_BASE}{siguiente_octeto}"
 
-    async def crear_tunel(self, nombre: str):
+    async def crear_tunel(self, nombre: str, subredes_remotas: str | None = None):
         """Genera llaves, asigna IP, guarda en BD y registra en Linux"""
+        redes = self.normalizar_subredes(subredes_remotas)
+        self._validar_rutas_disponibles(redes)
         
         # 1. Generar Llaves para el MikroTik
         client_privkey = self._ejecutar_comando([self.WG_BIN, "genkey"])
@@ -97,10 +197,11 @@ class VPNService:
         # 3. Registrar en Linux (Silencioso para que no rompa el entorno local si no hay WG)
         if self.SERVER_PUBKEY != "ERROR_LLAVE_NO_ENCONTRADA":
             try:
+                allowed_ips = ",".join([f"{client_ip}/32", *redes])
                 self._ejecutar_comando([
                     self.SUDO_BIN, self.WG_BIN, "set", self.WG_INTERFACE,
                     "peer", client_pubkey, 
-                    "allowed-ips", f"{client_ip}/32"
+                    "allowed-ips", allowed_ips
                 ])
                 self._ejecutar_comando([self.SUDO_BIN, self.WG_QUICK_BIN, "save", self.WG_INTERFACE])
             except Exception as e:
@@ -123,7 +224,8 @@ class VPNService:
             nombre=nombre,
             ip_asignada=client_ip,
             public_key=client_pubkey,
-            script_mikrotik=script_mikrotik
+            script_mikrotik=script_mikrotik,
+            subredes_remotas=", ".join(redes) or None,
         )
         self.db.add(nuevo_tunel)
         await self.db.commit()
@@ -133,8 +235,9 @@ class VPNService:
     
 
 
-    async def crear_acceso_tecnico(self, nombre: str):
+    async def crear_acceso_tecnico(self, nombre: str, subredes_remotas: str | None = None):
         """Genera un archivo .conf y un Código QR para Celulares/PCs"""
+        redes = self.normalizar_subredes(subredes_remotas)
         
         # 1. Generar Llaves para el Celular
         client_privkey = self._ejecutar_comando([self.WG_BIN, "genkey"])
@@ -156,6 +259,7 @@ class VPNService:
                 print(f"⚠️ No se pudo registrar en Linux: {e}")
 
         # 4. Construir el archivo estándar .conf (Para la app de móvil/PC)
+        client_allowed_ips = ", ".join([f"{self.VPN_SUBNET_BASE}0/24", *redes])
         wg_conf = textwrap.dedent(f"""
             [Interface]
             PrivateKey = {client_privkey}
@@ -165,7 +269,7 @@ class VPNService:
             [Peer]
             PublicKey = {self.SERVER_PUBKEY}
             Endpoint = {self.SERVER_ENDPOINT}:{self.SERVER_PORT}
-            AllowedIPs = {self.VPN_SUBNET_BASE}0/24
+            AllowedIPs = {client_allowed_ips}
             PersistentKeepalive = 25
         """).strip()
 
@@ -180,7 +284,8 @@ class VPNService:
             nombre=f"Técnico: {nombre}",
             ip_asignada=client_ip,
             public_key=client_pubkey,
-            script_mikrotik=wg_conf  # Aquí guardamos el .conf en lugar del script de router
+            script_mikrotik=wg_conf,  # Aquí guardamos el .conf en lugar del script de router
+            subredes_remotas=", ".join(redes) or None,
         )
         self.db.add(nuevo_tunel)
         await self.db.commit()

@@ -9,6 +9,7 @@ from src.infrastructure.models import VpnTunnelModel
 
 class VpnTecnicoCreate(BaseModel):
     nombre: str
+    subredes_remotas: str | None = None
 
 router = APIRouter(prefix="/vpn", tags=["WireGuard VPN"])
 
@@ -17,8 +18,13 @@ async def crear_nuevo_tunel(datos: VpnTunnelCreate, db: AsyncSession = Depends(g
     """Crea un nuevo túnel VPN independiente"""
     service = VPNService(db)
     try:
-        nuevo_tunel = await service.crear_tunel(nombre=datos.nombre)
+        nuevo_tunel = await service.crear_tunel(
+            nombre=datos.nombre,
+            subredes_remotas=datos.subredes_remotas,
+        )
         return nuevo_tunel
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -27,6 +33,12 @@ async def listar_tuneles(db: AsyncSession = Depends(get_db)):
     """Devuelve todos los túneles creados para mostrarlos en el Frontend"""
     result = await db.execute(select(VpnTunnelModel).order_by(VpnTunnelModel.id.desc()))
     return result.scalars().all()
+
+
+@router.get("/subredes/")
+async def listar_subredes_vpn(db: AsyncSession = Depends(get_db)):
+    """Devuelve las LAN que ya se alcanzan mediante peers MikroTik."""
+    return await VPNService(db).listar_subredes_enrutadas()
 
 
 
@@ -75,7 +87,10 @@ async def crear_vpn_para_tecnico(
     """
     service = VPNService(db)
     try:
-        resultado = await service.crear_acceso_tecnico(datos.nombre)
+        resultado = await service.crear_acceso_tecnico(
+            datos.nombre,
+            subredes_remotas=datos.subredes_remotas,
+        )
         
         # Devolvemos un JSON con todo listo para que React lo dibuje
         return {
@@ -85,5 +100,7 @@ async def crear_vpn_para_tecnico(
             "archivo_conf": resultado["archivo_conf"],
             "qr_imagen": resultado["qr_imagen"]  # <--- ¡La magia está aquí!
         }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -1064,6 +1064,7 @@ class WireguardConfigResponse(BaseModel):
 
 class VpnTunnelCreate(BaseModel):
     nombre: str
+    subredes_remotas: Optional[str] = Field(default=None, max_length=1000)
 
 class VpnTunnelResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -1073,5 +1074,6 @@ class VpnTunnelResponse(BaseModel):
     ip_asignada: str
     public_key: str
     script_mikrotik: str
+    subredes_remotas: Optional[str] = None
     is_active: bool
     created_at: datetime

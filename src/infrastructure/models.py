@@ -2021,6 +2021,7 @@ class VpnTunnelModel(Base):
     ip_asignada = Column(String(20), unique=True, nullable=False)
     public_key = Column(String(100), nullable=False)
     script_mikrotik = Column(Text, nullable=True) # Guardamos el script por si quieres volver a verlo
+    subredes_remotas = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=func.now())
 
