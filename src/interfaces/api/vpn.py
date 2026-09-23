@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
-from src.application.services.vpn_service import VPNService
+from src.application.services.vpn_service import VPNService, asegurar_vigilante
 from src.domain.schemas import VpnTunnelCreate, VpnTunnelResponse
 from src.infrastructure.database import get_db
 from src.infrastructure.models import VpnTunnelModel
@@ -32,7 +32,14 @@ async def crear_nuevo_tunel(datos: VpnTunnelCreate, db: AsyncSession = Depends(g
 async def listar_tuneles(db: AsyncSession = Depends(get_db)):
     """Devuelve todos los túneles creados para mostrarlos en el Frontend"""
     result = await db.execute(select(VpnTunnelModel).order_by(VpnTunnelModel.id.desc()))
-    return result.scalars().all()
+    # Los túneles creados antes del vigilante lo reciben al final del script
+    # para que el panel muestre el comando completo listo para copiar.
+    return [
+        VpnTunnelResponse.model_validate(tunel).model_copy(
+            update={"script_mikrotik": asegurar_vigilante(tunel.script_mikrotik)}
+        )
+        for tunel in result.scalars().all()
+    ]
 
 
 @router.get("/subredes/")

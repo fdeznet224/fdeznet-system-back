@@ -1,6 +1,7 @@
 import asyncio
 import requests
 import os
+import time
 from datetime import datetime, timedelta
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
@@ -20,6 +21,11 @@ from src.application.services.mikrotik_reconciliation_service import (
     MikrotikReconciliationService,
 )
 from src.application.services.license_service import verify_license
+from src.application.services.router_monitor_service import (
+    describir_enlace_vpn,
+    evaluar_estado_router,
+)
+from src.application.services.vpn_service import leer_handshakes_wireguard
 from src.application.services.bank_email_service import BankEmailError, BankEmailService
 from src.application.services.storage_service import cleanup_storage, close_period, previous_period
 
@@ -154,14 +160,24 @@ def obtener_usuarios_activos_http_sync(ip, user, password, port=80):
 # ==========================================
 # 1. TAREA DE MONITOREO DE ROUTERS (PING)
 # ==========================================
+# Fallas consecutivas por router; se reinicia con el proceso, lo cual sólo
+# retrasa unos minutos la siguiente alerta de caída.
+_fallas_routers: dict[int, int] = {}
+
+
 async def tarea_monitoreo_routers():
     print("📡 [RED] Monitoreando estado de routers...")
     async with SessionLocal() as db:
         try:
             routers = (await db.execute(select(RouterModel).where(RouterModel.is_active == True))).scalars().all()
+            handshakes = await asyncio.to_thread(leer_handshakes_wireguard)
             for router in routers:
                 mk = MikroTikService(router.ip_vpn, router.user_api, router.pass_api, router.port_api)
-                conectado, msg = await asyncio.to_thread(mk.probar_conexion)
+                respondio, msg = await asyncio.to_thread(mk.probar_conexion)
+                conectado, fallas = evaluar_estado_router(
+                    bool(router.is_online), respondio, _fallas_routers.get(router.id, 0)
+                )
+                _fallas_routers[router.id] = fallas
                 
                 if router.is_online != conectado:
                     router.is_online = conectado
@@ -173,6 +189,10 @@ async def tarea_monitoreo_routers():
                     fecha_fmt = datetime.now().strftime('%d/%m/%Y, %I:%M:%S %p').lower().replace('pm', 'p.m.').replace('am', 'a.m.')
                     
                     mensaje = f" AVISO Router: {router.nombre} está {estado_texto} el {fecha_fmt}"
+                    if not conectado:
+                        detalle = describir_enlace_vpn(handshakes.get(router.ip_vpn), time.time())
+                        if detalle:
+                            mensaje = f"{mensaje}. {detalle}"
                     
                     # Notificar y Loguear
                     await enviar_alertas_whatsapp(mensaje, db)

@@ -1,4 +1,5 @@
 import os
+import re
 import ipaddress
 import urllib.request
 import subprocess
@@ -9,6 +10,83 @@ from src.infrastructure.models import VpnTunnelModel
 import qrcode
 import io
 import base64
+
+MARCA_VIGILANTE = "fdeznet-vpn-watchdog"
+
+
+def construir_vigilante_mikrotik(endpoint: str, puerto: int, gateway: str) -> str:
+    """Script RouterOS que reinicia el túnel si deja de alcanzar la VPS.
+
+    Tras un corte de internet el MikroTik puede quedarse con una conexión UDP
+    vieja en connection tracking y no volver a negociar el túnel. Cada 2
+    minutos se hace ping al gateway VPN; si no responde se borra esa conexión
+    y se reinicia el peer. Es seguro volver a pegarlo: reemplaza el anterior.
+    """
+    destino = f"{endpoint}:{puerto}"
+    acciones = (
+        f'/ip firewall connection remove [find where protocol=\\"udp\\" dst-address=\\"{destino}\\"]; '
+        '/interface wireguard peers disable [find where interface=\\"wg-fdeznet\\"]; '
+        ':delay 2s; '
+        '/interface wireguard peers enable [find where interface=\\"wg-fdeznet\\"]; '
+        ':log warning \\"FdezNet VPN: tunel reiniciado por el vigilante\\"'
+    )
+    return textwrap.dedent(f"""
+        # --- Vigilante de reconexion VPN (se puede volver a pegar sin duplicar) ---
+        /system scheduler remove [find name="{MARCA_VIGILANTE}"]
+        /system script remove [find name="{MARCA_VIGILANTE}"]
+        /system script add name="{MARCA_VIGILANTE}" policy=read,write,test source=":if ([/ping {gateway} count=3 interval=1s] = 0) do={{ {acciones} }}"
+        /system scheduler add name="{MARCA_VIGILANTE}" interval=2m start-time=startup policy=read,write,test on-event="/system script run {MARCA_VIGILANTE}"
+    """).strip()
+
+
+def asegurar_vigilante(script: str | None) -> str | None:
+    """Agrega el vigilante a scripts de MikroTik generados antes de incluirlo."""
+    if not script or "[Interface]" in script or MARCA_VIGILANTE in script:
+        return script
+    endpoint = re.search(r"endpoint-address=(\S+)", script)
+    puerto = re.search(r"endpoint-port=(\d+)", script)
+    red = re.search(r"allowed-address=(\d+\.\d+\.\d+)\.0/24", script)
+    if not (endpoint and puerto and red):
+        return script
+    vigilante = construir_vigilante_mikrotik(
+        endpoint.group(1), int(puerto.group(1)), f"{red.group(1)}.1"
+    )
+    return f"{script.rstrip()}\n\n{vigilante}"
+
+
+def parsear_handshakes(dump: str) -> dict[str, int]:
+    """Convierte `wg show <if> dump` en {ip_vpn: último handshake (epoch)}."""
+    handshakes: dict[str, int] = {}
+    for linea in dump.splitlines()[1:]:
+        campos = linea.split("\t")
+        if len(campos) < 5:
+            continue
+        try:
+            ultimo = int(campos[4])
+        except ValueError:
+            continue
+        for red in campos[3].split(","):
+            red = red.strip()
+            if red.endswith("/32"):
+                handshakes[red[:-3]] = ultimo
+    return handshakes
+
+
+def leer_handshakes_wireguard() -> dict[str, int]:
+    """Lee los handshakes de la VPS; devuelve {} si WireGuard no está disponible."""
+    comando = [
+        os.getenv("SUDO_BIN", "/usr/bin/sudo"),
+        os.getenv("WG_BIN", "/usr/bin/wg"),
+        "show",
+        os.getenv("WG_INTERFACE", "wg0"),
+        "dump",
+    ]
+    try:
+        salida = subprocess.check_output(comando, stderr=subprocess.DEVNULL, timeout=5)
+    except Exception:
+        return {}
+    return parsear_handshakes(salida.decode("utf-8"))
+
 
 class VPNService:
     def __init__(self, db: AsyncSession):
@@ -218,6 +296,9 @@ class VPNService:
             /ip dns set servers=8.8.8.8,1.1.1.1
             /system note set note="VPN vinculada al sistema de gestión ISP"
         """).strip()
+        script_mikrotik += "\n\n" + construir_vigilante_mikrotik(
+            self.SERVER_ENDPOINT, self.SERVER_PORT, f"{self.VPN_SUBNET_BASE}1"
+        )
 
         # 5. Guardar en la Base de Datos
         nuevo_tunel = VpnTunnelModel(
