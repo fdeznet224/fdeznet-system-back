@@ -160,3 +160,11 @@ cargo de reconexión, que se suma a la factura al cortar.
 - Bot de WhatsApp: cuando `downloadMedia()` de whatsapp-web.js 1.34.7 falla
   (errores `t`/`r` con WhatsApp Web 2.3000.x), la imagen se lee de la caché
   de WhatsApp Web, igual que la rama main de la librería.
+
+## Versión 2.20.6 (28 de septiembre de 2026)
+
+Al cortar, la reconexión que se agregaba a una mensualidad sin renglones
+(facturas anteriores a los conceptos) absorbía la mensualidad: el WhatsApp
+mostraba "Cargo por reconexión $220" en vez de "Mensualidad de septiembre
+$190" + "Cargo por reconexión $30". Al cuadrar, lo que falta en una
+mensualidad sin renglón de internet se registra como internet.

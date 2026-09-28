@@ -19,6 +19,10 @@ class _Resultado:
 class _DB:
     def __init__(self, conceptos):
         self.conceptos = conceptos
+        self.agregados = []
+
+    def add(self, objeto):
+        self.agregados.append(objeto)
 
     async def execute(self, _statement):
         return _Resultado(self.conceptos)
@@ -113,3 +117,29 @@ def test_factura_cuadrada_no_cambia_nada():
 
     assert _cuadrar(factura, [internet]) == Decimal("0.00")
     assert internet.estado == "abonado"
+
+
+def test_reconexion_en_factura_sin_renglones_no_absorbe_la_mensualidad():
+    """Caso Alejandro Zúñiga: al cortar, la mensualidad de septiembre (190)
+    sin renglones se mostraba como "Cargo por reconexión $220"."""
+    reconexion = _concepto(260, "reconexion", "30.00", "30.00")
+    factura = SimpleNamespace(
+        id=884,
+        cliente_id=225,
+        servicio_id=180,
+        estado="vencida",
+        tipo_factura="mensual",
+        saldo_pendiente=Decimal("220.00"),
+        afecta_corte=True,
+        descripcion="19 días con servicio",
+        periodo_desde=None,
+    )
+    db = _DB([reconexion])
+
+    diferencia = asyncio.run(FinanceService(db).cuadrar_conceptos(factura))
+
+    assert diferencia == Decimal("190.00")
+    assert reconexion.saldo_pendiente == Decimal("30.00")
+    [internet] = db.agregados
+    assert internet.tipo == "internet"
+    assert internet.saldo_pendiente == Decimal("190.00")

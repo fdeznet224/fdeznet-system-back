@@ -122,6 +122,28 @@ class FinanceService:
                 concepto.saldo_pendiente = (saldo - quita).quantize(CENTAVO)
                 por_quitar -= quita
                 self._estado_concepto(concepto)
+        elif (
+            not any(
+                str(c.tipo or "").startswith("internet") for c in conceptos
+            )
+            and getattr(factura, "tipo_factura", None) in {"mensual", "prorrateo"}
+        ):
+            # Factura anterior a los renglones a la que se le sumó un cargo
+            # (p. ej. la reconexión al cortar): lo que falta es la
+            # mensualidad, no se debe inflar el cargo.
+            self.db.add(FacturaConceptoModel(
+                factura_id=factura.id,
+                cliente_id=factura.cliente_id,
+                servicio_id=factura.servicio_id,
+                tipo="internet",
+                concepto="Servicio de internet",
+                descripcion=factura.descripcion,
+                monto_original=diferencia,
+                saldo_pendiente=diferencia,
+                estado="facturado",
+                afecta_corte=bool(factura.afecta_corte),
+                fecha_cargo=factura.periodo_desde or date.today(),
+            ))
         else:
             concepto = ordenados[0]
             concepto.saldo_pendiente = (
