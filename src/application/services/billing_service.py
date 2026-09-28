@@ -673,11 +673,14 @@ class BillingService:
                 )
             )
             if cliente.telefono and debe_notificar:
+                await self.db.flush()
+                estado_cuenta = await self.estado_cuenta_cliente(cliente.id)
                 exito = await notificador.notificar(
                     "nueva_factura",
                     cliente.id,
                     variables_extra={
                         **self._variables_detalle_factura(nueva_factura),
+                        **self._variables_total_a_pagar(estado_cuenta),
                         "monto": f"${nueva_factura.total}",
                         "folio": str(nueva_factura.id),
                         "mes_actual": mes_actual_str,
@@ -1120,6 +1123,32 @@ class BillingService:
                 f"{hasta.strftime('%d/%m/%Y')}"
             )
         return "Prorrateo"
+
+    @staticmethod
+    def _variables_total_a_pagar(estado_cuenta: dict) -> dict:
+        """{total_a_pagar} y {desglose_total} para los mensajes al cliente.
+
+        El desglose solo se llena cuando hay algo más que una sola línea
+        (meses atrasados, servicios extra, reconexión); así no repite el
+        monto de la factura cuando es lo único que se debe.
+        """
+        total = Decimal(estado_cuenta.get("total") or 0)
+        detalle = estado_cuenta.get("detalle") or []
+        desglose = ""
+        if len(detalle) > 1:
+            lineas = [
+                f"• {item['texto']}"
+                + (" (este mes)" if item.get("actual") else "")
+                + f": ${Decimal(item.get('monto') or 0):.2f}"
+                for item in detalle
+            ]
+            desglose = "\n".join(
+                [f"📋 *Total a pagar: ${total:.2f}*", *lineas]
+            )
+        return {
+            "total_a_pagar": f"${total:.2f}",
+            "desglose_total": desglose,
+        }
 
     @staticmethod
     def _mensualidad_actual(facturas):

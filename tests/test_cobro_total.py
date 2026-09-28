@@ -270,3 +270,37 @@ def test_mes_actual_es_la_mensualidad_mas_reciente():
     ) is octubre
     assert BillingService._mensualidad_actual([octubre]) is octubre
     assert BillingService._mensualidad_actual([prorrateo]) is None
+
+
+def test_mensaje_de_factura_lleva_total_y_desglose_si_hay_atrasos():
+    estado = {
+        "total": Decimal("611.29"),
+        "detalle": [
+            {"texto": "Mensualidad de agosto 2026", "monto": Decimal("261.29"), "actual": False},
+            {"texto": "Mensualidad de octubre 2026", "monto": Decimal("300.00"), "actual": True},
+            {"texto": "Servicio extra: IPTV", "monto": Decimal("50.00"), "actual": False},
+        ],
+    }
+
+    variables = BillingService._variables_total_a_pagar(estado)
+
+    assert variables["total_a_pagar"] == "$611.29"
+    assert variables["desglose_total"].splitlines() == [
+        "📋 *Total a pagar: $611.29*",
+        "• Mensualidad de agosto 2026: $261.29",
+        "• Mensualidad de octubre 2026 (este mes): $300.00",
+        "• Servicio extra: IPTV: $50.00",
+    ]
+
+
+def test_sin_atrasos_ni_extras_no_repite_el_monto():
+    estado = {
+        "total": Decimal("300.00"),
+        "detalle": [
+            {"texto": "Mensualidad de octubre 2026", "monto": Decimal("300.00"), "actual": True},
+        ],
+    }
+
+    variables = BillingService._variables_total_a_pagar(estado)
+
+    assert variables == {"total_a_pagar": "$300.00", "desglose_total": ""}

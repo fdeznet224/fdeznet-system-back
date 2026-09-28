@@ -185,6 +185,8 @@ class NotificationService:
             "ajuste_suspension": "$0.00",
             "cargos_adicionales": "$0.00",
             "total_factura": "$0.00",
+            "total_a_pagar": "$0.00",
+            "desglose_total": "",
         }
 
         # 5. UNIFICAR DATOS (Las variables de 'variables_extra' sobrescriben los valores por defecto)
@@ -203,6 +205,16 @@ class NotificationService:
             and detalle_cobro not in mensaje_formateado
         ):
             mensaje_formateado = f"{mensaje_formateado}\n\n{detalle_cobro}"
+        # Si hay atrasos o extras, el cliente ve el total real a pagar aunque
+        # su plantilla no use {total_a_pagar} ni {desglose_total}.
+        desglose_total = str(datos_finales.get("desglose_total") or "").strip()
+        if (
+            tipo_evento == "nueva_factura"
+            and desglose_total
+            and "{desglose_total}" not in texto_plantilla
+            and "{total_a_pagar}" not in texto_plantilla
+        ):
+            mensaje_formateado = f"{mensaje_formateado}\n\n{desglose_total}"
         
         # 7. ENCOLAR TAREA HACIA EL BOT DE WHATSAPP
         registro = MensajeChatModel(
