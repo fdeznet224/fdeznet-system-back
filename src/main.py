@@ -16,6 +16,7 @@ from src.jobs import (
     tarea_cron_unificada,
     tarea_mantenimiento_almacenamiento,
     tarea_monitoreo_routers,
+    tarea_reactivar_servicios_pagados,
     tarea_sincronizar_clientes,
     tarea_verificar_licencia,
 )
@@ -152,6 +153,14 @@ async def lifespan(app: FastAPI):
     # Monitoreo (1 min), Clientes (3 min), Facturación/Cortes (1 hora/día)
     scheduler.add_job(tarea_monitoreo_routers, 'interval', minutes=1)
     scheduler.add_job(tarea_sincronizar_clientes, 'interval', minutes=3)
+    scheduler.add_job(
+        tarea_reactivar_servicios_pagados,
+        "interval",
+        minutes=10,
+        id="reactivar_servicios_pagados",
+        coalesce=True,
+        max_instances=1,
+    )
     scheduler.add_job(
         tarea_conciliar_mikrotik,
         "interval",

@@ -272,6 +272,27 @@ async def tarea_sincronizar_clientes():
 
 
 # ==========================================
+# 2.4 REACTIVAR SERVICIOS YA PAGADOS
+# ==========================================
+async def tarea_reactivar_servicios_pagados():
+    """Reconecta suspendidos por cobranza que ya no deben nada vencido."""
+    async with SessionLocal() as db:
+        try:
+            return await BillingService(db).reactivar_servicios_sin_deuda()
+        except Exception as exc:
+            await db.rollback()
+            db.add(
+                LogCronjobModel(
+                    nivel="ERROR",
+                    origen="ReactivacionPagados",
+                    mensaje=f"Fallo al revisar suspendidos pagados: {exc}",
+                )
+            )
+            await db.commit()
+            return {"revisados": 0, "reactivados": 0, "errores": 1}
+
+
+# ==========================================
 # 2.5 CONCILIACIÓN BD -> MIKROTIK
 # ==========================================
 async def tarea_conciliar_mikrotik():

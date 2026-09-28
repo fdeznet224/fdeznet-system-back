@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 import logging
+from types import SimpleNamespace
 from typing import Optional, List
 from dateutil.relativedelta import relativedelta
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,7 @@ from src.infrastructure.models import (
     ServicioModel,
     SuspensionFacturacionModel,
     ConfiguracionSistema,
+    LogCronjobModel,
 )
 
 # Servicios e Helpers
@@ -749,23 +751,8 @@ class BillingService:
                 ),
             )
             .where(
-                FacturaModel.estado.in_(["pendiente", "vencida"]),
-                FacturaModel.saldo_pendiente > 0,
-                FacturaModel.afecta_corte.is_(True),
-                FacturaModel.tipo_factura != "prorrateo",
+                *self._condiciones_deuda_cortable(hoy),
                 ClienteModel.estado != "eliminado",
-                or_(
-                    and_(
-                        # La fecha límite es el último día completo para pagar;
-                        # el corte procede a partir del día siguiente.
-                        FacturaModel.fecha_limite_corte < hoy,
-                        FacturaModel.es_promesa_activa.is_(False),
-                    ),
-                    and_(
-                        FacturaModel.es_promesa_activa.is_(True),
-                        FacturaModel.fecha_promesa_pago < hoy,
-                    ),
-                ),
             )
         )
 
@@ -901,6 +888,91 @@ class BillingService:
 
         reporte["clientes_suspendidos"] = len(clientes_suspendidos)
         await self.db.commit()
+        return reporte
+
+    async def reactivar_servicios_sin_deuda(self) -> dict[str, int]:
+        """Reconecta servicios cortados por pago que ya no deben nada vencido.
+
+        Repara pagos cuya reconexión falló en MikroTik (router caído o
+        timeout) y servicios que quedaron suspendidos con la regla anterior.
+        Sólo toca suspensiones abiertas por el motor de cobranza; las
+        suspensiones manuales se respetan.
+        """
+        hoy = date.today()
+        servicios = (
+            await self.db.execute(
+                select(ServicioModel)
+                .join(
+                    SuspensionFacturacionModel,
+                    SuspensionFacturacionModel.servicio_id == ServicioModel.id,
+                )
+                .where(
+                    ServicioModel.estado == "suspendido",
+                    SuspensionFacturacionModel.fecha_fin.is_(None),
+                    SuspensionFacturacionModel.motivo_inicio.in_(
+                        ["falta_pago", "promesa_incumplida"]
+                    ),
+                )
+                .order_by(ServicioModel.id)
+            )
+        ).unique().scalars().all()
+
+        reporte = {"revisados": len(servicios), "reactivados": 0, "errores": 0}
+        for servicio in servicios:
+            referencia = SimpleNamespace(
+                servicio_id=servicio.id,
+                cliente_id=servicio.cliente_id,
+            )
+            if await self._servicio_tiene_deuda_pendiente(referencia):
+                continue
+
+            if not await self._reactivar_en_mikrotik(servicio):
+                reporte["errores"] += 1
+                self.db.add(LogCronjobModel(
+                    nivel="ERROR",
+                    origen="ReactivacionPagados",
+                    mensaje=(
+                        f"Servicio {servicio.id} sin deuda vencida sigue "
+                        "suspendido: MikroTik no confirmó la reconexión; "
+                        "se reintentará."
+                    ),
+                ))
+                await self.db.commit()
+                continue
+
+            cliente = await self.db.get(ClienteModel, servicio.cliente_id)
+            await self._cerrar_suspension_facturacion(servicio, hoy, "pago")
+            servicio.estado = "activo"
+            servicio.ultima_reactivacion_origen = "automatico"
+            servicio.ultima_reactivacion_en = datetime.now()
+            await self._sincronizar_estado_cliente(cliente.id)
+            await self._registrar_cargo_reconexion(cliente, servicio, "pago")
+            self.db.add(LogCronjobModel(
+                nivel="WARNING",
+                origen="ReactivacionPagados",
+                mensaje=(
+                    f"Servicio {servicio.id} ({cliente.nombre}) reactivado: "
+                    "no tiene deuda vencida."
+                ),
+            ))
+            await self.db.commit()
+            reporte["reactivados"] += 1
+
+            if cliente.telefono:
+                try:
+                    await NotificationService(self.db).notificar(
+                        tipo_evento="reconexion",
+                        cliente_id=cliente.id,
+                        clave_dedupe=(
+                            f"servicio:{servicio.id}:reconexion:"
+                            f"{hoy.isoformat()}"
+                        ),
+                    )
+                except Exception as exc:
+                    print(
+                        "⚠️ Reconexión confirmada, pero falló WhatsApp "
+                        f"para el cliente {cliente.id}: {exc}"
+                    )
         return reporte
 
     async def registrar_pago_completo(
@@ -1193,6 +1265,12 @@ class BillingService:
         ).scalar_one()
         if total_conceptos == 0:
             return Decimal(factura.saldo_pendiente or 0) == 0
+        if Decimal(factura.saldo_pendiente or 0) == 0:
+            # El saldo de la factura manda: el ajuste por días suspendidos y
+            # los descuentos reducen el total sin tocar los renglones, y ese
+            # remanente no es deuda que deba impedir la reconexión.
+            factura.afecta_corte = False
+            return True
 
         internet_pendiente = (
             await self.db.execute(
@@ -1366,16 +1444,39 @@ class BillingService:
 
         return cantidad > 0
 
+    @staticmethod
+    def _condiciones_deuda_cortable(hoy: date) -> list:
+        """Deuda que justifica un corte.
+
+        El corte y la reactivación usan este mismo criterio: si no, una
+        mensualidad nueva que todavía no vence mantiene suspendido a un
+        cliente que ya pagó todo lo vencido.
+        """
+        return [
+            FacturaModel.estado.in_(["pendiente", "vencida"]),
+            FacturaModel.saldo_pendiente > 0,
+            FacturaModel.afecta_corte.is_(True),
+            FacturaModel.tipo_factura != "prorrateo",
+            or_(
+                and_(
+                    # La fecha límite es el último día completo para pagar;
+                    # el corte procede a partir del día siguiente.
+                    FacturaModel.fecha_limite_corte < hoy,
+                    FacturaModel.es_promesa_activa.is_(False),
+                ),
+                and_(
+                    FacturaModel.es_promesa_activa.is_(True),
+                    FacturaModel.fecha_promesa_pago < hoy,
+                ),
+            ),
+        ]
+
     async def _servicio_tiene_deuda_pendiente(
         self,
         factura,
         excluir_factura_id: int | None = None,
     ) -> bool:
-        condiciones = [
-            FacturaModel.estado.in_(["pendiente", "vencida"]),
-            FacturaModel.saldo_pendiente > 0,
-            FacturaModel.afecta_corte.is_(True),
-        ]
+        condiciones = self._condiciones_deuda_cortable(date.today())
         if factura.servicio_id:
             condiciones.append(
                 FacturaModel.servicio_id == factura.servicio_id
