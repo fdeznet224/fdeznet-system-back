@@ -172,29 +172,57 @@ def test_reconexion_desactivada_con_cargo_cero():
     assert db.agregados == []
 
 
-@pytest.mark.parametrize(
-    "tipo, factura, esperado",
-    [
-        ("internet", {"es_prorrateada": True}, "Prorrateo"),
-        ("internet", {"periodo_desde": date(2026, 9, 15)}, "Mensualidad 09/2026"),
-        ("internet_prorrateado", {}, "Prorrateo"),
-        ("reconexion", {}, "Reconexión"),
-        ("servicio_adicional", {}, "Router extra"),
-    ],
-)
-def test_etiquetas_del_total(tipo, factura, esperado):
-    datos = {
+def _factura_texto(**datos):
+    base = {
+        "id": 598,
         "es_prorrateada": False,
         "tipo_factura": "mensual",
         "mes_correspondiente": None,
-        "periodo_desde": None,
-        **factura,
+        "concepto": None,
+        "periodo_desde": date(2026, 7, 15),
+        "periodo_hasta": date(2026, 8, 14),
+        "fecha_vencimiento": date(2026, 7, 15),
     }
-    concepto = SimpleNamespace(tipo=tipo, concepto="Router extra")
+    return SimpleNamespace(**{**base, **datos})
 
-    assert BillingService._etiqueta_concepto(
-        concepto, SimpleNamespace(**datos)
-    ) == esperado
+
+def test_factura_vieja_sin_renglones_dice_el_mes_no_el_folio():
+    textos = BillingService._textos_factura(_factura_texto(), [])
+
+    assert textos == [("Mensualidad de julio 2026", True)]
+
+
+def test_textos_de_renglones_en_palabras():
+    conceptos = [
+        SimpleNamespace(tipo="internet", concepto="Servicio de internet"),
+        SimpleNamespace(tipo="servicio_adicional", concepto="IPTV"),
+        SimpleNamespace(tipo="reconexion", concepto="Cargo por reconexión"),
+        SimpleNamespace(tipo="internet_prorrateado", concepto="Prorrateo"),
+    ]
+
+    textos = BillingService._textos_factura(
+        _factura_texto(periodo_desde=date(2026, 10, 15)), conceptos
+    )
+
+    assert textos == [
+        ("Mensualidad de octubre 2026", True),
+        ("Servicio extra: IPTV", False),
+        ("Cargo por reconexión", False),
+        ("Prorrateo de instalación", False),
+    ]
+
+
+def test_prorrateo_muestra_sus_fechas():
+    factura = _factura_texto(
+        es_prorrateada=True,
+        tipo_factura="prorrateo",
+        periodo_desde=date(2026, 9, 3),
+        periodo_hasta=date(2026, 9, 14),
+    )
+
+    assert BillingService._textos_factura(factura, []) == [
+        ("Prorrateo del 03/09 al 14/09/2026", True)
+    ]
 
 
 def test_sincronizacion_offline_acepta_pago_de_cliente(monkeypatch):

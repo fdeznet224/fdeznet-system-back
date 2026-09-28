@@ -1086,21 +1086,49 @@ class BillingService:
     # COBRO TOTAL DEL CLIENTE (un solo cobro)
     # ==========================================
     @staticmethod
-    def _etiqueta_concepto(concepto, factura) -> str:
-        if concepto.tipo == "internet":
-            if factura.es_prorrateada or factura.tipo_factura == "prorrateo":
-                return "Prorrateo"
-            periodo = factura.mes_correspondiente or (
-                factura.periodo_desde.strftime("%m/%Y")
-                if factura.periodo_desde
-                else None
+    def _mes_factura(factura) -> str:
+        fecha = factura.periodo_desde or factura.fecha_vencimiento
+        if fecha:
+            return f"{MESES_EN_ESPANOL[fecha.month - 1].lower()} {fecha.year}"
+        return factura.mes_correspondiente or "sin fecha"
+
+    @classmethod
+    def _texto_prorrateo(cls, desde, hasta) -> str:
+        if desde and hasta:
+            return (
+                f"Prorrateo del {desde.strftime('%d/%m')} al "
+                f"{hasta.strftime('%d/%m/%Y')}"
             )
-            return f"Mensualidad {periodo}" if periodo else "Mensualidad"
-        if concepto.tipo == "internet_prorrateado":
-            return "Prorrateo"
-        if concepto.tipo == "reconexion":
-            return "Reconexión"
-        return concepto.concepto
+        return "Prorrateo"
+
+    @classmethod
+    def _textos_factura(cls, factura, conceptos) -> list[tuple[str, bool]]:
+        """Qué se cobra de esta factura, en palabras. (texto, es_internet)."""
+        es_prorrateo = bool(
+            factura.es_prorrateada or factura.tipo_factura == "prorrateo"
+        )
+        mensualidad = (
+            cls._texto_prorrateo(factura.periodo_desde, factura.periodo_hasta)
+            if es_prorrateo
+            else f"Mensualidad de {cls._mes_factura(factura)}"
+        )
+        if not conceptos:
+            if factura.tipo_factura in {"mensual", "prorrateo"} or es_prorrateo:
+                return [(mensualidad, True)]
+            return [(factura.concepto or "Cargo adicional", False)]
+        textos = []
+        for concepto in conceptos:
+            if concepto.tipo == "internet":
+                textos.append((mensualidad, True))
+            elif concepto.tipo == "internet_prorrateado":
+                textos.append(("Prorrateo de instalación", False))
+            elif concepto.tipo == "servicio_adicional":
+                textos.append((f"Servicio extra: {concepto.concepto}", False))
+            elif concepto.tipo == "reconexion":
+                textos.append(("Cargo por reconexión", False))
+            else:
+                textos.append((concepto.concepto, False))
+        return textos
 
     async def estado_cuenta_cliente(self, cliente_id: int) -> dict:
         """Total a pagar del cliente, listo para un solo cobro.
@@ -1139,7 +1167,30 @@ class BillingService:
             )
         ).scalars().all()
 
-        incluye: list[str] = []
+        hoy = date.today()
+        varios_servicios = len({f.servicio_id for f in facturas}) > 1
+        alias = {}
+        if varios_servicios:
+            alias = {
+                s.id: s.alias
+                for s in (
+                    await self.db.execute(
+                        select(ServicioModel).where(
+                            ServicioModel.cliente_id == cliente_id
+                        )
+                    )
+                ).scalars().all()
+            }
+        actual = next(
+            (
+                f for f in reversed(facturas)
+                if f.periodo_desde and f.periodo_hasta
+                and f.periodo_desde <= hoy <= f.periodo_hasta
+                and not (f.es_prorrateada or f.tipo_factura == "prorrateo")
+            ),
+            None,
+        )
+        detalle: list[dict] = []
         for factura in facturas:
             conceptos = (
                 await self.db.execute(
@@ -1151,14 +1202,21 @@ class BillingService:
                     .order_by(FacturaConceptoModel.id)
                 )
             ).scalars().all()
-            etiquetas = [
-                self._etiqueta_concepto(c, factura) for c in conceptos
-            ] or [factura.concepto or f"Factura #{factura.id}"]
-            for etiqueta in etiquetas:
-                if etiqueta not in incluye:
-                    incluye.append(etiqueta)
+            sufijo = (
+                f" ({alias.get(factura.servicio_id)})"
+                if varios_servicios and alias.get(factura.servicio_id)
+                else ""
+            )
+            for texto, es_internet in self._textos_factura(factura, conceptos):
+                detalle.append({
+                    "texto": texto + (sufijo if es_internet else ""),
+                    "actual": es_internet and factura is actual,
+                })
+        incluye = []
+        for item in detalle:
+            if item["texto"] not in incluye:
+                incluye.append(item["texto"])
 
-        hoy = date.today()
         vencida = next(
             (
                 f for f in facturas
@@ -1175,6 +1233,7 @@ class BillingService:
                 Decimal("0.00"),
             ),
             "incluye": incluye,
+            "detalle": detalle,
             "facturas": [
                 {"id": f.id, "saldo_pendiente": f.saldo_pendiente}
                 for f in facturas
