@@ -503,7 +503,11 @@ def test_reactivation_uses_each_service_plan_price(
 
     class DbFalsa:
         def __init__(self):
-            self.resultados = [Resultado(intervalos), Resultado(Decimal("0.00"))]
+            self.resultados = [
+                Resultado(intervalos),
+                Resultado(Decimal("0.00")),
+                Resultado([]),  # renglones de la factura
+            ]
 
         async def execute(self, _consulta):
             return self.resultados.pop(0)
@@ -582,7 +586,11 @@ def test_calendar_cycle_charges_used_and_remaining_days_without_moving_due_date(
 
     class DbFalsa:
         def __init__(self):
-            self.resultados = [Resultado(registros), Resultado(Decimal("0.00"))]
+            self.resultados = [
+                Resultado(registros),
+                Resultado(Decimal("0.00")),
+                Resultado([]),  # renglones de la factura
+            ]
 
         async def execute(self, _consulta):
             return self.resultados.pop(0)
@@ -647,6 +655,7 @@ def test_full_suspended_cycle_is_closed_without_marking_it_paid():
                 Resultado(intervalos),
                 Resultado(Decimal("0.00")),
                 Resultado([]),
+                Resultado([]),  # renglones de la factura
             ]
 
         async def execute(self, _consulta):

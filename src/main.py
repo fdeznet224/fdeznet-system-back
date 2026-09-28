@@ -17,6 +17,7 @@ from src.jobs import (
     tarea_mantenimiento_almacenamiento,
     tarea_monitoreo_routers,
     tarea_reactivar_servicios_pagados,
+    tarea_verificar_cuadre_facturas,
     tarea_sincronizar_clientes,
     tarea_verificar_licencia,
 )
@@ -153,6 +154,14 @@ async def lifespan(app: FastAPI):
     # Monitoreo (1 min), Clientes (3 min), Facturación/Cortes (1 hora/día)
     scheduler.add_job(tarea_monitoreo_routers, 'interval', minutes=1)
     scheduler.add_job(tarea_sincronizar_clientes, 'interval', minutes=3)
+    scheduler.add_job(
+        tarea_verificar_cuadre_facturas,
+        "interval",
+        minutes=60,
+        id="verificar_cuadre_facturas",
+        coalesce=True,
+        max_instances=1,
+    )
     scheduler.add_job(
         tarea_reactivar_servicios_pagados,
         "interval",

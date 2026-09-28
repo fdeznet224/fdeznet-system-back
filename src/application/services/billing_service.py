@@ -896,7 +896,7 @@ class BillingService:
         Repara pagos cuya reconexión falló en MikroTik (router caído o
         timeout) y servicios que quedaron suspendidos con la regla anterior.
         Sólo toca suspensiones abiertas por el motor de cobranza; las
-        suspensiones manuales se respetan.
+        suspensiones manuales se respetan. No cobra reconexión.
         """
         hoy = date.today()
         servicios = (
@@ -946,7 +946,8 @@ class BillingService:
             servicio.ultima_reactivacion_origen = "automatico"
             servicio.ultima_reactivacion_en = datetime.now()
             await self._sincronizar_estado_cliente(cliente.id)
-            await self._registrar_cargo_reconexion(cliente, servicio, "pago")
+            # Sin cargo de reconexión: si el servicio llegó hasta aquí, el
+            # cliente ya pagó y la reconexión falló del lado del sistema.
             self.db.add(LogCronjobModel(
                 nivel="WARNING",
                 origen="ReactivacionPagados",

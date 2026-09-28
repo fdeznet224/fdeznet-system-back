@@ -65,6 +65,122 @@ class FinanceService:
             raise ValueError("El monto debe ser mayor a cero")
         return monto
 
+    async def cuadrar_conceptos(self, factura: FacturaModel) -> Decimal:
+        """Hace que los renglones sumen exactamente el saldo de la factura.
+
+        Regla de cobranza: el saldo de la factura manda. Los ajustes por días
+        suspendidos y los descuentos se descuentan primero de internet; si la
+        factura sube (p. ej. se reconecta antes), la diferencia vuelve a
+        internet. Devuelve la diferencia corregida (0 si ya cuadraba).
+        """
+        conceptos = (
+            await self.db.execute(
+                select(FacturaConceptoModel)
+                .where(
+                    FacturaConceptoModel.factura_id == factura.id,
+                    FacturaConceptoModel.estado != "consolidado",
+                )
+                .with_for_update()
+            )
+        ).scalars().all()
+        if not conceptos:
+            return Decimal("0.00")
+
+        if factura.estado == "anulada":
+            ajuste = Decimal("0.00")
+            for concepto in conceptos:
+                ajuste -= Decimal(concepto.saldo_pendiente or 0)
+                concepto.saldo_pendiente = Decimal("0.00")
+                concepto.estado = "anulado"
+            return ajuste.quantize(CENTAVO)
+
+        objetivo = self.dinero(factura.saldo_pendiente or 0, permitir_cero=True)
+        actual = sum(
+            (Decimal(c.saldo_pendiente or 0) for c in conceptos),
+            Decimal("0.00"),
+        )
+        diferencia = (objetivo - actual).quantize(CENTAVO)
+        if diferencia == 0:
+            return diferencia
+
+        def prioridad(concepto):
+            es_internet = str(concepto.tipo or "").startswith("internet")
+            return (
+                not es_internet,
+                not concepto.afecta_corte,
+                -(concepto.id or 0),
+            )
+
+        ordenados = sorted(conceptos, key=prioridad)
+        if diferencia < 0:
+            por_quitar = -diferencia
+            for concepto in ordenados:
+                if por_quitar <= 0:
+                    break
+                saldo = Decimal(concepto.saldo_pendiente or 0)
+                quita = min(saldo, por_quitar)
+                concepto.saldo_pendiente = (saldo - quita).quantize(CENTAVO)
+                por_quitar -= quita
+                self._estado_concepto(concepto)
+        else:
+            concepto = ordenados[0]
+            concepto.saldo_pendiente = (
+                Decimal(concepto.saldo_pendiente or 0) + diferencia
+            ).quantize(CENTAVO)
+            if concepto.saldo_pendiente > Decimal(concepto.monto_original or 0):
+                concepto.monto_original = concepto.saldo_pendiente
+            self._estado_concepto(concepto)
+        return diferencia
+
+    async def verificar_cuadre_facturas(self) -> list[tuple[int, Decimal]]:
+        """Repara facturas cuyos renglones no suman su saldo.
+
+        Es la red de seguridad de la regla "el saldo de la factura manda":
+        si alguna operación futura olvida cuadrar, se corrige aquí antes de
+        que afecte cortes o reconexiones. Devuelve (factura_id, diferencia).
+        """
+        vigentes = (
+            FacturaConceptoModel.factura_id == FacturaModel.id,
+            FacturaConceptoModel.estado.notin_(["consolidado", "anulado"]),
+        )
+        suma_conceptos = (
+            select(func.coalesce(func.sum(FacturaConceptoModel.saldo_pendiente), 0))
+            .where(*vigentes)
+            .scalar_subquery()
+        )
+        facturas = (
+            await self.db.execute(
+                select(FacturaModel)
+                .where(
+                    FacturaModel.estado != "consolidada",
+                    select(FacturaConceptoModel.id).where(*vigentes).exists(),
+                    FacturaModel.saldo_pendiente != suma_conceptos,
+                )
+                .order_by(FacturaModel.id)
+                .with_for_update()
+            )
+        ).scalars().all()
+        reparadas = []
+        for factura in facturas:
+            diferencia = await self.cuadrar_conceptos(factura)
+            if diferencia:
+                reparadas.append((factura.id, diferencia))
+        return reparadas
+
+    @staticmethod
+    def _estado_concepto(concepto) -> None:
+        saldo = Decimal(concepto.saldo_pendiente or 0)
+        if saldo == 0:
+            concepto.estado = (
+                "pagado"
+                if concepto.estado in {"abonado", "pagado"}
+                else "ajustado"
+            )
+        elif saldo >= Decimal(concepto.monto_original or 0):
+            concepto.estado = "facturado"
+        else:
+            concepto.estado = "abonado"
+
     @staticmethod
     def normalizar_metodo(valor: str) -> str:
         metodo = re.sub(r"[^a-z0-9]+", "_", (valor or "").strip().lower()).strip("_")
@@ -375,6 +491,7 @@ class FinanceService:
                 and factura.fecha_vencimiento < date.today()
                 else "pendiente"
             )
+        await self.cuadrar_conceptos(factura)
         return factura
 
     async def normalizar_facturas_suspendidas(
@@ -472,6 +589,7 @@ class FinanceService:
             motivo=motivo.strip(),
         )
         self.db.add(registro)
+        await self.cuadrar_conceptos(factura)
         await self.db.commit()
         await self.db.refresh(registro)
         return registro, factura
@@ -568,6 +686,7 @@ class FinanceService:
         factura.fecha_anulacion = datetime.now()
         factura.es_promesa_activa = False
         await self._resolver_promesas(factura.id, "cancelada")
+        await self.cuadrar_conceptos(factura)
 
         servicio = None
         if (
@@ -689,6 +808,7 @@ class FinanceService:
             await self.db.delete(aplicacion)
         if restaura_internet:
             factura.afecta_corte = True
+        await self.cuadrar_conceptos(factura)
         pago.estado = "anulado"
         pago.motivo_anulacion = motivo.strip()
         pago.anulado_por_id = usuario_id

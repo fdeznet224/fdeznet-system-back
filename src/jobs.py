@@ -17,6 +17,7 @@ from src.infrastructure.models import (
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.infrastructure.whatsapp_client import whatsapp_queue
 from src.application.services.billing_service import BillingService
+from src.application.services.finance_service import FinanceService
 from src.application.services.mikrotik_reconciliation_service import (
     MikrotikReconciliationService,
 )
@@ -269,6 +270,40 @@ async def tarea_sincronizar_clientes():
         except Exception as e:
             db.add(LogCronjobModel(nivel="ERROR", origen="Servicios", mensaje=f"Error en sincronización: {str(e)}"))
             await db.commit()
+
+
+# ==========================================
+# 2.3 CUADRE FACTURA / RENGLONES
+# ==========================================
+async def tarea_verificar_cuadre_facturas():
+    """Repara renglones que no suman el saldo de su factura."""
+    async with SessionLocal() as db:
+        try:
+            reparadas = await FinanceService(db).verificar_cuadre_facturas()
+            for factura_id, diferencia in reparadas:
+                db.add(
+                    LogCronjobModel(
+                        nivel="WARNING",
+                        origen="CuadreFacturas",
+                        mensaje=(
+                            f"Factura #{factura_id}: renglones ajustados "
+                            f"{diferencia:+.2f} para cuadrar con su saldo."
+                        ),
+                    )
+                )
+            await db.commit()
+            return len(reparadas)
+        except Exception as exc:
+            await db.rollback()
+            db.add(
+                LogCronjobModel(
+                    nivel="ERROR",
+                    origen="CuadreFacturas",
+                    mensaje=f"Fallo al verificar cuadre de facturas: {exc}",
+                )
+            )
+            await db.commit()
+            return 0
 
 
 # ==========================================

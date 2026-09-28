@@ -143,7 +143,7 @@ def test_barrido_reactiva_solo_servicios_sin_deuda_vencida(monkeypatch):
     assert pagado.ultima_reactivacion_origen == "automatico"
     assert clientes[10].estado == "activo"
     assert llamadas["cerrados"] == [(1, date.today(), "pago")]
-    assert llamadas["cargos"] == [(1, "pago")]
+    assert llamadas["cargos"] == []
     assert moroso.estado == "suspendido"
 
 
