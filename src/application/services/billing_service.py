@@ -976,6 +976,91 @@ class BillingService:
                     )
         return reporte
 
+    # ==========================================
+    # BAJA AUTOMÁTICA POR FALTA DE PAGO
+    # ==========================================
+    async def dar_baja_por_falta_de_pago(self, dias: int) -> dict[str, int]:
+        """Da de baja servicios con más de `dias` suspendidos por adeudo.
+
+        Antes de la baja se cierran como no cobrados los días posteriores al
+        corte: solo queda como deuda lo que el cliente usó.
+        """
+        from src.application.services.baja_service import BajaService
+
+        reporte = {"revisados": 0, "dados_de_baja": 0, "errores": 0}
+        if not dias or dias <= 0:
+            return reporte
+        limite = date.today() - timedelta(days=dias)
+        servicios = (
+            await self.db.execute(
+                select(ServicioModel)
+                .join(
+                    SuspensionFacturacionModel,
+                    SuspensionFacturacionModel.servicio_id == ServicioModel.id,
+                )
+                .where(
+                    ServicioModel.estado == "suspendido",
+                    SuspensionFacturacionModel.fecha_fin.is_(None),
+                    SuspensionFacturacionModel.motivo_inicio.in_(
+                        ["falta_pago", "promesa_incumplida"]
+                    ),
+                    SuspensionFacturacionModel.fecha_inicio <= limite,
+                )
+                .order_by(ServicioModel.id)
+            )
+        ).unique().scalars().all()
+        reporte["revisados"] = len(servicios)
+        if not servicios:
+            return reporte
+
+        operador = (
+            await self.db.execute(
+                select(UsuarioModel)
+                .where(
+                    UsuarioModel.rol == "admin",
+                    UsuarioModel.activo.is_(True),
+                )
+                .order_by(UsuarioModel.id.asc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if operador is None:
+            reporte["errores"] = len(servicios)
+            return reporte
+
+        bajas = BajaService(self.db)
+        for servicio in servicios:
+            try:
+                await FinanceService(
+                    self.db
+                ).normalizar_facturas_suspendidas(
+                    servicio,
+                    fecha_reactivacion=date.max,
+                )
+                baja = await bajas.crear(
+                    cliente_id=servicio.cliente_id,
+                    servicio_id=servicio.id,
+                    motivo=(
+                        f"Baja automática por falta de pago: más de {dias} "
+                        "días suspendido"
+                    ),
+                    usuario=operador,
+                )
+                await bajas.sincronizar_mikrotik(baja.id)
+                reporte["dados_de_baja"] += 1
+            except Exception as exc:
+                await self.db.rollback()
+                reporte["errores"] += 1
+                self.db.add(LogCronjobModel(
+                    nivel="ERROR",
+                    origen="BajaAutomatica",
+                    mensaje=(
+                        f"No se dio de baja el servicio {servicio.id}: {exc}"
+                    ),
+                ))
+                await self.db.commit()
+        return reporte
+
     async def registrar_pago_completo(
         self,
         factura_id: int,

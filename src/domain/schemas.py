@@ -50,6 +50,7 @@ class SystemConfigUpdate(BaseModel):
     aviso_pantalla_corte: bool
     corte_solo_whatsapp: bool = False
     corte_whatsapp_kbps: int = Field(default=128, ge=32, le=2048)
+    baja_automatica_dias: int = Field(default=90, ge=0, le=365)
     telefonos_alerta: Optional[str] = ""
 
 

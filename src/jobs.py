@@ -273,6 +273,44 @@ async def tarea_sincronizar_clientes():
 
 
 # ==========================================
+# 2.2 BAJA AUTOMÁTICA POR FALTA DE PAGO
+# ==========================================
+async def tarea_baja_automatica():
+    """Da de baja servicios suspendidos por adeudo más días de lo permitido."""
+    async with SessionLocal() as db:
+        try:
+            config = await db.get(ConfiguracionSistema, 1)
+            dias = int(getattr(config, "baja_automatica_dias", 0) or 0)
+            if dias <= 0:
+                return None
+            reporte = await BillingService(db).dar_baja_por_falta_de_pago(dias)
+            if reporte["revisados"]:
+                db.add(
+                    LogCronjobModel(
+                        nivel="ERROR" if reporte["errores"] else "INFO",
+                        origen="BajaAutomatica",
+                        mensaje=(
+                            f"Bajas por falta de pago (> {dias} días "
+                            f"suspendido): {reporte}"
+                        ),
+                    )
+                )
+                await db.commit()
+            return reporte
+        except Exception as exc:
+            await db.rollback()
+            db.add(
+                LogCronjobModel(
+                    nivel="ERROR",
+                    origen="BajaAutomatica",
+                    mensaje=f"Fallo al procesar bajas automáticas: {exc}",
+                )
+            )
+            await db.commit()
+            return None
+
+
+# ==========================================
 # 2.3 CUADRE FACTURA / RENGLONES
 # ==========================================
 async def tarea_verificar_cuadre_facturas():

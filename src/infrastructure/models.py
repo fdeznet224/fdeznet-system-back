@@ -1702,6 +1702,7 @@ class ConfiguracionSistema(Base):
     aviso_pantalla_corte = Column(Boolean, default=False)
     corte_solo_whatsapp = Column(Boolean, nullable=False, default=False, server_default="0")
     corte_whatsapp_kbps = Column(Integer, nullable=False, default=128, server_default="128")
+    baja_automatica_dias = Column(Integer, nullable=False, default=90, server_default="90")
     telefonos_alerta = Column(String(255), default="")
 
     # --- IDENTIDAD / MARCA BLANCA ---

@@ -68,3 +68,41 @@ recuperada por periodo.
 Las notificaciones automáticas se guardan en el historial de chat. Las claves
 de evento evitan duplicados; `ack=-1` indica fallo, `0` pendiente, `1` enviado,
 `2` entregado y `3` leído.
+
+## Reglas de cobranza
+
+Estas reglas deciden cortes, reconexiones y adeudos. Cualquier cambio de
+código debe respetarlas.
+
+1. **El saldo de la factura manda.** Los renglones (`factura_conceptos`)
+   siempre suman el saldo de su factura. `FinanceService.cuadrar_conceptos`
+   los ajusta después de recalcular días suspendidos, aplicar descuentos o
+   anular facturas o pagos; los ajustes van primero al renglón de internet.
+   Un verificador corre cada hora, repara cualquier descuadre y lo deja en los
+   logs (`CuadreFacturas`).
+2. **Cuándo se corta.** Una factura de internet con saldo, con la fecha límite
+   de corte vencida y sin promesa vigente, o con una promesa incumplida. Los
+   prorrateos y los cargos que no afectan corte nunca cortan.
+3. **Cuándo se reconecta.** En cuanto no queda deuda que cumpla la regla 2.
+   Es el mismo criterio que el corte (`_condiciones_deuda_cortable`): una
+   mensualidad que todavía no vence no impide reconectar. Además de la
+   reconexión al pagar, una tarea cada 10 minutos reconecta a quien ya no
+   debe nada vencido (por ejemplo, si MikroTik no respondió al cobrar); esa
+   reconexión no cobra cargo de reconexión.
+4. **Días sin servicio.** Si el cliente paga el mismo día del corte no se
+   descuenta nada; cada día completo sin servicio se descuenta de la factura.
+   Los meses completos suspendidos quedan en $0 (`sin_cargo`).
+5. **Lo consumido no se perdona.** Los días usados antes del corte son deuda
+   real y se cobran, empezando por la factura vencida más antigua.
+6. **Sin convenios.** Para reconectar se paga completo todo lo vencido
+   (o se registra una promesa según la política del cliente). No se dividen
+   adeudos en cuotas: un cliente con deuda grande tiende a cambiarse de
+   compañía y las cuotas quedan sin cobrar.
+7. **Baja automática.** Tras `baja_automatica_dias` días suspendido por
+   adeudo (90 por defecto, 0 la desactiva) el servicio se da de baja: se
+   cierran como no cobrados los días posteriores al corte, se deja de
+   facturar, se crea la orden de retiro del equipo y se aplica el corte total
+   en MikroTik. La deuda de lo consumido queda en el cliente.
+8. **Suspensiones manuales.** Nunca se levantan ni se dan de baja solas; las
+   tareas automáticas sólo actúan sobre suspensiones abiertas por cobranza
+   (`falta_pago` o `promesa_incumplida`).
