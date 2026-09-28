@@ -128,3 +128,10 @@ Un solo bot de clientes: el flujo visual (comando `fdezbot`, también `menu` y
 clientes estaba activo y `inicio_fuera_horario` estaba desactivado, por lo que
 el bot no contesta solo fuera de horario hasta que se active en la
 configuración.
+
+## Versión 2.20.2 (28 de septiembre de 2026)
+
+- Backend: `74ce995c9663fe26eba9631ef83137d76b5207f8` (frontend sin cambios)
+
+Las notas de voz ya no reciben respuesta automática; quedan en el chat del
+panel. Reinicio de `fdeznet-bot`, reconectado sin QR.
