@@ -1137,8 +1137,13 @@ class BillingService:
         )
 
     @classmethod
-    def _textos_factura(cls, factura, conceptos) -> list[tuple[str, bool]]:
-        """Qué se cobra de esta factura, en palabras. (texto, es_internet)."""
+    def _textos_factura(
+        cls, factura, conceptos
+    ) -> list[tuple[str, bool, Decimal]]:
+        """Qué se cobra de esta factura, en palabras.
+
+        Devuelve (texto, es_internet, monto pendiente) por renglón.
+        """
         es_prorrateo = bool(
             factura.es_prorrateada or factura.tipo_factura == "prorrateo"
         )
@@ -1148,21 +1153,23 @@ class BillingService:
             else f"Mensualidad de {cls._mes_factura(factura)}"
         )
         if not conceptos:
+            saldo = Decimal(factura.saldo_pendiente or 0)
             if factura.tipo_factura in {"mensual", "prorrateo"} or es_prorrateo:
-                return [(mensualidad, True)]
-            return [(factura.concepto or "Cargo adicional", False)]
+                return [(mensualidad, True, saldo)]
+            return [(factura.concepto or "Cargo adicional", False, saldo)]
         textos = []
         for concepto in conceptos:
+            saldo = Decimal(concepto.saldo_pendiente or 0)
             if concepto.tipo == "internet":
-                textos.append((mensualidad, True))
+                textos.append((mensualidad, True, saldo))
             elif concepto.tipo == "internet_prorrateado":
-                textos.append(("Prorrateo de instalación", False))
+                textos.append(("Prorrateo de instalación", False, saldo))
             elif concepto.tipo == "servicio_adicional":
-                textos.append((f"Servicio extra: {concepto.concepto}", False))
+                textos.append((f"Servicio extra: {concepto.concepto}", False, saldo))
             elif concepto.tipo == "reconexion":
-                textos.append(("Cargo por reconexión", False))
+                textos.append(("Cargo por reconexión", False, saldo))
             else:
-                textos.append((concepto.concepto, False))
+                textos.append((concepto.concepto, False, saldo))
         return textos
 
     async def estado_cuenta_cliente(self, cliente_id: int) -> dict:
@@ -1234,9 +1241,12 @@ class BillingService:
                 if varios_servicios and alias.get(factura.servicio_id)
                 else ""
             )
-            for texto, es_internet in self._textos_factura(factura, conceptos):
+            for texto, es_internet, monto in self._textos_factura(
+                factura, conceptos
+            ):
                 detalle.append({
                     "texto": texto + (sufijo if es_internet else ""),
+                    "monto": monto,
                     "actual": es_internet and factura is actual,
                 })
         incluye = []

@@ -187,17 +187,19 @@ def _factura_texto(**datos):
 
 
 def test_factura_vieja_sin_renglones_dice_el_mes_no_el_folio():
-    textos = BillingService._textos_factura(_factura_texto(), [])
+    textos = BillingService._textos_factura(
+        _factura_texto(saldo_pendiente=Decimal("261.29")), []
+    )
 
-    assert textos == [("Mensualidad de julio 2026", True)]
+    assert textos == [("Mensualidad de julio 2026", True, Decimal("261.29"))]
 
 
 def test_textos_de_renglones_en_palabras():
     conceptos = [
-        SimpleNamespace(tipo="internet", concepto="Servicio de internet"),
-        SimpleNamespace(tipo="servicio_adicional", concepto="IPTV"),
-        SimpleNamespace(tipo="reconexion", concepto="Cargo por reconexión"),
-        SimpleNamespace(tipo="internet_prorrateado", concepto="Prorrateo"),
+        SimpleNamespace(tipo="internet", concepto="Servicio de internet", saldo_pendiente=Decimal("300")),
+        SimpleNamespace(tipo="servicio_adicional", concepto="IPTV", saldo_pendiente=Decimal("50")),
+        SimpleNamespace(tipo="reconexion", concepto="Cargo por reconexión", saldo_pendiente=Decimal("30")),
+        SimpleNamespace(tipo="internet_prorrateado", concepto="Prorrateo", saldo_pendiente=Decimal("120")),
     ]
 
     textos = BillingService._textos_factura(
@@ -205,10 +207,10 @@ def test_textos_de_renglones_en_palabras():
     )
 
     assert textos == [
-        ("Mensualidad de octubre 2026", True),
-        ("Servicio extra: IPTV", False),
-        ("Cargo por reconexión", False),
-        ("Prorrateo de instalación", False),
+        ("Mensualidad de octubre 2026", True, Decimal("300")),
+        ("Servicio extra: IPTV", False, Decimal("50")),
+        ("Cargo por reconexión", False, Decimal("30")),
+        ("Prorrateo de instalación", False, Decimal("120")),
     ]
 
 
@@ -218,10 +220,11 @@ def test_prorrateo_muestra_sus_fechas():
         tipo_factura="prorrateo",
         periodo_desde=date(2026, 9, 3),
         periodo_hasta=date(2026, 9, 14),
+        saldo_pendiente=Decimal("140.00"),
     )
 
     assert BillingService._textos_factura(factura, []) == [
-        ("Prorrateo del 03/09 al 14/09/2026", True)
+        ("Prorrateo del 03/09 al 14/09/2026", True, Decimal("140.00"))
     ]
 
 
