@@ -254,3 +254,16 @@ def test_sincronizacion_offline_acepta_pago_de_cliente(monkeypatch):
     assert llamadas["monto"] == Decimal("470.00")
     assert llamadas["clave_idempotencia"] == "op-9"
     assert "pago_cliente" in modulo.TIPOS_SINCRONIZABLES
+
+
+def test_mes_actual_es_la_mensualidad_mas_reciente():
+    agosto = _factura_texto(id=1, periodo_desde=date(2026, 8, 15))
+    septiembre = _factura_texto(id=2, periodo_desde=date(2026, 9, 15))
+    octubre = _factura_texto(id=3, periodo_desde=date(2026, 10, 15))
+    prorrateo = _factura_texto(id=4, es_prorrateada=True, tipo_factura="prorrateo")
+
+    assert BillingService._mensualidad_actual(
+        [agosto, septiembre, octubre, prorrateo]
+    ) is octubre
+    assert BillingService._mensualidad_actual([octubre]) is octubre
+    assert BillingService._mensualidad_actual([prorrateo]) is None

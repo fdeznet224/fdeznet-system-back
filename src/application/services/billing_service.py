@@ -1121,6 +1121,21 @@ class BillingService:
             )
         return "Prorrateo"
 
+    @staticmethod
+    def _mensualidad_actual(facturas):
+        """La mensualidad más reciente generada es la "actual" del cliente.
+
+        `facturas` viene ordenada de la más antigua a la más reciente; las
+        anteriores a ella son atrasadas. Los prorrateos no cuentan.
+        """
+        return next(
+            (
+                f for f in reversed(facturas)
+                if f.tipo_factura == "mensual" and not f.es_prorrateada
+            ),
+            None,
+        )
+
     @classmethod
     def _textos_factura(cls, factura, conceptos) -> list[tuple[str, bool]]:
         """Qué se cobra de esta factura, en palabras. (texto, es_internet)."""
@@ -1201,15 +1216,7 @@ class BillingService:
                     )
                 ).scalars().all()
             }
-        actual = next(
-            (
-                f for f in reversed(facturas)
-                if f.periodo_desde and f.periodo_hasta
-                and f.periodo_desde <= hoy <= f.periodo_hasta
-                and not (f.es_prorrateada or f.tipo_factura == "prorrateo")
-            ),
-            None,
-        )
+        actual = self._mensualidad_actual(facturas)
         detalle: list[dict] = []
         for factura in facturas:
             conceptos = (
