@@ -219,18 +219,19 @@ def test_textos_de_renglones_en_palabras():
 
 def test_reconexion_por_promesa_incumplida_se_nombra_como_penalizacion():
     conceptos = [
-        SimpleNamespace(tipo="internet", concepto="Servicio de internet", saldo_pendiente=Decimal("190")),
         SimpleNamespace(
             tipo="reconexion",
             concepto=CONCEPTO_RECONEXION_PROMESA,
             saldo_pendiente=Decimal("30"),
         ),
+        SimpleNamespace(tipo="internet", concepto="Servicio de internet", saldo_pendiente=Decimal("190")),
     ]
 
     textos = BillingService._textos_factura(
         _factura_texto(periodo_desde=date(2026, 9, 1)), conceptos
     )
 
+    assert textos[0] == ("Mensualidad de septiembre 2026", True, Decimal("190"))
     assert textos[1] == (
         "Reconexión y penalización por incumplir promesa de pago",
         False,

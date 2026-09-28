@@ -175,3 +175,8 @@ Cuando el corte es por una promesa de pago incumplida, el cargo de
 reconexión se nombra "Reconexión y penalización por incumplir promesa de
 pago" en la factura, la pantalla de cobro y los WhatsApp. El corte por falta
 de pago sigue diciendo "Cargo por reconexión".
+
+## Versión 2.20.8 (28 de septiembre de 2026)
+
+En el desglose de cada factura la mensualidad aparece primero y después los
+cargos (reconexión, penalización, servicios extra).

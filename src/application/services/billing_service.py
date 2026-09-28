@@ -1214,6 +1214,11 @@ class BillingService:
                 return [(mensualidad, True, saldo)]
             return [(factura.concepto or "Cargo adicional", False, saldo)]
         textos = []
+        # La mensualidad va primero y después los cargos (reconexión, extras).
+        conceptos = sorted(
+            conceptos,
+            key=lambda c: str(c.tipo or "") != "internet",
+        )
         for concepto in conceptos:
             saldo = Decimal(concepto.saldo_pendiente or 0)
             if concepto.tipo == "internet":
