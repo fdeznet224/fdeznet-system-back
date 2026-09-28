@@ -213,24 +213,30 @@ function iniciarMotor() {
                     console.error(
                         `❌ No se pudo descargar media tipo=${msg.type}: ${describirError(error)}`
                     );
-                    try {
-                        enviosDelSistema.iniciarEnvio(msg.from);
-                        let aviso = null;
+                    // Los audios no llevan respuesta automática: se avisa al panel
+                    // que llegó una nota de voz aunque no se haya podido descargar.
+                    if (msg.type === 'audio' || msg.type === 'ptt') {
+                        contenido = '[AUDIO]';
+                    } else {
                         try {
-                            aviso = await client.sendMessage(
-                            msg.from,
-                            '⚠️ No pude descargar el archivo desde WhatsApp. '
-                            + 'Reenvía el comprobante como una foto normal, no como foto de una sola vista.'
-                        );
-                        } finally {
-                            enviosDelSistema.terminarEnvio(msg.from, aviso);
+                            enviosDelSistema.iniciarEnvio(msg.from);
+                            let aviso = null;
+                            try {
+                                aviso = await client.sendMessage(
+                                    msg.from,
+                                    '⚠️ No pude descargar el archivo desde WhatsApp. '
+                                    + 'Reenvía el comprobante como una foto normal, no como foto de una sola vista.'
+                                );
+                            } finally {
+                                enviosDelSistema.terminarEnvio(msg.from, aviso);
+                            }
+                        } catch (notificationError) {
+                            console.error(
+                                `❌ No se pudo avisar del fallo de descarga: ${describirError(notificationError)}`
+                            );
                         }
-                    } catch (notificationError) {
-                        console.error(
-                            `❌ No se pudo avisar del fallo de descarga: ${describirError(notificationError)}`
-                        );
+                        return;
                     }
-                    return;
                 }
                 if (media) {
                     let ext = mime.extension(media.mimetype) || 'bin';

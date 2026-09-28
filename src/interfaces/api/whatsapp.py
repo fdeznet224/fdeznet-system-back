@@ -197,17 +197,6 @@ def mensaje_fuera_de_horario(
     )
 
 
-def mensaje_audio_no_disponible(
-    asistente_nombre: str = "Asistente",
-    palabra_activacion: str = BOT_KEYWORD,
-) -> str:
-    return (
-        f"🎤 Por el momento {asistente_nombre} no procesa notas de voz. "
-        "Por favor escribe tu solicitud o envía "
-        f"*{palabra_activacion}* para ver las opciones."
-    )
-
-
 def sufijos_identidad_whatsapp(*telefonos: str) -> set[str]:
     """Devuelve teléfonos comparables y descarta identificadores opacos LID."""
     sufijos = set()
@@ -1485,6 +1474,11 @@ async def webhook_recibir_mensaje(
             execute_until_wait(flujo_cliente),
         )
 
+    # Los audios no reciben respuesta automática: quedan en el chat del panel
+    # para que un asesor los escuche. No se envían a servicios externos.
+    if "[AUDIO]" in mensaje_texto.upper():
+        return {"status": "audio_para_asesor"}
+
     # Un asesor atiende este chat: el bot no contesta solo. El cliente aún
     # puede abrirlo con el comando (evaluado arriba) o la palabra de acceso.
     if (
@@ -1525,27 +1519,6 @@ async def webhook_recibir_mensaje(
             execute_until_wait(flujo_cliente),
         )
 
-    # El autoservicio es únicamente por texto; no se envía audio a servicios externos.
-    if media_url and "[AUDIO]" in mensaje_texto.upper():
-        await wa_service.enviar_mensaje(
-            telefono=telefono_raw,
-            mensaje=mensaje_audio_no_disponible(asistente_nombre, comando_bot),
-        )
-        if (
-            flujo_cliente
-            and flujo_cliente.activo
-            and bot_config.inicio_fuera_horario
-            and fuera_de_horario
-            and telefono_raw not in bot_memory
-        ):
-            return await ejecutar_bloque_visual(
-                db,
-                wa_service,
-                telefono_raw,
-                flujo_cliente,
-                execute_until_wait(flujo_cliente),
-            )
-        return {"status": "audio_no_disponible"}
 
     # Fuera del horario, una foto de comprobante entra directo al análisis de
     # pago; cualquier otro archivo abre el flujo visual.

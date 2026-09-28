@@ -10,7 +10,6 @@ from src.interfaces.api.whatsapp import (
     BOT_KEYWORD,
     esta_fuera_de_horario,
     interpretar_fecha_promesa,
-    mensaje_audio_no_disponible,
     mensaje_comprobante_ya_recibido,
     mensaje_fuera_de_horario,
     obtener_factura_cobrable,
@@ -90,10 +89,16 @@ def test_bot_busca_facturas_pendientes_y_vencidas(monkeypatch):
     assert 12 in parametros.values()
 
 
-def test_bot_pide_texto_al_recibir_audio():
-    mensaje = mensaje_audio_no_disponible()
-    assert "no procesa notas de voz" in mensaje
-    assert "fdezbot" in mensaje
+def test_bot_no_responde_audios():
+    import inspect
+    from src.interfaces.api import whatsapp
+
+    fuente = inspect.getsource(whatsapp.webhook_recibir_mensaje)
+    audio = fuente.index('"[AUDIO]"')
+    assert fuente.index("audio_para_asesor") > audio
+    # Se revisa antes que cualquier respuesta automática.
+    assert audio < fuente.index("mensaje_fuera_de_horario(")
+    assert audio < fuente.index("bot_en_pausa(")
 
 
 def test_bot_no_acepta_comprobante_duplicado_pendiente_o_aprobado():

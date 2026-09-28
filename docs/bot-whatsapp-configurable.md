@@ -26,6 +26,10 @@ promesa, estado y diagnóstico) siguen en uso desde las acciones del lienzo.
 Fuera de horario, una foto de comprobante entra directo al análisis de pago
 y cualquier otro mensaje abre el flujo visual.
 
+Las notas de voz no reciben respuesta automática en ningún momento: quedan en
+el chat del panel para que un asesor las escuche, incluso si WhatsApp no
+permitió descargarlas.
+
 ## Cuándo contesta el bot y cuándo se calla
 
 - Fuera del horario de atención contesta solo al primer mensaje. En horario
