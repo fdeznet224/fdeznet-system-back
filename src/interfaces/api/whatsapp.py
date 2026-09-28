@@ -78,6 +78,11 @@ from src.application.services.bot_flow_service import (
     schedule_summary,
 )
 from src.application.services.support_service import SupportService
+from src.application.services.bot_pausa_service import (
+    bot_en_pausa,
+    clave_telefono,
+    pausar_bot,
+)
 from src.application.services.bot_visual_flow_service import (
     execute_until_wait,
     get_visual_flow,
@@ -99,6 +104,14 @@ NODE_HEADERS = {
 
 # Memoria temporal para el Bot (Estado por número de teléfono)
 bot_memory = {}
+
+
+def cerrar_sesion_bot(telefono: str | None) -> None:
+    """Termina el menú activo del bot para ese número (en cualquier formato)."""
+    clave = clave_telefono(telefono)
+    for llave in list(bot_memory):
+        if llave == telefono or (clave and clave_telefono(llave) == clave):
+            bot_memory.pop(llave, None)
 ocr_tool = OCRService()
 BOT_KEYWORD = "fdezbot"
 BOT_SESSION_MINUTES = 15
@@ -394,6 +407,21 @@ async def ejecutar_bloque_visual(
         )
         bot_memory.pop(telefono, None)
         return {"status": "flujo_datos_pago"}
+    if action == "hablar_asesor":
+        bot_memory.pop(telefono, None)
+        await pausar_bot(db, telefono, "cliente_pidio_asesor")
+        await db.commit()
+        bot_config = await get_or_create_bot_config(db)
+        aviso = (
+            "👩‍💼 Listo, un asesor te atenderá por este chat."
+            if not esta_fuera_de_horario(config=bot_config)
+            else (
+                "👩‍💼 Listo, un asesor te atenderá por este chat en el "
+                "próximo horario de atención."
+            )
+        )
+        await wa_service.enviar_mensaje(telefono=telefono, mensaje=aviso)
+        return {"status": "flujo_hablar_asesor"}
     if action not in prompts:
         bot_memory.pop(telefono, None)
         await wa_service.enviar_mensaje(
@@ -1341,6 +1369,60 @@ async def enviar_campana(
 
 
 # ==========================================
+# 📱 RESPUESTA ESCRITA DESDE EL CELULAR
+# ==========================================
+@webhook_router.post("/webhook/salida-manual")
+async def webhook_salida_manual(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_webhook_secret),
+):
+    """Alguien del equipo contestó desde el celular: pausa el bot 2 horas."""
+    datos = await request.json()
+    telefono = str(datos.get("telefono") or "").strip()
+    telefono_raw = str(datos.get("telefono_raw") or telefono).strip()
+    clave = clave_telefono(telefono) or clave_telefono(telefono_raw)
+    if not clave:
+        return {"status": "ignorado"}
+
+    cliente = (
+        await db.execute(
+            select(ClienteModel).where(
+                cast(ClienteModel.telefono, String).like(f"%{clave}%")
+            )
+        )
+    ).scalars().first()
+    mensaje = MensajeChatModel(
+        cliente_id=cliente.id if cliente else None,
+        telefono=(telefono or telefono_raw).split("@")[0][:20],
+        direccion="salida",
+        mensaje=str(datos.get("mensaje") or "").strip() or "[Mensaje enviado desde el celular]",
+        tipo_mensaje="texto",
+        tipo_evento="chat_celular",
+        leido=True,
+        ack=1,
+        estado_envio="enviado",
+        wa_id=(str(datos.get("wa_id") or "")[:100] or None),
+    )
+    db.add(mensaje)
+    await pausar_bot(db, clave, "respuesta_celular")
+    cerrar_sesion_bot(telefono_raw)
+    cerrar_sesion_bot(telefono)
+    await db.commit()
+
+    await manager.broadcast({
+        "type": "NEW_MESSAGE",
+        "data": {
+            "id": mensaje.id,
+            "cliente_id": mensaje.cliente_id,
+            "mensaje": mensaje.mensaje,
+            "direccion": "salida",
+        },
+    })
+    return {"status": "bot_pausado"}
+
+
+# ==========================================
 # 🤖 WEBHOOK PRINCIPAL (EL CEREBRO DEL BOT Y CHAT)
 # ==========================================
 @webhook_router.post("/webhook/recibir")
@@ -1449,6 +1531,15 @@ async def webhook_recibir_mensaje(
             flujo_cliente,
             execute_until_wait(flujo_cliente),
         )
+
+    # Un asesor atiende este chat: el bot no contesta solo. El cliente aún
+    # puede abrirlo con el comando (evaluado arriba) o la palabra de acceso.
+    if (
+        telefono_raw not in bot_memory
+        and normalizar_texto_bot(texto_limpio) != palabra_bot
+        and await bot_en_pausa(db, telefono_busqueda or telefono_raw)
+    ):
+        return {"status": "atendido_por_asesor"}
 
     fuera_de_horario = esta_fuera_de_horario(config=bot_config)
     if (
@@ -2553,6 +2644,8 @@ async def enviar_mensaje_chat(
         creado_por_id=current_user.id,
     )
     db.add(nuevo_mensaje)
+    await pausar_bot(db, telefono_limpio, "respuesta_panel")
+    cerrar_sesion_bot(telefono_limpio)
     await db.commit()
     await db.refresh(nuevo_mensaje)
 

@@ -16,6 +16,20 @@ Se puede cambiar sin editar código:
 
 El flujo inicial incluye reporte de pago, promesa de pago, consulta de servicio y saldo, datos bancarios y diagnóstico técnico. Los datos bancarios se editan en **Configuración > Plantillas de Mensajes > Datos para Depósito o Transferencia** y nunca se guardan en el código fuente.
 
+## Cuándo contesta el bot y cuándo se calla
+
+- Fuera del horario de atención contesta solo al primer mensaje. En horario
+  solo responde si el cliente escribe el comando.
+- **Pausa por asesor (2 horas):** si alguien del equipo le escribe al cliente,
+  desde el panel o desde el celular, el bot deja de contestar solo en ese chat
+  y cierra el menú que tuviera abierto. El puente de WhatsApp distingue lo que
+  escribe una persona de los envíos del sistema (recordatorios, recibos,
+  respuestas del bot) y solo lo primero pausa.
+- La acción **Hablar con un asesor** del flujo visual también pausa el chat 2
+  horas y le avisa al cliente que un asesor lo atenderá.
+- Durante la pausa el cliente todavía puede abrir el bot escribiendo el
+  comando. Las pausas se guardan en `bot_pausas` y sobreviven a reinicios.
+
 ## Seguridad del autoservicio
 
 Las consultas financieras, promesas y diagnósticos requieren que el contrato corresponda al número de teléfono registrado en el cliente. El reporte de pago conserva la posibilidad explícita de aplicar un pago a una cuenta familiar, sujeto a la conciliación bancaria existente.

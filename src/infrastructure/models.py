@@ -1868,6 +1868,17 @@ class ConfiguracionBotModel(Base):
     actualizado_en = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 
 
+class BotPausaModel(Base):
+    """Chats donde el bot no contesta solo porque atiende un asesor."""
+
+    __tablename__ = "bot_pausas"
+
+    telefono = Column(String(20), primary_key=True)  # últimos 10 dígitos
+    pausado_hasta = Column(DateTime, nullable=False)
+    motivo = Column(String(40), nullable=False)
+    actualizado_en = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+
+
 class FlujoBotModel(Base):
     __tablename__ = "flujos_bot"
 

@@ -9,6 +9,11 @@ const crypto = require('crypto');
 const mime = require('mime-types');
 const { descargarMediaConReintentos, describirError } = require('./media-utils');
 const { resolverTelefonoEntrante } = require('./phone-utils');
+const {
+    crearRegistroEnvios,
+    esEscritaPorPersona,
+    esRespuestaPropia,
+} = require('./manual-reply');
 
 const PORT = process.env.PORT || 3000;
 const BACKEND_URL = process.env.API_BACKEND_URL || 'http://127.0.0.1:8000';
@@ -68,6 +73,9 @@ let lastQR = null;
 const backendIdPorWaId = new Map();
 const enviosCompletados = new Map();
 const enviosEnCurso = new Map();
+// Mensajes que manda el sistema; los demás que salen del celular son de una persona.
+const enviosDelSistema = crearRegistroEnvios();
+setInterval(() => enviosDelSistema.limpiar(), 60 * 1000).unref();
 const TTL_IDEMPOTENCIA_MS = 24 * 60 * 60 * 1000;
 
 setInterval(() => {
@@ -206,11 +214,17 @@ function iniciarMotor() {
                         `❌ No se pudo descargar media tipo=${msg.type}: ${describirError(error)}`
                     );
                     try {
-                        await client.sendMessage(
+                        enviosDelSistema.iniciarEnvio(msg.from);
+                        let aviso = null;
+                        try {
+                            aviso = await client.sendMessage(
                             msg.from,
                             '⚠️ No pude descargar el archivo desde WhatsApp. '
                             + 'Reenvía el comprobante como una foto normal, no como foto de una sola vista.'
                         );
+                        } finally {
+                            enviosDelSistema.terminarEnvio(msg.from, aviso);
+                        }
                     } catch (notificationError) {
                         console.error(
                             `❌ No se pudo avisar del fallo de descarga: ${describirError(notificationError)}`
@@ -256,6 +270,27 @@ function iniciarMotor() {
 
         } catch (e) { 
             console.error("❌ Error Webhook Recibir:", e.message); 
+        }
+    });
+
+    // Respuesta escrita por alguien del equipo desde el celular: el backend
+    // la guarda en el historial y pausa el bot en ese chat.
+    client.on('message_create', async (msg) => {
+        if (!esRespuestaPropia(msg)) return;
+        try {
+            if (!(await esEscritaPorPersona(msg, enviosDelSistema))) return;
+            const telefono = await resolverTelefonoEntrante(client, {
+                from: msg.to,
+                getContact: async () => (await msg.getChat()).getContact(),
+            });
+            await postBackend('/whatsapp/webhook/salida-manual', {
+                telefono,
+                telefono_raw: msg.to,
+                mensaje: msg.hasMedia ? '[Archivo enviado desde el celular]' : msg.body,
+                wa_id: msg.id?.id || null,
+            });
+        } catch (e) {
+            console.error('❌ Error Webhook Salida Manual:', e.message);
         }
     });
 
@@ -345,6 +380,8 @@ app.post('/enviar-mensaje', async (req, res) => {
             promesaEnvio = (async () => {
                 const chatId = numero.includes('@') ? numero : `${numero}@c.us`;
                 let response;
+                enviosDelSistema.iniciarEnvio(chatId);
+                try {
 
                 if (ruta) {
                     if (!fs.existsSync(ruta)) {
@@ -360,6 +397,9 @@ app.post('/enviar-mensaje', async (req, res) => {
                     );
                 } else {
                     response = await client.sendMessage(chatId, mensaje);
+                }
+                } finally {
+                    enviosDelSistema.terminarEnvio(chatId, response);
                 }
                 // whatsapp-web.js puede devolver el identificador serializado
                 // en distintas formas según la versión. El envío ya ocurrió;

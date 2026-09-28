@@ -13,6 +13,7 @@ PUBLIC_ACTIONS = {
     "estado_servicio",
     "datos_pago",
     "diagnostico_tecnico",
+    "hablar_asesor",
 }
 TECH_ACTIONS = {
     "tecnico_diagnostico",
