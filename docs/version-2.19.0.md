@@ -99,3 +99,22 @@ El "mes actual" de la pantalla de cobro es ahora la mensualidad más reciente
 generada, no la que contiene la fecha de hoy. Claudia Vazquez resalta octubre
 (#1046) en lugar de septiembre; Claudia Lopez, con solo octubre (#999), ahora
 también lo ve resaltado. Despliegue solo de backend, sin migraciones.
+
+## Versión 2.19.3 (28 de septiembre de 2026)
+
+- Backend: `5df19643168da05c84596278b2bcd67995aa8db2`
+- Frontend: `64892fdf19df926322619d5a158c5570f7740598`
+
+Cada línea de "Se está cobrando" muestra su monto (mensualidad, reconexión,
+servicio extra) para explicar el total al cliente.
+
+## Versión 2.20.0 (28 de septiembre de 2026)
+
+- Backend: `f7b04ec78cd1e0561c0bd0ba319e4e5fcffc1a75`
+- Frontend: `856b920b7caa3c79fd9d6cb6d6816708c143c1da`
+
+El bot se calla 2 horas en un chat cuando responde un asesor, desde el panel o
+desde el celular; nueva acción "Hablar con un asesor" en el flujo visual.
+Detalle en `docs/bot-whatsapp-configurable.md`. Migración `d5e6f7a8b9c1`
+(tabla `bot_pausas`) y reinicio de `fdeznet-bot`, que se reconectó sin pedir
+QR.
