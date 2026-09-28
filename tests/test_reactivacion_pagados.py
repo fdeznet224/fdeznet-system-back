@@ -193,3 +193,28 @@ def test_factura_pagada_liquida_internet_aunque_el_concepto_no_se_ajusto():
 
     assert liquidado is True
     assert factura.afecta_corte is False
+
+
+def test_recalcular_suspendidos_usa_la_fecha_de_hoy(monkeypatch):
+    servicios = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+    llamadas = []
+
+    class DB:
+        async def execute(self, _statement):
+            return _Resultado(servicios)
+
+    class Finanzas:
+        def __init__(self, _db):
+            pass
+
+        async def normalizar_facturas_suspendidas(self, servicio, fecha_reactivacion):
+            llamadas.append((servicio.id, fecha_reactivacion))
+
+    from src.application.services import billing_service as modulo
+
+    monkeypatch.setattr(modulo, "FinanceService", Finanzas)
+
+    total = asyncio.run(BillingService(DB()).recalcular_suspendidos())
+
+    assert total == 2
+    assert llamadas == [(1, date.today()), (2, date.today())]

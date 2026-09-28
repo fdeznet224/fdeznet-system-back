@@ -1,7 +1,7 @@
 import os
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
@@ -167,6 +167,7 @@ async def lifespan(app: FastAPI):
         tarea_verificar_cuadre_facturas,
         "interval",
         minutes=60,
+        next_run_time=datetime.now() + timedelta(minutes=2),
         id="verificar_cuadre_facturas",
         coalesce=True,
         max_instances=1,

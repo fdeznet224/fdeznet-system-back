@@ -1082,6 +1082,26 @@ class BillingService:
                 await self.db.commit()
         return reporte
 
+    async def recalcular_suspendidos(self) -> int:
+        """Descuenta al día de hoy los días sin servicio de los suspendidos.
+
+        Así el saldo guardado (listas de cobranza, bot, reportes) coincide
+        con lo que se cobra al abrir al cliente.
+        """
+        servicios = (
+            await self.db.execute(
+                select(ServicioModel).where(
+                    ServicioModel.estado == "suspendido"
+                )
+            )
+        ).scalars().all()
+        for servicio in servicios:
+            await FinanceService(self.db).normalizar_facturas_suspendidas(
+                servicio,
+                fecha_reactivacion=date.today(),
+            )
+        return len(servicios)
+
     # ==========================================
     # COBRO TOTAL DEL CLIENTE (un solo cobro)
     # ==========================================

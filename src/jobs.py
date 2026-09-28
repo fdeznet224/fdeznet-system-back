@@ -314,9 +314,11 @@ async def tarea_baja_automatica():
 # 2.3 CUADRE FACTURA / RENGLONES
 # ==========================================
 async def tarea_verificar_cuadre_facturas():
-    """Repara renglones que no suman el saldo de su factura."""
+    """Recalcula suspendidos y repara renglones que no suman su factura."""
     async with SessionLocal() as db:
         try:
+            await BillingService(db).recalcular_suspendidos()
+            await db.flush()
             reparadas = await FinanceService(db).verificar_cuadre_facturas()
             for factura_id, diferencia in reparadas:
                 db.add(
