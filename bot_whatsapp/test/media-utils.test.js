@@ -98,11 +98,34 @@ test('usa la caché de WhatsApp Web cuando downloadMedia de la librería falla',
         }
     };
 
+    const registros = [];
     const media = await descargarMediaConReintentos(mensaje, {
         intentos: 3,
         retrasoMs: 0,
-        esperarFn: async () => {}
+        esperarFn: async () => {},
+        registrar: (linea) => registros.push(linea)
     });
 
     assert.deepEqual(media, { data: 'base64', mimetype: 'image/jpeg' });
+    assert.deepEqual(registros, [
+        '📥 Media descargada tipo=desconocido metodo=cache_web intento=1 (libreria fallo: t)'
+    ]);
+});
+
+test('registra cuando la librería descarga el archivo', async () => {
+    const registros = [];
+    const mensaje = {
+        type: 'image',
+        async downloadMedia() {
+            return { data: 'base64', mimetype: 'image/jpeg' };
+        }
+    };
+
+    await descargarMediaConReintentos(mensaje, {
+        registrar: (linea) => registros.push(linea)
+    });
+
+    assert.deepEqual(registros, [
+        '📥 Media descargada tipo=image metodo=libreria intento=1'
+    ]);
 });

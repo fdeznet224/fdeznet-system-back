@@ -180,3 +180,9 @@ de pago sigue diciendo "Cargo por reconexión".
 
 En el desglose de cada factura la mensualidad aparece primero y después los
 cargos (reconexión, penalización, servicios extra).
+
+## Versión 2.20.9 (28 de septiembre de 2026)
+
+El bot registra cada archivo multimedia descargado y con qué método
+(`metodo=libreria` o `metodo=cache_web`, con el error de la librería cuando
+se usó el respaldo). Consulta: `journalctl -u fdeznet-bot | grep "Media descargada"`.

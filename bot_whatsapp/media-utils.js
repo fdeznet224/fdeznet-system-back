@@ -92,23 +92,42 @@ async function descargarDesdeCacheWeb(mensaje) {
 
 async function descargarMediaConReintentos(
     mensaje,
-    { intentos = 3, retrasoMs = 1200, esperarFn = esperar } = {}
+    {
+        intentos = 3,
+        retrasoMs = 1200,
+        esperarFn = esperar,
+        registrar = console.log
+    } = {}
 ) {
     let ultimoError = new Error('WhatsApp no entregó el archivo multimedia');
+    const tipo = mensaje?.type || 'desconocido';
 
     for (let intento = 1; intento <= intentos; intento += 1) {
+        let errorLibreria = null;
         try {
             repararIdSerializado(mensaje);
             const media = await mensaje.downloadMedia();
-            if (media?.data && media?.mimetype) return media;
+            if (media?.data && media?.mimetype) {
+                registrar(
+                    `📥 Media descargada tipo=${tipo} metodo=libreria intento=${intento}`
+                );
+                return media;
+            }
             ultimoError = new Error('WhatsApp no entregó el archivo multimedia');
         } catch (error) {
             ultimoError = error;
+            errorLibreria = describirError(error);
         }
 
         try {
             const media = await descargarDesdeCacheWeb(mensaje);
-            if (media?.data && media?.mimetype) return media;
+            if (media?.data && media?.mimetype) {
+                registrar(
+                    `📥 Media descargada tipo=${tipo} metodo=cache_web intento=${intento}`
+                    + (errorLibreria ? ` (libreria fallo: ${errorLibreria})` : '')
+                );
+                return media;
+            }
         } catch (error) {
             ultimoError = error;
         }
