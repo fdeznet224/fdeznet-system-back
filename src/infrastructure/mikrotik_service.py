@@ -1,9 +1,25 @@
+import re
+from urllib.parse import quote
+
 import requests
 import urllib3
 
-from src.utils.mikrotik import normalizar_mac
+from src.utils.mikrotik import (
+    KBPS_CORTE_WHATSAPP_DEFAULT,
+    RANGOS_META_WHATSAPP,
+    normalizar_mac,
+)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+LISTA_CORTE = "CORTE_FDEZNET"
+LISTA_WHATSAPP = "WHATSAPP_FDEZNET"
+MARCA_WA_SUBIDA = "fdeznet-corte-wa-subida"
+MARCA_WA_BAJADA = "fdeznet-corte-wa-bajada"
+COLA_TIPO_WA_SUBIDA = "fdeznet-corte-wa-subida"
+COLA_TIPO_WA_BAJADA = "fdeznet-corte-wa-bajada"
+COLA_ARBOL_WA_SUBIDA = "FDEZNET-CORTE-WA-SUBIDA"
+COLA_ARBOL_WA_BAJADA = "FDEZNET-CORTE-WA-BAJADA"
 
 class MikroTikService:
     def __init__(self, ip, user, password, port=80):
@@ -351,7 +367,12 @@ class MikroTikService:
     # ==========================================
     #  4. FIREWALL DE CORTES (MOROSOS)
     # ==========================================
-    def inicializar_firewall_corte(self, ip_servidor_portal: str = None):
+    def inicializar_firewall_corte(
+        self,
+        ip_servidor_portal: str = None,
+        solo_whatsapp: bool = False,
+        kbps: int = KBPS_CORTE_WHATSAPP_DEFAULT,
+    ):
         LISTA_CORTE = "CORTE_FDEZNET"
         try:
             if ip_servidor_portal:
@@ -370,9 +391,249 @@ class MikroTikService:
             }
             if not self._request("GET", f"/ip/firewall/filter?comment==== BLOQUEO MOROSOS ==="):
                 self._request("PUT", "/ip/firewall/filter", payload_filter)
+
+            if solo_whatsapp:
+                self._activar_corte_whatsapp(int(kbps))
+                return True, (
+                    "Firewall de corte listo: suspendidos solo con "
+                    f"WhatsApp a {int(kbps)} kbps"
+                )
+            self._desactivar_corte_whatsapp()
             return True, "Firewall de corte FTTH listo"
         except Exception as e:
             return False, str(e)
+
+    # --- Modo suspendido "solo WhatsApp" ---
+    # Las reglas accept van al inicio de la cadena forward: así quedan antes
+    # de fasttrack y del drop de morosos, y el tráfico permitido nunca se
+    # fasttrackea (si lo hiciera, se saltaría la cola de velocidad).
+
+    @staticmethod
+    def _reglas_filtro_whatsapp():
+        return [
+            {
+                "chain": "forward", "action": "accept",
+                "src-address-list": LISTA_CORTE,
+                "dst-address-list": LISTA_WHATSAPP,
+                "protocol": "tcp", "dst-port": "443,5222",
+                "comment": "=== CORTE WHATSAPP SALIDA ===",
+            },
+            {
+                "chain": "forward", "action": "accept",
+                "src-address-list": LISTA_WHATSAPP,
+                "dst-address-list": LISTA_CORTE,
+                "protocol": "tcp", "src-port": "443,5222",
+                "comment": "=== CORTE WHATSAPP ENTRADA ===",
+            },
+            {
+                "chain": "forward", "action": "accept",
+                "src-address-list": LISTA_CORTE,
+                "protocol": "udp", "dst-port": "53",
+                "comment": "=== CORTE DNS UDP ===",
+            },
+            {
+                "chain": "forward", "action": "accept",
+                "src-address-list": LISTA_CORTE,
+                "protocol": "tcp", "dst-port": "53",
+                "comment": "=== CORTE DNS TCP ===",
+            },
+        ]
+
+    @staticmethod
+    def _reglas_mangle_whatsapp():
+        return [
+            {
+                "chain": "forward", "action": "mark-packet",
+                "src-address-list": LISTA_CORTE,
+                "dst-address-list": LISTA_WHATSAPP,
+                "new-packet-mark": MARCA_WA_SUBIDA,
+                "passthrough": "false",
+                "comment": "=== CORTE WHATSAPP MARCA SUBIDA ===",
+            },
+            {
+                "chain": "forward", "action": "mark-packet",
+                "src-address-list": LISTA_WHATSAPP,
+                "dst-address-list": LISTA_CORTE,
+                "new-packet-mark": MARCA_WA_BAJADA,
+                "passthrough": "false",
+                "comment": "=== CORTE WHATSAPP MARCA BAJADA ===",
+            },
+        ]
+
+    @staticmethod
+    def _colas_whatsapp(kbps: int):
+        tipos = [
+            {
+                "name": COLA_TIPO_WA_SUBIDA, "kind": "pcq",
+                "pcq-rate": f"{kbps}k", "pcq-classifier": "src-address",
+            },
+            {
+                "name": COLA_TIPO_WA_BAJADA, "kind": "pcq",
+                "pcq-rate": f"{kbps}k", "pcq-classifier": "dst-address",
+            },
+        ]
+        arboles = [
+            {
+                "name": COLA_ARBOL_WA_SUBIDA, "parent": "global",
+                "packet-mark": MARCA_WA_SUBIDA, "queue": COLA_TIPO_WA_SUBIDA,
+                "comment": "FdezNet: suspendidos solo WhatsApp (subida)",
+            },
+            {
+                "name": COLA_ARBOL_WA_BAJADA, "parent": "global",
+                "packet-mark": MARCA_WA_BAJADA, "queue": COLA_TIPO_WA_BAJADA,
+                "comment": "FdezNet: suspendidos solo WhatsApp (bajada)",
+            },
+        ]
+        return tipos, arboles
+
+    def _buscar(self, ruta: str, campo: str, valor: str):
+        res = self._request(
+            "GET",
+            f"{ruta}?{campo}={quote(valor)}",
+            raise_on_error=True,
+        )
+        return res if isinstance(res, list) else []
+
+    def _asegurar_item(self, ruta: str, campo: str, payload: dict) -> str:
+        """Crea o corrige el item identificado por `campo`; devuelve su id."""
+        existentes = self._buscar(ruta, campo, payload[campo])
+        if existentes:
+            actual = existentes[0]
+            cambios = {
+                clave: valor
+                for clave, valor in payload.items()
+                if str(actual.get(clave, "")) != str(valor)
+            }
+            if str(actual.get("disabled", "false")) == "true":
+                cambios["disabled"] = "false"
+            if cambios:
+                self._request(
+                    "PATCH", f"{ruta}/{actual['.id']}", cambios,
+                    raise_on_error=True,
+                )
+            return actual[".id"]
+        creado = self._request("PUT", ruta, payload, raise_on_error=True)
+        if not isinstance(creado, dict) or not creado.get(".id"):
+            creados = self._buscar(ruta, campo, payload[campo])
+            if not creados:
+                raise RuntimeError(
+                    f"MikroTik no confirmó la creación en {ruta}"
+                )
+            return creados[0][".id"]
+        return creado[".id"]
+
+    def _eliminar_items(self, ruta: str, campo: str, valores):
+        for valor in valores:
+            for item in self._buscar(ruta, campo, valor):
+                self._request(
+                    "DELETE", f"{ruta}/{item['.id']}", raise_on_error=True
+                )
+
+    def _mover_al_inicio(self, ruta: str, cadena: str, ids: list[str]):
+        """Deja `ids` como primeras reglas (no dinámicas) de la cadena."""
+        reglas = self._request(
+            "GET", f"{ruta}?chain={cadena}", raise_on_error=True
+        )
+        orden = [
+            regla[".id"]
+            for regla in (reglas if isinstance(reglas, list) else [])
+            if str(regla.get("dynamic", "false")) != "true"
+        ]
+        if orden[:len(ids)] == ids:
+            return
+        for regla_id in reversed(ids):
+            if orden and orden[0] == regla_id:
+                continue
+            self._request(
+                "POST",
+                f"{ruta}/move",
+                {"numbers": regla_id, "destination": orden[0]},
+                raise_on_error=True,
+            )
+            if regla_id in orden:
+                orden.remove(regla_id)
+            orden.insert(0, regla_id)
+
+    def _sincronizar_lista_whatsapp(self):
+        ruta = "/ip/firewall/address-list"
+        actuales = self._buscar(ruta, "list", LISTA_WHATSAPP)
+        registradas = {
+            str(item.get("address", "")).strip(): item for item in actuales
+        }
+        for rango in RANGOS_META_WHATSAPP:
+            if rango not in registradas:
+                self._request(
+                    "PUT",
+                    ruta,
+                    {
+                        "list": LISTA_WHATSAPP,
+                        "address": rango,
+                        "comment": "Meta/WhatsApp (FdezNet)",
+                    },
+                    raise_on_error=True,
+                )
+        for direccion, item in registradas.items():
+            if direccion not in RANGOS_META_WHATSAPP:
+                self._request(
+                    "DELETE", f"{ruta}/{item['.id']}", raise_on_error=True
+                )
+
+    def _activar_corte_whatsapp(self, kbps: int):
+        if kbps < 16:
+            raise ValueError("La velocidad del modo WhatsApp es muy baja")
+        self._sincronizar_lista_whatsapp()
+
+        tipos, arboles = self._colas_whatsapp(kbps)
+        for tipo in tipos:
+            self._asegurar_item("/queue/type", "name", tipo)
+        for arbol in arboles:
+            self._asegurar_item("/queue/tree", "name", arbol)
+
+        for ruta, reglas in (
+            ("/ip/firewall/mangle", self._reglas_mangle_whatsapp()),
+            ("/ip/firewall/filter", self._reglas_filtro_whatsapp()),
+        ):
+            ids = [
+                self._asegurar_item(ruta, "comment", regla)
+                for regla in reglas
+            ]
+            self._mover_al_inicio(ruta, "forward", ids)
+
+    def _desactivar_corte_whatsapp(self):
+        self._eliminar_items(
+            "/ip/firewall/filter",
+            "comment",
+            [r["comment"] for r in self._reglas_filtro_whatsapp()],
+        )
+        self._eliminar_items(
+            "/ip/firewall/mangle",
+            "comment",
+            [r["comment"] for r in self._reglas_mangle_whatsapp()],
+        )
+        self._eliminar_items(
+            "/queue/tree", "name", [COLA_ARBOL_WA_SUBIDA, COLA_ARBOL_WA_BAJADA]
+        )
+        self._eliminar_items(
+            "/queue/type", "name", [COLA_TIPO_WA_SUBIDA, COLA_TIPO_WA_BAJADA]
+        )
+        self._eliminar_items(
+            "/ip/firewall/address-list", "list", [LISTA_WHATSAPP]
+        )
+
+    def limpiar_conexiones_cliente(self, ip_target) -> bool:
+        """Cierra conexiones abiertas (incluidas las fasttrack) de una IP.
+
+        Sin esto, una descarga o video iniciado antes del corte puede seguir
+        fluyendo porque FastTrack salta el firewall.
+        """
+        ip = str(ip_target or "").strip()
+        if not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip):
+            return False
+        script = (
+            "/ip firewall connection remove [find where "
+            f'src-address~"^{ip}:" or dst-address~"^{ip}:"]'
+        )
+        return self._request("POST", "/execute", {"script": script}) is not None
 
     def gestionar_corte_cliente(self, ip_target, suspender: bool):
         if not ip_target or ip_target == '0.0.0.0':
@@ -408,6 +669,10 @@ class MikroTikService:
                 },
                 raise_on_error=True,
             )
+            try:
+                self.limpiar_conexiones_cliente(ip_target)
+            except Exception as exc:
+                print(f"⚠️ No se limpiaron conexiones de {ip_target}: {exc}")
         elif not suspender and existe:
             for item in res:
                 self._request(

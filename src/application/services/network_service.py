@@ -14,8 +14,13 @@ from src.infrastructure.models import (
     ServicioModel,
 )
 from src.domain.schemas import RouterCreate, RedCreate
+from src.application.services.corte_whatsapp_service import (
+    aplicar_modo_corte,
+    obtener_modo_corte,
+)
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.utils.mikrotik import (
+    debe_bloquear_acceso,
     formatear_rate_limit_dhcp,
     formatear_rate_limit_pppoe,
     normalizar_mac,
@@ -225,8 +230,13 @@ class NetworkService:
             # ---------------------------------------------------------
             # PASO B: ASEGURAR REGLAS DE CORTE
             # ---------------------------------------------------------
-            mk.inicializar_firewall_corte()
-            log_acciones.append("Firewall FTTH verificado.")
+            modo_corte = await obtener_modo_corte(self.db)
+            firewall_ok, firewall_msg = aplicar_modo_corte(mk, modo_corte)
+            log_acciones.append(
+                f"{firewall_msg}."
+                if firewall_ok
+                else f"Firewall de corte con error ({firewall_msg})."
+            )
 
             # ---------------------------------------------------------
             # PASO C: SINCRONIZAR CLIENTES (Secrets PPPoE)
@@ -269,7 +279,14 @@ class NetworkService:
                         comentario_estandar,
                     )
                     mk.activar_desactivar_dhcp(
-                        mac, blocked=servicio.estado != "activo"
+                        mac,
+                        blocked=(
+                            servicio.estado not in {"activo", "suspendido"}
+                            or debe_bloquear_acceso(
+                                servicio.estado == "suspendido",
+                                modo_corte.solo_whatsapp,
+                            )
+                        ),
                     )
                 else:
                     if not servicio.user_pppoe:

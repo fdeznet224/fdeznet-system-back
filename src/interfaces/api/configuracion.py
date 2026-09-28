@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 from typing import List
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +14,11 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.decorator import cache
 
 # --- INFRAESTRUCTURA (Tus Modelos y DB) ---
+from src.application.services.corte_whatsapp_service import (
+    ModoCorte,
+    obtener_modo_corte,
+    tarea_aplicar_modo_corte,
+)
 from src.infrastructure.database import get_db
 from src.infrastructure.models import (
     PlantillaFacturacionModel, 
@@ -631,10 +636,30 @@ async def obtener_configuracion_sistema(db: AsyncSession = Depends(get_db)):
     return await get_or_create_system_config(db)
 
 @router.put("/sistema")
-async def guardar_configuracion_sistema(datos: SystemConfigUpdate, db: AsyncSession = Depends(get_db)):
+async def guardar_configuracion_sistema(
+    datos: SystemConfigUpdate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    modo_anterior = await obtener_modo_corte(db)
     stmt = update(ConfiguracionSistema).where(ConfiguracionSistema.id == 1).values(**datos.model_dump())
     await db.execute(stmt)
     await db.commit()
+    await FastAPICache.clear()
+
+    modo_nuevo = ModoCorte(
+        solo_whatsapp=datos.corte_solo_whatsapp,
+        kbps=datos.corte_whatsapp_kbps,
+    )
+    if modo_nuevo != modo_anterior:
+        background_tasks.add_task(tarea_aplicar_modo_corte)
+        return {
+            "status": "ok",
+            "mensaje": (
+                "Configuración guardada. Aplicando el modo de corte "
+                "en los routers."
+            ),
+        }
     return {"status": "ok", "mensaje": "Configuración guardada"}
 
 

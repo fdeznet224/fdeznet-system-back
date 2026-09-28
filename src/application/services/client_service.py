@@ -39,6 +39,9 @@ from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.infrastructure.repositories import ClienteRepository
 
 # Servicios Externos
+from src.application.services.corte_whatsapp_service import (
+    obtener_modo_corte,
+)
 from src.infrastructure.mikrotik_service import MikroTikService
 
 # 👇 Importamos el MEGA NOTIFICADOR 👇
@@ -51,7 +54,11 @@ from src.application.services.access_control_service import (
     verificar_instalacion_asignada,
 )
 from src.application.services.pppoe_config_service import resolver_password_pppoe
-from src.utils.mikrotik import formatear_rate_limit_dhcp, normalizar_mac
+from src.utils.mikrotik import (
+    debe_bloquear_acceso,
+    formatear_rate_limit_dhcp,
+    normalizar_mac,
+)
 
 class ClientService:
     def __init__(self, db: AsyncSession):
@@ -1168,6 +1175,7 @@ class ClientService:
                 cliente.router.port_api,
             )
 
+            modo_corte = await obtener_modo_corte(self.db)
             try:
                 modo = getattr(
                     cliente.router.tipo_seguridad,
@@ -1176,11 +1184,18 @@ class ClientService:
                 )
                 es_dhcp = str(modo).lower() == "dhcp"
                 if estado_limpio in ["suspendido", "retirado", "cortado"]:
+                    # "retirado" siempre corta total; los morosos pueden
+                    # conservar WhatsApp si el modo está activo.
+                    bloquear = estado_limpio == "retirado" or (
+                        debe_bloquear_acceso(
+                            True, modo_corte.solo_whatsapp
+                        )
+                    )
                     if es_dhcp:
                         mac = normalizar_mac(cliente.mac_address)
                         if not mac:
                             raise ValueError("Falta la MAC WAN/CPE")
-                        mk.activar_desactivar_dhcp(mac, blocked=True)
+                        mk.activar_desactivar_dhcp(mac, blocked=bloquear)
                     resultado = mk.gestionar_corte_cliente(
                         cliente.ip_asignada,
                         suspender=True,

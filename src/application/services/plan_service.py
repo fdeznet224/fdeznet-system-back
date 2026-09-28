@@ -9,8 +9,12 @@ from src.infrastructure.models import (
     ServicioModel,
 )
 from src.domain.schemas import PlanCreate
+from src.application.services.corte_whatsapp_service import (
+    obtener_modo_corte,
+)
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.utils.mikrotik import (
+    debe_bloquear_acceso,
     formatear_rate_limit_dhcp,
     formatear_rate_limit_pppoe,
     normalizar_mac,
@@ -154,6 +158,7 @@ class PlanService:
             except Exception as e:
                 print(f"⚠️ Error Sincronización MK ({accion}): {e}")
         elif "dhcp" in tipo_seguridad and accion == "editar":
+            modo_corte = await obtener_modo_corte(self.db)
             try:
                 mk = MikroTikService(
                     router.ip_vpn,
@@ -184,7 +189,10 @@ class PlanService:
                     )
                     mk.activar_desactivar_dhcp(
                         mac,
-                        blocked=servicio.estado == "suspendido",
+                        blocked=debe_bloquear_acceso(
+                            servicio.estado == "suspendido",
+                            modo_corte.solo_whatsapp,
+                        ),
                     )
             except Exception as e:
                 print(f"⚠️ Error Sincronización DHCP ({accion}): {e}")

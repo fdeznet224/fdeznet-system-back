@@ -48,6 +48,8 @@ class SystemConfigUpdate(BaseModel):
     generar_facturas_automaticamente: bool
     dia_generacion_factura: int = 1
     aviso_pantalla_corte: bool
+    corte_solo_whatsapp: bool = False
+    corte_whatsapp_kbps: int = Field(default=128, ge=32, le=2048)
     telefonos_alerta: Optional[str] = ""
 
 

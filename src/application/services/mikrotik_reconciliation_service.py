@@ -6,12 +6,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from src.application.services.corte_whatsapp_service import (
+    ModoCorte,
+    aplicar_modo_corte,
+    obtener_modo_corte,
+)
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.infrastructure.models import (
     LogCronjobModel,
     ServicioModel,
 )
-from src.utils.mikrotik import formatear_rate_limit_dhcp, normalizar_mac
+from src.utils.mikrotik import (
+    debe_bloquear_acceso,
+    formatear_rate_limit_dhcp,
+    normalizar_mac,
+)
 
 
 ESTADOS_CONCILIABLES = {"activo", "suspendido"}
@@ -30,6 +39,7 @@ class MikrotikReconciliationService:
         self.db = db
         self.mikrotik_factory = mikrotik_factory
         self.blocking_runner = blocking_runner
+        self.modo_corte = ModoCorte()
 
     @staticmethod
     def _es_verdadero(valor) -> bool:
@@ -180,14 +190,17 @@ class MikrotikReconciliationService:
             secrets_por_usuario[usuario] = secret
 
         debe_suspender = servicio.estado == "suspendido"
+        debe_deshabilitar = debe_bloquear_acceso(
+            debe_suspender, self.modo_corte.solo_whatsapp
+        )
         esta_deshabilitado = self._es_verdadero(
             secret.get("disabled")
         )
-        if esta_deshabilitado != debe_suspender:
+        if esta_deshabilitado != debe_deshabilitar:
             encontrado = await self.blocking_runner(
                 mk.activar_desactivar_pppoe,
                 usuario,
-                debe_suspender,
+                debe_deshabilitar,
             )
             if encontrado is not True:
                 raise RuntimeError(
@@ -195,7 +208,7 @@ class MikrotikReconciliationService:
                 )
             acciones.append(
                 "deshabilitar PPPoE"
-                if debe_suspender
+                if debe_deshabilitar
                 else "habilitar PPPoE"
             )
 
@@ -228,7 +241,7 @@ class MikrotikReconciliationService:
                 )
             if (
                 self._es_verdadero(verificado.get("disabled"))
-                != debe_suspender
+                != debe_deshabilitar
             ):
                 raise RuntimeError(
                     "el estado PPPoE final no coincide con la BD"
@@ -280,12 +293,15 @@ class MikrotikReconciliationService:
             leases_por_mac[mac] = lease
 
         debe_suspender = servicio.estado == "suspendido"
+        debe_bloquear = debe_bloquear_acceso(
+            debe_suspender, self.modo_corte.solo_whatsapp
+        )
         esta_bloqueado = self._es_verdadero(
             lease.get("block-access", lease.get("blocked"))
         )
-        if esta_bloqueado != debe_suspender:
+        if esta_bloqueado != debe_bloquear:
             encontrado = await self.blocking_runner(
-                mk.activar_desactivar_dhcp, mac, debe_suspender
+                mk.activar_desactivar_dhcp, mac, debe_bloquear
             )
             if encontrado is not True:
                 raise RuntimeError(
@@ -293,7 +309,7 @@ class MikrotikReconciliationService:
                 )
             acciones.append(
                 "bloquear lease DHCP"
-                if debe_suspender
+                if debe_bloquear
                 else "desbloquear lease DHCP"
             )
 
@@ -326,7 +342,7 @@ class MikrotikReconciliationService:
                     "block-access", verificado.get("blocked")
                 )
             )
-            if bloqueado != debe_suspender:
+            if bloqueado != debe_bloquear:
                 raise RuntimeError(
                     "el estado DHCP final no coincide con la BD"
                 )
@@ -336,6 +352,7 @@ class MikrotikReconciliationService:
         return acciones
 
     async def ejecutar(self) -> dict[str, int]:
+        self.modo_corte = await obtener_modo_corte(self.db)
         servicios = await self._cargar_servicios()
         por_router = defaultdict(list)
         reporte = {
@@ -422,6 +439,18 @@ class MikrotikReconciliationService:
                 router.port_api,
             )
             try:
+                firewall_ok, firewall_msg = await self.blocking_runner(
+                    aplicar_modo_corte, mk, self.modo_corte
+                )
+                if not firewall_ok:
+                    self._registrar_log(
+                        "ERROR",
+                        (
+                            f"No se verificó el firewall de corte en "
+                            f"'{router.nombre}'; se reintentará: "
+                            f"{firewall_msg}"
+                        ),
+                    )
                 es_dhcp = self._usa_dhcp(servicios_router[0])
                 secrets = await self.blocking_runner(
                     mk.obtener_todos_dhcp_estricto

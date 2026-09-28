@@ -26,10 +26,14 @@ class _ScalarResult:
 
 
 class _DB:
-    def __init__(self, servicios):
+    def __init__(self, servicios, config=None):
         self.servicios = servicios
+        self.config = config
         self.logs = []
         self.commits = 0
+
+    async def get(self, _model, _id):
+        return self.config
 
     async def execute(self, _statement):
         return _ScalarResult(self.servicios)
@@ -54,6 +58,11 @@ class _FakeMikrotik:
         self.cambios_corte = []
         self.configurados = []
         self.leases = {}
+        self.firewall_modos = []
+
+    def inicializar_firewall_corte(self, solo_whatsapp=False, kbps=128):
+        self.firewall_modos.append((solo_whatsapp, kbps))
+        return True, "Firewall de corte listo"
 
     def obtener_todos_pppoe_estricto(self):
         self.listados += 1
@@ -384,3 +393,94 @@ def test_ruta_y_cron_de_conciliacion_estan_publicados():
     ).read_text(encoding="utf-8")
     assert 'id="mikrotik_state_reconciler"' in main_source
     assert "minutes=5" in main_source
+
+
+def _config_whatsapp(kbps=96):
+    return SimpleNamespace(corte_solo_whatsapp=True, corte_whatsapp_kbps=kbps)
+
+
+def test_conciliador_modo_whatsapp_mantiene_pppoe_habilitado():
+    router = SimpleNamespace(
+        id=1,
+        nombre="Nodo",
+        ip_vpn="192.0.2.1",
+        user_api="api",
+        pass_api="clave",
+        port_api=80,
+        is_active=True,
+    )
+    suspendido = _servicio(
+        2, "suspendido", router, "suspendido2", "10.0.0.2"
+    )
+    mk = _FakeMikrotik(
+        secrets=[
+            {
+                "name": "suspendido2",
+                "password": "secreto",
+                "profile": "50 Megas",
+                "remote-address": "10.0.0.2",
+                "disabled": "true",
+            },
+        ],
+        ips_cortadas={"10.0.0.2"},
+    )
+    db = _DB([suspendido], config=_config_whatsapp())
+
+    reporte = asyncio.run(
+        MikrotikReconciliationService(
+            db,
+            mikrotik_factory=lambda *_args: mk,
+            blocking_runner=_run_direct,
+        ).ejecutar()
+    )
+
+    assert reporte["errores"] == 0
+    assert mk.firewall_modos == [(True, 96)]
+    # Sigue en la lista de corte, pero con la sesión PPPoE habilitada.
+    assert mk.cambios_estado == [("suspendido2", False)]
+    assert mk.cambios_corte == []
+    assert mk.secrets["suspendido2"]["disabled"] == "false"
+
+
+def test_conciliador_modo_whatsapp_desbloquea_lease_dhcp():
+    router = SimpleNamespace(
+        id=1,
+        nombre="Nodo DHCP",
+        ip_vpn="192.0.2.1",
+        user_api="api",
+        pass_api="clave",
+        port_api=80,
+        is_active=True,
+        tipo_seguridad="dhcp",
+    )
+    servicio = _servicio(3, "suspendido", router, None, "10.0.0.3")
+    servicio.mac_address = "AA:BB:CC:DD:EE:03"
+    servicio.pass_pppoe = None
+    servicio.plan = SimpleNamespace(
+        nombre="50 Megas",
+        velocidad_subida=10240,
+        velocidad_bajada=51200,
+        burst_subida=0,
+        burst_bajada=0,
+        burst_time=0,
+    )
+    mk = _FakeMikrotik(secrets=[], ips_cortadas={"10.0.0.3"})
+    mk.crear_actualizar_lease_dhcp(
+        "AA:BB:CC:DD:EE:03", "10.0.0.3", "10M/50M", "Servicio"
+    )
+    mk.leases["AA:BB:CC:DD:EE:03"]["block-access"] = "true"
+    mk.configurados.clear()
+    db = _DB([servicio], config=_config_whatsapp())
+
+    reporte = asyncio.run(
+        MikrotikReconciliationService(
+            db,
+            mikrotik_factory=lambda *_args: mk,
+            blocking_runner=_run_direct,
+        ).ejecutar()
+    )
+
+    assert reporte["errores"] == 0
+    assert mk.cambios_estado == [("AA:BB:CC:DD:EE:03", False)]
+    assert mk.leases["AA:BB:CC:DD:EE:03"]["block-access"] == "false"
+    assert "10.0.0.3" in mk.ips_cortadas

@@ -18,8 +18,12 @@ from src.domain.schemas import (
     ServicioPlanUpdate,
     ServicioUpdate,
 )
+from src.application.services.corte_whatsapp_service import (
+    obtener_modo_corte,
+)
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.utils.mikrotik import (
+    debe_bloquear_acceso,
     formatear_rate_limit_dhcp,
     normalizar_mac,
 )
@@ -632,6 +636,7 @@ class SubscriptionService:
             )
 
         debe_suspender = servicio.estado == "suspendido"
+        modo_corte = await obtener_modo_corte(self.db)
         encontrado = await asyncio.to_thread(
             (
                 mk.activar_desactivar_dhcp
@@ -639,7 +644,9 @@ class SubscriptionService:
                 else mk.activar_desactivar_pppoe
             ),
             servicio.mac_address if is_dhcp else servicio.user_pppoe,
-            debe_suspender,
+            debe_bloquear_acceso(
+                debe_suspender, modo_corte.solo_whatsapp
+            ),
         )
         if encontrado is not True:
             raise RuntimeError("MikroTik no encontró el acceso del cliente")
@@ -694,6 +701,7 @@ class SubscriptionService:
             servicio.router.port_api,
         )
         suspendido = estado == "suspendido"
+        modo_corte = await obtener_modo_corte(self.db)
         encontrado = await asyncio.to_thread(
             (
                 mk.activar_desactivar_dhcp
@@ -701,7 +709,7 @@ class SubscriptionService:
                 else mk.activar_desactivar_pppoe
             ),
             access_id,
-            suspendido,
+            debe_bloquear_acceso(suspendido, modo_corte.solo_whatsapp),
         )
         if encontrado is False:
             raise ValueError("MikroTik no encontró el acceso del cliente")
