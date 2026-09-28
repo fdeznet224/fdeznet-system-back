@@ -164,13 +164,18 @@ class BillingService:
         cliente.proxima_factura = periodo.siguiente_facturacion
         return factura
 
-    async def _registrar_cargo_reconexion(
+    async def _agregar_reconexion_a_factura(
         self,
+        factura: FacturaModel,
         cliente: ClienteModel,
         servicio: ServicioModel | None,
-        origen: str,
-    ) -> None:
-        """Agenda en la próxima factura el importe definido por la plantilla."""
+    ) -> Decimal:
+        """Suma el cargo de reconexión de la plantilla a la factura del corte.
+
+        Se agrega al cortar, una sola vez por corte, para que el cliente lo
+        pague en el mismo cobro que lo reconecta. Cuenta para el corte: sin
+        pagarlo no se reconecta. Con cargo 0 en la plantilla no se agrega.
+        """
         plantilla_id = (
             servicio.plantilla_id if servicio and servicio.plantilla_id
             else cliente.plantilla_id
@@ -179,23 +184,36 @@ class BillingService:
             await self.db.get(PlantillaFacturacionModel, plantilla_id)
             if plantilla_id else None
         )
-        monto = Decimal(str(plantilla.cargo_reconexion or 0)) if plantilla else Decimal("0")
+        monto = (
+            Decimal(str(plantilla.cargo_reconexion or 0))
+            if plantilla else Decimal("0")
+        ).quantize(Decimal("0.01"))
         if monto <= 0:
-            return
+            return Decimal("0.00")
 
         self.db.add(FacturaConceptoModel(
             cliente_id=cliente.id,
             servicio_id=servicio.id if servicio else None,
-            factura_id=None,
+            factura_id=factura.id,
             tipo="reconexion",
             concepto="Cargo por reconexión",
-            descripcion=f"Reconexión de servicio ({origen})",
+            descripcion="Reconexión por corte de servicio",
             monto_original=monto,
             saldo_pendiente=monto,
-            estado="pendiente",
-            afecta_corte=False,
+            estado="facturado",
+            afecta_corte=True,
             fecha_cargo=date.today(),
         ))
+        factura.monto = Decimal(factura.monto or 0) + monto
+        factura.total = Decimal(factura.total or 0) + monto
+        factura.saldo_pendiente = Decimal(factura.saldo_pendiente or 0) + monto
+        factura.cargos_adicionales_total = (
+            Decimal(factura.cargos_adicionales_total or 0) + monto
+        )
+        factura.detalles = "\n".join(
+            [factura.detalles or "", f"Cargo por reconexión: ${monto:.2f}"]
+        ).strip()
+        return monto
 
     async def _consolidar_prorrateos_en_mensualidad(
         self,
@@ -830,6 +848,10 @@ class BillingService:
                     factura,
                     "promesa_incumplida" if promesa_rota else "falta_pago",
                 )
+            if estado_previo != "suspendido":
+                await self._agregar_reconexion_a_factura(
+                    factura, cliente, servicio
+                )
             await self._sincronizar_estado_cliente(cliente.id)
             factura.estado = "vencida"
 
@@ -896,7 +918,7 @@ class BillingService:
         Repara pagos cuya reconexión falló en MikroTik (router caído o
         timeout) y servicios que quedaron suspendidos con la regla anterior.
         Sólo toca suspensiones abiertas por el motor de cobranza; las
-        suspensiones manuales se respetan. No cobra reconexión.
+        suspensiones manuales se respetan.
         """
         hoy = date.today()
         servicios = (
@@ -946,8 +968,7 @@ class BillingService:
             servicio.ultima_reactivacion_origen = "automatico"
             servicio.ultima_reactivacion_en = datetime.now()
             await self._sincronizar_estado_cliente(cliente.id)
-            # Sin cargo de reconexión: si el servicio llegó hasta aquí, el
-            # cliente ya pagó y la reconexión falló del lado del sistema.
+            # El cargo de reconexión ya venía en la factura del corte.
             self.db.add(LogCronjobModel(
                 nivel="WARNING",
                 origen="ReactivacionPagados",
@@ -1061,6 +1082,304 @@ class BillingService:
                 await self.db.commit()
         return reporte
 
+    # ==========================================
+    # COBRO TOTAL DEL CLIENTE (un solo cobro)
+    # ==========================================
+    @staticmethod
+    def _etiqueta_concepto(concepto, factura) -> str:
+        if concepto.tipo == "internet":
+            if factura.es_prorrateada or factura.tipo_factura == "prorrateo":
+                return "Prorrateo"
+            periodo = factura.mes_correspondiente or (
+                factura.periodo_desde.strftime("%m/%Y")
+                if factura.periodo_desde
+                else None
+            )
+            return f"Mensualidad {periodo}" if periodo else "Mensualidad"
+        if concepto.tipo == "internet_prorrateado":
+            return "Prorrateo"
+        if concepto.tipo == "reconexion":
+            return "Reconexión"
+        return concepto.concepto
+
+    async def estado_cuenta_cliente(self, cliente_id: int) -> dict:
+        """Total a pagar del cliente, listo para un solo cobro.
+
+        Recalcula los días sin servicio de los servicios suspendidos (como si
+        se reconectaran hoy) y suma todo lo pendiente: mensualidades,
+        prorrateos, servicios extra y cargos.
+        """
+        suspendidos = (
+            await self.db.execute(
+                select(ServicioModel).where(
+                    ServicioModel.cliente_id == cliente_id,
+                    ServicioModel.estado == "suspendido",
+                )
+            )
+        ).scalars().all()
+        for servicio in suspendidos:
+            await FinanceService(self.db).normalizar_facturas_suspendidas(
+                servicio,
+                fecha_reactivacion=date.today(),
+            )
+        await self.db.flush()
+
+        facturas = (
+            await self.db.execute(
+                select(FacturaModel)
+                .where(
+                    FacturaModel.cliente_id == cliente_id,
+                    FacturaModel.estado.in_(["pendiente", "vencida"]),
+                    FacturaModel.saldo_pendiente > 0,
+                )
+                .order_by(
+                    FacturaModel.fecha_vencimiento.asc(),
+                    FacturaModel.id.asc(),
+                )
+            )
+        ).scalars().all()
+
+        incluye: list[str] = []
+        for factura in facturas:
+            conceptos = (
+                await self.db.execute(
+                    select(FacturaConceptoModel)
+                    .where(
+                        FacturaConceptoModel.factura_id == factura.id,
+                        FacturaConceptoModel.saldo_pendiente > 0,
+                    )
+                    .order_by(FacturaConceptoModel.id)
+                )
+            ).scalars().all()
+            etiquetas = [
+                self._etiqueta_concepto(c, factura) for c in conceptos
+            ] or [factura.concepto or f"Factura #{factura.id}"]
+            for etiqueta in etiquetas:
+                if etiqueta not in incluye:
+                    incluye.append(etiqueta)
+
+        hoy = date.today()
+        vencida = next(
+            (
+                f for f in facturas
+                if f.afecta_corte
+                and f.fecha_limite_corte
+                and f.fecha_limite_corte < hoy
+            ),
+            None,
+        )
+        return {
+            "cliente_id": cliente_id,
+            "total": sum(
+                (Decimal(f.saldo_pendiente or 0) for f in facturas),
+                Decimal("0.00"),
+            ),
+            "incluye": incluye,
+            "facturas": [
+                {"id": f.id, "saldo_pendiente": f.saldo_pendiente}
+                for f in facturas
+            ],
+            "suspendido": bool(suspendidos),
+            "factura_promesa_id": (vencida or (facturas[0] if facturas else None)).id
+            if facturas
+            else None,
+        }
+
+    async def registrar_pago_cliente(
+        self,
+        cliente_id: int,
+        usuario_operador: UsuarioModel,
+        metodo_pago: str,
+        monto,
+        referencia: str | None = None,
+        clave_idempotencia: str | None = None,
+    ) -> dict:
+        """Un solo cobro por el total del cliente.
+
+        El importe se aplica de lo más antiguo a lo más reciente; si no
+        alcanza queda como abono y lo que sobra queda como saldo a favor.
+        """
+        recibido = FinanceService.dinero(monto)
+        clave = (clave_idempotencia or "").strip()[:80] or None
+        if clave:
+            previos = (
+                await self.db.execute(
+                    select(PagoModel).where(
+                        PagoModel.clave_idempotencia.like(f"{clave}:%"),
+                        PagoModel.cliente_id == cliente_id,
+                    )
+                )
+            ).scalars().all()
+            if previos:
+                return {
+                    "status": "ok",
+                    "idempotente": True,
+                    "pago_ids": [p.id for p in previos],
+                    "total_recibido": sum(
+                        (Decimal(p.monto_total or 0) for p in previos),
+                        Decimal("0.00"),
+                    ),
+                }
+
+        estado = await self.estado_cuenta_cliente(cliente_id)
+        facturas = estado["facturas"]
+        if not facturas:
+            raise ValueError("El cliente no tiene saldo pendiente")
+
+        restante = recibido
+        aplicados = []
+        reactivado = False
+        for indice, datos in enumerate(facturas):
+            if restante <= 0:
+                break
+            saldo = Decimal(datos["saldo_pendiente"])
+            ultima = indice == len(facturas) - 1
+            importe = restante if ultima else min(restante, saldo)
+            resultado = await self.registrar_pago_completo(
+                factura_id=datos["id"],
+                usuario_operador=usuario_operador,
+                metodo_pago=metodo_pago,
+                monto=importe,
+                referencia=referencia,
+                clave_idempotencia=(
+                    f"{clave}:{datos['id']}" if clave else None
+                ),
+                confirmar_transaccion=False,
+                enviar_notificacion=False,
+            )
+            restante -= importe
+            reactivado = reactivado or bool(resultado.get("reactivado"))
+            aplicados.append(resultado)
+        await self.db.commit()
+
+        cliente = await self.db.get(ClienteModel, cliente_id)
+        pendientes = await self._listar_facturas_pendientes_cliente(cliente_id)
+        saldo_restante = sum(
+            (Decimal(f["saldo_pendiente"] or 0) for f in pendientes),
+            Decimal("0.00"),
+        )
+        await self._notificar_cobro_total(
+            cliente,
+            [r["pago_id"] for r in aplicados],
+            recibido,
+            saldo_restante,
+            reactivado,
+            referencia,
+        )
+        return {
+            "status": "ok",
+            "idempotente": False,
+            "pago_ids": [r["pago_id"] for r in aplicados],
+            "total_recibido": recibido,
+            "saldo_pendiente": saldo_restante,
+            "saldo_a_favor": cliente.saldo_a_favor,
+            "reactivado": reactivado,
+        }
+
+    async def _notificar_cobro_total(
+        self,
+        cliente,
+        pago_ids: list[int],
+        recibido: Decimal,
+        saldo_restante: Decimal,
+        reactivado: bool,
+        referencia: str | None,
+    ) -> None:
+        """Un solo WhatsApp (y un solo recibo) por el cobro total."""
+        if not cliente or not cliente.telefono or not pago_ids:
+            return
+        clave = f"cobro:{pago_ids[0]}"
+        try:
+            notificador = NotificationService(self.db)
+            if reactivado:
+                await notificador.notificar(
+                    tipo_evento="reconexion",
+                    cliente_id=cliente.id,
+                    clave_dedupe=f"{clave}:reconexion",
+                )
+            pagos = (
+                await self.db.execute(
+                    select(PagoModel)
+                    .where(PagoModel.id.in_(pago_ids))
+                    .order_by(PagoModel.id)
+                )
+            ).scalars().all()
+            ultima = await self.db.get(FacturaModel, pagos[-1].factura_id)
+            if saldo_restante > 0:
+                await notificador.notificar(
+                    tipo_evento="abono_recibido",
+                    cliente_id=cliente.id,
+                    variables_extra={
+                        **self._variables_detalle_factura(ultima),
+                        "monto_pagado": f"${recibido:.2f}",
+                        "referencia": (
+                            "Abono registrado. (Resta por pagar: "
+                            f"${saldo_restante:.2f})"
+                        ),
+                    },
+                    clave_dedupe=f"{clave}:abono",
+                )
+                return
+            conceptos_pagados = (
+                await self.db.execute(
+                    select(
+                        FacturaConceptoModel.concepto,
+                        func.sum(PagoConceptoModel.monto_aplicado),
+                    )
+                    .join(
+                        PagoConceptoModel,
+                        PagoConceptoModel.concepto_id == FacturaConceptoModel.id,
+                    )
+                    .where(PagoConceptoModel.pago_id.in_(pago_ids))
+                    .group_by(FacturaConceptoModel.concepto)
+                )
+            ).all()
+            marca = await self.db.get(ConfiguracionSistema, 1)
+            ruta_pdf = await generar_recibo_pdf(
+                nombre_cliente=cliente.nombre,
+                monto=recibido,
+                concepto="Pago de servicios",
+                descripcion=ultima.descripcion or ultima.detalles or "Pago de servicio",
+                fecha_pago=pagos[-1].fecha_pago,
+                folio=ultima.id,
+                nueva_fecha_vencimiento=(
+                    ultima.fecha_vencimiento + relativedelta(months=1)
+                    if ultima.tipo_factura in {"mensual", "prorrateo"}
+                    else None
+                ),
+                telefono_cliente=cliente.telefono,
+                metodo_pago=pagos[-1].metodo_pago,
+                periodo_desde=ultima.periodo_desde,
+                periodo_hasta=ultima.periodo_hasta,
+                total_factura=recibido,
+                conceptos_pagados=[
+                    {"concepto": concepto, "monto": monto}
+                    for concepto, monto in conceptos_pagados
+                ],
+                empresa_nombre=marca.empresa_nombre if marca else "FdezNet",
+                color_primario=marca.color_primario if marca else "#1e3a8a",
+                color_secundario=marca.color_secundario if marca else "#2563eb",
+                pie_recibo=marca.pie_recibo if marca else None,
+                empresa_telefono=marca.empresa_telefono if marca else None,
+                empresa_email=marca.empresa_email if marca else None,
+                empresa_direccion=marca.empresa_direccion if marca else None,
+            )
+            await notificador.notificar(
+                tipo_evento="pago_recibido",
+                cliente_id=cliente.id,
+                variables_extra={
+                    **self._variables_detalle_factura(ultima),
+                    "monto_pagado": f"${recibido:.2f}",
+                    "referencia": referencia or "N/A",
+                },
+                ruta_pdf=ruta_pdf,
+                clave_dedupe=f"{clave}:recibo",
+            )
+        except Exception:
+            logger.exception(
+                "Error al notificar el cobro total del cliente %s", cliente.id
+            )
+
     async def registrar_pago_completo(
         self,
         factura_id: int,
@@ -1163,9 +1482,6 @@ class BillingService:
                             else "manual"
                         )
                         servicio.ultima_reactivacion_en = datetime.now()
-                    await self._registrar_cargo_reconexion(
-                        cliente, servicio, "pago"
-                    )
 
         if confirmar_transaccion:
             await self.db.commit()
@@ -1764,9 +2080,6 @@ class BillingService:
             promesa.servicio_reactivado = True
             promesa.reactivado_en = datetime.now()
             await self._sincronizar_estado_cliente(cliente.id)
-            await self._registrar_cargo_reconexion(
-                cliente, servicio, f"promesa {promesa.origen}"
-            )
 
         await self.db.commit()
 

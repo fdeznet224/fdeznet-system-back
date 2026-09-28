@@ -103,6 +103,16 @@ código debe respetarlas.
    cierran como no cobrados los días posteriores al corte, se deja de
    facturar, se crea la orden de retiro del equipo y se aplica el corte total
    en MikroTik. La deuda de lo consumido queda en el cliente.
-8. **Suspensiones manuales.** Nunca se levantan ni se dan de baja solas; las
+8. **Un solo cobro.** Caja y cobradores ven un único total por cliente
+   (`POST /finanzas/clientes/{id}/estado-cuenta`) que incluye mensualidad,
+   prorrateo, servicios extra y reconexión, y lo cobran de una vez
+   (`POST /finanzas/clientes/{id}/cobrar`, o la operación offline
+   `pago_cliente`). El importe se aplica de lo más antiguo a lo más reciente;
+   si no alcanza queda como abono y el excedente como saldo a favor. El
+   cliente recibe un solo WhatsApp con un solo recibo.
+9. **Reconexión en la misma factura.** Al cortar, el cargo de reconexión de
+   la plantilla (0 lo desactiva) se suma una sola vez a la factura del corte
+   y cuenta para el corte: se paga en el mismo cobro que reconecta.
+10. **Suspensiones manuales.** Nunca se levantan ni se dan de baja solas; las
    tareas automáticas sólo actúan sobre suspensiones abiertas por cobranza
    (`falta_pago` o `promesa_incumplida`).

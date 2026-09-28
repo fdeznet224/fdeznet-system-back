@@ -89,7 +89,7 @@ class _DBBarrido:
 
 def _preparar(monkeypatch, db, con_deuda=(), mikrotik_falla=()):
     service = BillingService(db)
-    llamadas = {"reactivados": [], "cerrados": [], "cargos": []}
+    llamadas = {"reactivados": [], "cerrados": []}
 
     async def deuda(referencia, excluir_factura_id=None):
         return referencia.servicio_id in con_deuda
@@ -104,14 +104,10 @@ def _preparar(monkeypatch, db, con_deuda=(), mikrotik_falla=()):
     async def sincronizar(cliente_id):
         db.clientes[cliente_id].estado = "activo"
 
-    async def cargo(cliente, servicio, origen):
-        llamadas["cargos"].append((servicio.id, origen))
-
     monkeypatch.setattr(service, "_servicio_tiene_deuda_pendiente", deuda)
     monkeypatch.setattr(service, "_reactivar_en_mikrotik", reactivar)
     monkeypatch.setattr(service, "_cerrar_suspension_facturacion", cerrar)
     monkeypatch.setattr(service, "_sincronizar_estado_cliente", sincronizar)
-    monkeypatch.setattr(service, "_registrar_cargo_reconexion", cargo)
     return service, llamadas
 
 
@@ -143,7 +139,6 @@ def test_barrido_reactiva_solo_servicios_sin_deuda_vencida(monkeypatch):
     assert pagado.ultima_reactivacion_origen == "automatico"
     assert clientes[10].estado == "activo"
     assert llamadas["cerrados"] == [(1, date.today(), "pago")]
-    assert llamadas["cargos"] == []
     assert moroso.estado == "suspendido"
 
 
@@ -160,7 +155,6 @@ def test_barrido_no_marca_activo_si_mikrotik_falla(monkeypatch):
     assert reporte == {"revisados": 1, "reactivados": 0, "errores": 1}
     assert servicio.estado == "suspendido"
     assert llamadas["cerrados"] == []
-    assert llamadas["cargos"] == []
     assert db.logs[0].nivel == "ERROR"
 
 

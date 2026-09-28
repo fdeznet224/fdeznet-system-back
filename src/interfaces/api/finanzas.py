@@ -394,6 +394,60 @@ async def forzar_cortes_ahora(
 
 
 # ==========================================
+# 2.9 COBRO TOTAL DEL CLIENTE
+# ==========================================
+class CobroClienteRequest(BaseModel):
+    metodo_pago: str
+    monto_recibido: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    referencia: Optional[str] = None
+    clave_idempotencia: Optional[str] = Field(None, max_length=80)
+
+
+async def _cliente_en_alcance(db, cliente_id: int, current_user):
+    cliente = await db.get(ClienteModel, cliente_id)
+    if not cliente:
+        raise HTTPException(404, "Cliente no encontrado")
+    await _ensure_client_scope(cliente, current_user)
+    return cliente
+
+
+@router.post("/clientes/{cliente_id}/estado-cuenta")
+async def estado_cuenta_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    """Total a pagar (mensualidad, prorrateo, extras y reconexión)."""
+    await _cliente_en_alcance(db, cliente_id, current_user)
+    estado = await BillingService(db).estado_cuenta_cliente(cliente_id)
+    await db.commit()
+    return estado
+
+
+@router.post("/clientes/{cliente_id}/cobrar")
+async def cobrar_cliente(
+    cliente_id: int,
+    data: CobroClienteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    """Un solo cobro por el total; se aplica de lo más antiguo a lo reciente."""
+    await _cliente_en_alcance(db, cliente_id, current_user)
+    try:
+        return await BillingService(db).registrar_pago_cliente(
+            cliente_id=cliente_id,
+            usuario_operador=current_user,
+            metodo_pago=data.metodo_pago,
+            monto=data.monto_recibido,
+            referencia=data.referencia,
+            clave_idempotencia=data.clave_idempotencia,
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ==========================================
 # 3. REGISTRAR COBRO (liquidación por período)
 # ==========================================
 @router.post("/cobrar")

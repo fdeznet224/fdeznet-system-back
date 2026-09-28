@@ -20,6 +20,7 @@ TIPOS_SINCRONIZABLES = {
     "orden_estado",
     "soporte_incidencia",
     "pago_factura",
+    "pago_cliente",
 }
 ROLES_PAGO = {"admin", "supervisor", "cajero"}
 ROLES_SOPORTE = {"admin", "supervisor", "cajero", "tecnico"}
@@ -58,6 +59,23 @@ class SoporteIncidenciaPayload(BaseModel):
 
 class PagoFacturaPayload(BaseModel):
     factura_id: int = Field(gt=0)
+    metodo_pago: Literal[
+        "efectivo",
+        "transferencia",
+        "tarjeta",
+        "deposito",
+        "otro",
+    ]
+    monto_recibido: Decimal = Field(
+        gt=0,
+        max_digits=12,
+        decimal_places=2,
+    )
+    referencia: Optional[str] = Field(default=None, max_length=100)
+
+
+class PagoClientePayload(BaseModel):
+    cliente_id: int = Field(gt=0)
     metodo_pago: Literal[
         "efectivo",
         "transferencia",
@@ -127,6 +145,12 @@ class SyncService:
             respuesta = await self._cambiar_estado(payload, usuario)
         elif tipo == "soporte_incidencia":
             respuesta = await self._crear_incidencia(payload, usuario)
+        elif tipo == "pago_cliente":
+            respuesta = await self._registrar_pago_cliente(
+                operacion_id,
+                payload,
+                usuario,
+            )
         else:
             respuesta = await self._registrar_pago(
                 operacion_id,
@@ -226,6 +250,24 @@ class SyncService:
         datos = PagoFacturaPayload.model_validate(payload)
         return await BillingService(self.db).registrar_pago_completo(
             factura_id=datos.factura_id,
+            usuario_operador=usuario,
+            metodo_pago=datos.metodo_pago,
+            monto=datos.monto_recibido,
+            referencia=datos.referencia,
+            clave_idempotencia=operacion_id,
+        )
+
+    async def _registrar_pago_cliente(
+        self,
+        operacion_id: str,
+        payload: dict[str, Any],
+        usuario: UsuarioModel,
+    ) -> dict[str, Any]:
+        if usuario.rol not in ROLES_PAGO:
+            raise PermissionError("Tu rol no puede registrar cobros")
+        datos = PagoClientePayload.model_validate(payload)
+        return await BillingService(self.db).registrar_pago_cliente(
+            cliente_id=datos.cliente_id,
             usuario_operador=usuario,
             metodo_pago=datos.metodo_pago,
             monto=datos.monto_recibido,
