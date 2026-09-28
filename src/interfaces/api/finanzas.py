@@ -1,11 +1,11 @@
-from decimal import Decimal
-from typing import Optional, Literal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Annotated, Optional, Literal
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func, desc, false
 from sqlalchemy.orm import joinedload, selectinload
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 # Infraestructura
 from src.infrastructure.database import get_db
@@ -59,10 +59,30 @@ async def _ensure_client_scope(cliente, current_user):
 # ==========================================
 # 0. SCHEMAS LOCALES (Input)
 # ==========================================
+def _a_centavos(valor):
+    """Redondea el monto a centavos en vez de rechazarlo con 422.
+
+    El frontend manda el total como número JSON; un saldo recalculado
+    (prorrateo por suspensión) o la aritmética de flotantes pueden traer
+    más de 2 decimales.
+    """
+    try:
+        return Decimal(str(valor)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError):
+        return valor
+
+
+MontoCobro = Annotated[
+    Decimal,
+    BeforeValidator(_a_centavos),
+    Field(gt=0, max_digits=12, decimal_places=2),
+]
+
+
 class CobroFullRequest(BaseModel):
     factura_id: int
     metodo_pago: str  # efectivo, transferencia, etc.
-    monto_recibido: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    monto_recibido: MontoCobro
     referencia: Optional[str] = None
     clave_idempotencia: Optional[str] = Field(None, max_length=100)
     concepto_ids: list[int] = Field(default_factory=list)
@@ -398,7 +418,7 @@ async def forzar_cortes_ahora(
 # ==========================================
 class CobroClienteRequest(BaseModel):
     metodo_pago: str
-    monto_recibido: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    monto_recibido: MontoCobro
     referencia: Optional[str] = None
     clave_idempotencia: Optional[str] = Field(None, max_length=80)
 

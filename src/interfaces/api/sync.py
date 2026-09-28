@@ -25,6 +25,7 @@ class OperacionEntrada(BaseModel):
         "orden_estado",
         "soporte_incidencia",
         "pago_factura",
+        "pago_cliente",
     ]
     creado_cliente: Optional[datetime] = None
     payload: dict[str, Any]

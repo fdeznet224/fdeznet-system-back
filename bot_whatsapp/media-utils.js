@@ -44,6 +44,52 @@ function repararIdSerializado(mensaje) {
     return id._serialized === reconstruido;
 }
 
+// Respaldo para cuando Message.downloadMedia() de whatsapp-web.js 1.34.7
+// truena con errores minificados ("t", "r"): su downloadAndMaybeDecrypt dejó
+// de funcionar con WhatsApp Web 2.3000.x. Es el mismo método que usa la rama
+// main de la librería (resolveMediaBlob): pedir a WhatsApp Web que resuelva
+// el archivo y leerlo de su caché de blobs.
+async function descargarDesdeCacheWeb(mensaje) {
+    const pagina = mensaje?.client?.pupPage;
+    const msgId = mensaje?.id?._serialized;
+    if (!pagina || !msgId) return undefined;
+
+    return pagina.evaluate(async (id) => {
+        const { Msg } = window.require('WAWebCollections');
+        const msg = Msg.get(id)
+            || (await Msg.getMessagesById([id]))?.messages?.[0];
+        if (!msg || !msg.mediaData || msg.mediaData.mediaStage === 'REUPLOADING') {
+            return null;
+        }
+
+        await msg.downloadMedia({
+            downloadEvenIfExpensive: true,
+            rmrReason: 1,
+            isUserInitiated: true
+        });
+        const etapa = msg.mediaData.mediaStage || '';
+        if (etapa.includes('ERROR') || etapa === 'FETCHING') return null;
+
+        const blob = window.require('WAWebMediaInMemoryBlobCache')
+            .InMemoryMediaBlobCache.get(msg.mediaObject?.filehash)
+            || msg.mediaObject?.mediaBlob?.forceToBlob();
+        if (!blob) return null;
+
+        const data = await new Promise((resolve, reject) => {
+            const lector = new FileReader();
+            lector.onload = () => resolve(String(lector.result).split(',')[1]);
+            lector.onerror = reject;
+            lector.readAsDataURL(blob);
+        });
+        return {
+            data,
+            mimetype: msg.mimetype,
+            filename: msg.filename,
+            filesize: msg.size
+        };
+    }, msgId);
+}
+
 async function descargarMediaConReintentos(
     mensaje,
     { intentos = 3, retrasoMs = 1200, esperarFn = esperar } = {}
@@ -60,6 +106,13 @@ async function descargarMediaConReintentos(
             ultimoError = error;
         }
 
+        try {
+            const media = await descargarDesdeCacheWeb(mensaje);
+            if (media?.data && media?.mimetype) return media;
+        } catch (error) {
+            ultimoError = error;
+        }
+
         if (intento < intentos) await esperarFn(retrasoMs * intento);
     }
 
@@ -67,6 +120,7 @@ async function descargarMediaConReintentos(
 }
 
 module.exports = {
+    descargarDesdeCacheWeb,
     descargarMediaConReintentos,
     describirError,
     repararIdSerializado

@@ -151,3 +151,12 @@ desglose se agrega al final del mensaje.
 El total a pagar con desglose también llega en el recordatorio de pago, el
 aviso de corte ejecutado y el aviso de corte manual. En el corte incluye el
 cargo de reconexión, que se suma a la factura al cortar.
+
+## Versión 2.20.5 (28 de septiembre de 2026)
+
+- Cobros desde el Panel del Cobrador: la sincronización rechazaba con 422 las
+  operaciones `pago_cliente` porque la ruta no incluía ese tipo; ya se aceptan.
+  Los montos de cobro se redondean a centavos en vez de rechazarse.
+- Bot de WhatsApp: cuando `downloadMedia()` de whatsapp-web.js 1.34.7 falla
+  (errores `t`/`r` con WhatsApp Web 2.3000.x), la imagen se lee de la caché
+  de WhatsApp Web, igual que la rama main de la librería.

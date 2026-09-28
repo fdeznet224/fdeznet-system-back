@@ -81,3 +81,28 @@ test('conserva un error entendible al agotar los reintentos', async () => {
 test('describe errores HTTP sin imprimir cuerpos sensibles', () => {
     assert.equal(describirError({ response: { status: 503 } }), 'HTTP 503');
 });
+
+test('usa la caché de WhatsApp Web cuando downloadMedia de la librería falla', async () => {
+    const mensaje = {
+        id: { _serialized: 'false_5215550000000@c.us_IMG1' },
+        client: {
+            pupPage: {
+                async evaluate(_fn, id) {
+                    assert.equal(id, 'false_5215550000000@c.us_IMG1');
+                    return { data: 'base64', mimetype: 'image/jpeg' };
+                }
+            }
+        },
+        async downloadMedia() {
+            throw new Error('t');
+        }
+    };
+
+    const media = await descargarMediaConReintentos(mensaje, {
+        intentos: 3,
+        retrasoMs: 0,
+        esperarFn: async () => {}
+    });
+
+    assert.deepEqual(media, { data: 'base64', mimetype: 'image/jpeg' });
+});
