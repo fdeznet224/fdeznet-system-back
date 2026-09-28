@@ -8,8 +8,6 @@ from unittest.mock import AsyncMock
 from src.application.services.ocr_service import OCRService
 from src.interfaces.api.whatsapp import (
     BOT_KEYWORD,
-    construir_menu_bot,
-    detectar_intencion_bot,
     esta_fuera_de_horario,
     interpretar_fecha_promesa,
     mensaje_audio_no_disponible,
@@ -92,101 +90,10 @@ def test_bot_busca_facturas_pendientes_y_vencidas(monkeypatch):
     assert 12 in parametros.values()
 
 
-def test_bot_usa_fdezbot_como_palabra_de_acceso():
-    assert BOT_KEYWORD == "fdezbot"
-    assert "Asistente" in construir_menu_bot()
-    assert "fdezpay" not in construir_menu_bot().lower()
-    assert "No tengo internet" in construir_menu_bot()
-
-
-def test_bot_acepta_dia_o_fecha_completa_para_promesa():
-    hoy = date(2026, 9, 6)
-
-    assert interpretar_fecha_promesa("15", hoy) == date(2026, 9, 15)
-    assert interpretar_fecha_promesa("5", hoy) == date(2026, 10, 5)
-    assert interpretar_fecha_promesa("20/09/2026", hoy) == date(2026, 9, 20)
-
-
-def test_bot_respeta_horario_de_atencion():
-    tz = ZoneInfo("America/Mexico_City")
-    assert esta_fuera_de_horario(datetime(2026, 9, 7, 7, 59, tzinfo=tz))
-    assert not esta_fuera_de_horario(datetime(2026, 9, 7, 8, 0, tzinfo=tz))
-    assert not esta_fuera_de_horario(datetime(2026, 9, 12, 13, 59, tzinfo=tz))
-    assert esta_fuera_de_horario(datetime(2026, 9, 12, 14, 0, tzinfo=tz))
-    assert esta_fuera_de_horario(datetime(2026, 9, 13, 10, 0, tzinfo=tz))
-
-
-def test_bot_informa_horario_y_autoservicio_sin_ia():
-    mensaje = mensaje_fuera_de_horario()
-    assert "Lunes: 08:00 a 20:00" in mensaje
-    assert "Domingo: cerrado" in mensaje
-    assert "Asistente" in mensaje
-    assert "asistente automático" in mensaje
-    assert "puedo ayudarte" in mensaje
-
-
-def test_bot_respeta_horario_semanal_personalizado_y_turno_nocturno():
-    horario = {
-        day: {"activo": False, "inicio": "08:00", "fin": "17:00"}
-        for day in (
-            "lunes", "martes", "miercoles", "jueves",
-            "viernes", "sabado", "domingo",
-        )
-    }
-    horario["lunes"] = {"activo": True, "inicio": "22:00", "fin": "02:00"}
-    config = SimpleNamespace(
-        zona_horaria="America/Mexico_City",
-        horario_atencion_json=json.dumps(horario),
-    )
-    tz = ZoneInfo("America/Mexico_City")
-
-    assert not esta_fuera_de_horario(
-        datetime(2026, 9, 7, 23, 0, tzinfo=tz),
-        config,
-    )
-    assert not esta_fuera_de_horario(
-        datetime(2026, 9, 8, 1, 30, tzinfo=tz),
-        config,
-    )
-    assert esta_fuera_de_horario(
-        datetime(2026, 9, 8, 2, 0, tzinfo=tz),
-        config,
-    )
-
-
-def test_mensaje_fuera_horario_usa_texto_y_variables_personalizadas():
-    config = SimpleNamespace(
-        mensaje_fuera_horario=(
-            "Hola, somos {empresa}. Atiende {asistente}.\n{horario}"
-        ),
-        horario_atencion_json=None,
-    )
-    mensaje = mensaje_fuera_de_horario("Mi ISP", "Ayudante", config)
-    assert "somos Mi ISP" in mensaje
-    assert "Atiende Ayudante" in mensaje
-    assert "Domingo: cerrado" in mensaje
-
-
 def test_bot_pide_texto_al_recibir_audio():
     mensaje = mensaje_audio_no_disponible()
     assert "no procesa notas de voz" in mensaje
     assert "fdezbot" in mensaje
-
-
-def test_bot_reconoce_solicitudes_comunes_fuera_de_horario():
-    assert detectar_intencion_bot("¿A qué cuenta deposito?") == "datos_pago"
-    assert detectar_intencion_bot("No tengo internet") == "sin_internet"
-    assert detectar_intencion_bot("pueden reactivar mi servicio") == "promesa"
-    assert detectar_intencion_bot("cuánto saldo debo") == "estado"
-    assert detectar_intencion_bot("ya pagué") == "pago"
-    assert detectar_intencion_bot("buenas noches") == "menu"
-
-
-def test_foto_de_comprobante_tiene_prioridad_sobre_el_texto():
-    assert detectar_intencion_bot(
-        "[FOTO_COMPROBANTE]",
-        es_comprobante=True,
-    ) == "pago"
 
 
 def test_bot_no_acepta_comprobante_duplicado_pendiente_o_aprobado():

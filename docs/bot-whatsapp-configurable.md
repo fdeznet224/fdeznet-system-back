@@ -16,6 +16,16 @@ Se puede cambiar sin editar código:
 
 El flujo inicial incluye reporte de pago, promesa de pago, consulta de servicio y saldo, datos bancarios y diagnóstico técnico. Los datos bancarios se editan en **Configuración > Plantillas de Mensajes > Datos para Depósito o Transferencia** y nunca se guardan en el código fuente.
 
+## Un solo bot
+
+El único bot de clientes es el flujo visual. Lo abren su comando y también
+`menu`, `fdezpay` y `fdezbot`, para no confundir a quien usaba las palabras
+anteriores. El menú numerado anterior (palabra de acceso, opciones y
+detección de intenciones) se retiró; sus pasos internos (reporte de pago,
+promesa, estado y diagnóstico) siguen en uso desde las acciones del lienzo.
+Fuera de horario, una foto de comprobante entra directo al análisis de pago
+y cualquier otro mensaje abre el flujo visual.
+
 ## Cuándo contesta el bot y cuándo se calla
 
 - Fuera del horario de atención contesta solo al primer mensaje. En horario

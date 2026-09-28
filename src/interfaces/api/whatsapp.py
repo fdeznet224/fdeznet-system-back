@@ -70,9 +70,6 @@ from src.application.services.whatsapp_outbox_service import (
 from src.application.services.bot_flow_service import (
     DEFAULT_AWAY_MESSAGE,
     DAYS,
-    action_enabled,
-    action_for_input,
-    build_bot_menu,
     get_or_create_bot_config,
     normalize_schedule,
     schedule_summary,
@@ -207,12 +204,8 @@ def mensaje_audio_no_disponible(
     return (
         f"🎤 Por el momento {asistente_nombre} no procesa notas de voz. "
         "Por favor escribe tu solicitud o envía "
-        f"*{palabra_activacion}* para usar el menú."
+        f"*{palabra_activacion}* para ver las opciones."
     )
-
-
-def construir_menu_bot(asistente_nombre: str = "Asistente", config=None) -> str:
-    return build_bot_menu(asistente_nombre, config)
 
 
 def sufijos_identidad_whatsapp(*telefonos: str) -> set[str]:
@@ -534,56 +527,6 @@ def normalizar_texto_bot(texto: str) -> str:
         for caracter in texto
         if not unicodedata.combining(caracter)
     )
-
-
-def detectar_intencion_bot(
-    texto: str,
-    *,
-    es_comprobante: bool = False,
-) -> str:
-    """Clasifica por reglas las solicitudes más comunes del ISP."""
-    if es_comprobante:
-        return "pago"
-    limpio = normalizar_texto_bot(texto)
-    palabras = set(re.findall(r"[a-z0-9]+", limpio))
-    if any(
-        frase in limpio
-        for frase in (
-            "numero de cuenta",
-            "a que cuenta",
-            "donde deposito",
-            "donde transfiero",
-        )
-    ):
-        return "datos_pago"
-    if palabras & {
-        "cuenta",
-        "clabe",
-        "deposito",
-        "depositar",
-        "transferencia",
-        "transferir",
-    }:
-        return "datos_pago"
-    if any(
-        frase in limpio
-        for frase in (
-            "no tengo internet",
-            "sin internet",
-            "no hay internet",
-            "no tengo servicio",
-        )
-    ):
-        return "sin_internet"
-    if palabras & {"reactivar", "reactivacion", "reconexion", "activar"}:
-        return "promesa"
-    if palabras & {"saldo", "debo", "deuda", "vencimiento", "servicio"}:
-        return "estado"
-    if palabras & {"pague", "pago", "comprobante", "ticket"}:
-        return "pago"
-    if palabras & {"promesa", "prorroga"}:
-        return "promesa"
-    return "menu"
 
 
 async def obtener_datos_pago(db: AsyncSession) -> str:
@@ -1449,7 +1392,6 @@ async def webhook_recibir_mensaje(
     asistente_nombre = getattr(marca, "sistema_nombre", None) or "Asistente"
     bot_config = await get_or_create_bot_config(db)
     palabra_bot = normalizar_texto_bot(bot_config.palabra_activacion)
-    menu_bot = construir_menu_bot(asistente_nombre, bot_config)
     flujo_cliente = await get_visual_flow(db, "cliente")
     flujo_tecnico = await get_visual_flow(db, "tecnico")
 
@@ -1518,11 +1460,22 @@ async def webhook_recibir_mensaje(
             staff_id=staff.id,
         )
 
+    # Un solo bot: el flujo visual. Las palabras anteriores y "menu" también
+    # lo abren para no confundir a quien ya las conoce.
+    comando_bot = (
+        flujo_cliente.comando if flujo_cliente and flujo_cliente.comando else "menu"
+    )
+    comandos_cliente = {
+        normalizar_texto_bot(comando_bot),
+        palabra_bot,
+        "menu",
+        "fdezpay",
+        "fdezbot",
+    }
     if (
         flujo_cliente
         and flujo_cliente.activo
-        and normalizar_texto_bot(texto_limpio)
-        == normalizar_texto_bot(flujo_cliente.comando)
+        and normalizar_texto_bot(texto_limpio) in comandos_cliente
     ):
         return await ejecutar_bloque_visual(
             db,
@@ -1536,7 +1489,6 @@ async def webhook_recibir_mensaje(
     # puede abrirlo con el comando (evaluado arriba) o la palabra de acceso.
     if (
         telefono_raw not in bot_memory
-        and normalizar_texto_bot(texto_limpio) != palabra_bot
         and await bot_en_pausa(db, telefono_busqueda or telefono_raw)
     ):
         return {"status": "atendido_por_asesor"}
@@ -1575,125 +1527,47 @@ async def webhook_recibir_mensaje(
 
     # El autoservicio es únicamente por texto; no se envía audio a servicios externos.
     if media_url and "[AUDIO]" in mensaje_texto.upper():
+        await wa_service.enviar_mensaje(
+            telefono=telefono_raw,
+            mensaje=mensaje_audio_no_disponible(asistente_nombre, comando_bot),
+        )
         if (
-            bot_config.activo
+            flujo_cliente
+            and flujo_cliente.activo
             and bot_config.inicio_fuera_horario
             and fuera_de_horario
             and telefono_raw not in bot_memory
         ):
-            bot_memory[telefono_raw] = {
-                "paso": "ESPERANDO_OPCION",
-                "iniciado_en": datetime.now(),
-            }
-        await wa_service.enviar_mensaje(
-            telefono=telefono_raw,
-            mensaje=(
-                mensaje_audio_no_disponible(
-                    asistente_nombre,
-                    bot_config.palabra_activacion,
-                )
-                + ("\n\n" + menu_bot if fuera_de_horario and bot_config.activo else "")
-            ),
-        )
+            return await ejecutar_bloque_visual(
+                db,
+                wa_service,
+                telefono_raw,
+                flujo_cliente,
+                execute_until_wait(flujo_cliente),
+            )
         return {"status": "audio_no_disponible"}
 
-    # =========================================================
-    # 2. ACTIVACIÓN DEL BOT (NUEVA PALABRA CLAVE)
-    # =========================================================
-    if bot_config.activo and normalizar_texto_bot(texto_limpio) == palabra_bot:
-        bot_memory[telefono_raw] = {
-            "paso": "ESPERANDO_OPCION",
-            "iniciado_en": datetime.now(),
-        }
-        await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=menu_bot)
-        return {"status": "bot_iniciado"}
-
-    if texto_limpio == "fdezpay":
-        await wa_service.enviar_mensaje(
-            telefono=telefono_raw,
-            mensaje=(
-                "🤖 La palabra de acceso cambió. Escribe "
-                f"*{bot_config.palabra_activacion}* para iniciar."
-            ),
-        )
-        return {"status": "palabra_anterior"}
-
-    # Fuera del horario, cualquier mensaje inicia el autoservicio. Una foto de
-    # comprobante entra directamente al análisis, sin exigir una palabra clave.
+    # Fuera del horario, una foto de comprobante entra directo al análisis de
+    # pago; cualquier otro archivo abre el flujo visual.
     if (
         bot_config.activo
         and bot_config.inicio_fuera_horario
         and fuera_de_horario
         and telefono_raw not in bot_memory
     ):
-        intencion = detectar_intencion_bot(
-            mensaje_texto,
-            es_comprobante=bool(
-                media_url
-                and "[FOTO_COMPROBANTE]" in mensaje_texto.upper()
-            ),
-        )
-        paso_por_intencion = {
-            "pago": "ESPERANDO_FOTO_PAGO",
-            "promesa": "VALIDAR_CEDULA_PROMESA",
-            "estado": "VALIDAR_CEDULA_ESTADO",
-            "sin_internet": "VALIDAR_CEDULA_SOPORTE",
-            "menu": "ESPERANDO_OPCION",
-        }
-        accion_por_intencion = {
-            "pago": "reportar_pago",
-            "promesa": "promesa_pago",
-            "estado": "estado_servicio",
-            "datos_pago": "datos_pago",
-            "sin_internet": "diagnostico_tecnico",
-        }
-        accion_detectada = accion_por_intencion.get(intencion)
-        if accion_detectada and not action_enabled(bot_config, accion_detectada):
-            intencion = "menu"
-        if intencion == "datos_pago":
-            await wa_service.enviar_mensaje(
-                telefono=telefono_raw,
-                mensaje=await obtener_datos_pago(db),
+        if media_url and "[FOTO_COMPROBANTE]" in mensaje_texto.upper():
+            bot_memory[telefono_raw] = {
+                "paso": "ESPERANDO_FOTO_PAGO",
+                "iniciado_en": datetime.now(),
+            }
+        elif flujo_cliente and flujo_cliente.activo:
+            return await ejecutar_bloque_visual(
+                db,
+                wa_service,
+                telefono_raw,
+                flujo_cliente,
+                execute_until_wait(flujo_cliente),
             )
-            return {"status": "bot_datos_pago"}
-
-        bot_memory[telefono_raw] = {
-            "paso": paso_por_intencion[intencion],
-            "iniciado_en": datetime.now(),
-        }
-        if intencion == "promesa":
-            await wa_service.enviar_mensaje(
-                telefono=telefono_raw,
-                mensaje=(
-                    "⏳ Puedo ayudarte a registrar una promesa y, si aplica, "
-                    "reactivar tu servicio. Escribe tu *número de contrato*."
-                ),
-            )
-            return {"status": "bot_promesa_automatico"}
-        if intencion == "estado":
-            await wa_service.enviar_mensaje(
-                telefono=telefono_raw,
-                mensaje=(
-                    "📊 Para consultar tu servicio y saldo, escribe tu "
-                    "*número de contrato*."
-                ),
-            )
-            return {"status": "bot_estado_automatico"}
-        if intencion == "sin_internet":
-            await wa_service.enviar_mensaje(
-                telefono=telefono_raw,
-                mensaje=(
-                    "📡 Vamos a revisar tu servicio. Escribe tu "
-                    "*número de contrato*."
-                ),
-            )
-            return {"status": "bot_soporte_automatico"}
-        if intencion == "menu":
-            await wa_service.enviar_mensaje(
-                telefono=telefono_raw,
-                mensaje=menu_bot,
-            )
-            return {"status": "bot_automatico"}
 
     # =========================================================
     # 3. LÓGICA DEL BOT 
@@ -1710,7 +1584,7 @@ async def webhook_recibir_mensaje(
                 telefono=telefono_raw,
                 mensaje=(
                     "⌛ La sesión terminó por seguridad. Escribe "
-                    f"*{bot_config.palabra_activacion}* para iniciar otra."
+                    f"*{comando_bot}* para iniciar otra."
                 ),
             )
             return {"status": "bot_expirado"}
@@ -1854,15 +1728,6 @@ async def webhook_recibir_mensaje(
             )
             return {"status": "bot_tecnico_consulta_finalizada"}
 
-        if texto_limpio in {"menu", "menú"}:
-            estado.clear()
-            estado.update({"paso": "ESPERANDO_OPCION", "iniciado_en": datetime.now()})
-            await wa_service.enviar_mensaje(
-                telefono=telefono_raw,
-                mensaje=menu_bot,
-            )
-            return {"status": "bot_menu"}
-
         if texto_limpio in {"cancelar", "salir"}:
             del bot_memory[telefono_raw]
             await wa_service.enviar_mensaje(
@@ -1871,37 +1736,6 @@ async def webhook_recibir_mensaje(
             )
             return {"status": "bot_apagado"}
 
-        # --- SELECCIÓN DEL MENÚ ---
-        if estado["paso"] == "ESPERANDO_OPCION":
-            accion = action_for_input(bot_config, texto_limpio)
-            if accion == "reportar_pago":
-                estado["paso"] = "ESPERANDO_FOTO_PAGO"
-                res = "📄 *Reporte de Pago*\nPor favor, envíame la **foto del comprobante** o ticket bien enfocada."
-                
-            elif accion == "promesa_pago":
-                estado["paso"] = "VALIDAR_CEDULA_PROMESA"
-                res = "⏳ *Promesa de Pago*\nPor favor escribe tu *número de contrato* para buscar tu cuenta (Ej: 329B)."
-                
-            elif accion == "estado_servicio":
-                estado["paso"] = "VALIDAR_CEDULA_ESTADO"
-                res = "📊 *Estado del Servicio*\nPor favor, escribe tu *número de contrato* para buscar tus datos."
-
-            elif accion == "datos_pago":
-                res = await obtener_datos_pago(db)
-                del bot_memory[telefono_raw]
-
-            elif accion == "diagnostico_tecnico":
-                estado["paso"] = "VALIDAR_CEDULA_SOPORTE"
-                res = (
-                    "📡 *Revisión de conexión*\nEscribe tu "
-                    "*número de contrato* para revisar tu servicio."
-                )
-                
-            else:
-                res = "❌ Opción no válida. Elige uno de los números mostrados en el menú."
-            
-            await wa_service.enviar_mensaje(telefono=telefono_raw, mensaje=res)
-            return {"status": "procesando_menu"}
 
         # --- FLUJO 1: REPORTAR PAGO ---
         elif estado["paso"] == "ESPERANDO_FOTO_PAGO":
@@ -2350,7 +2184,7 @@ async def webhook_recibir_mensaje(
                     f"📅 *Cobranza:* {fecha_financiera}\n"
                     f"💰 *Saldo a favor:* ${Decimal(cliente_final.saldo_a_favor or 0):.2f}\n\n"
                     "Para volver al menú escribe "
-                    f"*{bot_config.palabra_activacion}*."
+                    f"*{comando_bot}*."
                 )
                 del bot_memory[telefono_raw]
             else:
