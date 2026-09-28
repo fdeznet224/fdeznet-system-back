@@ -90,3 +90,12 @@ pasada (23:26): 7 facturas cuadradas (#921, #927, #933, #939, #943, #980,
 Claudia Vazquez aparece con $601.29 en la lista. Florisela (servicio 19) y
 Elizabeth (servicio 23) siguen pendientes de reconexión porque Paraiso no
 responde; se reintenta cada 10 minutos.
+
+## Versión 2.19.2 (27 de septiembre de 2026)
+
+- Backend: `51164a8c9480c69e33f708879e8112e9bec19cef` (frontend sin cambios)
+
+El "mes actual" de la pantalla de cobro es ahora la mensualidad más reciente
+generada, no la que contiene la fecha de hoy. Claudia Vazquez resalta octubre
+(#1046) en lugar de septiembre; Claudia Lopez, con solo octubre (#999), ahora
+también lo ve resaltado. Despliegue solo de backend, sin migraciones.
