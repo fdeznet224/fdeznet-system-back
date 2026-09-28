@@ -135,3 +135,13 @@ configuración.
 
 Las notas de voz ya no reciben respuesta automática; quedan en el chat del
 panel. Reinicio de `fdeznet-bot`, reconectado sin QR.
+
+## Versión 2.20.3 (28 de septiembre de 2026)
+
+- Backend: `c182d713beec92c659f739eff83f39a899b362fe`
+- Frontend: `56465b286620420ebffc101c74bc29f66f98add2`
+
+El WhatsApp de factura nueva agrega el total a pagar y su desglose cuando hay
+meses atrasados, servicios extra o reconexión. Nuevas variables de plantilla
+`{total_a_pagar}` y `{desglose_total}`; si la plantilla no las usa, el
+desglose se agrega al final del mensaje.
