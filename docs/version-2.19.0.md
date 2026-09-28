@@ -118,3 +118,13 @@ desde el celular; nueva acción "Hablar con un asesor" en el flujo visual.
 Detalle en `docs/bot-whatsapp-configurable.md`. Migración `d5e6f7a8b9c1`
 (tabla `bot_pausas`) y reinicio de `fdeznet-bot`, que se reconectó sin pedir
 QR.
+
+## Versión 2.20.1 (28 de septiembre de 2026)
+
+- Backend: `8ad18b9fdb4511b01b2b255d79411498855f630d` (frontend sin cambios)
+
+Un solo bot de clientes: el flujo visual (comando `fdezbot`, también `menu` y
+`fdezpay`). Se retiró el menú numerado anterior. Al liberar, el flujo de
+clientes estaba activo y `inicio_fuera_horario` estaba desactivado, por lo que
+el bot no contesta solo fuera de horario hasta que se active en la
+configuración.
