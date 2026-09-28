@@ -1248,9 +1248,17 @@ class ClientService:
         if cliente.telefono:
             notificador = NotificationService(self.db)
             if estado_limpio in ["suspendido", "retirado", "cortado"]:
+                from src.application.services.billing_service import (
+                    BillingService,
+                )
+
+                facturacion = BillingService(self.db)
                 await notificador.notificar(
                     "corte_servicio",
                     cliente.id,
+                    variables_extra=facturacion._variables_total_a_pagar(
+                        await facturacion.estado_cuenta_cliente(cliente.id)
+                    ),
                 )
             elif estado_limpio == "activo":
                 await notificador.notificar(

@@ -36,6 +36,17 @@ PLANTILLAS_OBLIGATORIAS = {
 }
 
 
+# Avisos donde el cliente debe ver el total real que debe (atrasos, extras y
+# reconexión), no solo el monto de una factura.
+EVENTOS_CON_TOTAL = {
+    "nueva_factura",
+    "recordatorio_pago",
+    "corte_ejecutado",
+    "aviso_corte",
+    "corte_servicio",
+}
+
+
 class NotificationService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -209,7 +220,7 @@ class NotificationService:
         # su plantilla no use {total_a_pagar} ni {desglose_total}.
         desglose_total = str(datos_finales.get("desglose_total") or "").strip()
         if (
-            tipo_evento == "nueva_factura"
+            tipo_evento in EVENTOS_CON_TOTAL
             and desglose_total
             and "{desglose_total}" not in texto_plantilla
             and "{total_a_pagar}" not in texto_plantilla

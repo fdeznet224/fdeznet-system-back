@@ -736,9 +736,13 @@ class BillingService:
                     # 🔥 CORRECCIÓN: Llamamos a la nueva plantilla 'recordatorio_pago'
                     # Ya no mandamos variables_extra porque el Notificador Global
                     # se encarga de inyectar el {precio}, {dia_corte}, etc.
+                    estado_cuenta = await self.estado_cuenta_cliente(cliente.id)
                     await notificador.notificar(
                         tipo_evento="recordatorio_pago", 
                         cliente_id=cliente.id,
+                        variables_extra=self._variables_total_a_pagar(
+                            estado_cuenta
+                        ),
                         clave_dedupe=(
                             f"factura:{factura.id}:recordatorio:"
                             f"{hoy.isoformat()}:{dias_aviso_urgente}"
@@ -880,6 +884,12 @@ class BillingService:
                     ),
                     "folio": str(factura.id),
                 }
+                await self.db.flush()
+                variables.update(
+                    self._variables_total_a_pagar(
+                        await self.estado_cuenta_cliente(cliente.id)
+                    )
+                )
 
                 enviado = await notificador.notificar(
                     "corte_ejecutado",

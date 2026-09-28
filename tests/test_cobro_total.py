@@ -304,3 +304,15 @@ def test_sin_atrasos_ni_extras_no_repite_el_monto():
     variables = BillingService._variables_total_a_pagar(estado)
 
     assert variables == {"total_a_pagar": "$300.00", "desglose_total": ""}
+
+
+def test_recordatorio_y_avisos_de_corte_llevan_el_total():
+    from src.application.services.notification_service import EVENTOS_CON_TOTAL
+
+    assert {
+        "nueva_factura",
+        "recordatorio_pago",
+        "corte_ejecutado",
+        "aviso_corte",
+        "corte_servicio",
+    } <= EVENTOS_CON_TOTAL

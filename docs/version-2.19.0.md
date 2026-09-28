@@ -145,3 +145,9 @@ El WhatsApp de factura nueva agrega el total a pagar y su desglose cuando hay
 meses atrasados, servicios extra o reconexión. Nuevas variables de plantilla
 `{total_a_pagar}` y `{desglose_total}`; si la plantilla no las usa, el
 desglose se agrega al final del mensaje.
+
+## Versión 2.20.4 (28 de septiembre de 2026)
+
+El total a pagar con desglose también llega en el recordatorio de pago, el
+aviso de corte ejecutado y el aviso de corte manual. En el corte incluye el
+cargo de reconexión, que se suma a la factura al cortar.
