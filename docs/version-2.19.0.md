@@ -168,3 +168,10 @@ Al cortar, la reconexión que se agregaba a una mensualidad sin renglones
 mostraba "Cargo por reconexión $220" en vez de "Mensualidad de septiembre
 $190" + "Cargo por reconexión $30". Al cuadrar, lo que falta en una
 mensualidad sin renglón de internet se registra como internet.
+
+## Versión 2.20.7 (28 de septiembre de 2026)
+
+Cuando el corte es por una promesa de pago incumplida, el cargo de
+reconexión se nombra "Reconexión y penalización por incumplir promesa de
+pago" en la factura, la pantalla de cobro y los WhatsApp. El corte por falta
+de pago sigue diciendo "Cargo por reconexión".

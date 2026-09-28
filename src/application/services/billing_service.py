@@ -55,6 +55,9 @@ MESES_EN_ESPANOL = (
     "Noviembre",
     "Diciembre",
 )
+CONCEPTO_RECONEXION_PROMESA = (
+    "Reconexión y penalización por incumplir promesa de pago"
+)
 
 
 class BillingService:
@@ -169,12 +172,15 @@ class BillingService:
         factura: FacturaModel,
         cliente: ClienteModel,
         servicio: ServicioModel | None,
+        por_promesa_incumplida: bool = False,
     ) -> Decimal:
         """Suma el cargo de reconexión de la plantilla a la factura del corte.
 
         Se agrega al cortar, una sola vez por corte, para que el cliente lo
         pague en el mismo cobro que lo reconecta. Cuenta para el corte: sin
         pagarlo no se reconecta. Con cargo 0 en la plantilla no se agrega.
+        Si el corte es por una promesa de pago incumplida, el renglón lo dice
+        para que el cliente entienda por qué paga otra reconexión.
         """
         plantilla_id = (
             servicio.plantilla_id if servicio and servicio.plantilla_id
@@ -191,13 +197,21 @@ class BillingService:
         if monto <= 0:
             return Decimal("0.00")
 
+        concepto = (
+            CONCEPTO_RECONEXION_PROMESA if por_promesa_incumplida
+            else "Cargo por reconexión"
+        )
         self.db.add(FacturaConceptoModel(
             cliente_id=cliente.id,
             servicio_id=servicio.id if servicio else None,
             factura_id=factura.id,
             tipo="reconexion",
-            concepto="Cargo por reconexión",
-            descripcion="Reconexión por corte de servicio",
+            concepto=concepto,
+            descripcion=(
+                "Reconexión por corte al incumplir la promesa de pago"
+                if por_promesa_incumplida
+                else "Reconexión por corte de servicio"
+            ),
             monto_original=monto,
             saldo_pendiente=monto,
             estado="facturado",
@@ -211,7 +225,7 @@ class BillingService:
             Decimal(factura.cargos_adicionales_total or 0) + monto
         )
         factura.detalles = "\n".join(
-            [factura.detalles or "", f"Cargo por reconexión: ${monto:.2f}"]
+            [factura.detalles or "", f"{concepto}: ${monto:.2f}"]
         ).strip()
         return monto
 
@@ -857,7 +871,10 @@ class BillingService:
                 )
             if estado_previo != "suspendido":
                 await self._agregar_reconexion_a_factura(
-                    factura, cliente, servicio
+                    factura,
+                    cliente,
+                    servicio,
+                    por_promesa_incumplida=promesa_rota,
                 )
             await self._sincronizar_estado_cliente(cliente.id)
             factura.estado = "vencida"
@@ -1206,7 +1223,13 @@ class BillingService:
             elif concepto.tipo == "servicio_adicional":
                 textos.append((f"Servicio extra: {concepto.concepto}", False, saldo))
             elif concepto.tipo == "reconexion":
-                textos.append(("Cargo por reconexión", False, saldo))
+                textos.append((
+                    concepto.concepto
+                    if concepto.concepto == CONCEPTO_RECONEXION_PROMESA
+                    else "Cargo por reconexión",
+                    False,
+                    saldo,
+                ))
             else:
                 textos.append((concepto.concepto, False, saldo))
         return textos

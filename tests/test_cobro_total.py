@@ -5,7 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.application.services.billing_service import BillingService
+from src.application.services.billing_service import (
+    CONCEPTO_RECONEXION_PROMESA,
+    BillingService,
+)
 from src.infrastructure.models import FacturaConceptoModel
 
 
@@ -212,6 +215,27 @@ def test_textos_de_renglones_en_palabras():
         ("Cargo por reconexión", False, Decimal("30")),
         ("Prorrateo de instalación", False, Decimal("120")),
     ]
+
+
+def test_reconexion_por_promesa_incumplida_se_nombra_como_penalizacion():
+    conceptos = [
+        SimpleNamespace(tipo="internet", concepto="Servicio de internet", saldo_pendiente=Decimal("190")),
+        SimpleNamespace(
+            tipo="reconexion",
+            concepto=CONCEPTO_RECONEXION_PROMESA,
+            saldo_pendiente=Decimal("30"),
+        ),
+    ]
+
+    textos = BillingService._textos_factura(
+        _factura_texto(periodo_desde=date(2026, 9, 1)), conceptos
+    )
+
+    assert textos[1] == (
+        "Reconexión y penalización por incumplir promesa de pago",
+        False,
+        Decimal("30"),
+    )
 
 
 def test_prorrateo_muestra_sus_fechas():
