@@ -108,14 +108,15 @@ class OCRService:
 
         cedula_detectada = None
         for patron in [
-            r"concepto[^\w]*([a-z0-9]{3,10})",
-            r"motivo[^\w]*([a-z0-9]{3,10})",
-            r"mensaje[^\w]*([a-z0-9]{3,10})",
-            r"descripci[oó]n[^\w]*([a-z0-9]{3,10})",
+            r"concepto[^\w]*([a-z0-9]{3,20})",
+            r"motivo[^\w]*([a-z0-9]{3,20})",
+            r"mensaje[^\w]*([a-z0-9]{3,20})",
+            r"descripci[oó]n[^\w]*([a-z0-9]{3,20})",
         ]:
             match = re.search(patron, texto)
             if match:
-                cedula_detectada = match.group(1).upper()
+                # "fdeznet2E3A": el contrato va pegado al nombre de la empresa.
+                cedula_detectada = re.sub(r"^fdeznet", "", match.group(1)).upper() or None
                 break
 
         # Fecha y hora de la transferencia (hora local de la captura):

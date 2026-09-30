@@ -1065,7 +1065,9 @@ async def ver_archivo_comprobante(
     comprobante = await db.get(ComprobantePagoRevisionModel, comprobante_id)
     if not comprobante:
         raise HTTPException(status_code=404, detail="Comprobante no encontrado")
-    nombre = Path(urlparse(comprobante.media_url).path).name
+    # "whatsapp-media://image_x.jpg": el nombre queda en netloc, no en path.
+    ruta = urlparse(comprobante.media_url or "")
+    nombre = Path(ruta.netloc or ruta.path).name if ruta.scheme == "whatsapp-media" else Path(ruta.path).name
     if not nombre or Path(nombre).suffix.lower() not in {
         ".jpg", ".jpeg", ".png", ".webp",
     }:

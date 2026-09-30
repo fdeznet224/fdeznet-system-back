@@ -129,6 +129,53 @@ class ParsedBankEmail:
     content_hash: str
 
 
+MESES = {
+    "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
+    "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12,
+}
+
+
+def _parse_operation_time(text: str, sent_at: datetime | None) -> datetime | None:
+    """Hora de la operación escrita en el correo, en UTC como fecha_correo.
+
+    Banco Azteca: "Fecha y hora 22/Sept/2026, 07:47:16" en hora de México y
+    a 12 horas sin a.m./p.m., así que se toma la opción más cercana a la hora
+    en que el banco envió el correo. Si el banco tarda en avisar, se sigue
+    comparando contra la hora real de la transferencia.
+    """
+    match = re.search(
+        r"fecha\s+y\s+hora\s*:?\s*(\d{1,2})[/\s-]+([a-záéíóú]{3,10})\.?[/\s-]+(\d{4}),?\s+"
+        r"(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap]\.?\s?m\.?)?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    dia, mes, anio, hora, minuto, segundo, meridiano = match.groups()
+    numero_mes = MESES.get(mes[:3].casefold())
+    if not numero_mes:
+        return None
+    hora = int(hora)
+    if meridiano:
+        horas = [hora % 12 + (12 if meridiano.lower().startswith("p") else 0)]
+    else:
+        horas = [hora % 12, hora % 12 + 12] if hora <= 12 else [hora]
+    opciones = []
+    for h in horas:
+        try:
+            local = datetime(int(anio), numero_mes, int(dia), h, int(minuto), int(segundo or 0))
+        except ValueError:
+            continue
+        opciones.append(local.replace(tzinfo=ZONA_LOCAL).astimezone(timezone.utc).replace(tzinfo=None))
+    if not opciones:
+        return None
+    if sent_at is None:
+        return opciones[0] if len(opciones) == 1 else None
+    elegida = min(opciones, key=lambda fecha: abs(fecha - sent_at))
+    # Si no cuadra ni con un día de diferencia, no se confía en ella.
+    return elegida if abs(elegida - sent_at) <= timedelta(days=1) else None
+
+
 def _decode(value: str | None) -> str:
     if not value:
         return ""
@@ -336,7 +383,7 @@ def parse_bank_email(
         uid=uid,
         sender=sender[:255],
         subject=subject[:500],
-        received_at=received_at,
+        received_at=_parse_operation_time(searchable, received_at) or received_at,
         amount=_parse_amount(searchable),
         reference=_parse_reference(searchable),
         concept=_parse_concept(searchable),
@@ -425,6 +472,7 @@ COINCIDENCIAS_VALIDAS = {"coincidencia_exacta", "coincidencia_sin_referencia"}
 # dinero cuente en el mes que cubre. A partir de esta hora, para que el
 # "pago confirmado" no llegue de madrugada.
 HORA_APLICAR_ADELANTADOS = time(8, 0)
+REINTENTAR_SIN_REFERENCIA = timedelta(hours=2)
 
 
 def aplicar_pago_desde(factura: FacturaModel) -> datetime | None:
@@ -1049,6 +1097,10 @@ class BankEmailService:
                         ComprobantePagoRevisionModel.folio_detectado.is_not(None),
                         # Adelantados sin referencia: ya tienen su depósito apartado.
                         ComprobantePagoRevisionModel.motivo_revision == "pago_adelantado",
+                        # Sin referencia: el correo del banco puede llegar
+                        # después que la captura; se reintenta un rato.
+                        ComprobantePagoRevisionModel.fecha_recepcion
+                        >= datetime.now() - REINTENTAR_SIN_REFERENCIA,
                     ),
                 )
                 .order_by(ComprobantePagoRevisionModel.fecha_recepcion.asc())
