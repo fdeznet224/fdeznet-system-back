@@ -1471,6 +1471,31 @@ class BillingService:
             "reactivado": reactivado,
         }
 
+    @staticmethod
+    def _proximo_vencimiento(factura) -> date | None:
+        """Fecha del siguiente pago que se imprime en el recibo."""
+        if not factura.fecha_vencimiento:
+            return None
+        if factura.tipo_factura == "prorrateo":
+            # El prorrateo vence al iniciar el ciclo; ese mismo día toca la
+            # primera mensualidad completa.
+            return factura.fecha_vencimiento
+        if factura.tipo_factura == "mensual":
+            return factura.fecha_vencimiento + relativedelta(months=1)
+        return None
+
+    async def _generar_recibo_seguro(self, **datos) -> str | None:
+        """Un recibo que no se pudo generar no debe impedir el WhatsApp."""
+        try:
+            return await generar_recibo_pdf(**datos)
+        except Exception:
+            logger.exception(
+                "No se pudo generar el recibo PDF del folio %s; la "
+                "confirmación se envía sin adjunto.",
+                datos.get("folio"),
+            )
+            return None
+
     async def _notificar_cobro_total(
         self,
         cliente,
@@ -1500,7 +1525,13 @@ class BillingService:
                 )
             ).scalars().all()
             ultima = await self.db.get(FacturaModel, pagos[-1].factura_id)
-            if saldo_restante > 0:
+            # Es abono sólo si el dinero no alcanzó para liquidar alguna de
+            # las facturas que se cobraron. Pagar completo un prorrateo es un
+            # pago confirmado aunque exista otra factura aún por vencer.
+            quedo_a_medias = any(
+                Decimal(pago.saldo_posterior or 0) > 0 for pago in pagos
+            )
+            if quedo_a_medias:
                 await notificador.notificar(
                     tipo_evento="abono_recibido",
                     cliente_id=cliente.id,
@@ -1530,18 +1561,14 @@ class BillingService:
                 )
             ).all()
             marca = await self.db.get(ConfiguracionSistema, 1)
-            ruta_pdf = await generar_recibo_pdf(
+            ruta_pdf = await self._generar_recibo_seguro(
                 nombre_cliente=cliente.nombre,
                 monto=recibido,
                 concepto="Pago de servicios",
                 descripcion=ultima.descripcion or ultima.detalles or "Pago de servicio",
                 fecha_pago=pagos[-1].fecha_pago,
                 folio=ultima.id,
-                nueva_fecha_vencimiento=(
-                    ultima.fecha_vencimiento + relativedelta(months=1)
-                    if ultima.tipo_factura in {"mensual", "prorrateo"}
-                    else None
-                ),
+                nueva_fecha_vencimiento=self._proximo_vencimiento(ultima),
                 telefono_cliente=cliente.telefono,
                 metodo_pago=pagos[-1].metodo_pago,
                 periodo_desde=ultima.periodo_desde,
@@ -1565,7 +1592,12 @@ class BillingService:
                 variables_extra={
                     **self._variables_detalle_factura(ultima),
                     "monto_pagado": f"${recibido:.2f}",
-                    "referencia": referencia or "N/A",
+                    "referencia": (
+                        f"{referencia or 'Pago aplicado'}. "
+                        f"Saldo pendiente: ${saldo_restante:.2f}"
+                        if saldo_restante > 0
+                        else referencia or "N/A"
+                    ),
                 },
                 ruta_pdf=ruta_pdf,
                 clave_dedupe=f"{clave}:recibo",
@@ -1698,11 +1730,7 @@ class BillingService:
                 
                 if pago_completado:
                     # Si liquidó, se le manda su PDF
-                    prox_venc = (
-                        factura.fecha_vencimiento + relativedelta(months=1)
-                        if factura.tipo_factura in {"mensual", "prorrateo"}
-                        else None
-                    )
+                    prox_venc = self._proximo_vencimiento(factura)
                     concepto_recibo = (
                         factura.concepto
                         or f"Mensualidad de internet - {factura.plan_snapshot}"
@@ -1727,7 +1755,7 @@ class BillingService:
                         )
                     ).all()
                     marca = await self.db.get(ConfiguracionSistema, 1)
-                    ruta_pdf = await generar_recibo_pdf(
+                    ruta_pdf = await self._generar_recibo_seguro(
                         nombre_cliente=cliente.nombre,
                         monto=nuevo_pago.monto_total,
                         concepto=concepto_recibo,
