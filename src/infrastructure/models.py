@@ -1872,7 +1872,52 @@ class ConfiguracionBotModel(Base):
     mensaje_bienvenida = Column(String(500), nullable=False, default="Soy tu asistente de pagos y servicios. Elige una opción:")
     mensaje_despedida = Column(String(300), nullable=False, default="Asistente desactivado. Un asesor humano te atenderá a la brevedad.")
     opciones_json = Column(Text, nullable=False)
+    # Agente de IA: apagado (bot de menú), sugerencia (un asesor aprueba) o
+    # automatico (responde solo).
+    agente_modo = Column(String(20), nullable=False, default="apagado", server_default="apagado")
+    agente_url = Column(String(255), nullable=False, default="https://api.deepseek.com/v1", server_default="https://api.deepseek.com/v1")
+    agente_modelo = Column(String(80), nullable=False, default="deepseek-flash", server_default="deepseek-flash")
+    agente_api_key = Column(EncryptedText(), nullable=True)
+    agente_conocimiento = Column(Text, nullable=True)
     actualizado_en = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class AgenteInteraccionModel(Base):
+    """Cada mensaje que atendió el agente: lo que consultó, propuso y costó."""
+
+    __tablename__ = "agente_interacciones"
+
+    id = Column(Integer, primary_key=True)
+    telefono = Column(String(60), nullable=False, index=True)  # msg.from (número o LID)
+    cliente_id = Column(Integer, ForeignKey("clientes.id", ondelete="SET NULL"), nullable=True, index=True)
+    mensaje_chat_id = Column(Integer, ForeignKey("mensajes_chat.id", ondelete="SET NULL"), nullable=True)
+    modo = Column(String(20), nullable=False)
+    estado = Column(String(20), nullable=False, default="pendiente", index=True)
+    mensaje_cliente = Column(Text, nullable=True)
+    respuesta_propuesta = Column(Text, nullable=True)
+    respuesta_enviada = Column(Text, nullable=True)
+    herramientas_json = Column(Text, nullable=True)  # consultas hechas y su resultado
+    acciones_pendientes_json = Column(Text, nullable=True)  # se ejecutan al aprobar
+    acciones_resultado_json = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    tokens_entrada = Column(Integer, nullable=False, default=0, server_default="0")
+    tokens_salida = Column(Integer, nullable=False, default=0, server_default="0")
+    costo_usd = Column(Numeric(10, 6), nullable=False, default=0, server_default="0")
+    revisado_por_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True)
+    creado_en = Column(DateTime, nullable=False, default=datetime.now, index=True)
+    revisado_en = Column(DateTime, nullable=True)
+
+
+class WhatsappIdentidadModel(Base):
+    """Chat identificado con su número de contrato (o intentos fallidos)."""
+
+    __tablename__ = "whatsapp_identidades"
+
+    telefono = Column(String(60), primary_key=True)  # msg.from (número o LID)
+    cliente_id = Column(Integer, ForeignKey("clientes.id", ondelete="CASCADE"), nullable=True)
+    verificado_en = Column(DateTime, nullable=True)
+    intentos_fallidos = Column(Integer, nullable=False, default=0, server_default="0")
+    ultimo_intento_en = Column(DateTime, nullable=True)
 
 
 class BotPausaModel(Base):

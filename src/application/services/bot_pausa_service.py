@@ -16,10 +16,16 @@ PAUSA_ASESOR = timedelta(hours=2)
 
 
 def clave_telefono(valor: str | None) -> str | None:
-    """Últimos 10 dígitos: igualan 52…, 521…, @c.us y el número local."""
+    """Últimos 10 dígitos: igualan 52…, 521…, @c.us y el número local.
+
+    Un LID de WhatsApp no es un teléfono: se usa completo para que la pausa
+    del asesor también funcione en esos chats.
+    """
     base = str(valor or "").split("@")[0]
     digitos = re.sub(r"\D", "", base)
-    if len(digitos) < 10 or str(valor or "").lower().endswith("@lid"):
+    if str(valor or "").lower().endswith("@lid"):
+        return digitos[:20] or None
+    if len(digitos) < 10:
         return None
     return digitos[-10:]
 
