@@ -43,11 +43,13 @@ MODOS = ("apagado", "sugerencia", "automatico")
 MAX_VUELTAS = 5
 MAX_INTENTOS_CONTRATO = 5
 MENSAJES_DE_CONTEXTO = 12
+# Una conversación "nueva" vuelve a preguntar con quién se habla.
+VIGENCIA_NOMBRE = timedelta(hours=12)
 # US$ por millón de tokens (DeepSeek Flash, hora pico: el precio más alto).
 PRECIOS = {"entrada": Decimal("0.30"), "cache": Decimal("0.006"), "salida": Decimal("1.20")}
 
 CONSULTAS = {
-    "identificar_cliente", "consultar_cuenta", "diagnosticar_conexion",
+    "registrar_nombre", "identificar_cliente", "consultar_cuenta", "diagnosticar_conexion",
     "consultar_avisos", "datos_de_pago", "leer_comprobante",
 }
 ACCIONES = {
@@ -111,6 +113,8 @@ def _herramienta(nombre, descripcion, propiedades=None, requeridas=None):
 
 
 HERRAMIENTAS = [
+    _herramienta("registrar_nombre", "Guarda el nombre con el que se presenta la persona en esta conversación.",
+                 {"nombre": {"type": "string"}}, ["nombre"]),
     _herramienta("identificar_cliente", "Identifica al cliente con su número de contrato (letras y/o números).",
                  {"contrato": {"type": "string"}}, ["contrato"]),
     _herramienta("consultar_cuenta", "Saldo del cliente identificado con el desglose de lo que debe."),
@@ -328,6 +332,16 @@ class AgenteIAService:
             "{}: {}".format("CLIENTE" if m.direccion == "entrada" else "EMPRESA", (m.mensaje or "")[:500])
             for m in reversed(historial)
         ]
+        if contexto.nombre_contacto:
+            quien = f"Hablas con {contexto.nombre_contacto}."
+        else:
+            quien = (
+                "INICIO DE CONVERSACIÓN: todavía no sabes con quién hablas. Si en su último mensaje ya "
+                "dice su nombre (por ejemplo, respondiendo a tu pregunta), usa registrar_nombre y continúa "
+                "con lo que pidió al principio de la conversación. Si no, saluda, dile en una frase que con "
+                "gusto lo ayudas con lo que pidió y pregúntale con quién tienes el gusto; en esa respuesta "
+                "no pidas contrato ni uses herramientas de cuenta."
+            )
         if contexto.cliente:
             identidad = (
                 f"CLIENTE IDENTIFICADO: {contexto.cliente.nombre} (contrato {contexto.cliente.cedula}, "
@@ -337,8 +351,8 @@ class AgenteIAService:
             identidad = "Cliente NO identificado: si pide algo de su cuenta, pídele su número de contrato."
         adjunto = "\n(El cliente envió una imagen; si parece comprobante usa leer_comprobante.)" if media_url else ""
         return (
-            "Conversación reciente:\n{}\n\n{}\n\nÚltimo mensaje del cliente:\n{}{}"
-        ).format("\n".join(lineas) or "(sin mensajes previos)", identidad, texto or "", adjunto)
+            "Conversación reciente:\n{}\n\n{}\n{}\n\nÚltimo mensaje del cliente:\n{}{}"
+        ).format("\n".join(lineas) or "(sin mensajes previos)", quien, identidad, texto or "", adjunto)
 
     async def _fallar(self, interaccion, error, contexto=None):
         interaccion.estado = "error"
@@ -365,6 +379,7 @@ class _Contexto:
         self.media_url = media_url
         self.usuario = usuario
         self.cliente = None
+        self.nombre_contacto = None
         self.consultas = []
         self.pendientes = []
         self.ejecutadas = []
@@ -386,8 +401,16 @@ class _Contexto:
 
     async def cargar_identidad(self):
         identidad = await self.db.get(WhatsappIdentidadModel, self.telefono)
-        if identidad and identidad.cliente_id:
+        if not identidad:
+            return
+        if identidad.cliente_id:
             self.cliente = await self.db.get(ClienteModel, identidad.cliente_id)
+        if (
+            identidad.nombre_contacto
+            and identidad.nombre_registrado_en
+            and datetime.now() - identidad.nombre_registrado_en < VIGENCIA_NOMBRE
+        ):
+            self.nombre_contacto = identidad.nombre_contacto
 
     async def usar(self, nombre: str, argumentos: dict) -> dict:
         if nombre not in CONSULTAS | ACCIONES:
@@ -420,6 +443,20 @@ class _Contexto:
             return {"error": str(exc)[:300]}
 
     # ------------------------------------------------------------ consultas
+    async def _registrar_nombre(self, nombre: str) -> dict:
+        nombre = " ".join((nombre or "").split())[:150]
+        if len(nombre) < 2:
+            return {"error": "No se entendió el nombre; pregúntalo de nuevo."}
+        registro = await self.db.get(WhatsappIdentidadModel, self.telefono)
+        if not registro:
+            registro = WhatsappIdentidadModel(telefono=self.telefono, intentos_fallidos=0)
+            self.db.add(registro)
+        registro.nombre_contacto = nombre
+        registro.nombre_registrado_en = datetime.now()
+        await self.db.commit()
+        self.nombre_contacto = nombre
+        return {"registrado": True, "nombre": nombre}
+
     async def _identificar_cliente(self, contrato: str) -> dict:
         contrato = (contrato or "").strip().upper()
         registro = await self.db.get(WhatsappIdentidadModel, self.telefono)

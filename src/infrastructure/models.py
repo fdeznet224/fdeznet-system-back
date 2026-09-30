@@ -1918,6 +1918,9 @@ class WhatsappIdentidadModel(Base):
     verificado_en = Column(DateTime, nullable=True)
     intentos_fallidos = Column(Integer, nullable=False, default=0, server_default="0")
     ultimo_intento_en = Column(DateTime, nullable=True)
+    # Cada conversación empieza preguntando con quién se habla.
+    nombre_contacto = Column(String(150), nullable=True)
+    nombre_registrado_en = Column(DateTime, nullable=True)
 
 
 class BotPausaModel(Base):

@@ -327,3 +327,54 @@ def test_telefonos_de_alerta_se_validan_y_no_los_pisa_el_panel_general():
     with pytest.raises(ValueError):
         AlertasUpdate(telefonos_alerta="123")
     assert "telefonos_alerta" not in SystemConfigUpdate.model_fields
+
+
+# ------------------------------------------------- nombre al iniciar la charla
+def test_registrar_nombre_lo_guarda_para_la_conversacion():
+    db = _DB()
+    contexto = _contexto(cliente=None, db=db)
+    resultado = asyncio.run(contexto.usar("registrar_nombre", {"nombre": "  Juana   Pérez "}))
+    assert resultado == {"registrado": True, "nombre": "Juana Pérez"}
+    assert contexto.nombre_contacto == "Juana Pérez"
+    assert db.agregados[0].nombre_contacto == "Juana Pérez"
+
+
+@pytest.mark.parametrize("horas, esperado", [(1, "Juana"), (13, None)])
+def test_el_nombre_vale_solo_para_la_conversacion_reciente(horas, esperado):
+    identidad = SimpleNamespace(
+        cliente_id=None, nombre_contacto="Juana",
+        nombre_registrado_en=datetime.now() - timedelta(hours=horas),
+    )
+    db = _DB({("WhatsappIdentidadModel", "123456789012345@lid"): identidad})
+    contexto = _contexto(cliente=None, db=db)
+    asyncio.run(contexto.cargar_identidad())
+    assert contexto.nombre_contacto == esperado
+
+
+def _mensaje_para_modelo(nombre):
+    servicio = AgenteIAService(_DB())
+
+    class _Resultado:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    async def execute(_consulta):
+        return _Resultado()
+
+    servicio.db.execute = execute
+    contexto = _contexto(cliente=CLIENTE, db=servicio.db)
+    contexto.nombre_contacto = nombre
+    return asyncio.run(servicio._mensaje_usuario(contexto, "no tengo internet", None))
+
+
+def test_al_iniciar_la_conversacion_se_pide_el_nombre_aunque_sea_cliente():
+    texto = _mensaje_para_modelo(None)
+    assert "INICIO DE CONVERSACIÓN" in texto and "CLIENTE IDENTIFICADO" in texto
+
+
+def test_con_nombre_ya_no_se_vuelve_a_preguntar():
+    texto = _mensaje_para_modelo("Juana")
+    assert "Hablas con Juana." in texto and "INICIO DE CONVERSACIÓN" not in texto
