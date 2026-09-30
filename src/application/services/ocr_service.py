@@ -48,6 +48,59 @@ def huella_captura(monto: float, fecha_pago: datetime | None, cuentas: list[str]
     return "SC-" + hashlib.sha256(base.encode()).hexdigest()[:16].upper()
 
 
+MESES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6, "julio": 7,
+    "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+}
+
+
+def datos_cep(texto_crudo: str) -> dict | None:
+    """Comprobante Electrónico de Pago (CEP) de Banxico en PDF.
+
+    Pone primero las etiquetas y después los valores ("Monto IVA Referencia
+    numérica Clave de rastreo ... $ 300.00 $ 0.00 300926 NU3ANLCA8IO19..."),
+    así que las reglas de las capturas se confunden (toman el "30" de la
+    fecha como monto o el sello digital como folio).
+    """
+    texto = " ".join((texto_crudo or "").split())
+    if not re.search(r"comprobante\s+electr[oó]nico\s+de\s+pago", texto, re.IGNORECASE):
+        return None
+    valores = re.search(
+        r"\$\s*([\d,]+\.\d{2})\s+\$\s*[\d,]+\.\d{2}\s+(\d{1,12})\s+([A-Za-z0-9]{8,30})\b",
+        texto,
+    )
+    if not valores:
+        return None
+    monto = float(valores.group(1).replace(",", ""))
+    folio = valores.group(3).upper()
+    fecha_pago = None
+    operacion = re.search(
+        r"fecha de operaci[oó]n en el spei\W*(\d{1,2}) de ([a-z]+) de (\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})",
+        texto,
+        re.IGNORECASE,
+    )
+    if operacion:
+        dia, mes, anio, hora, minuto, segundo = operacion.groups()
+        numero_mes = MESES.get(mes.lower())
+        if numero_mes:
+            try:
+                fecha_pago = datetime(int(anio), numero_mes, int(dia), int(hora), int(minuto), int(segundo))
+            except ValueError:
+                fecha_pago = None
+    # CLABE (18), tarjeta (16) o celular (10) del ordenante y del beneficiario.
+    cuentas = sorted({numero[-4:] for numero in re.findall(r"\b(\d{18}|\d{16})\b", texto)})
+    return {
+        "folio": folio,
+        "monto": monto,
+        "cedula_detectada": None,
+        "fecha_pago": fecha_pago,
+        "cuentas": cuentas,
+        "concepto": None,
+        "huella": huella_captura(monto, fecha_pago, cuentas),
+        "exito": monto > 0,
+    }
+
+
 class OCRService:
     def __init__(self):
         # EasyOCR carga PyTorch y descarga modelos grandes. Se inicializa solo
@@ -71,6 +124,9 @@ class OCRService:
     @staticmethod
     def extraer_datos(texto_crudo: str) -> dict:
         """Interpreta el texto OCR sin depender de una imagen real."""
+        cep = datos_cep(texto_crudo)
+        if cep:
+            return cep
         texto = " ".join((texto_crudo or "").split()).lower()
 
         folio = None
@@ -103,10 +159,12 @@ class OCRService:
                 if len(palabra) >= 10
                 and any(c.isdigit() for c in palabra)
             ]
+            # Una clave de rastreo tiene hasta 30 caracteres; más largo es un
+            # sello digital o un código, no un folio.
             candidatos = [
                 candidato
                 for candidato in candidatos
-                if len(candidato) >= 10
+                if 10 <= len(candidato) <= 30
             ]
             if candidatos:
                 folio = max(candidatos, key=len)
@@ -114,7 +172,9 @@ class OCRService:
         monto = 0.0
         numero = r"(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)"
         patrones_monto = [
-            rf"(?:importe|monto|enviaste|transferiste|total)[^\d]*{numero}",
+            # El monto pegado a su etiqueta ("Monto: $300.00"); si hay otras
+            # palabras en medio, puede ser la fecha ("Monto ... 30 de septiembre").
+            rf"(?:importe|monto|enviaste|transferiste|total)[^\d\w]{{0,6}}{numero}",
             rf"[\$sS]\s*{numero}",
             rf"{numero}\s*(?:mxn|m\.?n\.?|pesos)",
         ]

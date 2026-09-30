@@ -151,3 +151,49 @@ def test_la_busqueda_por_folio_no_depende_del_monto_leido(monkeypatch):
 
 def test_el_agente_espera_8_segundos_para_juntar_mensajes():
     assert whatsapp.ESPERA_AGENTE_SEGUNDOS == 8
+
+
+# ---------------------------------------------- CEP de Banxico en PDF
+CEP = """horas
+Fecha de consulta 30 de septiembre de 2026
+COMPROBANTE   ELECTRÓNICO   DE   PAGO
+Concepto del pago
+Monto
+IVA
+Referencia numérica
+Clave de rastreo
+30 de septiembre de 2026
+Transferencia
+$ 300.00
+$ 0.00
+300926
+ABC1DEFG2HIJ3KLM4NOP
+Fecha de operación en el SPEI®
+30 de septiembre de 2026
+12:45:08 horas
+JUAN PEREZ LOPEZ
+638180010153531111
+BANCO UNO BANCO DOS
+JUAN PEREZ LOPEZ
+014100605514952222
+Cadena Original (información del pago):
+""" + "X" * 120 + "\n"
+
+
+def test_el_cep_de_banxico_se_lee_con_su_formato():
+    datos = OCRService.extraer_datos(CEP)
+    assert datos["monto"] == 300.0  # no el "30" de la fecha
+    assert datos["folio"] == "ABC1DEFG2HIJ3KLM4NOP"  # no el sello digital
+    assert datos["fecha_pago"] == datetime(2026, 9, 30, 12, 45, 8)
+    assert datos["cuentas"] == ["1111", "2222"]
+    assert datos["exito"] is True
+
+
+def test_un_codigo_de_mas_de_30_caracteres_no_es_folio():
+    datos = OCRService.extraer_datos("Pago $300.00 " + "A1" * 40)
+    assert datos["folio"] is None
+
+
+def test_el_monto_no_se_toma_de_la_fecha():
+    datos = OCRService.extraer_datos("Monto IVA Clave 30 de septiembre de 2026 $ 300.00")
+    assert datos["monto"] == 300.0
