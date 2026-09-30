@@ -75,3 +75,31 @@ def test_no_se_sale_de_la_carpeta_de_whatsapp():
     comprobante = SimpleNamespace(media_url="whatsapp-media://../../.env")
     with pytest.raises(HTTPException):
         asyncio.run(whatsapp.ver_archivo_comprobante(14, db=_DB(comprobante), current_user=None))
+
+
+
+# ------------------------------------------------ bot técnico con el agente
+def test_con_sesion_tecnica_abierta_no_contesta_el_agente(monkeypatch):
+    monkeypatch.setattr(whatsapp, "bot_memory", {
+        "tec@lid": {"paso": "FLUJO_VISUAL", "alcance": "tecnico", "staff_id": 2, "iniciado_en": datetime.now()},
+        "cliente@lid": {"paso": "FLUJO_VISUAL", "alcance": "cliente", "staff_id": None, "iniciado_en": datetime.now()},
+    })
+    assert whatsapp.sesion_tecnica_activa("tec@lid", 10) is True
+    assert whatsapp.sesion_tecnica_activa("cliente@lid", 10) is False
+    assert whatsapp.sesion_tecnica_activa("otro@lid", 10) is False
+
+
+def test_la_sesion_tecnica_vencida_regresa_al_agente(monkeypatch):
+    from datetime import timedelta
+
+    memoria = {"tec@lid": {"paso": "TECNICO_CONTRATO_PPPOE", "staff_id": 2, "iniciado_en": datetime.now() - timedelta(minutes=11)}}
+    monkeypatch.setattr(whatsapp, "bot_memory", memoria)
+    assert whatsapp.sesion_tecnica_activa("tec@lid", 10) is False
+    assert "tec@lid" not in memoria
+
+
+def test_el_agente_respeta_la_sesion_tecnica_en_el_webhook():
+    import inspect
+
+    fuente = inspect.getsource(whatsapp.webhook_recibir_mensaje)
+    assert fuente.index("sesion_tecnica_activa(") < fuente.index("lanzar_agente(")

@@ -248,6 +248,22 @@ def mensaje_fuera_de_horario(
     )
 
 
+def sesion_tecnica_activa(telefono: str, minutos_sesion: int) -> bool:
+    """El personal está usando el bot técnico (lo abrió con el comando).
+
+    Solo el flujo técnico guarda staff_id. Mientras la sesión siga vigente,
+    sus respuestas (opción, contrato) van al bot técnico y no al agente de IA.
+    """
+    estado = bot_memory.get(telefono)
+    if not estado or not estado.get("staff_id"):
+        return False
+    iniciado_en = estado.get("iniciado_en")
+    if iniciado_en and datetime.now() - iniciado_en > timedelta(minutes=minutos_sesion or 10):
+        bot_memory.pop(telefono, None)
+        return False
+    return True
+
+
 def sufijos_identidad_whatsapp(*telefonos: str) -> set[str]:
     """Devuelve teléfonos comparables y descarta identificadores opacos LID."""
     sufijos = set()
@@ -1560,8 +1576,11 @@ async def webhook_recibir_mensaje(
         )
 
     # Con el agente de IA encendido, él atiende a los clientes en lugar del
-    # bot de menú (el flujo técnico del personal sigue arriba sin cambios).
-    if (bot_config.agente_modo or "apagado") != "apagado":
+    # bot de menú. El personal con una sesión técnica abierta sigue con el
+    # bot técnico: su opción o el contrato no deben llegar al agente.
+    if (bot_config.agente_modo or "apagado") != "apagado" and not sesion_tecnica_activa(
+        telefono_raw, bot_config.minutos_sesion
+    ):
         if "[AUDIO]" in mensaje_texto.upper():
             return {"status": "audio_para_asesor"}
         lanzar_agente(
