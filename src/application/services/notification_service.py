@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,8 +9,10 @@ from src.infrastructure.models import (
     ConfiguracionSistema,
     MensajeChatModel,
     PlantillaMensajeModel,
+    ServicioModel,
 )
 from src.application.helpers.message_formatter import formatear_mensaje
+from src.application.services.billing_calendar_service import BillingCalendarService
 from src.infrastructure.whatsapp_client import whatsapp_queue
 
 logger = logging.getLogger(__name__)
@@ -127,15 +129,48 @@ class NotificationService:
         # =========================================================
         
         # A. Cálculos de Fechas
-        dia_pago = cliente.plantilla.dia_pago if cliente.plantilla else 1
-        dias_tolerancia = cliente.plantilla.dias_tolerancia if cliente.plantilla else 0
-        
-        # El día que se ejecuta el corte de servicio
-        dia_corte_calc = dia_pago + dias_tolerancia
-        dia_corte_servicio = dia_corte_calc if dia_corte_calc <= 30 else 30
+        # El día de pago sale del servicio: el fijo de su plantilla o el de
+        # su instalación, según la forma de cobro.
+        servicio = (
+            await self.db.execute(
+                select(ServicioModel)
+                .options(joinedload(ServicioModel.plantilla))
+                .where(
+                    ServicioModel.cliente_id == cliente.id,
+                    ServicioModel.estado.in_(["activo", "suspendido"]),
+                )
+                .order_by(ServicioModel.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        plantilla_cobro = (
+            (servicio.plantilla if servicio else None) or cliente.plantilla
+        )
+        if servicio:
+            dia_pago = BillingCalendarService.dia_ciclo_servicio(
+                servicio, plantilla_cobro
+            )
+        else:
+            dia_pago = plantilla_cobro.dia_pago if plantilla_cobro else 1
+        dias_tolerancia = (
+            (plantilla_cobro.dias_tolerancia or 0) if plantilla_cobro else 0
+        )
+
+        # El corte cae N días después del próximo pago; puede pasar al mes
+        # siguiente (pago el 30 + 3 días = corte el 3).
+        hoy = date.today()
+        proximo_pago = BillingCalendarService.siguiente_inicio_ciclo(
+            hoy - timedelta(days=1), dia_pago
+        )
+        fecha_corte = proximo_pago + timedelta(days=dias_tolerancia)
+        dia_corte_servicio = fecha_corte.day
 
         # El último día que el cliente tiene para pagar tranquilamente (un día antes del corte)
-        ultimo_dia_pago = (dia_corte_servicio - 1) if dias_tolerancia > 0 else dia_corte_servicio
+        ultimo_dia_pago = (
+            (fecha_corte - timedelta(days=1)).day
+            if dias_tolerancia > 0
+            else dia_corte_servicio
+        )
 
         # B. Mes en texto humano
         meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]

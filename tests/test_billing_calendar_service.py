@@ -54,7 +54,8 @@ def test_meses_gratis_no_pueden_ser_negativos():
 def test_instalacion_tiene_facturacion_prepago_por_defecto():
     solicitud = InstalacionRequest(user_pppoe="cliente-test", pass_pppoe="clave-test")
     assert solicitud.tipo_facturacion.value == "prepago"
-    assert solicitud.ciclo_facturacion.value == "calendario"
+    # Sin elección explícita se usa la forma de cobro de la plantilla.
+    assert solicitud.ciclo_facturacion is None
     assert solicitud.meses_gratis == 0
 
 

@@ -81,7 +81,7 @@ class BillingService:
             return None
         periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
             servicio.proxima_facturacion,
-            plantilla.dia_pago or servicio.dia_vencimiento or 1,
+            BillingCalendarService.dia_ciclo_servicio(servicio, plantilla),
             plan.precio,
             plantilla.impuesto or 0,
         )
@@ -399,10 +399,12 @@ class BillingService:
             if plan is None:
                 reporte["omitidos_sin_servicio"] += 1
                 continue
-            if dia_objetivo and plantilla.dia_pago != dia_objetivo:
-                continue
-            if servicio.ciclo_facturacion == CicloFacturacion.aniversario:
-                reporte["omitidos_modalidad_pendiente"] += 1
+            # Día fijo: el de la plantilla. Día de instalación: el del
+            # propio servicio. Ambos modos conviven en la misma emisión.
+            dia_ciclo = BillingCalendarService.dia_ciclo_servicio(
+                servicio, plantilla
+            )
+            if dia_objetivo and dia_ciclo != dia_objetivo:
                 continue
             if servicio.proxima_facturacion is None:
                 reporte["omitidos_sin_proxima_facturacion"] += 1
@@ -423,9 +425,6 @@ class BillingService:
                 reporte["omitidos_modalidad_pendiente"] += 1
                 continue
 
-            # La plantilla es la configuración vigente del ciclo. El campo
-            # del servicio sólo queda como dato histórico/compatibilidad.
-            dia_ciclo = plantilla.dia_pago or servicio.dia_vencimiento or 1
             periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
                 periodo_desde=servicio.proxima_facturacion,
                 dia_ciclo=dia_ciclo,

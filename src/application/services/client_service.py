@@ -85,6 +85,11 @@ class ClientService:
         if servicio:
             return servicio
 
+        plantilla = (
+            await self.db.get(PlantillaFacturacionModel, cliente.plantilla_id)
+            if cliente.plantilla_id
+            else None
+        )
         servicio = ServicioModel(
             cliente_id=cliente.id,
             alias="Principal",
@@ -111,7 +116,9 @@ class ClientService:
             # una carga lazy desde AsyncSession durante el alta.
             ultimo_cambio_estado=None,
             tipo_facturacion=TipoFacturacion.prepago,
-            ciclo_facturacion=CicloFacturacion.calendario,
+            ciclo_facturacion=CicloFacturacion(
+                BillingCalendarService.resolver_ciclo(None, plantilla)
+            ),
             meses_gratis=0,
             estado="pendiente_instalacion",
         )
@@ -732,8 +739,13 @@ class ClientService:
         tipo_facturacion = TipoFacturacion(
             datos_finales.tipo_facturacion.value
         )
+        # Una elección explícita manda; si no, se conserva la que el
+        # servicio heredó de su plantilla al crearse.
         ciclo_facturacion = CicloFacturacion(
-            datos_finales.ciclo_facturacion.value
+            BillingCalendarService.valor_ciclo(
+                datos_finales.ciclo_facturacion
+                or servicio.ciclo_facturacion
+            )
         )
 
         fechas_servicio = BillingCalendarService.calcular_fechas_servicio(
@@ -809,7 +821,14 @@ class ClientService:
             if puerto:
                 puerto.servicio_id = servicio.id
 
-        if cliente_rel.plantilla:
+        if ciclo_facturacion == CicloFacturacion.aniversario:
+            servicio.dia_vencimiento = fechas_servicio.fecha_activacion.day
+            servicio.dias_tolerancia = (
+                (cliente_rel.plantilla.dias_tolerancia or 0)
+                if cliente_rel.plantilla
+                else 0
+            )
+        elif cliente_rel.plantilla:
             servicio.dia_vencimiento = cliente_rel.plantilla.dia_pago
             servicio.dias_tolerancia = (
                 cliente_rel.plantilla.dias_tolerancia or 0
@@ -1011,9 +1030,14 @@ class ClientService:
                 # campo heredado del cliente sincronizado para que la edición
                 # general siga funcionando cuando sólo existe un domicilio.
                 servicios_activos[0].plantilla_id = plantilla_objetivo
-                servicios_activos[0].dia_vencimiento = (
-                    plantilla.dia_pago if plantilla else None
-                )
+                # Quien paga por día de instalación conserva su día.
+                if (
+                    servicios_activos[0].ciclo_facturacion
+                    != CicloFacturacion.aniversario
+                ):
+                    servicios_activos[0].dia_vencimiento = (
+                        plantilla.dia_pago if plantilla else None
+                    )
                 servicios_activos[0].dias_tolerancia = (
                     (plantilla.dias_tolerancia or 0) if plantilla else 0
                 )

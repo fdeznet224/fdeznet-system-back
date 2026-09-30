@@ -3,12 +3,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 # Modelos y Schemas
-from src.infrastructure.models import PlantillaFacturacionModel
+from src.infrastructure.models import CicloFacturacion, PlantillaFacturacionModel
 from src.domain.schemas import BillingTemplateRequest
 
 class BillingTemplateService:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    @staticmethod
+    def _valores(data: BillingTemplateRequest) -> dict:
+        valores = data.dict()
+        valores["ciclo_facturacion"] = CicloFacturacion(
+            data.ciclo_facturacion.value
+        )
+        return valores
 
     async def get_all(self) -> List[PlantillaFacturacionModel]:
         """Obtiene todas las plantillas de facturación"""
@@ -26,7 +34,7 @@ class BillingTemplateService:
         podemos desempaquetar el diccionario directamente (**data.dict()).
         """
         # Convertimos el Schema a Modelo DB directamente
-        nuevo = PlantillaFacturacionModel(**data.dict())
+        nuevo = PlantillaFacturacionModel(**self._valores(data))
         
         self.db.add(nuevo)
         await self.db.commit()
@@ -40,7 +48,7 @@ class BillingTemplateService:
             return None
 
         # Actualización dinámica (Iteramos sobre los campos del schema)
-        for key, value in data.dict().items():
+        for key, value in self._valores(data).items():
             setattr(plantilla, key, value)
 
         await self.db.commit()

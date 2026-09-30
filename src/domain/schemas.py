@@ -512,6 +512,7 @@ class BillingTemplateRequest(BaseModel):
     )
     recordatorio_whatsapp: bool = True
     aviso_factura: str = "whatsapp"
+    ciclo_facturacion: CicloFacturacionEnum = CicloFacturacionEnum.calendario
 
 class PlantillaResponse(BillingTemplateRequest):
     model_config = ConfigDict(from_attributes=True)
@@ -825,7 +826,8 @@ class InstalacionRequest(BaseModel):
     fecha_instalacion: Optional[date] = None
     fecha_activacion: Optional[date] = None
     tipo_facturacion: TipoFacturacionEnum = TipoFacturacionEnum.prepago
-    ciclo_facturacion: CicloFacturacionEnum = CicloFacturacionEnum.calendario
+    # Sin valor se usa la forma de cobro de la plantilla.
+    ciclo_facturacion: Optional[CicloFacturacionEnum] = None
     meses_gratis: int = Field(default=0, ge=0, le=12)
     potencia_optica_dbm: Optional[float] = Field(default=None, ge=-50, le=10)
     potencia_tx_dbm: Optional[float] = Field(default=None, ge=-50, le=20)
@@ -853,7 +855,8 @@ class ServicioCreate(BaseModel):
     red_id: Optional[int] = None
     tecnico_id: Optional[int] = None
     tipo_facturacion: TipoFacturacionEnum = TipoFacturacionEnum.prepago
-    ciclo_facturacion: CicloFacturacionEnum = CicloFacturacionEnum.calendario
+    # Sin valor se usa la forma de cobro de la plantilla.
+    ciclo_facturacion: Optional[CicloFacturacionEnum] = None
     meses_gratis: int = Field(default=0, ge=0, le=12)
     crear_orden: bool = True
 
@@ -892,7 +895,8 @@ class ServicioActivacion(BaseModel):
     fecha_instalacion: Optional[date] = None
     fecha_activacion: Optional[date] = None
     tipo_facturacion: TipoFacturacionEnum = TipoFacturacionEnum.prepago
-    ciclo_facturacion: CicloFacturacionEnum = CicloFacturacionEnum.calendario
+    # Sin valor se usa la forma de cobro de la plantilla.
+    ciclo_facturacion: Optional[CicloFacturacionEnum] = None
     meses_gratis: int = Field(default=0, ge=0, le=12)
 
     @field_validator("mac_address")
