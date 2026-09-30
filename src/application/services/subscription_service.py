@@ -129,6 +129,16 @@ class SubscriptionService:
             ),
             red_id=datos.red_id,
         )
+        plantilla_id = (
+            datos.plantilla_id
+            if datos.plantilla_id is not None
+            else cliente.plantilla_id
+        )
+        plantilla = (
+            await self.db.get(PlantillaFacturacionModel, plantilla_id)
+            if plantilla_id
+            else None
+        )
 
         servicio = ServicioModel(
             cliente_id=cliente.id,
@@ -142,11 +152,7 @@ class SubscriptionService:
                 if datos.plan_id is not None
                 else cliente.plan_id
             ),
-            plantilla_id=(
-                datos.plantilla_id
-                if datos.plantilla_id is not None
-                else cliente.plantilla_id
-            ),
+            plantilla_id=plantilla_id,
             zona_id=datos.zona_id,
             red_id=datos.red_id,
             tecnico_id=datos.tecnico_id,
@@ -154,7 +160,9 @@ class SubscriptionService:
                 datos.tipo_facturacion.value
             ),
             ciclo_facturacion=CicloFacturacion(
-                datos.ciclo_facturacion.value
+                BillingCalendarService.resolver_ciclo(
+                    datos.ciclo_facturacion, plantilla
+                )
             ),
             meses_gratis=datos.meses_gratis,
             estado="pendiente_instalacion",
@@ -241,6 +249,20 @@ class SubscriptionService:
             ),
             red_id=cambios.get("red_id", servicio.red_id),
         )
+        # Un servicio aún sin instalar adopta la forma de cobro de su nueva
+        # plantilla, salvo que se haya elegido otra de forma explícita.
+        if (
+            cambios.get("plantilla_id")
+            and "ciclo_facturacion" not in cambios
+            and servicio.estado == "pendiente_instalacion"
+        ):
+            nueva_plantilla = await self.db.get(
+                PlantillaFacturacionModel,
+                cambios["plantilla_id"],
+            )
+            cambios["ciclo_facturacion"] = CicloFacturacion(
+                BillingCalendarService.resolver_ciclo(None, nueva_plantilla)
+            )
         for campo, valor in cambios.items():
             setattr(servicio, campo, valor)
         await self.db.commit()
@@ -424,20 +446,37 @@ class SubscriptionService:
                 orden_id=orden_id,
             )
 
+        plantilla = (
+            await self.db.get(
+                PlantillaFacturacionModel,
+                servicio.plantilla_id,
+            )
+            if servicio.plantilla_id
+            else None
+        )
+        # Una elección explícita manda. Si en la activación se cambia la
+        # plantilla, se toma la forma de cobro de la nueva; si no, la que el
+        # servicio ya tenía.
+        if datos.ciclo_facturacion:
+            ciclo = BillingCalendarService.valor_ciclo(datos.ciclo_facturacion)
+        elif datos.plantilla_id is not None:
+            ciclo = BillingCalendarService.resolver_ciclo(None, plantilla)
+        else:
+            ciclo = BillingCalendarService.valor_ciclo(
+                servicio.ciclo_facturacion
+            )
         fecha_instalacion = datos.fecha_instalacion or date.today()
         fecha_activacion = datos.fecha_activacion or fecha_instalacion
         fechas = BillingCalendarService.calcular_fechas_servicio(
             fecha_instalacion=fecha_instalacion,
             fecha_activacion=fecha_activacion,
             meses_gratis=datos.meses_gratis,
-            ciclo_facturacion=datos.ciclo_facturacion.value,
+            ciclo_facturacion=ciclo,
         )
         servicio.tipo_facturacion = TipoFacturacion(
             datos.tipo_facturacion.value
         )
-        servicio.ciclo_facturacion = CicloFacturacion(
-            datos.ciclo_facturacion.value
-        )
+        servicio.ciclo_facturacion = CicloFacturacion(ciclo)
         servicio.fecha_instalacion = fechas.fecha_instalacion
         servicio.fecha_activacion = fechas.fecha_activacion
         servicio.fecha_inicio_servicio = fechas.fecha_inicio_servicio
@@ -448,17 +487,12 @@ class SubscriptionService:
         servicio.proxima_facturacion = fechas.proxima_facturacion
         servicio.meses_gratis = datos.meses_gratis
 
-        plantilla = (
-            await self.db.get(
-                PlantillaFacturacionModel,
-                servicio.plantilla_id,
+        if ciclo == "aniversario":
+            servicio.dia_vencimiento = fechas.fecha_activacion.day
+        else:
+            servicio.dia_vencimiento = (
+                plantilla.dia_pago if plantilla else None
             )
-            if servicio.plantilla_id
-            else None
-        )
-        servicio.dia_vencimiento = (
-            plantilla.dia_pago if plantilla else None
-        )
         servicio.dias_tolerancia = (
             (plantilla.dias_tolerancia or 0)
             if plantilla
@@ -507,6 +541,9 @@ class SubscriptionService:
         await self._sincronizar_estado_cliente(servicio.cliente_id)
         await self._sincronizar_legacy_si_principal(servicio)
         await self.db.commit()
+        await BillingService(
+            self.db
+        ).emitir_primera_factura_por_instalacion(servicio)
         return await self.obtener(servicio.id)
 
     async def cambiar_plan(

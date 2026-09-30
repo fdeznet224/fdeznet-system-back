@@ -1,5 +1,13 @@
 require('dotenv').config();
 
+// Antes de cargar la librería: corrige el envío de archivos (ver el módulo).
+try {
+    const estadoParche = require('./parche-whatsapp-web').aplicarParche();
+    console.log(`Parche de envío de archivos de WhatsApp: ${estadoParche}`);
+} catch (error) {
+    console.warn(`No se pudo aplicar el parche de archivos: ${error.message}`);
+}
+
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');

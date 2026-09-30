@@ -5,7 +5,8 @@
   "private": true,
   "main": "index.js",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "postinstall": "node parche-whatsapp-web.js"
   },
   "keywords": [],
   "author": "",
