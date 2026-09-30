@@ -351,7 +351,7 @@ def test_el_nombre_vale_solo_para_la_conversacion_reciente(horas, esperado):
     assert contexto.nombre_contacto == esperado
 
 
-def _mensaje_para_modelo(nombre):
+def _mensaje_para_modelo(nombre, media_url=None, historial=()):
     servicio = AgenteIAService(_DB())
 
     class _Resultado:
@@ -359,7 +359,7 @@ def _mensaje_para_modelo(nombre):
             return self
 
         def all(self):
-            return []
+            return list(historial)
 
     async def execute(_consulta):
         return _Resultado()
@@ -367,7 +367,7 @@ def _mensaje_para_modelo(nombre):
     servicio.db.execute = execute
     contexto = _contexto(cliente=CLIENTE, db=servicio.db)
     contexto.nombre_contacto = nombre
-    return asyncio.run(servicio._mensaje_usuario(contexto, "no tengo internet", None))
+    return asyncio.run(servicio._mensaje_usuario(contexto, "no tengo internet", media_url))
 
 
 def test_al_iniciar_la_conversacion_se_pide_el_nombre_aunque_sea_cliente():
@@ -378,6 +378,24 @@ def test_al_iniciar_la_conversacion_se_pide_el_nombre_aunque_sea_cliente():
 def test_con_nombre_ya_no_se_vuelve_a_preguntar():
     texto = _mensaje_para_modelo("Juana")
     assert "Hablas con Juana." in texto and "INICIO DE CONVERSACIÓN" not in texto
+
+
+def test_si_llega_un_comprobante_se_revisa_antes_de_preguntar_el_nombre():
+    texto = _mensaje_para_modelo(None, media_url="whatsapp-media://pago.jpg")
+    assert "primero usa leer_comprobante" in texto
+    assert "No esperes su nombre" in texto
+
+
+def test_el_historial_lleva_fecha_y_se_indica_la_hora_actual():
+    viejo = SimpleNamespace(fecha=datetime(2026, 9, 28, 20, 18), direccion="entrada", mensaje="sin internet")
+    texto = _mensaje_para_modelo("Juana", historial=[viejo])
+    assert "[28/09 20:18] CLIENTE: sin internet" in texto
+    assert "Ahora son las" in texto and "no retomes temas viejos" in texto
+
+
+@pytest.mark.parametrize("hora, saludo", [(9, "buenos días"), (13, "buenas tardes"), (21, "buenas noches")])
+def test_saluda_segun_la_hora(hora, saludo):
+    assert agente_mod.saludo_para(datetime(2026, 9, 30, hora, 0)) == saludo
 
 
 # ------------------------------------------- prospectos y avisos al personal

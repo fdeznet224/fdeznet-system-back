@@ -363,11 +363,26 @@ class AgenteIAService:
             )
         ).scalars().all()
         lineas = [
-            "{}: {}".format("CLIENTE" if m.direccion == "entrada" else "EMPRESA", (m.mensaje or "")[:500])
+            "[{}] {}: {}".format(
+                m.fecha.strftime("%d/%m %H:%M") if m.fecha else "",
+                "CLIENTE" if m.direccion == "entrada" else "EMPRESA",
+                (m.mensaje or "")[:500],
+            )
             for m in reversed(historial)
         ]
+        ahora = datetime.now()
+        hora = (
+            f"Ahora son las {ahora:%H:%M} del {ahora:%d/%m} ({saludo_para(ahora)}). Lo de días anteriores "
+            "es solo contexto: atiende lo que pide ahora y no retomes temas viejos como si fueran de hoy."
+        )
         if contexto.nombre_contacto:
             quien = f"Hablas con {contexto.nombre_contacto}."
+        elif media_url:
+            quien = (
+                "INICIO DE CONVERSACIÓN con una imagen: primero usa leer_comprobante y, si es un comprobante "
+                "y el cliente está identificado, aplicar_comprobante. Dile el resultado y al final pregúntale "
+                "con quién tienes el gusto. No esperes su nombre para revisar el comprobante."
+            )
         else:
             quien = (
                 "INICIO DE CONVERSACIÓN: todavía no sabes con quién hablas. Si en su último mensaje ya "
@@ -387,8 +402,8 @@ class AgenteIAService:
         if not contexto._telefono_de_contacto():
             identidad += "\nNo se conoce el teléfono de este chat: si vas a registrar un interesado, pídele un número de contacto."
         return (
-            "Conversación reciente:\n{}\n\n{}\n{}\n\nÚltimo mensaje del cliente:\n{}{}"
-        ).format("\n".join(lineas) or "(sin mensajes previos)", quien, identidad, texto or "", adjunto)
+            "Conversación reciente:\n{}\n\n{}\n{}\n{}\n\nÚltimo mensaje del cliente:\n{}{}"
+        ).format("\n".join(lineas) or "(sin mensajes previos)", hora, quien, identidad, texto or "", adjunto)
 
     async def _fallar(self, interaccion, error, contexto=None):
         interaccion.estado = "error"
@@ -400,6 +415,14 @@ class AgenteIAService:
             interaccion.costo_usd = contexto.costo
         await self.db.commit()
         return interaccion
+
+
+def saludo_para(momento: datetime) -> str:
+    if momento.hour < 12:
+        return "buenos días"
+    if momento.hour < 19:
+        return "buenas tardes"
+    return "buenas noches"
 
 
 class _Contexto:

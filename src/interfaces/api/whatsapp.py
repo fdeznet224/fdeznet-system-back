@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 # Importaciones de Servicios
 from src.application.services.ocr_service import OCRService
 from src.application.services.bank_email_service import (
+    COINCIDENCIAS_VALIDAS,
     BankEmailError,
     BankEmailService,
     normalize_reference,
@@ -1126,16 +1127,18 @@ async def aprobar_comprobante_revision(
         ).scalar_one_or_none()
     if transaction is None:
         transaction, _reason = await correo_service.find_match(db, comprobante)
-    if transaction is None or correo_service.transaction_match_reason(
+    # Misma regla que la conciliación automática: con referencia debe
+    # coincidir; sin ella, monto y hora cercana con un solo depósito.
+    if transaction is None or correo_service.motivo_coincidencia(
         config_correo,
         comprobante,
         transaction,
-    ) != "coincidencia_exacta":
+    ) not in COINCIDENCIAS_VALIDAS:
         raise HTTPException(
             status_code=409,
             detail=(
                 "No se puede aprobar: falta una transferencia bancaria "
-                "autenticada que coincida en folio, monto, fecha y hora"
+                "autenticada que coincida en folio (o en hora, si la captura no lo trae), monto y fecha"
             ),
         )
     if transaction.pago_id:

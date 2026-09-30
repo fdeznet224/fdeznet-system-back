@@ -84,3 +84,11 @@ def test_dos_depositos_iguales_en_la_ventana_van_a_revision_humana():
     uno = [_correo()]
     correo, motivo = asyncio.run(servicio._find_match_sin_referencia(_DB(uno), CONFIG, _revision(), Decimal("300.00")))
     assert correo is uno[0] and motivo == "coincidencia_sin_referencia"
+
+
+def test_la_bandeja_aprueba_a_mano_con_la_misma_regla_sin_referencia():
+    import inspect
+    from src.interfaces.api import whatsapp
+
+    fuente = inspect.getsource(whatsapp.aprobar_comprobante_revision)
+    assert "motivo_coincidencia(" in fuente and "COINCIDENCIAS_VALIDAS" in fuente
