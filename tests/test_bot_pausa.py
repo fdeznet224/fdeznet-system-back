@@ -32,9 +32,16 @@ def test_clave_telefono_iguala_formatos(valor):
     assert clave_telefono(valor) == "9611234567"
 
 
-@pytest.mark.parametrize("valor", ["123456789012345@lid", "12345", "", None])
+@pytest.mark.parametrize("valor", ["12345", "", None])
 def test_clave_telefono_descarta_identificadores_no_telefonicos(valor):
     assert clave_telefono(valor) is None
+
+
+def test_un_lid_usa_su_identificador_completo_y_no_choca_con_un_telefono():
+    # Un LID no es teléfono: sus últimos 10 dígitos podrían coincidir con
+    # el número de otro cliente, por eso se usa completo.
+    assert clave_telefono("123456789012345@lid") == "123456789012345"
+    assert clave_telefono("123456789012345@lid") != clave_telefono("5216789012345")
 
 
 def test_pausa_dura_dos_horas_y_se_reconoce_en_cualquier_formato():

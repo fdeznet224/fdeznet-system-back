@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import httpx
@@ -75,6 +76,7 @@ from src.application.services.bot_flow_service import (
     schedule_summary,
 )
 from src.application.services.support_service import SupportService
+from src.application.services.agente_ia_service import AgenteIAService
 from src.application.services.bot_pausa_service import (
     bot_en_pausa,
     clave_telefono,
@@ -101,6 +103,54 @@ NODE_HEADERS = {
 
 # Memoria temporal para el Bot (Estado por número de teléfono)
 bot_memory = {}
+
+# Agente de IA: los clientes suelen mandar varios mensajes seguidos; se espera
+# un momento y solo el último se atiende (los anteriores van como contexto).
+ESPERA_AGENTE_SEGUNDOS = 6
+_ultimo_mensaje_agente: dict[str, int] = {}
+_tareas_agente: set = set()
+
+
+def lanzar_agente(
+    telefono_raw: str,
+    telefono_busqueda: str,
+    mensaje_chat_id: int,
+    texto: str,
+    media_url: str | None,
+) -> None:
+    _ultimo_mensaje_agente[telefono_raw] = mensaje_chat_id
+
+    async def correr():
+        await asyncio.sleep(ESPERA_AGENTE_SEGUNDOS)
+        if _ultimo_mensaje_agente.get(telefono_raw) != mensaje_chat_id:
+            return  # llegó otro mensaje del mismo chat; ese lo atiende
+        async with SessionLocal() as db:
+            async def enviar(telefono: str, mensaje: str) -> bool:
+                return await WhatsAppService().enviar_mensaje(
+                    telefono=telefono, mensaje=mensaje, tipo_evento="agente_ia"
+                )
+
+            try:
+                interaccion = await AgenteIAService(db, enviar=enviar).atender(
+                    telefono_raw, telefono_busqueda, mensaje_chat_id, texto, media_url
+                )
+            except Exception:
+                logger.exception("El agente de IA no pudo atender %s", telefono_raw)
+                return
+            if interaccion:
+                await manager.broadcast({
+                    "type": "AGENTE_IA",
+                    "data": {
+                        "id": interaccion.id,
+                        "cliente_id": interaccion.cliente_id,
+                        "telefono": interaccion.telefono,
+                        "estado": interaccion.estado,
+                    },
+                })
+
+    tarea = asyncio.create_task(correr())
+    _tareas_agente.add(tarea)
+    tarea.add_done_callback(_tareas_agente.discard)
 
 
 def cerrar_sesion_bot(telefono: str | None) -> None:
@@ -1448,6 +1498,20 @@ async def webhook_recibir_mensaje(
             execute_until_wait(flujo_tecnico),
             staff_id=staff.id,
         )
+
+    # Con el agente de IA encendido, él atiende a los clientes en lugar del
+    # bot de menú (el flujo técnico del personal sigue arriba sin cambios).
+    if (bot_config.agente_modo or "apagado") != "apagado":
+        if "[AUDIO]" in mensaje_texto.upper():
+            return {"status": "audio_para_asesor"}
+        lanzar_agente(
+            telefono_raw,
+            telefono_busqueda,
+            nuevo_mensaje.id,
+            mensaje_texto.replace("[FOTO_COMPROBANTE]", "").strip(),
+            media_url,
+        )
+        return {"status": "agente_ia"}
 
     # Un solo bot: el flujo visual. Las palabras anteriores y "menu" también
     # lo abren para no confundir a quien ya las conoce.

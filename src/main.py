@@ -39,6 +39,7 @@ from src.version import SYSTEM_VERSION
 
 # Importar Routers
 from src.interfaces.api import (
+    agente_ia,
     auditoria,
     auth,
     bank_email,
@@ -309,6 +310,7 @@ app.include_router(zonas.router, dependencies=licensed)
 app.include_router(configuracion.router, dependencies=admin_only)
 app.include_router(control_plane.router, dependencies=admin_only)
 app.include_router(whatsapp.router, dependencies=licensed)
+app.include_router(agente_ia.router, dependencies=licensed)
 app.include_router(naps.router, dependencies=licensed)
 app.include_router(vpn.router, dependencies=licensed_admin)
 app.include_router(olts.router, dependencies=licensed)
