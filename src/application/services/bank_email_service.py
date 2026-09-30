@@ -687,6 +687,106 @@ class BankEmailService:
             if self.motivo_coincidencia(config, revision, t) == "coincidencia_sin_referencia"
         ]
 
+    @staticmethod
+    def ventana_deposito_elegido(
+        config: ConfiguracionCorreoBancoModel,
+        revision: ComprobantePagoRevisionModel,
+    ) -> tuple[datetime, datetime]:
+        """Días en que puede estar el depósito que elige una persona."""
+        base = revision.fecha_recepcion or datetime.now()
+        return base - timedelta(days=max(1, config.ventana_dias or 1)), base + timedelta(days=1)
+
+    @staticmethod
+    def motivo_deposito_elegido(
+        config: ConfiguracionCorreoBancoModel,
+        revision: ComprobantePagoRevisionModel,
+        transaction: TransaccionCorreoBancoModel,
+    ) -> str:
+        """Validación del depósito que una persona elige en la bandeja.
+
+        La persona decide cuál es por concepto y cuenta, pero el depósito debe
+        ser un abono auténtico a una cuenta permitida, estar libre (o apartado
+        para este comprobante), cuadrar en monto y en días y, si la captura
+        trae folio, tener ese mismo folio.
+        """
+        motivo = BankEmailService.transaction_match_reason(
+            config, revision, transaction, exigir_referencia=False
+        )
+        if motivo != "coincidencia_exacta":
+            return motivo
+        if transaction.pago_id:
+            return "correo_bancario_ya_utilizado"
+        folio = normalize_reference_for_match(revision.folio_detectado)
+        if folio and folio != normalize_reference_for_match(transaction.referencia):
+            return "referencia_bancaria_no_coincide"
+        inicio, fin = BankEmailService.ventana_deposito_elegido(config, revision)
+        if not transaction.fecha_correo or not inicio <= transaction.fecha_correo <= fin:
+            return "fecha_bancaria_fuera_de_ventana"
+        return "deposito_elegido"
+
+    async def depositos_posibles(
+        self,
+        db: AsyncSession,
+        revision: ComprobantePagoRevisionModel,
+    ) -> list[dict]:
+        """Depósitos que la persona puede elegir para un comprobante."""
+        config = await self.get_config(db)
+        inicio, fin = self.ventana_deposito_elegido(config, revision)
+        filtros = [
+            TransaccionCorreoBancoModel.autenticado.is_(True),
+            TransaccionCorreoBancoModel.tipo_movimiento == "entrante",
+            TransaccionCorreoBancoModel.fecha_correo >= inicio,
+            TransaccionCorreoBancoModel.fecha_correo <= fin,
+            or_(
+                TransaccionCorreoBancoModel.estado == "disponible",
+                TransaccionCorreoBancoModel.id == (revision.transaccion_correo_id or 0),
+            ),
+        ]
+        if revision.monto_detectado:
+            tolerancia = Decimal(config.tolerancia_monto or 0)
+            monto = Decimal(revision.monto_detectado)
+            filtros += [
+                TransaccionCorreoBancoModel.monto >= monto - tolerancia,
+                TransaccionCorreoBancoModel.monto <= monto + tolerancia,
+            ]
+        depositos = (
+            await db.execute(
+                select(TransaccionCorreoBancoModel)
+                .where(*filtros)
+                .order_by(TransaccionCorreoBancoModel.fecha_correo.desc())
+                .limit(30)
+            )
+        ).scalars().all()
+        hora_inicio, hora_fin = self.ventana_sin_referencia(revision)
+        folio = normalize_reference_for_match(revision.folio_detectado)
+        resultado = []
+        for deposito in depositos:
+            if self.motivo_deposito_elegido(config, revision, deposito) != "deposito_elegido":
+                continue
+            local = (
+                deposito.fecha_correo.replace(tzinfo=timezone.utc).astimezone(ZONA_LOCAL).replace(tzinfo=None)
+                if deposito.fecha_correo
+                else None
+            )
+            resultado.append({
+                "id": deposito.id,
+                "monto": float(deposito.monto or 0),
+                "referencia": deposito.referencia,
+                "concepto": (deposito.concepto or "").split(" Comisión")[0].strip()[:160],
+                "cuenta_destino": deposito.cuenta_destino_terminacion,
+                "fecha": local.isoformat() if local else None,
+                "coincide_hora": bool(
+                    deposito.fecha_correo and hora_inicio <= deposito.fecha_correo <= hora_fin
+                ),
+                "coincide_referencia": bool(
+                    folio and folio == normalize_reference_for_match(deposito.referencia)
+                ),
+                "ligado": deposito.id == revision.transaccion_correo_id,
+            })
+        # Primero los que cuadran por referencia u hora.
+        resultado.sort(key=lambda d: (not d["coincide_referencia"], not d["coincide_hora"]))
+        return resultado
+
     async def reconcile_revision(
         self,
         db: AsyncSession,

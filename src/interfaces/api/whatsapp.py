@@ -689,6 +689,21 @@ class AprobarComprobanteRequest(BaseModel):
     )
     referencia: Optional[str] = Field(default=None, max_length=100)
     notas: Optional[str] = Field(default=None, max_length=1000)
+    # Depósito que la persona elige en la bandeja cuando hay varios posibles.
+    transaccion_correo_id: Optional[int] = Field(default=None, gt=0)
+
+
+MOTIVOS_DEPOSITO_RECHAZADO = {
+    "correo_bancario_no_configurado": "La validación por correo bancario está desactivada",
+    "correo_bancario_no_autenticado": "El correo de ese depósito no está autenticado",
+    "correo_bancario_ya_utilizado": "Ese depósito ya se usó o está apartado para otro comprobante",
+    "movimiento_bancario_no_es_abono": "Ese movimiento no es un abono",
+    "cuenta_destino_no_configurada": "No hay cuentas receptoras configuradas",
+    "cuenta_destino_no_autorizada": "Ese depósito llegó a una cuenta no autorizada",
+    "monto_bancario_no_coincide": "El monto del depósito no coincide con el comprobante",
+    "referencia_bancaria_no_coincide": "La captura trae un folio distinto al del depósito",
+    "fecha_bancaria_fuera_de_ventana": "El depósito está fuera de los días de búsqueda",
+}
 
 
 class RechazarComprobanteRequest(BaseModel):
@@ -1092,6 +1107,23 @@ async def ver_archivo_chat(
     return FileResponse(archivo)
 
 
+@router.get("/comprobantes-revision/{comprobante_id}/depositos")
+async def depositos_posibles_comprobante(
+    comprobante_id: int,
+    monto: Optional[Decimal] = Query(default=None, gt=0),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    comprobante = await db.get(ComprobantePagoRevisionModel, comprobante_id)
+    if not comprobante:
+        raise HTTPException(status_code=404, detail="Comprobante no encontrado")
+    if not comprobante.monto_detectado and monto:
+        # Monto que escribió la persona: solo para buscar, no se guarda.
+        db.expunge(comprobante)
+        comprobante.monto_detectado = monto
+    return {"depositos": await BankEmailService().depositos_posibles(db, comprobante)}
+
+
 @router.post("/comprobantes-revision/{comprobante_id}/aprobar")
 async def aprobar_comprobante_revision(
     comprobante_id: int,
@@ -1114,7 +1146,25 @@ async def aprobar_comprobante_revision(
     correo_service = BankEmailService()
     config_correo = await correo_service.get_config(db)
     transaction = None
-    if comprobante.transaccion_correo_id:
+    if datos.transaccion_correo_id:
+        transaction = (
+            await db.execute(
+                select(TransaccionCorreoBancoModel)
+                .where(TransaccionCorreoBancoModel.id == datos.transaccion_correo_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if transaction is None:
+            raise HTTPException(status_code=404, detail="Depósito no encontrado")
+        if not comprobante.monto_detectado and datos.monto:
+            comprobante.monto_detectado = datos.monto
+        motivo = correo_service.motivo_deposito_elegido(config_correo, comprobante, transaction)
+        if motivo != "deposito_elegido":
+            raise HTTPException(
+                status_code=409,
+                detail=MOTIVOS_DEPOSITO_RECHAZADO.get(motivo, "Ese depósito no se puede usar"),
+            )
+    elif comprobante.transaccion_correo_id:
         transaction = (
             await db.execute(
                 select(TransaccionCorreoBancoModel)
@@ -1128,17 +1178,22 @@ async def aprobar_comprobante_revision(
     if transaction is None:
         transaction, _reason = await correo_service.find_match(db, comprobante)
     # Misma regla que la conciliación automática: con referencia debe
-    # coincidir; sin ella, monto y hora cercana con un solo depósito.
-    if transaction is None or correo_service.motivo_coincidencia(
-        config_correo,
-        comprobante,
-        transaction,
-    ) not in COINCIDENCIAS_VALIDAS:
+    # coincidir; sin ella, monto y hora cercana con un solo depósito. Si la
+    # persona eligió el depósito, ya se validó arriba.
+    if transaction is None or (
+        not datos.transaccion_correo_id
+        and correo_service.motivo_coincidencia(
+            config_correo,
+            comprobante,
+            transaction,
+        ) not in COINCIDENCIAS_VALIDAS
+    ):
         raise HTTPException(
             status_code=409,
             detail=(
                 "No se puede aprobar: falta una transferencia bancaria "
-                "autenticada que coincida en folio (o en hora, si la captura no lo trae), monto y fecha"
+                "autenticada que coincida en folio (o en hora, si la captura no lo trae), monto y fecha. "
+                "Si hay varios depósitos posibles, elige uno de la lista"
             ),
         )
     if transaction.pago_id:

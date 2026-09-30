@@ -92,3 +92,59 @@ def test_la_bandeja_aprueba_a_mano_con_la_misma_regla_sin_referencia():
 
     fuente = inspect.getsource(whatsapp.aprobar_comprobante_revision)
     assert "motivo_coincidencia(" in fuente and "COINCIDENCIAS_VALIDAS" in fuente
+
+
+# --------------------------------------------- depósito elegido en la bandeja
+def _elegido(revision=None, correo=None, **config):
+    cfg = SimpleNamespace(**{**vars(CONFIG), **config})
+    revision = revision or _revision(transaccion_correo_id=None)
+    return BankEmailService.motivo_deposito_elegido(cfg, revision, correo or _correo(id=90, pago_id=None))
+
+
+def test_la_persona_puede_elegir_un_deposito_valido_aunque_haya_varios():
+    assert _elegido() == "deposito_elegido"
+
+
+def test_el_deposito_elegido_debe_ser_autentico_libre_y_del_mismo_monto():
+    assert _elegido(correo=_correo(id=90, pago_id=None, autenticado=False)) == "correo_bancario_no_autenticado"
+    assert _elegido(correo=_correo(id=90, pago_id=None, monto=Decimal("350.00"))) == "monto_bancario_no_coincide"
+    assert _elegido(correo=_correo(id=90, pago_id=None, cuenta_destino_terminacion="1111")) == "cuenta_destino_no_autorizada"
+    assert _elegido(correo=_correo(id=90, pago_id=None, estado="conciliada")) == "correo_bancario_ya_utilizado"
+
+
+def test_no_se_puede_elegir_el_deposito_apartado_para_otro_comprobante():
+    apartado = _correo(id=89, pago_id=None, estado="reservada")
+    assert _elegido(correo=apartado) == "correo_bancario_ya_utilizado"
+    propio = _revision(transaccion_correo_id=89)
+    assert _elegido(revision=propio, correo=apartado) == "deposito_elegido"
+
+
+def test_si_la_captura_trae_folio_el_deposito_elegido_debe_tenerlo():
+    con_folio = _revision(transaccion_correo_id=None, folio_detectado="OTRO999")
+    assert _elegido(revision=con_folio) == "referencia_bancaria_no_coincide"
+
+
+def test_el_deposito_elegido_debe_estar_en_los_dias_de_busqueda():
+    viejo = _correo(id=90, pago_id=None, fecha_correo=datetime(2026, 9, 20, 10, 0))
+    assert _elegido(correo=viejo) == "fecha_bancaria_fuera_de_ventana"
+
+
+def test_la_lista_marca_cual_cuadra_por_hora_y_limpia_el_concepto(monkeypatch):
+    servicio = BankEmailService()
+    monkeypatch.setattr(servicio, "get_config", lambda _db: asyncio.sleep(0, CONFIG))
+    mauricio = _correo(
+        id=89, pago_id=None, fecha_correo=datetime(2026, 9, 30, 14, 54, 59), referencia="M01576668",
+        concepto="fdeznet2E3A Folio: M01576668 Comisión (incluye IVA) $0 Contáctanos",
+    )
+    margarita = _correo(
+        id=90, pago_id=None, cuenta_destino_terminacion="6342", fecha_correo=datetime(2026, 9, 30, 14, 58, 19),
+        referencia="38432P0420", concepto="margarita moreno lopez De la cuenta: BANORTE ***6634",
+    )
+    lejano = _correo(id=70, pago_id=None, fecha_correo=datetime(2026, 9, 29, 23, 40, 36), concepto="Envio")
+    depositos = asyncio.run(servicio.depositos_posibles(
+        _DB([lejano, mauricio, margarita]), _revision(transaccion_correo_id=None)
+    ))
+    assert [d["id"] for d in depositos] == [89, 90, 70]
+    assert depositos[0]["concepto"] == "fdeznet2E3A Folio: M01576668"
+    assert depositos[1]["fecha"] == "2026-09-30T08:58:19"
+    assert [d["coincide_hora"] for d in depositos] == [True, True, False]
