@@ -108,6 +108,42 @@ class BillingCalendarService:
         siguiente_mes = cls.primer_dia_mes_siguiente(fecha)
         return cls.fecha_inicio_ciclo_mes(siguiente_mes.year, siguiente_mes.month, dia_ciclo)
 
+    @staticmethod
+    def valor_ciclo(ciclo: Any) -> str:
+        return getattr(ciclo, "value", ciclo) or "calendario"
+
+    @classmethod
+    def resolver_ciclo(cls, solicitado: Any, plantilla: Any) -> str:
+        """El ciclo elegido para el servicio manda; si no, el de la plantilla.
+
+        calendario = día fijo de pago de la plantilla.
+        aniversario = cada cliente paga el día en que se activó su servicio.
+        """
+        if solicitado:
+            return cls.valor_ciclo(solicitado)
+        return cls.valor_ciclo(getattr(plantilla, "ciclo_facturacion", None))
+
+    @classmethod
+    def dia_ciclo_servicio(cls, servicio: Any, plantilla: Any) -> int:
+        """Día del mes en que inicia el ciclo de cobro de un servicio."""
+        dia_servicio = getattr(servicio, "dia_vencimiento", None)
+        ciclo = getattr(servicio, "ciclo_facturacion", None)
+        if cls.valor_ciclo(ciclo) == "aniversario":
+            fecha_base = (
+                getattr(servicio, "fecha_activacion", None)
+                or getattr(servicio, "fecha_inicio_cobro", None)
+            )
+            return (
+                dia_servicio
+                or (fecha_base.day if fecha_base else None)
+                or 1
+            )
+        return (
+            getattr(plantilla, "dia_pago", None)
+            or dia_servicio
+            or 1
+        )
+
     @classmethod
     def calcular_fechas_servicio(
         cls,

@@ -243,6 +243,13 @@ class PlantillaFacturacionModel(Base):
     impuesto = Column(Numeric(5, 2), default=0, server_default=text("0.00"))
     recordatorio_whatsapp = Column(Boolean, default=True)
     aviso_factura = Column(String(50), default='whatsapp') 
+    # calendario = día fijo de pago; aniversario = día de instalación.
+    ciclo_facturacion = Column(
+        Enum(CicloFacturacion, native_enum=False, length=20),
+        nullable=False,
+        default=CicloFacturacion.calendario,
+        server_default=CicloFacturacion.calendario.value,
+    )
     
     clientes = relationship("ClienteModel", back_populates="plantilla")
 

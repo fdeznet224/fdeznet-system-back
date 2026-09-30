@@ -82,6 +82,14 @@ def construir_detalle_facturacion(
     return filas
 
 
+def color_seguro(valor, respaldo):
+    """Usa el color de la marca o, si está vacío o mal escrito, el de respaldo."""
+    try:
+        return colors.HexColor(str(valor).strip()) if valor else colors.HexColor(respaldo)
+    except (ValueError, TypeError):
+        return colors.HexColor(respaldo)
+
+
 async def generar_recibo_pdf(
     nombre_cliente,
     monto,
@@ -120,8 +128,8 @@ async def generar_recibo_pdf(
     ruta_completa = os.path.join(ruta_carpeta, nombre_archivo)
 
     # 2. Definición de Colores Minimalistas (Azules y Grises Suaves)
-    COLOR_PRIMARIO = colors.HexColor(color_primario)
-    COLOR_ACENTO = colors.HexColor(color_secundario)
+    COLOR_PRIMARIO = color_seguro(color_primario, "#1e3a8a")
+    COLOR_ACENTO = color_seguro(color_secundario, "#2563eb")
     COLOR_TEXTO = colors.HexColor("#334155")     # Gris Oscuro (Slate 700) - Textos legibles
     COLOR_LINEAS = colors.HexColor("#e2e8f0")    # Gris Muy Claro (Slate 200) - Divisiones sutiles
 

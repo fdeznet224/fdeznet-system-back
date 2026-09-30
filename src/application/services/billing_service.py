@@ -15,7 +15,6 @@ from src.infrastructure.models import (
     ServicioAdicionalModel,
     ServicioModel,
     SuspensionFacturacionModel,
-    ConfiguracionSistema,
     LogCronjobModel,
 )
 
@@ -24,7 +23,6 @@ from src.infrastructure.mikrotik_service import MikroTikService
 from src.utils.mikrotik import formatear_rate_limit_dhcp, normalizar_mac
 # 👇 IMPORTAMOS EL NUEVO SERVICIO UNIFICADO 👇
 from src.application.services.notification_service import NotificationService
-from src.application.helpers.pdf_generator import generar_recibo_pdf
 
 from src.infrastructure.models import (
     ServicioModel,
@@ -81,7 +79,7 @@ class BillingService:
             return None
         periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
             servicio.proxima_facturacion,
-            plantilla.dia_pago or servicio.dia_vencimiento or 1,
+            BillingCalendarService.dia_ciclo_servicio(servicio, plantilla),
             plan.precio,
             plantilla.impuesto or 0,
         )
@@ -338,7 +336,31 @@ class BillingService:
     # ==========================================
     # 1. GENERACIÓN MASIVA INTELIGENTE
     # ==========================================
-    async def generar_emision_masiva(self, dia_objetivo: int = None):
+    async def emitir_primera_factura_por_instalacion(
+        self,
+        servicio: ServicioModel,
+    ) -> None:
+        """Emite al activar la factura que vence el día de instalación.
+
+        Se llama después de guardar la activación: si falla, la activación
+        queda firme y la emisión automática la genera en su siguiente corrida.
+        """
+        if servicio.ciclo_facturacion != CicloFacturacion.aniversario:
+            return
+        try:
+            await self.generar_emision_masiva(servicio_id=servicio.id)
+        except Exception:
+            await self.db.rollback()
+            logger.exception(
+                "No se pudo emitir la primera factura del servicio %s",
+                servicio.id,
+            )
+
+    async def generar_emision_masiva(
+        self,
+        dia_objetivo: int = None,
+        servicio_id: int | None = None,
+    ):
         hoy = date.today()
         notificador = NotificationService(self.db)
 
@@ -368,6 +390,8 @@ class BillingService:
                 ),
             )
         )
+        if servicio_id is not None:
+            stmt = stmt.where(ServicioModel.id == servicio_id)
 
         result = await self.db.execute(stmt)
         servicios = result.scalars().all()
@@ -399,10 +423,12 @@ class BillingService:
             if plan is None:
                 reporte["omitidos_sin_servicio"] += 1
                 continue
-            if dia_objetivo and plantilla.dia_pago != dia_objetivo:
-                continue
-            if servicio.ciclo_facturacion == CicloFacturacion.aniversario:
-                reporte["omitidos_modalidad_pendiente"] += 1
+            # Día fijo: el de la plantilla. Día de instalación: el del
+            # propio servicio. Ambos modos conviven en la misma emisión.
+            dia_ciclo = BillingCalendarService.dia_ciclo_servicio(
+                servicio, plantilla
+            )
+            if dia_objetivo and dia_ciclo != dia_objetivo:
                 continue
             if servicio.proxima_facturacion is None:
                 reporte["omitidos_sin_proxima_facturacion"] += 1
@@ -423,9 +449,6 @@ class BillingService:
                 reporte["omitidos_modalidad_pendiente"] += 1
                 continue
 
-            # La plantilla es la configuración vigente del ciclo. El campo
-            # del servicio sólo queda como dato histórico/compatibilidad.
-            dia_ciclo = plantilla.dia_pago or servicio.dia_vencimiento or 1
             periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
                 periodo_desde=servicio.proxima_facturacion,
                 dia_ciclo=dia_ciclo,
@@ -741,8 +764,15 @@ class BillingService:
             if not cliente.telefono or cliente.estado != 'activo':
                 continue
 
-            # Calculamos cuántos días faltan para la fecha de pago
-            dias_restantes = (factura.fecha_vencimiento - hoy).days
+            # En postpago la factura se emite el mismo día que vence, así
+            # que el aviso previo se calcula contra la fecha de corte.
+            fecha_referencia = factura.fecha_vencimiento
+            if (
+                factura.tipo_facturacion_snapshot == "postpago"
+                and factura.fecha_limite_corte
+            ):
+                fecha_referencia = factura.fecha_limite_corte
+            dias_restantes = (fecha_referencia - hoy).days
             
             # Se ejecuta dinámicamente según los días del parámetro (ej: 1 día antes)
             if dias_restantes == dias_aviso_urgente:
@@ -1439,6 +1469,55 @@ class BillingService:
             "reactivado": reactivado,
         }
 
+    @staticmethod
+    def _proximo_vencimiento(factura) -> date | None:
+        """Fecha del siguiente pago que se imprime en el recibo."""
+        if not factura.fecha_vencimiento:
+            return None
+        if factura.tipo_factura == "prorrateo":
+            # El prorrateo vence al iniciar el ciclo; ese mismo día toca la
+            # primera mensualidad completa.
+            return factura.fecha_vencimiento
+        if factura.tipo_factura == "mensual":
+            return factura.fecha_vencimiento + relativedelta(months=1)
+        return None
+
+    @staticmethod
+    def _texto_recibo(
+        folio,
+        fecha_pago,
+        metodo_pago,
+        monto,
+        conceptos,
+        periodo_desde=None,
+        periodo_hasta=None,
+        proximo_vencimiento=None,
+        saldo_pendiente=None,
+    ) -> str:
+        """Recibo escrito en el WhatsApp (sustituye al PDF adjunto)."""
+        lineas = [f"🧾 *Recibo de pago* #{str(folio).zfill(8)}"]
+        if fecha_pago:
+            lineas.append(f"📅 Fecha: {fecha_pago.strftime('%d/%m/%Y %H:%M')}")
+        if metodo_pago:
+            lineas.append(f"💳 Método: {str(metodo_pago).replace('_', ' ').capitalize()}")
+        lineas.append(f"💵 Monto pagado: *${Decimal(monto or 0):.2f}*")
+        if conceptos:
+            lineas.append("*Conceptos pagados:*")
+            lineas.extend(
+                f"• {concepto}: ${Decimal(importe or 0):.2f}"
+                for concepto, importe in conceptos
+            )
+        if periodo_desde and periodo_hasta:
+            lineas.append(
+                f"📆 Periodo: {periodo_desde.strftime('%d/%m/%Y')} al "
+                f"{periodo_hasta.strftime('%d/%m/%Y')}"
+            )
+        if saldo_pendiente and Decimal(saldo_pendiente) > 0:
+            lineas.append(f"⚠️ Saldo pendiente: ${Decimal(saldo_pendiente):.2f}")
+        if proximo_vencimiento:
+            lineas.append(f"⏭️ Próximo pago: {proximo_vencimiento.strftime('%d/%m/%Y')}")
+        return "\n".join(lineas)
+
     async def _notificar_cobro_total(
         self,
         cliente,
@@ -1468,7 +1547,13 @@ class BillingService:
                 )
             ).scalars().all()
             ultima = await self.db.get(FacturaModel, pagos[-1].factura_id)
-            if saldo_restante > 0:
+            # Es abono sólo si el dinero no alcanzó para liquidar alguna de
+            # las facturas que se cobraron. Pagar completo un prorrateo es un
+            # pago confirmado aunque exista otra factura aún por vencer.
+            quedo_a_medias = any(
+                Decimal(pago.saldo_posterior or 0) > 0 for pago in pagos
+            )
+            if quedo_a_medias:
                 await notificador.notificar(
                     tipo_evento="abono_recibido",
                     cliente_id=cliente.id,
@@ -1497,35 +1582,16 @@ class BillingService:
                     .group_by(FacturaConceptoModel.concepto)
                 )
             ).all()
-            marca = await self.db.get(ConfiguracionSistema, 1)
-            ruta_pdf = await generar_recibo_pdf(
-                nombre_cliente=cliente.nombre,
-                monto=recibido,
-                concepto="Pago de servicios",
-                descripcion=ultima.descripcion or ultima.detalles or "Pago de servicio",
-                fecha_pago=pagos[-1].fecha_pago,
+            recibo = self._texto_recibo(
                 folio=ultima.id,
-                nueva_fecha_vencimiento=(
-                    ultima.fecha_vencimiento + relativedelta(months=1)
-                    if ultima.tipo_factura in {"mensual", "prorrateo"}
-                    else None
-                ),
-                telefono_cliente=cliente.telefono,
+                fecha_pago=pagos[-1].fecha_pago,
                 metodo_pago=pagos[-1].metodo_pago,
+                monto=recibido,
+                conceptos=conceptos_pagados,
                 periodo_desde=ultima.periodo_desde,
                 periodo_hasta=ultima.periodo_hasta,
-                total_factura=recibido,
-                conceptos_pagados=[
-                    {"concepto": concepto, "monto": monto}
-                    for concepto, monto in conceptos_pagados
-                ],
-                empresa_nombre=marca.empresa_nombre if marca else "FdezNet",
-                color_primario=marca.color_primario if marca else "#1e3a8a",
-                color_secundario=marca.color_secundario if marca else "#2563eb",
-                pie_recibo=marca.pie_recibo if marca else None,
-                empresa_telefono=marca.empresa_telefono if marca else None,
-                empresa_email=marca.empresa_email if marca else None,
-                empresa_direccion=marca.empresa_direccion if marca else None,
+                proximo_vencimiento=self._proximo_vencimiento(ultima),
+                saldo_pendiente=saldo_restante,
             )
             await notificador.notificar(
                 tipo_evento="pago_recibido",
@@ -1533,9 +1599,14 @@ class BillingService:
                 variables_extra={
                     **self._variables_detalle_factura(ultima),
                     "monto_pagado": f"${recibido:.2f}",
-                    "referencia": referencia or "N/A",
+                    "referencia": (
+                        f"{referencia or 'Pago aplicado'}. "
+                        f"Saldo pendiente: ${saldo_restante:.2f}"
+                        if saldo_restante > 0
+                        else referencia or "N/A"
+                    ),
+                    "recibo": recibo,
                 },
-                ruta_pdf=ruta_pdf,
                 clave_dedupe=f"{clave}:recibo",
             )
         except Exception:
@@ -1666,11 +1737,7 @@ class BillingService:
                 
                 if pago_completado:
                     # Si liquidó, se le manda su PDF
-                    prox_venc = (
-                        factura.fecha_vencimiento + relativedelta(months=1)
-                        if factura.tipo_factura in {"mensual", "prorrateo"}
-                        else None
-                    )
+                    prox_venc = self._proximo_vencimiento(factura)
                     concepto_recibo = (
                         factura.concepto
                         or f"Mensualidad de internet - {factura.plan_snapshot}"
@@ -1694,36 +1761,15 @@ class BillingService:
                             .where(PagoConceptoModel.pago_id == nuevo_pago.id)
                         )
                     ).all()
-                    marca = await self.db.get(ConfiguracionSistema, 1)
-                    ruta_pdf = await generar_recibo_pdf(
-                        nombre_cliente=cliente.nombre,
-                        monto=nuevo_pago.monto_total,
-                        concepto=concepto_recibo,
-                        descripcion=descripcion_recibo,
-                        fecha_pago=nuevo_pago.fecha_pago,
+                    recibo = self._texto_recibo(
                         folio=factura.id,
-                        nueva_fecha_vencimiento=prox_venc,
-                        telefono_cliente=cliente.telefono,
+                        fecha_pago=nuevo_pago.fecha_pago,
                         metodo_pago=nuevo_pago.metodo_pago,
+                        monto=nuevo_pago.monto_total,
+                        conceptos=conceptos_pagados,
                         periodo_desde=factura.periodo_desde,
                         periodo_hasta=factura.periodo_hasta,
-                        dias_con_servicio=factura.dias_con_servicio,
-                        dias_sin_servicio=factura.dias_sin_servicio,
-                        monto_servicio_original=factura.monto_servicio_original,
-                        ajuste_suspension=factura.ajuste_suspension,
-                        cargos_adicionales=factura.cargos_adicionales_total,
-                        total_factura=factura.total,
-                        conceptos_pagados=[
-                            {"concepto": fila.concepto, "monto": fila.monto_aplicado}
-                            for fila in conceptos_pagados
-                        ],
-                        empresa_nombre=marca.empresa_nombre if marca else "FdezNet",
-                        color_primario=marca.color_primario if marca else "#1e3a8a",
-                        color_secundario=marca.color_secundario if marca else "#2563eb",
-                        pie_recibo=marca.pie_recibo if marca else None,
-                        empresa_telefono=marca.empresa_telefono if marca else None,
-                        empresa_email=marca.empresa_email if marca else None,
-                        empresa_direccion=marca.empresa_direccion if marca else None,
+                        proximo_vencimiento=prox_venc,
                     )
                     notificacion_pago_encolada = await notificador.notificar(
                         tipo_evento="pago_recibido", 
@@ -1732,8 +1778,8 @@ class BillingService:
                             **self._variables_detalle_factura(factura),
                             "monto_pagado": f"${nuevo_pago.monto_total:.2f}",
                             "referencia": referencia or "N/A",
+                            "recibo": recibo,
                         },
-                        ruta_pdf=ruta_pdf,
                         clave_dedupe=f"pago:{nuevo_pago.id}:recibo",
                     )
                 else:
