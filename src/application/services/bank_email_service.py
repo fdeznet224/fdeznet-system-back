@@ -658,6 +658,14 @@ class BankEmailService:
 
     async def _find_match_sin_referencia(self, db, config, revision, amount):
         """Solo si hay UN depósito con el mismo monto en la ventana de hora."""
+        candidatos = await self._candidatos_sin_referencia(db, config, revision, amount)
+        if len(candidatos) == 1:
+            return candidatos[0], "coincidencia_sin_referencia"
+        if len(candidatos) > 1:
+            return None, "multiples_correos_coincidentes"
+        return None, "correo_bancario_no_encontrado"
+
+    async def _candidatos_sin_referencia(self, db, config, revision, amount):
         tolerance = Decimal(config.tolerancia_monto or 0)
         inicio, fin = self.ventana_sin_referencia(revision)
         posibles = (
@@ -674,15 +682,10 @@ class BankEmailService:
                 .with_for_update()
             )
         ).scalars().all()
-        candidatos = [
+        return [
             t for t in posibles
             if self.motivo_coincidencia(config, revision, t) == "coincidencia_sin_referencia"
         ]
-        if len(candidatos) == 1:
-            return candidatos[0], "coincidencia_sin_referencia"
-        if len(candidatos) > 1:
-            return None, "multiples_correos_coincidentes"
-        return None, "correo_bancario_no_encontrado"
 
     async def reconcile_revision(
         self,
@@ -703,6 +706,24 @@ class BankEmailService:
             reason = self.motivo_coincidencia(config, revision, transaction)
             if reason not in COINCIDENCIAS_VALIDAS:
                 transaction = None
+            elif reason == "coincidencia_sin_referencia":
+                # Sin referencia, solo el monto y la hora identifican el
+                # depósito: aunque ya esté ligado, si otro depósito libre
+                # también cuadra no se cobra; lo decide una persona.
+                otros = [
+                    t for t in await self._candidatos_sin_referencia(
+                        db, config, revision, Decimal(revision.monto_detectado or 0)
+                    )
+                    if t.id != transaction.id
+                ]
+                if otros:
+                    if transaction.estado == "reservada":
+                        transaction.estado = "disponible"
+                    revision.transaccion_correo_id = None
+                    revision.notas_revision = "Depósitos posibles: " + ", ".join(
+                        f"#{t.id}" for t in [transaction, *otros]
+                    )
+                    transaction, reason = None, "multiples_correos_coincidentes"
         else:
             transaction, reason = await self.find_match(db, revision)
         revision.motivo_revision = reason

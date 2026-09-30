@@ -25,9 +25,9 @@ def _factura(**cambios):
     return SimpleNamespace(**datos)
 
 
-def _escenario():
+def _escenario(estado_deposito="disponible"):
     correo = SimpleNamespace(
-        id=89, autenticado=True, estado="disponible", tipo_movimiento="entrante",
+        id=89, autenticado=True, estado=estado_deposito, tipo_movimiento="entrante",
         cuenta_destino_terminacion="5265", monto=Decimal("300.00"),
         fecha_correo=datetime(2026, 9, 30, 14, 54, 59), referencia="M01576668",
     )
@@ -52,8 +52,8 @@ class _DB:
         return None
 
 
-def _conciliar(monkeypatch, ahora, factura=None):
-    correo, revision = _escenario()
+def _conciliar(monkeypatch, ahora, factura=None, otros_depositos=(), estado_deposito="disponible"):
+    correo, revision = _escenario(estado_deposito)
     db = _DB({
         ("TransaccionCorreoBancoModel", 89): correo,
         ("FacturaModel", 1134): factura or _factura(),
@@ -67,6 +67,10 @@ def _conciliar(monkeypatch, ahora, factura=None):
     monkeypatch.setattr(banco_mod, "datetime", _Reloj)
     servicio = BankEmailService()
     monkeypatch.setattr(servicio, "get_config", lambda _db: asyncio.sleep(0, CONFIG))
+    monkeypatch.setattr(
+        servicio, "_candidatos_sin_referencia",
+        lambda *_a: asyncio.sleep(0, [correo, *otros_depositos]),
+    )
     llego_a_cobrar = []
 
     async def _operador(*_a, **_k):
@@ -137,3 +141,17 @@ def test_quien_ya_pago_por_adelantado_no_recibe_recordatorio():
 
     fuente = inspect.getsource(BillingService.enviar_recordatorios_automaticos)
     assert '"pago_adelantado"' in fuente and "~exists()" in fuente
+
+
+def test_si_otro_deposito_tambien_cuadra_no_se_cobra_el_ligado(monkeypatch):
+    # Caso Mauricio/Margarita: dos depósitos de $300 con minutos de diferencia.
+    otro = SimpleNamespace(id=90)
+    resultado, correo, revision, cobro = _conciliar(
+        monkeypatch, datetime(2026, 10, 1, 8, 0), otros_depositos=[otro], estado_deposito="reservada"
+    )
+    assert resultado == {"status": "multiples_correos_coincidentes", "approved": False}
+    assert not cobro
+    assert revision.transaccion_correo_id is None
+    assert revision.notas_revision == "Depósitos posibles: #89, #90"
+    assert correo.estado == "disponible"
+
