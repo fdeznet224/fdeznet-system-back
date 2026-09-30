@@ -5,9 +5,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
-import src.application.services.billing_service as billing_module
 from src.application.services.billing_service import BillingService
-from src.application.services.notification_service import NotificationService
+from src.application.services.notification_service import NotificationService, quitar_aviso_de_pdf
 
 
 class _CobroDB:
@@ -56,20 +55,14 @@ def _pago(saldo_posterior):
     )
 
 
-def _cobrar(monkeypatch, pagos, saldo_restante, recibo=None):
+def _cobrar(monkeypatch, pagos, saldo_restante):
     enviados = []
 
     async def notificar(self, tipo_evento, cliente_id, **kwargs):
         enviados.append((tipo_evento, kwargs))
         return True
 
-    async def generar(**_datos):
-        if recibo is None:
-            raise OSError("disco lleno")
-        return recibo
-
     monkeypatch.setattr(NotificationService, "notificar", notificar)
-    monkeypatch.setattr(billing_module, "generar_recibo_pdf", generar)
     cliente = SimpleNamespace(id=5, nombre="Cliente", telefono="5512345678")
     asyncio.run(
         BillingService(_CobroDB(pagos, _prorrateo()))._notificar_cobro_total(
@@ -85,26 +78,32 @@ def _cobrar(monkeypatch, pagos, saldo_restante, recibo=None):
 
 
 def test_prorrateo_liquidado_confirma_aunque_haya_otra_factura(monkeypatch):
-    enviados = _cobrar(monkeypatch, [_pago("0")], "500.00", "/tmp/r.pdf")
+    enviados = _cobrar(monkeypatch, [_pago("0")], "500.00")
 
     tipo, datos = enviados[0]
     assert tipo == "pago_recibido"
-    assert datos["ruta_pdf"] == "/tmp/r.pdf"
     assert "Saldo pendiente: $500.00" in datos["variables_extra"]["referencia"]
 
 
+def test_la_confirmacion_trae_el_recibo_escrito_sin_pdf(monkeypatch):
+    enviados = _cobrar(monkeypatch, [_pago("0")], "0")
+
+    _, datos = enviados[0]
+    assert "ruta_pdf" not in datos
+    recibo = datos["variables_extra"]["recibo"]
+    assert "#00000040" in recibo
+    assert "20/09/2026 12:00" in recibo
+    assert "Efectivo" in recibo
+    assert "$183.33" in recibo
+    assert "• Prorrateo de internet: $183.33" in recibo
+    assert "Periodo: 20/09/2026 al 30/09/2026" in recibo
+    assert "Próximo pago: 01/10/2026" in recibo
+
+
 def test_factura_a_medias_sigue_siendo_abono(monkeypatch):
-    enviados = _cobrar(monkeypatch, [_pago("83.33")], "83.33", "/tmp/r.pdf")
+    enviados = _cobrar(monkeypatch, [_pago("83.33")], "83.33")
 
     assert [tipo for tipo, _ in enviados] == ["abono_recibido"]
-
-
-def test_si_el_recibo_falla_la_confirmacion_sale_sin_pdf(monkeypatch):
-    enviados = _cobrar(monkeypatch, [_pago("0")], "0", recibo=None)
-
-    tipo, datos = enviados[0]
-    assert tipo == "pago_recibido"
-    assert datos["ruta_pdf"] is None
 
 
 def test_recibo_de_prorrateo_muestra_la_fecha_real_del_siguiente_pago():
@@ -115,3 +114,19 @@ def test_recibo_de_prorrateo_muestra_la_fecha_real_del_siguiente_pago():
 
     assert BillingService._proximo_vencimiento(prorrateo) == date(2026, 10, 1)
     assert BillingService._proximo_vencimiento(mensual) == date(2026, 11, 1)
+
+
+def test_se_quita_la_linea_que_promete_el_pdf_de_plantillas_antiguas():
+    plantilla = (
+        "✅ Pago confirmado\n"
+        "💰 Total de la factura: $191.94\n"
+        "📄 Adjunto encontrarás tu recibo oficial en PDF con el desglose completo.\n"
+        "¡Gracias por tu pago!"
+    )
+    limpio = quitar_aviso_de_pdf(plantilla)
+    assert "PDF" not in limpio
+    assert limpio.splitlines() == ["✅ Pago confirmado", "💰 Total de la factura: $191.94", "¡Gracias por tu pago!"]
+
+
+def test_al_quitar_el_aviso_no_quedan_renglones_vacios_de_mas():
+    assert quitar_aviso_de_pdf("Hola\n\n📄 Adjunto tu recibo en PDF.\n\nGracias") == "Hola\n\nGracias"

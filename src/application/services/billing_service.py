@@ -15,7 +15,6 @@ from src.infrastructure.models import (
     ServicioAdicionalModel,
     ServicioModel,
     SuspensionFacturacionModel,
-    ConfiguracionSistema,
     LogCronjobModel,
 )
 
@@ -24,7 +23,6 @@ from src.infrastructure.mikrotik_service import MikroTikService
 from src.utils.mikrotik import formatear_rate_limit_dhcp, normalizar_mac
 # 👇 IMPORTAMOS EL NUEVO SERVICIO UNIFICADO 👇
 from src.application.services.notification_service import NotificationService
-from src.application.helpers.pdf_generator import generar_recibo_pdf
 
 from src.infrastructure.models import (
     ServicioModel,
@@ -1484,17 +1482,41 @@ class BillingService:
             return factura.fecha_vencimiento + relativedelta(months=1)
         return None
 
-    async def _generar_recibo_seguro(self, **datos) -> str | None:
-        """Un recibo que no se pudo generar no debe impedir el WhatsApp."""
-        try:
-            return await generar_recibo_pdf(**datos)
-        except Exception:
-            logger.exception(
-                "No se pudo generar el recibo PDF del folio %s; la "
-                "confirmación se envía sin adjunto.",
-                datos.get("folio"),
+    @staticmethod
+    def _texto_recibo(
+        folio,
+        fecha_pago,
+        metodo_pago,
+        monto,
+        conceptos,
+        periodo_desde=None,
+        periodo_hasta=None,
+        proximo_vencimiento=None,
+        saldo_pendiente=None,
+    ) -> str:
+        """Recibo escrito en el WhatsApp (sustituye al PDF adjunto)."""
+        lineas = [f"🧾 *Recibo de pago* #{str(folio).zfill(8)}"]
+        if fecha_pago:
+            lineas.append(f"📅 Fecha: {fecha_pago.strftime('%d/%m/%Y %H:%M')}")
+        if metodo_pago:
+            lineas.append(f"💳 Método: {str(metodo_pago).replace('_', ' ').capitalize()}")
+        lineas.append(f"💵 Monto pagado: *${Decimal(monto or 0):.2f}*")
+        if conceptos:
+            lineas.append("*Conceptos pagados:*")
+            lineas.extend(
+                f"• {concepto}: ${Decimal(importe or 0):.2f}"
+                for concepto, importe in conceptos
             )
-            return None
+        if periodo_desde and periodo_hasta:
+            lineas.append(
+                f"📆 Periodo: {periodo_desde.strftime('%d/%m/%Y')} al "
+                f"{periodo_hasta.strftime('%d/%m/%Y')}"
+            )
+        if saldo_pendiente and Decimal(saldo_pendiente) > 0:
+            lineas.append(f"⚠️ Saldo pendiente: ${Decimal(saldo_pendiente):.2f}")
+        if proximo_vencimiento:
+            lineas.append(f"⏭️ Próximo pago: {proximo_vencimiento.strftime('%d/%m/%Y')}")
+        return "\n".join(lineas)
 
     async def _notificar_cobro_total(
         self,
@@ -1560,31 +1582,16 @@ class BillingService:
                     .group_by(FacturaConceptoModel.concepto)
                 )
             ).all()
-            marca = await self.db.get(ConfiguracionSistema, 1)
-            ruta_pdf = await self._generar_recibo_seguro(
-                nombre_cliente=cliente.nombre,
-                monto=recibido,
-                concepto="Pago de servicios",
-                descripcion=ultima.descripcion or ultima.detalles or "Pago de servicio",
-                fecha_pago=pagos[-1].fecha_pago,
+            recibo = self._texto_recibo(
                 folio=ultima.id,
-                nueva_fecha_vencimiento=self._proximo_vencimiento(ultima),
-                telefono_cliente=cliente.telefono,
+                fecha_pago=pagos[-1].fecha_pago,
                 metodo_pago=pagos[-1].metodo_pago,
+                monto=recibido,
+                conceptos=conceptos_pagados,
                 periodo_desde=ultima.periodo_desde,
                 periodo_hasta=ultima.periodo_hasta,
-                total_factura=recibido,
-                conceptos_pagados=[
-                    {"concepto": concepto, "monto": monto}
-                    for concepto, monto in conceptos_pagados
-                ],
-                empresa_nombre=marca.empresa_nombre if marca else "FdezNet",
-                color_primario=marca.color_primario if marca else "#1e3a8a",
-                color_secundario=marca.color_secundario if marca else "#2563eb",
-                pie_recibo=marca.pie_recibo if marca else None,
-                empresa_telefono=marca.empresa_telefono if marca else None,
-                empresa_email=marca.empresa_email if marca else None,
-                empresa_direccion=marca.empresa_direccion if marca else None,
+                proximo_vencimiento=self._proximo_vencimiento(ultima),
+                saldo_pendiente=saldo_restante,
             )
             await notificador.notificar(
                 tipo_evento="pago_recibido",
@@ -1598,8 +1605,8 @@ class BillingService:
                         if saldo_restante > 0
                         else referencia or "N/A"
                     ),
+                    "recibo": recibo,
                 },
-                ruta_pdf=ruta_pdf,
                 clave_dedupe=f"{clave}:recibo",
             )
         except Exception:
@@ -1754,36 +1761,15 @@ class BillingService:
                             .where(PagoConceptoModel.pago_id == nuevo_pago.id)
                         )
                     ).all()
-                    marca = await self.db.get(ConfiguracionSistema, 1)
-                    ruta_pdf = await self._generar_recibo_seguro(
-                        nombre_cliente=cliente.nombre,
-                        monto=nuevo_pago.monto_total,
-                        concepto=concepto_recibo,
-                        descripcion=descripcion_recibo,
-                        fecha_pago=nuevo_pago.fecha_pago,
+                    recibo = self._texto_recibo(
                         folio=factura.id,
-                        nueva_fecha_vencimiento=prox_venc,
-                        telefono_cliente=cliente.telefono,
+                        fecha_pago=nuevo_pago.fecha_pago,
                         metodo_pago=nuevo_pago.metodo_pago,
+                        monto=nuevo_pago.monto_total,
+                        conceptos=conceptos_pagados,
                         periodo_desde=factura.periodo_desde,
                         periodo_hasta=factura.periodo_hasta,
-                        dias_con_servicio=factura.dias_con_servicio,
-                        dias_sin_servicio=factura.dias_sin_servicio,
-                        monto_servicio_original=factura.monto_servicio_original,
-                        ajuste_suspension=factura.ajuste_suspension,
-                        cargos_adicionales=factura.cargos_adicionales_total,
-                        total_factura=factura.total,
-                        conceptos_pagados=[
-                            {"concepto": fila.concepto, "monto": fila.monto_aplicado}
-                            for fila in conceptos_pagados
-                        ],
-                        empresa_nombre=marca.empresa_nombre if marca else "FdezNet",
-                        color_primario=marca.color_primario if marca else "#1e3a8a",
-                        color_secundario=marca.color_secundario if marca else "#2563eb",
-                        pie_recibo=marca.pie_recibo if marca else None,
-                        empresa_telefono=marca.empresa_telefono if marca else None,
-                        empresa_email=marca.empresa_email if marca else None,
-                        empresa_direccion=marca.empresa_direccion if marca else None,
+                        proximo_vencimiento=prox_venc,
                     )
                     notificacion_pago_encolada = await notificador.notificar(
                         tipo_evento="pago_recibido", 
@@ -1792,8 +1778,8 @@ class BillingService:
                             **self._variables_detalle_factura(factura),
                             "monto_pagado": f"${nuevo_pago.monto_total:.2f}",
                             "referencia": referencia or "N/A",
+                            "recibo": recibo,
                         },
-                        ruta_pdf=ruta_pdf,
                         clave_dedupe=f"pago:{nuevo_pago.id}:recibo",
                     )
                 else:

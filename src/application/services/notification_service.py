@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
+import re
 
 from src.infrastructure.models import (
     ClienteModel,
@@ -47,6 +48,15 @@ EVENTOS_CON_TOTAL = {
     "aviso_corte",
     "corte_servicio",
 }
+
+
+def quitar_aviso_de_pdf(texto: str) -> str:
+    """Plantillas antiguas prometen un recibo PDF adjunto que ya no se manda."""
+    limpio = "\n".join(
+        linea for linea in texto.splitlines()
+        if not ("pdf" in linea.lower() and ("adjunt" in linea.lower() or "recibo" in linea.lower()))
+    )
+    return re.sub(r"\n{3,}", "\n\n", limpio)
 
 
 class NotificationService:
@@ -251,6 +261,12 @@ class NotificationService:
             and detalle_cobro not in mensaje_formateado
         ):
             mensaje_formateado = f"{mensaje_formateado}\n\n{detalle_cobro}"
+        # El recibo va escrito en el mensaje (ya no se adjunta PDF).
+        recibo = str(datos_finales.get("recibo") or "").strip()
+        if tipo_evento == "pago_recibido" and recibo and "{recibo}" not in texto_plantilla:
+            mensaje_formateado = f"{mensaje_formateado}\n\n{recibo}"
+        if not ruta_pdf:
+            mensaje_formateado = quitar_aviso_de_pdf(mensaje_formateado)
         # Si hay atrasos o extras, el cliente ve el total real a pagar aunque
         # su plantilla no use {total_a_pagar} ni {desglose_total}.
         desglose_total = str(datos_finales.get("desglose_total") or "").strip()
