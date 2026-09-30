@@ -123,6 +123,7 @@ class ComprobanteService:
             "revision_id": revision.id,
             "monto": str(monto),
             "folio": folio,
+            "nota_monto": "El monto definitivo es el que confirma el banco con este folio.",
             "contrato_en_captura": contrato,
             "cliente_en_captura": cliente_en_captura.nombre if cliente_en_captura else None,
         }
@@ -139,7 +140,9 @@ class ComprobanteService:
 
         monto = FinanceService.dinero(revision.monto_detectado or 0)
         deuda = Decimal(factura.saldo_pendiente or 0)
-        if monto < deuda:
+        # Con folio, el monto lo confirma el banco (el OCR puede leer $30 por
+        # $300); sin folio, el monto leído es lo que se compara.
+        if not normalize_reference(revision.folio_detectado) and monto < deuda:
             revision.motivo_revision = "monto_no_coincide"
             revision.notas_revision = f"OCR ${monto}; deuda ${deuda}"
             await self.db.commit()
@@ -170,10 +173,11 @@ class ComprobanteService:
             return {"aplicado": False, "estado": "error_conciliacion"}
 
         if resultado.get("approved"):
+            revision = await self.db.get(ComprobantePagoRevisionModel, revision_id)
             return {
                 "aplicado": True,
                 "estado": "pago_confirmado_por_banco",
-                "monto": str(monto),
+                "monto": str(FinanceService.dinero(revision.monto_detectado or monto)),
                 "reactivado": bool(resultado.get("reactivado")),
                 "sigue_suspendido": cliente.estado == "suspendido" and not resultado.get("reactivado"),
             }

@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import io
 import re
 from datetime import datetime
 import httpx
@@ -11,6 +12,28 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 WHATSAPP_UPLOADS = Path(__file__).resolve().parents[3] / "bot_whatsapp" / "uploads"
+# Los comprobantes del banco caben en una o dos páginas.
+MAX_PAGINAS_PDF = 2
+
+
+def leer_pdf(contenido: bytes) -> tuple[str, list[bytes]]:
+    """Texto del PDF y, si no trae texto (escaneado), sus imágenes.
+
+    El botón "Compartir" de la app del banco manda el comprobante en PDF con
+    el texto adentro: se lee directo, sin OCR y sin errores de lectura.
+    """
+    from pypdf import PdfReader
+
+    lector = PdfReader(io.BytesIO(contenido))
+    if lector.is_encrypted:
+        raise ValueError("El PDF está protegido con contraseña")
+    paginas = list(lector.pages[:MAX_PAGINAS_PDF])
+    texto = " ".join((pagina.extract_text() or "") for pagina in paginas)
+    imagenes: list[bytes] = []
+    if len(texto.strip()) < 20:
+        for pagina in paginas:
+            imagenes.extend(imagen.data for imagen in list(pagina.images)[:3])
+    return texto, imagenes
 
 def huella_captura(monto: float, fecha_pago: datetime | None, cuentas: list[str]) -> str | None:
     """Folio propio de una captura sin referencia bancaria.
@@ -192,7 +215,15 @@ class OCRService:
             if not contenido or len(contenido) > 10 * 1024 * 1024:
                 raise ValueError("Imagen vacía o mayor a 10 MB")
 
-            if content_type and not content_type.startswith("image/"):
+            if contenido[:5] == b"%PDF-":
+                texto_pdf, imagenes = await asyncio.to_thread(leer_pdf, contenido)
+                if len(texto_pdf.strip()) >= 20:
+                    logger.info("PDF procesado; se extrajeron datos estructurados")
+                    return self.extraer_datos(texto_pdf)
+                if not imagenes:
+                    raise ValueError("El PDF no trae texto ni imágenes")
+                contenido = imagenes[0]
+            elif content_type and not content_type.startswith("image/"):
                 raise ValueError("El comprobante recibido no es una imagen")
 
             with tempfile.NamedTemporaryFile(

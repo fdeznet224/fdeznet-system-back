@@ -560,23 +560,26 @@ class BankEmailService:
         if transaction.cuenta_destino_terminacion not in allowed_accounts:
             return "cuenta_destino_no_autorizada"
 
-        if exigir_referencia:
-            expected_reference = normalize_reference_for_match(
-                revision.folio_detectado
-            )
-            bank_reference = normalize_reference_for_match(transaction.referencia)
-            if not expected_reference or expected_reference != bank_reference:
-                return "referencia_bancaria_no_coincide"
+        expected_reference = normalize_reference_for_match(revision.folio_detectado)
+        misma_referencia = bool(expected_reference) and expected_reference == (
+            normalize_reference_for_match(transaction.referencia)
+        )
+        if exigir_referencia and not misma_referencia:
+            return "referencia_bancaria_no_coincide"
 
-        amount = Decimal(revision.monto_detectado or 0).quantize(
-            Decimal("0.01")
-        )
-        bank_amount = Decimal(transaction.monto or 0).quantize(
-            Decimal("0.01")
-        )
-        tolerance = Decimal(config.tolerancia_monto or 0)
-        if amount <= 0 or abs(bank_amount - amount) > tolerance:
-            return "monto_bancario_no_coincide"
+        # Con el mismo folio el depósito es ese: vale el monto del banco y no
+        # el que leyó el OCR (puede leer $30 donde dice $300). El pago se
+        # registra con el monto del correo y se compara contra la deuda.
+        if not misma_referencia:
+            amount = Decimal(revision.monto_detectado or 0).quantize(
+                Decimal("0.01")
+            )
+            bank_amount = Decimal(transaction.monto or 0).quantize(
+                Decimal("0.01")
+            )
+            tolerance = Decimal(config.tolerancia_monto or 0)
+            if amount <= 0 or abs(bank_amount - amount) > tolerance:
+                return "monto_bancario_no_coincide"
 
         if not exigir_referencia:
             return "coincidencia_exacta"  # la ventana de hora la revisa motivo_coincidencia
@@ -736,11 +739,12 @@ class BankEmailService:
             return None, "correo_bancario_no_configurado"
         reference = normalize_reference(revision.folio_detectado)
         amount = Decimal(revision.monto_detectado or 0).quantize(Decimal("0.01"))
-        if amount <= 0:
-            return None, "comprobante_sin_referencia_o_monto"
         if not reference:
+            if amount <= 0:
+                return None, "comprobante_sin_referencia_o_monto"
             return await self._find_match_sin_referencia(db, config, revision, amount)
-        tolerance = Decimal(config.tolerancia_monto or 0)
+        # Con folio se busca por folio en los días de la ventana; el monto lo
+        # pone el banco (transaction_match_reason).
         earliest = revision.fecha_recepcion - timedelta(days=max(1, config.ventana_dias))
         latest = revision.fecha_recepcion + timedelta(days=1)
         amount_and_date_candidates = (
@@ -749,8 +753,6 @@ class BankEmailService:
                 .where(
                     TransaccionCorreoBancoModel.estado == "disponible",
                     TransaccionCorreoBancoModel.autenticado.is_(True),
-                    TransaccionCorreoBancoModel.monto >= amount - tolerance,
-                    TransaccionCorreoBancoModel.monto <= amount + tolerance,
                     TransaccionCorreoBancoModel.fecha_correo >= earliest,
                     TransaccionCorreoBancoModel.fecha_correo <= latest,
                 )
@@ -867,7 +869,7 @@ class BankEmailService:
                 TransaccionCorreoBancoModel.id == (revision.transaccion_correo_id or 0),
             ),
         ]
-        if revision.monto_detectado:
+        if revision.monto_detectado and not normalize_reference(revision.folio_detectado):
             tolerancia = Decimal(config.tolerancia_monto or 0)
             monto = Decimal(revision.monto_detectado)
             filtros += [
@@ -995,6 +997,10 @@ class BankEmailService:
             return {"status": revision.motivo_revision, "approved": False}
 
         amount = Decimal(transaction.monto or 0).quantize(Decimal("0.01"))
+        leido = Decimal(revision.monto_detectado or 0).quantize(Decimal("0.01"))
+        if leido != amount:
+            revision.notas_revision = f"Monto leído ${leido}; el banco confirma ${amount}"
+            revision.monto_detectado = amount
         debt = Decimal(invoice.saldo_pendiente or 0).quantize(Decimal("0.01"))
         if amount < debt:
             revision.motivo_revision = "correo_confirmado_monto_insuficiente"

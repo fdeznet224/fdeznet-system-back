@@ -105,9 +105,10 @@ NODE_HEADERS = {
 # Memoria temporal para el Bot (Estado por número de teléfono)
 bot_memory = {}
 
-# Agente de IA: los clientes suelen mandar varios mensajes seguidos; se espera
-# un momento y solo el último se atiende (los anteriores van como contexto).
-ESPERA_AGENTE_SEGUNDOS = 4
+# Agente de IA: los clientes suelen mandar varios mensajes seguidos (saludo,
+# foto, monto) con 5 o 6 segundos de diferencia; se espera un momento y solo
+# el último se atiende (los anteriores van como contexto).
+ESPERA_AGENTE_SEGUNDOS = 8
 _ultimo_mensaje_agente: dict[str, int] = {}
 _tareas_agente: set = set()
 
@@ -1085,7 +1086,7 @@ async def ver_archivo_comprobante(
     ruta = urlparse(comprobante.media_url or "")
     nombre = Path(ruta.netloc or ruta.path).name if ruta.scheme == "whatsapp-media" else Path(ruta.path).name
     if not nombre or Path(nombre).suffix.lower() not in {
-        ".jpg", ".jpeg", ".png", ".webp",
+        ".jpg", ".jpeg", ".png", ".webp", ".pdf",
     }:
         raise HTTPException(status_code=404, detail="Archivo no disponible")
     uploads = Path(__file__).resolve().parents[3] / "bot_whatsapp" / "uploads"
