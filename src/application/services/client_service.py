@@ -933,6 +933,10 @@ class ClientService:
                 except Exception as e_msg:
                     print(f"⚠️ Error al encolar bienvenida: {e_msg}")
 
+            await BillingService(
+                self.db
+            ).emitir_primera_factura_por_instalacion(servicio)
+
             return await self._recargar_cliente(cliente.id)
 
         except Exception as e:

@@ -338,7 +338,31 @@ class BillingService:
     # ==========================================
     # 1. GENERACIÓN MASIVA INTELIGENTE
     # ==========================================
-    async def generar_emision_masiva(self, dia_objetivo: int = None):
+    async def emitir_primera_factura_por_instalacion(
+        self,
+        servicio: ServicioModel,
+    ) -> None:
+        """Emite al activar la factura que vence el día de instalación.
+
+        Se llama después de guardar la activación: si falla, la activación
+        queda firme y la emisión automática la genera en su siguiente corrida.
+        """
+        if servicio.ciclo_facturacion != CicloFacturacion.aniversario:
+            return
+        try:
+            await self.generar_emision_masiva(servicio_id=servicio.id)
+        except Exception:
+            await self.db.rollback()
+            logger.exception(
+                "No se pudo emitir la primera factura del servicio %s",
+                servicio.id,
+            )
+
+    async def generar_emision_masiva(
+        self,
+        dia_objetivo: int = None,
+        servicio_id: int | None = None,
+    ):
         hoy = date.today()
         notificador = NotificationService(self.db)
 
@@ -368,6 +392,8 @@ class BillingService:
                 ),
             )
         )
+        if servicio_id is not None:
+            stmt = stmt.where(ServicioModel.id == servicio_id)
 
         result = await self.db.execute(stmt)
         servicios = result.scalars().all()
@@ -740,8 +766,15 @@ class BillingService:
             if not cliente.telefono or cliente.estado != 'activo':
                 continue
 
-            # Calculamos cuántos días faltan para la fecha de pago
-            dias_restantes = (factura.fecha_vencimiento - hoy).days
+            # En postpago la factura se emite el mismo día que vence, así
+            # que el aviso previo se calcula contra la fecha de corte.
+            fecha_referencia = factura.fecha_vencimiento
+            if (
+                factura.tipo_facturacion_snapshot == "postpago"
+                and factura.fecha_limite_corte
+            ):
+                fecha_referencia = factura.fecha_limite_corte
+            dias_restantes = (fecha_referencia - hoy).days
             
             # Se ejecuta dinámicamente según los días del parámetro (ej: 1 día antes)
             if dias_restantes == dias_aviso_urgente:

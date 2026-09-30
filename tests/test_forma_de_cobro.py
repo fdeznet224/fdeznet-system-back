@@ -1,7 +1,7 @@
 """Día fijo de pago (calendario) y día de instalación (aniversario)."""
 
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -9,6 +9,7 @@ from src.application.services.billing_calendar_service import (
     BillingCalendarService,
 )
 from src.application.services.billing_service import BillingService
+from src.application.services.notification_service import NotificationService
 from src.domain.schemas import (
     BillingTemplateRequest,
     InstalacionRequest,
@@ -140,3 +141,118 @@ def test_emision_manual_por_dia_incluye_clientes_por_instalacion():
 
     assert reporte["facturas_generadas"] == 1
     assert db.facturas[0].servicio_id == 102
+
+
+class _RecordatoriosDB:
+    def __init__(self, facturas):
+        self.facturas = facturas
+
+    async def execute(self, _statement):
+        return SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: self.facturas)
+        )
+
+    async def commit(self):
+        return None
+
+
+def _factura_pendiente(folio, tipo, vencimiento, corte):
+    return SimpleNamespace(
+        id=folio,
+        cliente=SimpleNamespace(
+            id=folio, nombre="Cliente", telefono="5512345678", estado="activo"
+        ),
+        tipo_facturacion_snapshot=tipo,
+        fecha_vencimiento=vencimiento,
+        fecha_limite_corte=corte,
+    )
+
+
+def test_recordatorio_postpago_se_calcula_contra_el_corte(monkeypatch):
+    hoy = date.today()
+    manana = hoy + timedelta(days=1)
+    facturas = [
+        # Prepago: vence mañana, se avisa hoy.
+        _factura_pendiente(1, "prepago", manana, manana + timedelta(days=3)),
+        # Postpago emitido hoy (vence hoy); el corte es mañana: se avisa hoy.
+        _factura_pendiente(2, "postpago", hoy, manana),
+        # Postpago que vence mañana pero corta en 3 días: aún no se avisa.
+        _factura_pendiente(3, "postpago", manana, manana + timedelta(days=3)),
+    ]
+    avisados = []
+
+    async def notificar(self, tipo_evento, cliente_id, **_kwargs):
+        avisados.append(cliente_id)
+        return True
+
+    async def estado_cuenta(self, _cliente_id):
+        return {}
+
+    monkeypatch.setattr(NotificationService, "notificar", notificar)
+    monkeypatch.setattr(BillingService, "estado_cuenta_cliente", estado_cuenta)
+    monkeypatch.setattr(
+        BillingService, "_variables_total_a_pagar", lambda self, _e: {}
+    )
+
+    reporte = asyncio.run(
+        BillingService(_RecordatoriosDB(facturas)).enviar_recordatorios_automaticos(
+            dias_aviso_urgente=1
+        )
+    )
+
+    assert avisados == [1, 2]
+    assert reporte["aviso_urgente_enviados"] == 2
+
+
+def test_primera_factura_por_instalacion_se_emite_al_activar(monkeypatch):
+    llamadas = []
+
+    async def emision(self, dia_objetivo=None, servicio_id=None):
+        llamadas.append(servicio_id)
+
+    monkeypatch.setattr(BillingService, "generar_emision_masiva", emision)
+    service = BillingService(SimpleNamespace())
+
+    asyncio.run(service.emitir_primera_factura_por_instalacion(
+        SimpleNamespace(id=7, ciclo_facturacion=CicloFacturacion.aniversario)
+    ))
+    asyncio.run(service.emitir_primera_factura_por_instalacion(
+        SimpleNamespace(id=8, ciclo_facturacion=CicloFacturacion.calendario)
+    ))
+
+    # El día fijo ya tiene su prorrateo; sólo el día de instalación emite.
+    assert llamadas == [7]
+
+
+def test_si_falla_la_primera_factura_la_activacion_sigue_firme(monkeypatch):
+    rollbacks = []
+
+    async def emision(self, dia_objetivo=None, servicio_id=None):
+        raise RuntimeError("sin conexión")
+
+    async def rollback():
+        rollbacks.append(True)
+
+    monkeypatch.setattr(BillingService, "generar_emision_masiva", emision)
+    service = BillingService(SimpleNamespace(rollback=rollback))
+
+    asyncio.run(service.emitir_primera_factura_por_instalacion(
+        SimpleNamespace(id=7, ciclo_facturacion=CicloFacturacion.aniversario)
+    ))
+
+    assert rollbacks == [True]
+
+
+def test_emision_de_un_solo_servicio_filtra_por_su_id():
+    consultas = []
+
+    class DB(_BillingDB):
+        async def execute(self, statement):
+            consultas.append(str(statement))
+            return await super().execute(statement)
+
+    asyncio.run(
+        BillingService(DB([])).generar_emision_masiva(servicio_id=7)
+    )
+
+    assert "servicios.id = :id_1" in consultas[0]

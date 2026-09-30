@@ -541,6 +541,9 @@ class SubscriptionService:
         await self._sincronizar_estado_cliente(servicio.cliente_id)
         await self._sincronizar_legacy_si_principal(servicio)
         await self.db.commit()
+        await BillingService(
+            self.db
+        ).emitir_primera_factura_por_instalacion(servicio)
         return await self.obtener(servicio.id)
 
     async def cambiar_plan(
