@@ -2172,6 +2172,8 @@ class ComprobantePagoRevisionModel(Base):
     # Hora local de la transferencia leída en la captura (para empatar con
     # el correo cuando la captura no trae referencia).
     fecha_pago_detectada = Column(DateTime, nullable=True)
+    # Folio propio de la captura (monto + hora + cuentas) para detectar reenvíos.
+    huella_captura = Column(String(24), nullable=True, index=True)
     fecha_recepcion = Column(
         DateTime,
         nullable=False,

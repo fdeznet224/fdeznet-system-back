@@ -58,11 +58,16 @@ class ComprobanteService:
         resultado = await self.ocr.procesar_ticket(media_url)
         monto = Decimal(str(resultado.get("monto") or 0))
         folio = normalize_reference(resultado.get("folio"))
+        huella = resultado.get("huella")
 
         if resultado.get("exito") and folio:
             estado_previo = await self._estado_folio_existente(folio)
             if estado_previo:
                 return {"estado": "duplicado", "folio": folio, **estado_previo}
+        if huella:
+            estado_previo = await self._estado_huella_existente(huella, telefono, media_url)
+            if estado_previo:
+                return {"estado": "duplicado", "folio": folio or huella, **estado_previo}
 
         revision = ComprobantePagoRevisionModel(
             cliente_id=cliente_id,
@@ -73,6 +78,7 @@ class ComprobanteService:
             folio_detectado=folio,
             cedula_detectada=resultado.get("cedula_detectada"),
             fecha_pago_detectada=resultado.get("fecha_pago"),
+            huella_captura=huella,
             motivo_revision=(
                 "esperando_confirmacion"
                 if resultado.get("exito")
@@ -198,6 +204,28 @@ class ComprobanteService:
             "estado_revision": revision.estado if revision else None,
         }
 
+    async def _estado_huella_existente(self, huella: str, telefono: str, media_url: str) -> dict | None:
+        """La misma captura (monto, hora y cuentas) ya se había recibido."""
+        revision = (
+            await self.db.execute(
+                select(ComprobantePagoRevisionModel)
+                .where(ComprobantePagoRevisionModel.huella_captura == huella)
+                .order_by(ComprobantePagoRevisionModel.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        # Una captura rechazada sin pago se puede volver a revisar.
+        if not revision or (revision.estado == "rechazado" and not revision.pago_id):
+            return None
+        return {
+            "pago_ya_registrado": bool(revision.pago_id),
+            "estado_revision": revision.estado,
+            "revision_id": revision.id,
+            # Releer la misma imagen del mismo mensaje no es un reenvío.
+            "misma_imagen": revision.media_url == media_url,
+            "otro_telefono": revision.telefono != telefono,
+        }
+
     async def alertar_folio_duplicado(self, telefono: str, folio: str) -> None:
         """Mismo aviso de posible fraude que manda el bot de menú."""
         if not self.avisar_admin:
@@ -207,6 +235,7 @@ class ComprobanteService:
         texto = (
             "🚨 *POSIBLE FRAUDE*\n"
             f"El número {telefono} envió un comprobante con el folio {folio}, que ya se había registrado."
+            + (" (folio generado de la captura: mismo monto, hora y cuentas)" if folio.startswith("SC-") else "")
         )
         for numero in numeros:
             await self.avisar_admin(numero, texto)

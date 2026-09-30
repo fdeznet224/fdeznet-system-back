@@ -655,7 +655,13 @@ class _Contexto:
             self.cliente.id if self.cliente else None,
             self.interaccion.mensaje_chat_id,
         )
-        if resultado["estado"] == "duplicado" and not resultado.get("pago_ya_registrado"):
+        # Posible fraude: volver a cobrar un pago ya aplicado o usar la captura
+        # de otro número. Reenviar la propia captura en revisión no lo es.
+        if (
+            resultado["estado"] == "duplicado"
+            and not resultado.get("misma_imagen")
+            and (resultado.get("pago_ya_registrado") or resultado.get("otro_telefono"))
+        ):
             await comprobantes.alertar_folio_duplicado(self.telefono, resultado["folio"])
         return resultado
 

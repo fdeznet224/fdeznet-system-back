@@ -30,6 +30,8 @@ def test_ocr_extrae_folio_monto_y_cedula_de_transferencia():
         "monto": 500.0,
         "cedula_detectada": "329B",
         "fecha_pago": None,
+        "cuentas": [],
+        "huella": None,
         "exito": True,
     }
 

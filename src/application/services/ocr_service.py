@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 from datetime import datetime
 import httpx
@@ -10,6 +11,19 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 WHATSAPP_UPLOADS = Path(__file__).resolve().parents[3] / "bot_whatsapp" / "uploads"
+
+def huella_captura(monto: float, fecha_pago: datetime | None, cuentas: list[str]) -> str | None:
+    """Folio propio de una captura sin referencia bancaria.
+
+    Monto + fecha y hora de la transferencia (al segundo) + terminaciones de
+    cuenta visibles: si la misma captura se reenvía da la misma huella. Sin
+    hora no se genera, porque el mismo monto se repite cada mes.
+    """
+    if not monto or monto <= 0 or not fecha_pago:
+        return None
+    base = f"{monto:.2f}|{fecha_pago:%Y%m%d%H%M%S}|{','.join(sorted(set(cuentas)))}"
+    return "SC-" + hashlib.sha256(base.encode()).hexdigest()[:16].upper()
+
 
 class OCRService:
     def __init__(self):
@@ -120,11 +134,16 @@ class OCRService:
             except ValueError:
                 fecha_pago = None
 
+        # Terminaciones de cuenta o tarjeta: "Cuenta ****8663", "Tarjeta ** **5265".
+        cuentas = re.findall(r"(?:[*•·]{2,}|x{2,})[\s*•·x]*(\d{4})\b", texto)
+
         return {
             "folio": folio,
             "monto": monto,
             "cedula_detectada": cedula_detectada,
             "fecha_pago": fecha_pago,
+            "cuentas": sorted(set(cuentas)),
+            "huella": huella_captura(monto, fecha_pago, cuentas),
             "exito": folio is not None and monto > 0,
         }
 
