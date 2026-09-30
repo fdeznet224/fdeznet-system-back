@@ -175,6 +175,14 @@ class ComprobanteService:
                 "reactivado": bool(resultado.get("reactivado")),
                 "sigue_suspendido": cliente.estado == "suspendido" and not resultado.get("reactivado"),
             }
+        if resultado.get("status") == "pago_adelantado":
+            return {
+                "aplicado": False,
+                "estado": "pago_adelantado",
+                "monto": str(monto),
+                "detalle": "El banco confirmó el pago; es del mes siguiente y se aplica solo ese día.",
+                "aplicar_el": resultado.get("aplicar_el"),
+            }
         return {"aplicado": False, "estado": resultado.get("status") or "sin_confirmacion_bancaria"}
 
     async def _estado_folio_existente(self, folio: str) -> dict | None:

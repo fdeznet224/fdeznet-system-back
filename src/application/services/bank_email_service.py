@@ -5,7 +5,7 @@ import imaplib
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from email import policy
 from email.header import decode_header, make_header
@@ -15,7 +15,7 @@ from html import unescape
 from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infrastructure.models import (
@@ -355,6 +355,18 @@ def _read_gmail_messages(
 VENTANA_SIN_REFERENCIA = timedelta(minutes=15)
 ZONA_LOCAL = ZoneInfo("America/Mexico_City")  # fecha_recepcion y la hora de la captura
 COINCIDENCIAS_VALIDAS = {"coincidencia_exacta", "coincidencia_sin_referencia"}
+# Los pagos de un mes posterior se aplican el día 1 de ese mes, para que el
+# dinero cuente en el mes que cubre. A partir de esta hora, para que el
+# "pago confirmado" no llegue de madrugada.
+HORA_APLICAR_ADELANTADOS = time(8, 0)
+
+
+def aplicar_pago_desde(factura: FacturaModel) -> datetime | None:
+    """Día 1 del mes que cubre la factura, o None si no hay fecha."""
+    inicio = factura.periodo_desde or factura.fecha_vencimiento
+    if not inicio:
+        return None
+    return datetime.combine(date(inicio.year, inicio.month, 1), HORA_APLICAR_ADELANTADOS)
 
 
 class BankEmailService:
@@ -420,7 +432,11 @@ class BankEmailService:
             return "correo_bancario_no_configurado"
         if not transaction.autenticado:
             return "correo_bancario_no_autenticado"
-        if transaction.estado not in {"disponible", "procesando"}:
+        apartada_para_esta = (
+            transaction.estado == "reservada"
+            and revision.transaccion_correo_id == transaction.id
+        )
+        if transaction.estado not in {"disponible", "procesando"} and not apartada_para_esta:
             return "correo_bancario_ya_utilizado"
         if transaction.tipo_movimiento != "entrante":
             return "movimiento_bancario_no_es_abono"
@@ -739,6 +755,21 @@ class BankEmailService:
             await db.commit()
             return {"status": revision.motivo_revision, "approved": False}
 
+        aplicar_desde = aplicar_pago_desde(invoice)
+        if aplicar_desde and datetime.now() < aplicar_desde:
+            # El banco ya lo confirmó: se aparta el depósito y se aplica el día 1.
+            revision.factura_id = invoice.id
+            revision.motivo_revision = "pago_adelantado"
+            revision.notas_revision = f"Se aplica el {aplicar_desde:%d/%m/%Y}"
+            transaction.estado = "reservada"
+            await db.commit()
+            return {
+                "status": "pago_adelantado",
+                "approved": False,
+                "transaction_id": transaction.id,
+                "aplicar_el": aplicar_desde.date().isoformat(),
+            }
+
         if operator is None:
             operator = (
                 await db.execute(
@@ -815,7 +846,11 @@ class BankEmailService:
                     ComprobantePagoRevisionModel.estado == "pendiente",
                     ComprobantePagoRevisionModel.cliente_id.is_not(None),
                     ComprobantePagoRevisionModel.monto_detectado.is_not(None),
-                    ComprobantePagoRevisionModel.folio_detectado.is_not(None),
+                    or_(
+                        ComprobantePagoRevisionModel.folio_detectado.is_not(None),
+                        # Adelantados sin referencia: ya tienen su depósito apartado.
+                        ComprobantePagoRevisionModel.motivo_revision == "pago_adelantado",
+                    ),
                 )
                 .order_by(ComprobantePagoRevisionModel.fecha_recepcion.asc())
                 .limit(limit)

@@ -5,12 +5,12 @@ from types import SimpleNamespace
 from typing import Optional, List
 from dateutil.relativedelta import relativedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, desc, func, extract
+from sqlalchemy import select, and_, or_, desc, exists, func, extract
 from sqlalchemy.orm import joinedload, selectinload
 
 # Modelos
 from src.infrastructure.models import (
-    ClienteModel, FacturaModel, FacturaConceptoModel, PagoConceptoModel, PagoModel,
+    ClienteModel, ComprobantePagoRevisionModel, FacturaModel, FacturaConceptoModel, PagoConceptoModel, PagoModel,
     UsuarioModel, PlanModel, RouterModel, PlantillaFacturacionModel,
     ServicioAdicionalModel,
     ServicioModel,
@@ -752,7 +752,13 @@ class BillingService:
             joinedload(FacturaModel.cliente)
         ).where(
             FacturaModel.estado == 'pendiente',
-            FacturaModel.es_promesa_activa == False
+            FacturaModel.es_promesa_activa == False,
+            # Ya pagada por adelantado: el pago se aplica el día 1 del mes.
+            ~exists().where(
+                ComprobantePagoRevisionModel.factura_id == FacturaModel.id,
+                ComprobantePagoRevisionModel.estado == "pendiente",
+                ComprobantePagoRevisionModel.motivo_revision == "pago_adelantado",
+            ),
         )
         
         facturas = (await self.db.execute(stmt)).scalars().all()
