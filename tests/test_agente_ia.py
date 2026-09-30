@@ -378,3 +378,91 @@ def test_al_iniciar_la_conversacion_se_pide_el_nombre_aunque_sea_cliente():
 def test_con_nombre_ya_no_se_vuelve_a_preguntar():
     texto = _mensaje_para_modelo("Juana")
     assert "Hablas con Juana." in texto and "INICIO DE CONVERSACIÓN" not in texto
+
+
+# ------------------------------------------- prospectos y avisos al personal
+class _Filas:
+    def __init__(self, valor=None):
+        self.valor = valor
+
+    def scalar_one_or_none(self):
+        return self.valor
+
+
+def _contexto_con_avisos(monkeypatch, telefono_busqueda="5219611234567@c.us", orden_existente=None):
+    enviados, pausas = [], []
+    config = SimpleNamespace(telefonos_alerta="9610000001, 9610000002")
+    db = _DB({("ConfiguracionSistema", 1): config})
+
+    async def execute(_consulta):
+        return _Filas(orden_existente)
+
+    db.execute = execute
+
+    async def enviar(numero, texto):
+        enviados.append((numero, texto))
+        return True
+
+    async def pausar(db_, llave, motivo, duracion):
+        pausas.append((llave, motivo, duracion))
+
+    monkeypatch.setattr(agente_mod, "pausar_bot", pausar)
+    servicio = AgenteIAService(db, enviar=enviar)
+    contexto = _Contexto(servicio, SimpleNamespace(mensaje_chat_id=1), "automatico", "82769002647735@lid", telefono_busqueda, None)
+    contexto.nombre_contacto = "Arisel"
+    contexto.usuario = SimpleNamespace(id=1)
+    return contexto, enviados, pausas
+
+
+def test_pasar_a_asesor_pausa_30_minutos_y_avisa_al_personal(monkeypatch):
+    contexto, enviados, pausas = _contexto_con_avisos(monkeypatch)
+
+    asyncio.run(contexto.usar("pasar_a_humano", {"motivo": "Pide hablar con una persona"}))
+
+    assert {p[2] for p in pausas} == {timedelta(minutes=30)}
+    assert [n for n, _ in enviados] == ["9610000001", "9610000002"]
+    assert "Arisel" in enviados[0][1] and "Pide hablar con una persona" in enviados[0][1]
+    assert "9611234567" in enviados[0][1]
+
+
+def test_un_interesado_queda_como_orden_de_instalacion_y_se_avisa(monkeypatch):
+    creadas = []
+
+    class _Ordenes:
+        def __init__(self, db):
+            pass
+
+        async def crear(self, datos, usuario):
+            creadas.append(datos)
+            return SimpleNamespace(id=321)
+
+    monkeypatch.setattr(agente_mod, "OrdenService", _Ordenes)
+    contexto, enviados, _ = _contexto_con_avisos(monkeypatch)
+
+    resultado = asyncio.run(contexto.usar("registrar_prospecto", {
+        "nombre": "Arisel Fernández", "direccion": "Vicente Guerrero, frente a la escuela", "plan": "Estándar $300",
+    }))
+
+    assert resultado == {"orden_creada": True, "orden_id": 321}
+    orden = creadas[0]
+    assert orden.tipo == "instalacion" and orden.cliente_id is None
+    assert orden.prospecto_telefono == "9611234567"
+    assert "Estándar $300" in orden.descripcion
+    assert len(enviados) == 2 and "#321" in enviados[0][1]
+
+
+def test_no_se_duplica_la_orden_de_un_interesado(monkeypatch):
+    contexto, enviados, _ = _contexto_con_avisos(monkeypatch, orden_existente=99)
+    resultado = asyncio.run(contexto.usar("registrar_prospecto", {"nombre": "Arisel", "direccion": "Vicente Guerrero"}))
+    assert resultado == {"orden_existente": True, "orden_id": 99}
+    assert enviados == []
+
+
+def test_un_lid_no_se_usa_como_telefono_de_contacto(monkeypatch):
+    contexto, _, _ = _contexto_con_avisos(monkeypatch, telefono_busqueda="82769002647735@lid")
+    assert contexto._telefono_de_contacto() is None
+
+
+def test_en_chats_con_lid_se_indica_pedir_telefono_de_contacto():
+    texto = _mensaje_para_modelo("Juana")  # el contexto de prueba usa un LID
+    assert "pídele un número de contacto" in texto

@@ -13,8 +13,10 @@ usar; las reglas de dinero y de identidad se aplican aquí, en código:
 import asyncio
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import httpx
 from sqlalchemy import or_, select, update
@@ -25,6 +27,7 @@ from src.application.services.billing_service import BillingService
 from src.application.services.bot_flow_service import get_or_create_bot_config
 from src.application.services.bot_pausa_service import bot_en_pausa, pausar_bot
 from src.application.services.comprobante_service import ComprobanteService
+from src.application.services.orden_service import OrdenService
 from src.application.services.support_service import SupportService
 from src.infrastructure.models import (
     AgenteInteraccionModel,
@@ -32,6 +35,7 @@ from src.infrastructure.models import (
     ConfiguracionSistema,
     FacturaModel,
     MensajeChatModel,
+    OrdenServicioModel,
     PlantillaMensajeModel,
     UsuarioModel,
     WhatsappIdentidadModel,
@@ -45,6 +49,8 @@ MAX_INTENTOS_CONTRATO = 5
 MENSAJES_DE_CONTEXTO = 12
 # Una conversación "nueva" vuelve a preguntar con quién se habla.
 VIGENCIA_NOMBRE = timedelta(hours=12)
+# Si nadie atiende al pasar a un asesor, el agente retoma la conversación.
+PAUSA_AL_PASAR_A_ASESOR = timedelta(minutes=30)
 # US$ por millón de tokens (DeepSeek Flash, hora pico: el precio más alto).
 PRECIOS = {"entrada": Decimal("0.30"), "cache": Decimal("0.006"), "salida": Decimal("1.20")}
 
@@ -53,7 +59,7 @@ CONSULTAS = {
     "consultar_avisos", "datos_de_pago", "leer_comprobante",
 }
 ACCIONES = {
-    "registrar_promesa", "crear_orden_tecnica", "aplicar_comprobante",
+    "registrar_prospecto", "registrar_promesa", "crear_orden_tecnica", "aplicar_comprobante",
     "solicitar_cambio_contrasena", "pasar_a_humano",
 }
 REQUIEREN_CLIENTE = {
@@ -122,6 +128,12 @@ HERRAMIENTAS = [
     _herramienta("consultar_avisos", "Avisos de mantenimiento o fallas enviados en las últimas 24 horas."),
     _herramienta("datos_de_pago", "Cuenta para depósito o transferencia."),
     _herramienta("leer_comprobante", "Lee la última imagen de comprobante que envió el cliente (monto, folio, contrato)."),
+    _herramienta("registrar_prospecto", "Registra a una persona nueva que quiere contratar: crea la orden de instalación y avisa al personal.",
+                 {"nombre": {"type": "string"},
+                  "direccion": {"type": "string", "description": "colonia, calle y referencias"},
+                  "plan": {"type": "string"},
+                  "telefono": {"type": "string", "description": "solo si lo dio; si no, se usa el del chat"}},
+                 ["nombre", "direccion"]),
     _herramienta("registrar_promesa", "Registra una promesa de pago del cliente identificado.",
                  {"fecha": {"type": "string", "description": "AAAA-MM-DD"}}, ["fecha"]),
     _herramienta("crear_orden_tecnica", "Crea una orden para que un técnico revise el servicio del cliente identificado.",
@@ -350,6 +362,8 @@ class AgenteIAService:
         else:
             identidad = "Cliente NO identificado: si pide algo de su cuenta, pídele su número de contrato."
         adjunto = "\n(El cliente envió una imagen; si parece comprobante usa leer_comprobante.)" if media_url else ""
+        if not contexto._telefono_de_contacto():
+            identidad += "\nNo se conoce el teléfono de este chat: si vas a registrar un interesado, pídele un número de contacto."
         return (
             "Conversación reciente:\n{}\n\n{}\n{}\n\nÚltimo mensaje del cliente:\n{}{}"
         ).format("\n".join(lineas) or "(sin mensajes previos)", quien, identidad, texto or "", adjunto)
@@ -637,9 +651,75 @@ class _Contexto:
     async def _pasar_a_humano(self, motivo: str) -> dict:
         for llave in {self.telefono, self.telefono_busqueda}:
             if llave:
-                await pausar_bot(self.db, llave, "agente_pasa_a_asesor")
+                await pausar_bot(
+                    self.db, llave, "agente_pasa_a_asesor", duracion=PAUSA_AL_PASAR_A_ASESOR
+                )
         await self.db.commit()
+        quien = self.nombre_contacto or (self.cliente.nombre if self.cliente else "Contacto sin nombre")
+        cuenta = f" (contrato {self.cliente.cedula})" if self.cliente else ""
+        await self._avisar_personal(
+            f"🙋 *El agente pasó un chat a un asesor*\n"
+            f"👤 {quien}{cuenta}\n📱 {self._telefono_de_contacto() or self.telefono}\n"
+            f"📝 {motivo}\n\nSi nadie contesta en 30 minutos, el agente retoma la conversación."
+        )
         return {"pasado_a_asesor": True, "motivo": motivo}
+
+    async def _registrar_prospecto(self, nombre: str, direccion: str, plan: str = "", telefono: str = "") -> dict:
+        nombre = " ".join((nombre or self.nombre_contacto or "").split())[:150]
+        direccion = " ".join((direccion or "").split())[:255]
+        if len(nombre) < 2 or len(direccion) < 5:
+            return {"error": "Falta el nombre o la dirección (colonia, calle y referencias)."}
+        contacto = re.sub(r"\D", "", telefono or "")[-10:] or self._telefono_de_contacto()
+        if contacto:
+            existente = (
+                await self.db.execute(
+                    select(OrdenServicioModel.id).where(
+                        OrdenServicioModel.tipo == "instalacion",
+                        OrdenServicioModel.prospecto_telefono == contacto,
+                        OrdenServicioModel.estado.notin_(["terminada", "cancelada"]),
+                    ).limit(1)
+                )
+            ).scalar_one_or_none()
+            if existente:
+                return {"orden_existente": True, "orden_id": existente}
+        usuario = self.usuario or await self._usuario_sistema()
+        orden = await OrdenService(self.db).crear(
+            SimpleNamespace(
+                tipo="instalacion", prioridad="normal", cliente_id=None,
+                prospecto_nombre=nombre, prospecto_telefono=contacto, prospecto_direccion=direccion,
+                tecnico_id=None, caja_nap_sugerida_id=None, puerto_nap_sugerido=None, fecha_programada=None,
+                motivo="prospecto_whatsapp",
+                descripcion=f"[Agente WhatsApp] Quiere contratar{' el plan ' + plan if plan else ''}. Chat: {self.telefono}",
+            ),
+            usuario,
+        )
+        await self._avisar_personal(
+            f"🆕 *Nuevo interesado por WhatsApp*\n👤 {nombre}\n📍 {direccion}\n"
+            f"📶 Plan: {plan or 'por definir'}\n📱 {contacto or self.telefono}\n"
+            f"🧾 Orden de instalación #{orden.id}"
+        )
+        return {"orden_creada": True, "orden_id": orden.id}
+
+    def _telefono_de_contacto(self) -> str | None:
+        """Teléfono real del chat (un LID no sirve para llamar)."""
+        for valor in (self.telefono_busqueda, self.telefono):
+            if valor and not str(valor).lower().endswith("@lid"):
+                digitos = re.sub(r"\D", "", str(valor).split("@")[0])
+                if len(digitos) >= 10:
+                    return digitos[-10:]
+        return None
+
+    async def _avisar_personal(self, texto: str) -> None:
+        """Avisa por WhatsApp a los teléfonos de alerta (Integraciones y claves)."""
+        if not self.servicio.enviar:
+            return
+        config = await self.db.get(ConfiguracionSistema, 1)
+        numeros = [n.strip() for n in (getattr(config, "telefonos_alerta", "") or "").split(",") if n.strip()]
+        for numero in numeros:
+            try:
+                await self.servicio.enviar(numero, texto)
+            except Exception:
+                logger.exception("No se pudo avisar al personal en %s", numero)
 
     async def _usuario_sistema(self) -> UsuarioModel:
         usuario = (
