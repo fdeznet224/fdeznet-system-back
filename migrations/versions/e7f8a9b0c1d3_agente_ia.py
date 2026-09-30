@@ -1,7 +1,7 @@
 """agente de IA para WhatsApp: configuración, interacciones e identidades
 
 Revision ID: e7f8a9b0c1d3
-Revises: d5e6f7a8b9c1
+Revises: e6f7a8b9c0d2
 Create Date: 2026-09-30
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "e7f8a9b0c1d3"
-down_revision = "d5e6f7a8b9c1"
+down_revision = "e6f7a8b9c0d2"
 branch_labels = None
 depends_on = None
 
