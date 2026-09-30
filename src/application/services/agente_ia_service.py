@@ -66,7 +66,8 @@ REQUIEREN_CLIENTE = {
     "consultar_cuenta", "diagnosticar_conexion", "registrar_promesa",
     "crear_orden_tecnica", "aplicar_comprobante", "solicitar_cambio_contrasena",
 }
-CATEGORIAS_ORDEN = ("sin_internet", "cable_roto", "potencia_baja", "lentitud", "router_wifi", "otro")
+CATEGORIAS_ORDEN = ("sin_internet", "cable_roto", "potencia_baja", "lentitud", "router_wifi", "cambio_domicilio", "otro")
+RE_COORDENADAS = re.compile(r"(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})")
 
 EXPLICACION_DIAGNOSTICO = {
     "servicio_suspendido": "El servicio está suspendido por adeudo; no es una falla de la red.",
@@ -103,6 +104,18 @@ async def vincular_chat(db: AsyncSession, telefono: str, cliente_id: int) -> Non
     )
 
 
+def enlace_ubicacion(texto: str | None) -> str | None:
+    """Enlace de Google Maps a partir de la ubicación que compartió el cliente."""
+    coincidencia = RE_COORDENADAS.search(texto or "")
+    if not coincidencia:
+        return None
+    lat, lng = coincidencia.groups()
+    return f"https://maps.google.com/?q={lat},{lng}"
+
+
+_UBICACION = {"type": "string", "description": "la ubicación que compartió por WhatsApp (enlace o coordenadas), si la envió"}
+
+
 def _herramienta(nombre, descripcion, propiedades=None, requeridas=None):
     return {
         "type": "function",
@@ -131,6 +144,7 @@ HERRAMIENTAS = [
     _herramienta("registrar_prospecto", "Registra a una persona nueva que quiere contratar: crea la orden de instalación y avisa al personal.",
                  {"nombre": {"type": "string"},
                   "direccion": {"type": "string", "description": "colonia, calle y referencias"},
+                  "ubicacion": _UBICACION,
                   "plan": {"type": "string"},
                   "telefono": {"type": "string", "description": "solo si lo dio; si no, se usa el del chat"}},
                  ["nombre", "direccion"]),
@@ -138,7 +152,8 @@ HERRAMIENTAS = [
                  {"fecha": {"type": "string", "description": "AAAA-MM-DD"}}, ["fecha"]),
     _herramienta("crear_orden_tecnica", "Crea una orden para que un técnico revise el servicio del cliente identificado.",
                  {"categoria": {"type": "string", "enum": list(CATEGORIAS_ORDEN)},
-                  "descripcion": {"type": "string"}}, ["categoria", "descripcion"]),
+                  "descripcion": {"type": "string"},
+                  "ubicacion": _UBICACION}, ["categoria", "descripcion"]),
     _herramienta("aplicar_comprobante", "Concilia un comprobante leído con el correo bancario y, si coincide, aplica el pago.",
                  {"revision_id": {"type": "integer"}}, ["revision_id"]),
     _herramienta("solicitar_cambio_contrasena", "Pide al personal cambiar la contraseña del WiFi del cliente identificado.",
@@ -622,8 +637,11 @@ class _Contexto:
             return {"error": str(exc)}
         return {"registrada": True, "fecha_limite": fecha_promesa, "reactivado": bool(reactivado)}
 
-    async def _crear_orden_tecnica(self, categoria: str, descripcion: str) -> dict:
+    async def _crear_orden_tecnica(self, categoria: str, descripcion: str, ubicacion: str = "") -> dict:
         categoria = categoria if categoria in CATEGORIAS_ORDEN else "otro"
+        mapa = enlace_ubicacion(ubicacion)
+        if mapa:
+            descripcion = f"{descripcion} · Ubicación: {mapa}"
         usuario = self.usuario or await self._usuario_sistema()
         try:
             orden = await SupportService(self.db).crear_incidencia(
@@ -664,11 +682,18 @@ class _Contexto:
         )
         return {"pasado_a_asesor": True, "motivo": motivo}
 
-    async def _registrar_prospecto(self, nombre: str, direccion: str, plan: str = "", telefono: str = "") -> dict:
+    async def _registrar_prospecto(
+        self, nombre: str, direccion: str, plan: str = "", telefono: str = "", ubicacion: str = ""
+    ) -> dict:
         nombre = " ".join((nombre or self.nombre_contacto or "").split())[:150]
-        direccion = " ".join((direccion or "").split())[:255]
-        if len(nombre) < 2 or len(direccion) < 5:
-            return {"error": "Falta el nombre o la dirección (colonia, calle y referencias)."}
+        mapa = enlace_ubicacion(ubicacion)
+        direccion = " ".join((direccion or "").split())
+        if len(nombre) < 2 or (len(direccion) < 5 and not mapa):
+            return {"error": "Falta el nombre o la dirección (colonia, calle y referencias) o su ubicación."}
+        if mapa:
+            # El técnico abre el enlace en el mapa; la dirección escrita es la referencia.
+            direccion = f"{direccion[:255 - len(mapa) - 3]} · {mapa}" if direccion else mapa
+        direccion = direccion[:255]
         contacto = re.sub(r"\D", "", telefono or "")[-10:] or self._telefono_de_contacto()
         if contacto:
             existente = (

@@ -466,3 +466,46 @@ def test_un_lid_no_se_usa_como_telefono_de_contacto(monkeypatch):
 def test_en_chats_con_lid_se_indica_pedir_telefono_de_contacto():
     texto = _mensaje_para_modelo("Juana")  # el contexto de prueba usa un LID
     assert "pídele un número de contacto" in texto
+
+
+# ------------------------------------------------------------------ ubicación
+def test_la_ubicacion_de_whatsapp_se_vuelve_enlace_de_mapa():
+    assert agente_mod.enlace_ubicacion("📍 Ubicación: http://maps.google.com/maps?q=16.7521,-93.1152") == "https://maps.google.com/?q=16.7521,-93.1152"
+    assert agente_mod.enlace_ubicacion("Calle Hidalgo 12") is None
+
+
+def test_el_interesado_con_ubicacion_lleva_el_mapa_en_la_orden(monkeypatch):
+    creadas = []
+
+    class _Ordenes:
+        def __init__(self, db):
+            pass
+
+        async def crear(self, datos, usuario):
+            creadas.append(datos)
+            return SimpleNamespace(id=7)
+
+    monkeypatch.setattr(agente_mod, "OrdenService", _Ordenes)
+    contexto, enviados, _ = _contexto_con_avisos(monkeypatch)
+    resultado = asyncio.run(contexto.usar("registrar_prospecto", {
+        "nombre": "Arisel", "direccion": "Casa azul junto a la tienda",
+        "ubicacion": "📍 Ubicación: http://maps.google.com/maps?q=16.7521,-93.1152",
+    }))
+    assert resultado["orden_creada"] is True
+    assert creadas[0].prospecto_direccion == "Casa azul junto a la tienda · https://maps.google.com/?q=16.7521,-93.1152"
+    assert "maps.google.com" in enviados[0][1]
+    assert len(creadas[0].prospecto_direccion) <= 255
+
+
+def test_solo_con_ubicacion_basta_aunque_no_escriba_direccion(monkeypatch):
+    class _Ordenes:
+        def __init__(self, db):
+            pass
+
+        async def crear(self, datos, usuario):
+            return SimpleNamespace(id=8)
+
+    monkeypatch.setattr(agente_mod, "OrdenService", _Ordenes)
+    contexto, _, _ = _contexto_con_avisos(monkeypatch)
+    resultado = asyncio.run(contexto.usar("registrar_prospecto", {"nombre": "Arisel", "direccion": "", "ubicacion": "16.7521,-93.1152"}))
+    assert resultado["orden_creada"] is True
