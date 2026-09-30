@@ -79,6 +79,8 @@ class ComprobanteService:
             cedula_detectada=resultado.get("cedula_detectada"),
             fecha_pago_detectada=resultado.get("fecha_pago"),
             huella_captura=huella,
+            concepto_detectado=(resultado.get("concepto") or "")[:120] or None,
+            cuentas_detectadas=",".join(resultado.get("cuentas") or [])[:60] or None,
             motivo_revision=(
                 "esperando_confirmacion"
                 if resultado.get("exito")

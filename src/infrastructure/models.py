@@ -2174,6 +2174,9 @@ class ComprobantePagoRevisionModel(Base):
     fecha_pago_detectada = Column(DateTime, nullable=True)
     # Folio propio de la captura (monto + hora + cuentas) para detectar reenvíos.
     huella_captura = Column(String(24), nullable=True, index=True)
+    # Para confirmar al titular cuando la captura no trae folio.
+    concepto_detectado = Column(String(120), nullable=True)
+    cuentas_detectadas = Column(String(60), nullable=True)
     fecha_recepcion = Column(
         DateTime,
         nullable=False,

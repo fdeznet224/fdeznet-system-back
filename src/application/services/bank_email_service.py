@@ -4,6 +4,7 @@ import hashlib
 import imaplib
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -19,6 +20,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infrastructure.models import (
+    ClienteModel,
     ComprobantePagoRevisionModel,
     ConfiguracionCorreoBancoModel,
     FacturaModel,
@@ -27,6 +29,70 @@ from src.infrastructure.models import (
     UsuarioModel,
 )
 from src.application.services.billing_service import BillingService
+
+
+# Palabras que traen casi todos los conceptos y no identifican a nadie.
+PALABRAS_GENERICAS = {
+    "pago", "pagos", "internet", "fdeznet", "transferencia", "envio", "folio",
+    "cuenta", "servicio", "mensualidad", "renta", "comision", "incluye", "iva",
+    "contactanos", "ayuda", "linea", "azteca", "banco", "tipo", "operacion",
+    "concepto", "spei", "abono", "deposito", "mes", "del", "los", "las", "para",
+}
+
+
+def palabras(texto: str | None) -> set[str]:
+    """Palabras en minúsculas y sin acentos, para comparar conceptos."""
+    plano = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower()
+    return set(re.findall(r"[a-z0-9]+", plano))
+
+
+def cuentas_de_origen(concepto: str | None) -> set[str]:
+    """Terminaciones de cuenta en el correo: "De la cuenta: BANORTE ***6634"."""
+    return set(re.findall(r"(?:\*{2,}|x{2,})\s*(\d{4})\b", concepto or "", re.IGNORECASE))
+
+
+def contrato_en_concepto(contrato: str | None, texto: set[str]) -> bool:
+    """El contrato como palabra ("2e3a") o pegado a letras ("fdeznet2e3a")."""
+    contrato = (contrato or "").strip().lower()
+    if len(contrato) < 3:
+        return False
+    return any(
+        palabra == contrato
+        or (palabra.endswith(contrato) and palabra[: -len(contrato)].isalpha())
+        for palabra in texto
+    )
+
+
+def senales_de_titular(
+    cliente: ClienteModel | None,
+    revision: ComprobantePagoRevisionModel,
+    transaction: TransaccionCorreoBancoModel,
+) -> list[str]:
+    """Por qué el depósito es de ese cliente, cuando no hay folio que compararlo.
+
+    Sin folio, monto y hora no bastan: cualquiera que sepa que otro cliente
+    pagó $300 a cierta hora podría reclamar ese depósito con una captura
+    editada. Debe coincidir además algo propio del cliente.
+    """
+    banco = palabras(transaction.concepto)
+    senales = []
+    if cliente:
+        nombre = {p for p in palabras(cliente.nombre) if len(p) >= 3 and p not in PALABRAS_GENERICAS}
+        if len(nombre & banco) >= 2:
+            senales.append("nombre")
+        if contrato_en_concepto(cliente.cedula, banco):
+            senales.append("contrato")
+    captura = {
+        p for p in palabras(getattr(revision, "concepto_detectado", None))
+        if len(p) >= 4 and p not in PALABRAS_GENERICAS
+    }
+    comunes = captura & banco
+    if len(comunes) >= 2 or any(len(p) >= 5 and not p.isalpha() and not p.isdigit() for p in comunes):
+        senales.append("concepto")
+    cuentas = {c for c in (getattr(revision, "cuentas_detectadas", None) or "").split(",") if c}
+    if cuentas & cuentas_de_origen(transaction.concepto):
+        senales.append("cuenta_origen")
+    return senales
 
 
 class BankEmailError(RuntimeError):
@@ -656,13 +722,24 @@ class BankEmailService:
             return None, "multiples_correos_coincidentes"
         return None, "correo_bancario_no_encontrado"
 
-    async def _find_match_sin_referencia(self, db, config, revision, amount):
-        """Solo si hay UN depósito con el mismo monto en la ventana de hora."""
+    async def _find_match_sin_referencia(self, db, config, revision, amount, ligado=None):
+        """Sin folio: monto, hora cercana y algo propio del cliente.
+
+        De los depósitos que cuadran en monto y hora se toma el ÚNICO en el que
+        coincide el titular (nombre, contrato, concepto o cuenta de origen).
+        Si ninguno o varios coinciden, lo decide una persona.
+        """
         candidatos = await self._candidatos_sin_referencia(db, config, revision, amount)
-        if len(candidatos) == 1:
-            return candidatos[0], "coincidencia_sin_referencia"
+        if ligado is not None and all(t.id != ligado.id for t in candidatos):
+            candidatos.append(ligado)
+        cliente = await db.get(ClienteModel, revision.cliente_id) if revision.cliente_id else None
+        del_cliente = [t for t in candidatos if senales_de_titular(cliente, revision, t)]
+        if len(del_cliente) == 1:
+            return del_cliente[0], "coincidencia_sin_referencia"
         if len(candidatos) > 1:
             return None, "multiples_correos_coincidentes"
+        if candidatos:
+            return None, "titular_no_coincide"
         return None, "correo_bancario_no_encontrado"
 
     async def _candidatos_sin_referencia(self, db, config, revision, amount):
@@ -759,6 +836,7 @@ class BankEmailService:
         ).scalars().all()
         hora_inicio, hora_fin = self.ventana_sin_referencia(revision)
         folio = normalize_reference_for_match(revision.folio_detectado)
+        cliente = await db.get(ClienteModel, revision.cliente_id) if revision.cliente_id else None
         resultado = []
         for deposito in depositos:
             if self.motivo_deposito_elegido(config, revision, deposito) != "deposito_elegido":
@@ -782,9 +860,10 @@ class BankEmailService:
                     folio and folio == normalize_reference_for_match(deposito.referencia)
                 ),
                 "ligado": deposito.id == revision.transaccion_correo_id,
+                "titular": senales_de_titular(cliente, revision, deposito),
             })
         # Primero los que cuadran por referencia u hora.
-        resultado.sort(key=lambda d: (not d["coincide_referencia"], not d["coincide_hora"]))
+        resultado.sort(key=lambda d: (not d["coincide_referencia"], not d["titular"], not d["coincide_hora"]))
         return resultado
 
     async def reconcile_revision(
@@ -807,23 +886,22 @@ class BankEmailService:
             if reason not in COINCIDENCIAS_VALIDAS:
                 transaction = None
             elif reason == "coincidencia_sin_referencia":
-                # Sin referencia, solo el monto y la hora identifican el
-                # depósito: aunque ya esté ligado, si otro depósito libre
-                # también cuadra no se cobra; lo decide una persona.
-                otros = [
-                    t for t in await self._candidatos_sin_referencia(
-                        db, config, revision, Decimal(revision.monto_detectado or 0)
-                    )
-                    if t.id != transaction.id
-                ]
-                if otros:
+                # Sin referencia, aunque ya esté ligado se vuelve a elegir con
+                # la misma regla: si no es el único del cliente, no se cobra.
+                elegido, motivo = await self._find_match_sin_referencia(
+                    db, config, revision, Decimal(revision.monto_detectado or 0), ligado=transaction
+                )
+                if elegido is None or elegido.id != transaction.id:
                     if transaction.estado == "reservada":
                         transaction.estado = "disponible"
                     revision.transaccion_correo_id = None
-                    revision.notas_revision = "Depósitos posibles: " + ", ".join(
-                        f"#{t.id}" for t in [transaction, *otros]
+                    revision.notas_revision = (
+                        f"El depósito #{transaction.id} no se confirmó como del cliente ({motivo})"
+                        if elegido is None
+                        else f"El depósito #{transaction.id} no es del cliente; el que coincide es #{elegido.id}"
                     )
-                    transaction, reason = None, "multiples_correos_coincidentes"
+                    transaction = None
+                    reason = motivo if elegido is None else "multiples_correos_coincidentes"
         else:
             transaction, reason = await self.find_match(db, revision)
         revision.motivo_revision = reason

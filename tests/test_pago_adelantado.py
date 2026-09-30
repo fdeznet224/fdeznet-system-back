@@ -25,11 +25,17 @@ def _factura(**cambios):
     return SimpleNamespace(**datos)
 
 
-def _escenario(estado_deposito="disponible"):
+MARGARITA = SimpleNamespace(id=248, nombre="Margarita Moreno Lopez", cedula="D440")
+CONCEPTO_MARGARITA = "margarita moreno lopez De la cuenta: BANORTE ***6634"
+CONCEPTO_MAURICIO = "fdeznet2E3A Folio: M01576668"
+
+
+def _escenario(estado_deposito="disponible", concepto=CONCEPTO_MARGARITA):
     correo = SimpleNamespace(
         id=89, autenticado=True, estado=estado_deposito, tipo_movimiento="entrante",
         cuenta_destino_terminacion="5265", monto=Decimal("300.00"),
         fecha_correo=datetime(2026, 9, 30, 14, 54, 59), referencia="M01576668",
+        concepto=concepto,
     )
     revision = SimpleNamespace(
         id=13, estado="pendiente", cliente_id=248, factura_id=1134, transaccion_correo_id=89,
@@ -52,9 +58,13 @@ class _DB:
         return None
 
 
-def _conciliar(monkeypatch, ahora, factura=None, otros_depositos=(), estado_deposito="disponible"):
-    correo, revision = _escenario(estado_deposito)
+def _conciliar(
+    monkeypatch, ahora, factura=None, otros_depositos=(), estado_deposito="disponible",
+    concepto=CONCEPTO_MARGARITA,
+):
+    correo, revision = _escenario(estado_deposito, concepto)
     db = _DB({
+        ("ClienteModel", 248): MARGARITA,
         ("TransaccionCorreoBancoModel", 89): correo,
         ("FacturaModel", 1134): factura or _factura(),
     })
@@ -143,15 +153,43 @@ def test_quien_ya_pago_por_adelantado_no_recibe_recordatorio():
     assert '"pago_adelantado"' in fuente and "~exists()" in fuente
 
 
-def test_si_otro_deposito_tambien_cuadra_no_se_cobra_el_ligado(monkeypatch):
-    # Caso Mauricio/Margarita: dos depósitos de $300 con minutos de diferencia.
-    otro = SimpleNamespace(id=90)
+def _deposito(id, concepto):
+    return SimpleNamespace(id=id, concepto=concepto)
+
+
+def test_caso_de_hoy_el_deposito_ligado_era_de_otro_cliente(monkeypatch):
+    # Margarita quedó ligada al #89 (concepto de Mauricio) y el #90 lleva su nombre.
     resultado, correo, revision, cobro = _conciliar(
-        monkeypatch, datetime(2026, 10, 1, 8, 0), otros_depositos=[otro], estado_deposito="reservada"
+        monkeypatch, datetime(2026, 10, 1, 8, 0), estado_deposito="reservada",
+        concepto=CONCEPTO_MAURICIO, otros_depositos=[_deposito(90, "margarita moreno lopez")],
     )
     assert resultado == {"status": "multiples_correos_coincidentes", "approved": False}
     assert not cobro
     assert revision.transaccion_correo_id is None
-    assert revision.notas_revision == "Depósitos posibles: #89, #90"
+    assert revision.notas_revision == "El depósito #89 no es del cliente; el que coincide es #90"
     assert correo.estado == "disponible"
 
+
+def test_si_otro_deposito_igual_no_es_del_cliente_se_cobra_el_suyo(monkeypatch):
+    *_, cobro = _conciliar(
+        monkeypatch, datetime(2026, 10, 1, 8, 0), estado_deposito="reservada",
+        otros_depositos=[_deposito(90, CONCEPTO_MAURICIO)],
+    )
+    assert cobro
+
+
+def test_si_dos_depositos_llevan_su_nombre_decide_una_persona(monkeypatch):
+    resultado, correo, _, cobro = _conciliar(
+        monkeypatch, datetime(2026, 10, 1, 8, 0), estado_deposito="reservada",
+        otros_depositos=[_deposito(90, "MARGARITA MORENO pago")],
+    )
+    assert resultado["status"] == "multiples_correos_coincidentes" and not cobro
+    assert correo.estado == "disponible"
+
+
+def test_sin_nada_del_cliente_en_el_deposito_no_se_cobra(monkeypatch):
+    resultado, _, revision, cobro = _conciliar(
+        monkeypatch, datetime(2026, 10, 1, 8, 0), estado_deposito="reservada", concepto="Envio Folio: 000001971",
+    )
+    assert resultado["status"] == "titular_no_coincide" and not cobro
+    assert revision.notas_revision.startswith("El depósito #89 no se confirmó como del cliente")

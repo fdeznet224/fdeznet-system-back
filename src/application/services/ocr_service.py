@@ -134,6 +134,17 @@ class OCRService:
             except ValueError:
                 fecha_pago = None
 
+        # Texto del concepto: "Concepto de transferencia: margarita moreno lopez 30/09/2026".
+        concepto = None
+        match = re.search(
+            r"(?:concepto|motivo)(?: de(?: la)? (?:transferencia|pago|operaci[oó]n))?\s*[:\-]?\s*"
+            r"(.{3,80}?)(?=\s+\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\s+(?:fecha|folio|referencia|clave|cuenta|"
+            r"importe|monto|compartir|hora|banco|comisi[oó]n)\b|$)",
+            texto,
+        )
+        if match:
+            concepto = match.group(1).strip(" :-") or None
+
         # Terminaciones de cuenta o tarjeta: "Cuenta ****8663", "Tarjeta ** **5265".
         cuentas = re.findall(r"(?:[*•·]{2,}|x{2,})[\s*•·x]*(\d{4})\b", texto)
 
@@ -143,6 +154,7 @@ class OCRService:
             "cedula_detectada": cedula_detectada,
             "fecha_pago": fecha_pago,
             "cuentas": sorted(set(cuentas)),
+            "concepto": concepto,
             "huella": huella_captura(monto, fecha_pago, cuentas),
             "exito": folio is not None and monto > 0,
         }

@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
-from src.application.services.bank_email_service import BankEmailService
+from src.application.services.bank_email_service import BankEmailService, senales_de_titular
 
 CONFIG = SimpleNamespace(activo=True, cuentas_destino_permitidas="6342, 5265", tolerancia_monto=Decimal("0"), ventana_dias=3)
 
@@ -15,6 +15,7 @@ def _revision(**cambios):
         folio_detectado=None, monto_detectado=Decimal("300.00"),
         fecha_pago_detectada=datetime(2026, 9, 30, 8, 58, 12),  # hora local de la captura
         fecha_recepcion=datetime(2026, 9, 30, 9, 2, 31),
+        cliente_id=None, concepto_detectado=None, cuentas_detectadas=None,
     )
     datos.update(cambios)
     return SimpleNamespace(**datos)
@@ -59,9 +60,16 @@ def test_sin_hora_en_la_captura_se_usa_la_hora_en_que_llego():
     assert BankEmailService.motivo_coincidencia(CONFIG, sin_hora, tarde) == "fecha_hora_bancaria_fuera_de_ventana"
 
 
+MARGARITA = SimpleNamespace(id=248, nombre="Margarita Moreno Lopez", cedula="D440")
+
+
 class _DB:
-    def __init__(self, correos):
+    def __init__(self, correos, cliente=None):
         self.correos = correos
+        self.cliente = cliente
+
+    async def get(self, _modelo, _llave):
+        return self.cliente
 
     async def execute(self, _consulta):
         correos = self.correos
@@ -76,14 +84,49 @@ class _DB:
         return _R()
 
 
-def test_dos_depositos_iguales_en_la_ventana_van_a_revision_humana():
+def _buscar(correos, revision=None, cliente=MARGARITA):
     servicio = BankEmailService()
-    dos = [_correo(), _correo(fecha_correo=datetime(2026, 9, 30, 15, 1, 0))]
-    correo, motivo = asyncio.run(servicio._find_match_sin_referencia(_DB(dos), CONFIG, _revision(), Decimal("300.00")))
-    assert correo is None and motivo == "multiples_correos_coincidentes"
-    uno = [_correo()]
-    correo, motivo = asyncio.run(servicio._find_match_sin_referencia(_DB(uno), CONFIG, _revision(), Decimal("300.00")))
-    assert correo is uno[0] and motivo == "coincidencia_sin_referencia"
+    return asyncio.run(servicio._find_match_sin_referencia(
+        _DB(correos, cliente), CONFIG, revision or _revision(cliente_id=248), Decimal("300.00")
+    ))
+
+
+def test_dos_depositos_iguales_sin_nada_del_cliente_van_a_revision_humana():
+    dos = [_correo(concepto="Envio"), _correo(concepto="Envio", fecha_correo=datetime(2026, 9, 30, 15, 1, 0))]
+    assert _buscar(dos) == (None, "multiples_correos_coincidentes")
+
+
+def test_monto_y_hora_no_bastan_si_el_deposito_no_es_del_cliente():
+    # Alguien sabe que otro cliente pagó $300 a esa hora y manda una captura editada.
+    assert _buscar([_correo(concepto="fdeznet2E3A Folio: M01576668")]) == (None, "titular_no_coincide")
+
+
+def test_caso_margarita_y_mauricio_se_toma_el_que_lleva_su_nombre():
+    mauricio = _correo(concepto="fdeznet2E3A Folio: M01576668")
+    margarita = _correo(concepto="margarita moreno lopez De la cuenta: BANORTE ***6634",
+                        fecha_correo=datetime(2026, 9, 30, 14, 58, 19))
+    assert _buscar([mauricio, margarita]) == (margarita, "coincidencia_sin_referencia")
+
+
+def test_sin_cliente_identificado_vale_el_concepto_de_la_captura():
+    margarita = _correo(concepto="margarita moreno lopez De la cuenta: BANORTE ***6634")
+    revision = _revision(concepto_detectado="margarita moreno lopez")
+    assert _buscar([margarita], revision, cliente=None) == (margarita, "coincidencia_sin_referencia")
+
+
+def _senales(concepto, cliente=MARGARITA, **revision):
+    return senales_de_titular(cliente, _revision(**revision), _correo(concepto=concepto))
+
+
+def test_senales_del_titular():
+    assert _senales("MARGARITA MORENO pago internet") == ["nombre"]
+    assert _senales("pago de lopez") == []  # un solo apellido no basta
+    mauricio = SimpleNamespace(nombre="Mauricio Balcazar Vazquez", cedula="2E3A")
+    assert _senales("fdeznet2E3A Folio: M01576668", mauricio) == ["contrato"]
+    assert _senales("Envio Folio: 2E3A123", mauricio) == []  # el contrato debe ir solo o tras letras
+    assert _senales("pago fdeznet2e3a", None, concepto_detectado="fdeznet2E3A") == ["concepto"]
+    assert _senales("pago internet", None, concepto_detectado="pago internet") == []  # palabras genéricas
+    assert _senales("De la cuenta: BANORTE ***6634", None, cuentas_detectadas="5265,6634") == ["cuenta_origen"]
 
 
 def test_la_bandeja_aprueba_a_mano_con_la_misma_regla_sin_referencia():
@@ -142,9 +185,10 @@ def test_la_lista_marca_cual_cuadra_por_hora_y_limpia_el_concepto(monkeypatch):
     )
     lejano = _correo(id=70, pago_id=None, fecha_correo=datetime(2026, 9, 29, 23, 40, 36), concepto="Envio")
     depositos = asyncio.run(servicio.depositos_posibles(
-        _DB([lejano, mauricio, margarita]), _revision(transaccion_correo_id=None)
+        _DB([lejano, mauricio, margarita], MARGARITA), _revision(transaccion_correo_id=None, cliente_id=248)
     ))
-    assert [d["id"] for d in depositos] == [89, 90, 70]
-    assert depositos[0]["concepto"] == "fdeznet2E3A Folio: M01576668"
-    assert depositos[1]["fecha"] == "2026-09-30T08:58:19"
+    assert [d["id"] for d in depositos] == [90, 89, 70]  # primero el que lleva su nombre
+    assert depositos[0]["titular"] == ["nombre"] and depositos[1]["titular"] == []
+    assert depositos[1]["concepto"] == "fdeznet2E3A Folio: M01576668"
+    assert depositos[0]["fecha"] == "2026-09-30T08:58:19"
     assert [d["coincide_hora"] for d in depositos] == [True, True, False]
