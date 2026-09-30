@@ -1870,7 +1870,7 @@ class ConfiguracionBotModel(Base):
     agente_modo = Column(String(20), nullable=False, default="apagado", server_default="apagado")
     agente_url = Column(String(255), nullable=False, default="https://api.deepseek.com/v1", server_default="https://api.deepseek.com/v1")
     agente_modelo = Column(String(80), nullable=False, default="deepseek-flash", server_default="deepseek-flash")
-    agente_api_key_cifrada = Column(Text, nullable=True)
+    agente_api_key = Column(EncryptedText(), nullable=True)
     agente_conocimiento = Column(Text, nullable=True)
     actualizado_en = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 

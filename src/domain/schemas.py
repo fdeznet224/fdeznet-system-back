@@ -1,3 +1,4 @@
+import re
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -51,7 +52,21 @@ class SystemConfigUpdate(BaseModel):
     corte_solo_whatsapp: bool = False
     corte_whatsapp_kbps: int = Field(default=128, ge=32, le=2048)
     baja_automatica_dias: int = Field(default=90, ge=0, le=365)
-    telefonos_alerta: Optional[str] = ""
+    # telefonos_alerta se guarda aparte (Integraciones) para que este
+    # formulario no lo sobrescriba con un valor viejo.
+
+
+class AlertasUpdate(BaseModel):
+    telefonos_alerta: str = Field(default="", max_length=500)
+
+    @field_validator("telefonos_alerta")
+    @classmethod
+    def validar_telefonos(cls, valor):
+        numeros = [n.strip() for n in (valor or "").split(",") if n.strip()]
+        for numero in numeros:
+            if not re.fullmatch(r"\+?\d{10,15}", re.sub(r"[\s-]", "", numero)):
+                raise ValueError(f"Teléfono inválido: {numero}")
+        return ", ".join(re.sub(r"[\s-]", "", n) for n in numeros)
 
 
 class StoragePolicyUpdate(BaseModel):

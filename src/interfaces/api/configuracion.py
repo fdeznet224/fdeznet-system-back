@@ -29,6 +29,7 @@ from src.infrastructure.models import (
 
 # --- SCHEMAS (Los datos que entran y salen) ---
 from src.domain.schemas import (
+    AlertasUpdate,
     SystemConfigUpdate, 
     PppoePasswordConfig,
     BillingTemplateRequest, 
@@ -629,6 +630,22 @@ async def eliminar_plantilla_mensaje(id: int, db: AsyncSession = Depends(get_db)
 # =========================================================
 # 3. CONFIGURACIÓN DEL SISTEMA (Cronjobs Globales)
 # =========================================================
+
+@router.get("/alertas")
+async def obtener_alertas(db: AsyncSession = Depends(get_db)):
+    config = await get_or_create_system_config(db)
+    return {"telefonos_alerta": config.telefonos_alerta or ""}
+
+
+@router.put("/alertas")
+async def guardar_alertas(datos: AlertasUpdate, db: AsyncSession = Depends(get_db)):
+    """Teléfonos que reciben avisos de posible fraude (comprobantes repetidos)."""
+    config = await get_or_create_system_config(db)
+    config.telefonos_alerta = datos.telefonos_alerta
+    await db.commit()
+    await FastAPICache.clear()
+    return {"status": "ok", "telefonos_alerta": config.telefonos_alerta}
+
 
 @router.get("/sistema")
 @cache(expire=300)

@@ -257,3 +257,73 @@ def test_varios_mensajes_seguidos_se_atienden_una_sola_vez(monkeypatch):
 
     asyncio.run(escenario())
     assert atendidos == ["no tengo internet"]
+
+
+# ---------------------------------------------------------------- panel
+import httpx
+from fastapi import HTTPException
+
+import src.interfaces.api.agente_ia as api_agente
+from src.domain.schemas import AlertasUpdate, SystemConfigUpdate
+
+
+def _probar(estado, cuerpo, modelo="deepseek-flash"):
+    transporte = httpx.MockTransport(lambda _req: httpx.Response(estado, json=cuerpo))
+
+    async def correr():
+        async with httpx.AsyncClient(transport=transporte) as http:
+            return await api_agente.verificar_conexion_ia("https://api.deepseek.com/v1", modelo, "clave", http=http)
+
+    return asyncio.run(correr())
+
+
+def test_probar_clave_valida_con_el_modelo_configurado():
+    resultado = _probar(200, {"data": [{"id": "deepseek-flash"}, {"id": "deepseek-v4-pro"}]})
+    assert resultado["ok"] is True
+
+
+def test_probar_clave_invalida_o_modelo_inexistente():
+    assert _probar(401, {"error": "bad key"}) == {"ok": False, "detalle": "La clave no es válida o fue revocada."}
+    resultado = _probar(200, {"data": [{"id": "deepseek-v4-pro"}]})
+    assert resultado["ok"] is False and "deepseek-flash" in resultado["detalle"]
+
+
+def _config_bot(**valores):
+    return SimpleNamespace(
+        agente_modo="apagado", agente_url="https://api.deepseek.com/v1",
+        agente_modelo="deepseek-flash", agente_api_key=None, agente_conocimiento=None, **valores,
+    )
+
+
+def test_no_se_enciende_el_agente_sin_clave(monkeypatch):
+    config = _config_bot()
+
+    async def obtener(_db):
+        return config
+
+    monkeypatch.setattr(api_agente, "get_or_create_bot_config", obtener)
+    datos = api_agente.ConfiguracionAgenteRequest(modo="sugerencia")
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(api_agente.guardar_configuracion(datos, db=_DB(), current_user=None))
+    assert "Integraciones" in error.value.detail
+    assert config.agente_modo == "apagado"
+
+
+def test_guardar_conexion_sin_clave_conserva_la_guardada(monkeypatch):
+    config = _config_bot()
+    config.agente_api_key = "sk-guardada"
+
+    async def obtener(_db):
+        return config
+
+    monkeypatch.setattr(api_agente, "get_or_create_bot_config", obtener)
+    datos = api_agente.ConexionAgenteRequest(url="https://api.deepseek.com/v1", modelo="deepseek-flash", api_key="  ")
+    resultado = asyncio.run(api_agente.guardar_conexion(datos, db=_DB(), current_user=None))
+    assert resultado["tiene_clave"] is True and config.agente_api_key == "sk-guardada"
+
+
+def test_telefonos_de_alerta_se_validan_y_no_los_pisa_el_panel_general():
+    assert AlertasUpdate(telefonos_alerta="961 580 1793, 5219611234567").telefonos_alerta == "9615801793, 5219611234567"
+    with pytest.raises(ValueError):
+        AlertasUpdate(telefonos_alerta="123")
+    assert "telefonos_alerta" not in SystemConfigUpdate.model_fields

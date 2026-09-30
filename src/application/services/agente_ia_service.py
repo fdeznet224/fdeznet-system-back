@@ -21,7 +21,6 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.services.agente_ia_prompt import CONOCIMIENTO_INICIAL, INSTRUCCIONES
-from src.application.services.bank_email_service import _fernet
 from src.application.services.billing_service import BillingService
 from src.application.services.bot_flow_service import get_or_create_bot_config
 from src.application.services.bot_pausa_service import bot_en_pausa, pausar_bot
@@ -96,20 +95,6 @@ async def vincular_chat(db: AsyncSession, telefono: str, cliente_id: int) -> Non
     )
 
 
-def cifrar_clave(clave: str) -> str:
-    return _fernet().encrypt(clave.strip().encode()).decode()
-
-
-def descifrar_clave(token: str | None) -> str | None:
-    if not token:
-        return None
-    try:
-        return _fernet().decrypt(token.encode()).decode()
-    except Exception:
-        logger.error("No se pudo descifrar la clave del agente de IA")
-        return None
-
-
 def _herramienta(nombre, descripcion, propiedades=None, requeridas=None):
     return {
         "type": "function",
@@ -181,7 +166,7 @@ class AgenteIAService:
         self.db.add(interaccion)
         await self.db.commit()
 
-        clave = descifrar_clave(config.agente_api_key_cifrada)
+        clave = (config.agente_api_key or "").strip()
         if not clave:
             return await self._fallar(interaccion, "Falta la clave de API del agente")
 

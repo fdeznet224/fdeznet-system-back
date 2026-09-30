@@ -20,7 +20,7 @@ def upgrade() -> None:
         tabla.add_column(sa.Column("agente_modo", sa.String(20), nullable=False, server_default="apagado"))
         tabla.add_column(sa.Column("agente_url", sa.String(255), nullable=False, server_default="https://api.deepseek.com/v1"))
         tabla.add_column(sa.Column("agente_modelo", sa.String(80), nullable=False, server_default="deepseek-flash"))
-        tabla.add_column(sa.Column("agente_api_key_cifrada", sa.Text(), nullable=True))
+        tabla.add_column(sa.Column("agente_api_key", sa.Text(), nullable=True))
         tabla.add_column(sa.Column("agente_conocimiento", sa.Text(), nullable=True))
 
     op.create_table(
@@ -70,7 +70,7 @@ def downgrade() -> None:
     with op.batch_alter_table("configuracion_bot") as tabla:
         for columna in (
             "agente_conocimiento",
-            "agente_api_key_cifrada",
+            "agente_api_key",
             "agente_modelo",
             "agente_url",
             "agente_modo",
