@@ -1,5 +1,6 @@
 import asyncio
 import re
+from datetime import datetime
 import httpx
 import os
 import logging
@@ -103,10 +104,27 @@ class OCRService:
                 cedula_detectada = match.group(1).upper()
                 break
 
+        # Fecha y hora de la transferencia (hora local de la captura):
+        # "30/09/2026 08.58.12", "30-09-2026 8:58".
+        fecha_pago = None
+        match = re.search(
+            r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})\D{0,20}?(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?",
+            texto,
+        )
+        if match:
+            dia, mes, anio, hora, minuto, segundo = match.groups()
+            try:
+                fecha_pago = datetime(
+                    int(anio), int(mes), int(dia), int(hora), int(minuto), int(segundo or 0)
+                )
+            except ValueError:
+                fecha_pago = None
+
         return {
             "folio": folio,
             "monto": monto,
             "cedula_detectada": cedula_detectada,
+            "fecha_pago": fecha_pago,
             "exito": folio is not None and monto > 0,
         }
 

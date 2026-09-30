@@ -13,6 +13,7 @@ from email.parser import BytesParser
 from email.utils import parseaddr, parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -350,7 +351,54 @@ def _read_gmail_messages(
             pass
 
 
+# Empate sin referencia (capturas que no muestran folio ni clave de rastreo).
+VENTANA_SIN_REFERENCIA = timedelta(minutes=15)
+ZONA_LOCAL = ZoneInfo("America/Mexico_City")  # fecha_recepcion y la hora de la captura
+COINCIDENCIAS_VALIDAS = {"coincidencia_exacta", "coincidencia_sin_referencia"}
+
+
 class BankEmailService:
+    @staticmethod
+    def ventana_sin_referencia(revision: ComprobantePagoRevisionModel) -> tuple[datetime, datetime]:
+        """Ventana en UTC (como fecha_correo) para empatar sin referencia.
+
+        Con la hora de la captura: ±15 minutos. Sin ella: desde una hora antes
+        de recibir el comprobante hasta 5 minutos después.
+        """
+        if revision.fecha_pago_detectada:
+            inicio = revision.fecha_pago_detectada - VENTANA_SIN_REFERENCIA
+            fin = revision.fecha_pago_detectada + VENTANA_SIN_REFERENCIA
+        else:
+            inicio = revision.fecha_recepcion - timedelta(hours=1)
+            fin = revision.fecha_recepcion + timedelta(minutes=5)
+
+        def a_utc(local: datetime) -> datetime:
+            return local.replace(tzinfo=ZONA_LOCAL).astimezone(timezone.utc).replace(tzinfo=None)
+
+        return a_utc(inicio), a_utc(fin)
+
+    @staticmethod
+    def motivo_coincidencia(
+        config: ConfiguracionCorreoBancoModel,
+        revision: ComprobantePagoRevisionModel,
+        transaction: TransaccionCorreoBancoModel,
+    ) -> str:
+        """Con referencia exige que coincida; sin ella, monto y hora cercana."""
+        if normalize_reference(revision.folio_detectado):
+            return BankEmailService.transaction_match_reason(config, revision, transaction)
+        comunes = BankEmailService.transaction_match_reason(
+            config,
+            revision,
+            transaction,
+            exigir_referencia=False,
+        )
+        if comunes != "coincidencia_exacta":
+            return comunes
+        inicio, fin = BankEmailService.ventana_sin_referencia(revision)
+        if not transaction.fecha_correo or not inicio <= transaction.fecha_correo <= fin:
+            return "fecha_hora_bancaria_fuera_de_ventana"
+        return "coincidencia_sin_referencia"
+
     @staticmethod
     def allowed_destination_accounts(
         config: ConfiguracionCorreoBancoModel,
@@ -366,6 +414,7 @@ class BankEmailService:
         config: ConfiguracionCorreoBancoModel,
         revision: ComprobantePagoRevisionModel,
         transaction: TransaccionCorreoBancoModel,
+        exigir_referencia: bool = True,
     ) -> str:
         if not config.activo:
             return "correo_bancario_no_configurado"
@@ -381,12 +430,13 @@ class BankEmailService:
         if transaction.cuenta_destino_terminacion not in allowed_accounts:
             return "cuenta_destino_no_autorizada"
 
-        expected_reference = normalize_reference_for_match(
-            revision.folio_detectado
-        )
-        bank_reference = normalize_reference_for_match(transaction.referencia)
-        if not expected_reference or expected_reference != bank_reference:
-            return "referencia_bancaria_no_coincide"
+        if exigir_referencia:
+            expected_reference = normalize_reference_for_match(
+                revision.folio_detectado
+            )
+            bank_reference = normalize_reference_for_match(transaction.referencia)
+            if not expected_reference or expected_reference != bank_reference:
+                return "referencia_bancaria_no_coincide"
 
         amount = Decimal(revision.monto_detectado or 0).quantize(
             Decimal("0.01")
@@ -398,6 +448,8 @@ class BankEmailService:
         if amount <= 0 or abs(bank_amount - amount) > tolerance:
             return "monto_bancario_no_coincide"
 
+        if not exigir_referencia:
+            return "coincidencia_exacta"  # la ventana de hora la revisa motivo_coincidencia
         if not revision.fecha_recepcion or not transaction.fecha_correo:
             return "fecha_bancaria_no_disponible"
         earliest = revision.fecha_recepcion - timedelta(
@@ -554,8 +606,10 @@ class BankEmailService:
             return None, "correo_bancario_no_configurado"
         reference = normalize_reference(revision.folio_detectado)
         amount = Decimal(revision.monto_detectado or 0).quantize(Decimal("0.01"))
-        if not reference or amount <= 0:
+        if amount <= 0:
             return None, "comprobante_sin_referencia_o_monto"
+        if not reference:
+            return await self._find_match_sin_referencia(db, config, revision, amount)
         tolerance = Decimal(config.tolerancia_monto or 0)
         earliest = revision.fecha_recepcion - timedelta(days=max(1, config.ventana_dias))
         latest = revision.fecha_recepcion + timedelta(days=1)
@@ -586,6 +640,34 @@ class BankEmailService:
             return None, "multiples_correos_coincidentes"
         return None, "correo_bancario_no_encontrado"
 
+    async def _find_match_sin_referencia(self, db, config, revision, amount):
+        """Solo si hay UN depósito con el mismo monto en la ventana de hora."""
+        tolerance = Decimal(config.tolerancia_monto or 0)
+        inicio, fin = self.ventana_sin_referencia(revision)
+        posibles = (
+            await db.execute(
+                select(TransaccionCorreoBancoModel)
+                .where(
+                    TransaccionCorreoBancoModel.estado == "disponible",
+                    TransaccionCorreoBancoModel.autenticado.is_(True),
+                    TransaccionCorreoBancoModel.monto >= amount - tolerance,
+                    TransaccionCorreoBancoModel.monto <= amount + tolerance,
+                    TransaccionCorreoBancoModel.fecha_correo >= inicio,
+                    TransaccionCorreoBancoModel.fecha_correo <= fin,
+                )
+                .with_for_update()
+            )
+        ).scalars().all()
+        candidatos = [
+            t for t in posibles
+            if self.motivo_coincidencia(config, revision, t) == "coincidencia_sin_referencia"
+        ]
+        if len(candidatos) == 1:
+            return candidatos[0], "coincidencia_sin_referencia"
+        if len(candidatos) > 1:
+            return None, "multiples_correos_coincidentes"
+        return None, "correo_bancario_no_encontrado"
+
     async def reconcile_revision(
         self,
         db: AsyncSession,
@@ -602,8 +684,8 @@ class BankEmailService:
             else None
         )
         if transaction:
-            reason = self.transaction_match_reason(config, revision, transaction)
-            if reason != "coincidencia_exacta":
+            reason = self.motivo_coincidencia(config, revision, transaction)
+            if reason not in COINCIDENCIAS_VALIDAS:
                 transaction = None
         else:
             transaction, reason = await self.find_match(db, revision)

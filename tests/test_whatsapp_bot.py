@@ -29,8 +29,20 @@ def test_ocr_extrae_folio_monto_y_cedula_de_transferencia():
         "folio": "202607281234567890",
         "monto": 500.0,
         "cedula_detectada": "329B",
+        "fecha_pago": None,
         "exito": True,
     }
+
+
+def test_ocr_lee_la_hora_de_una_captura_sin_referencia():
+    # Pantalla "¡Tu transferencia fue exitosa!": trae monto y hora, no folio.
+    resultado = OCRService.extraer_datos(
+        "iTu transferencia fue exitosa! Envié $ 300.00 MN "
+        "Concepto de transferencia: margarita moreno lopez 30/09/2026 08.58.12 Compartir"
+    )
+    assert resultado["folio"] is None and resultado["monto"] == 300.0
+    assert resultado["fecha_pago"] == datetime(2026, 9, 30, 8, 58, 12)
+    assert resultado["exito"] is False
 
 
 def test_ocr_acepta_monto_sin_centavos():

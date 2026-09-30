@@ -2169,6 +2169,9 @@ class ComprobantePagoRevisionModel(Base):
     )
     motivo_revision = Column(String(100), nullable=False)
     notas_revision = Column(Text, nullable=True)
+    # Hora local de la transferencia leída en la captura (para empatar con
+    # el correo cuando la captura no trae referencia).
+    fecha_pago_detectada = Column(DateTime, nullable=True)
     fecha_recepcion = Column(
         DateTime,
         nullable=False,

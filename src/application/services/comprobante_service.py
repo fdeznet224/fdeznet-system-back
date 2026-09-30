@@ -72,19 +72,36 @@ class ComprobanteService:
             monto_detectado=monto if monto > 0 else None,
             folio_detectado=folio,
             cedula_detectada=resultado.get("cedula_detectada"),
+            fecha_pago_detectada=resultado.get("fecha_pago"),
             motivo_revision=(
-                "esperando_confirmacion" if resultado.get("exito") else "ocr_no_legible"
+                "esperando_confirmacion"
+                if resultado.get("exito")
+                else "sin_referencia" if monto > 0 else "ocr_no_legible"
             ),
         )
         self.db.add(revision)
         await self.db.commit()
         await self.db.refresh(revision)
 
+        if not resultado.get("exito") and monto > 0:
+            # Pantallas de "transferencia exitosa" que no muestran referencia:
+            # se puede empatar por monto y hora con el correo del banco.
+            return {
+                "estado": "sin_referencia",
+                "revision_id": revision.id,
+                "monto": str(monto),
+                "hora_en_captura": resultado.get("fecha_pago"),
+                "detalle": (
+                    "Se leyó el monto pero la captura no muestra clave de rastreo ni referencia. "
+                    "Intenta aplicar_comprobante (se empata por monto y hora); si no se confirma, "
+                    "pide el comprobante completo (botón Compartir o Ver detalle) con la clave de rastreo."
+                ),
+            }
         if not resultado.get("exito"):
             return {
                 "estado": "ilegible",
                 "revision_id": revision.id,
-                "detalle": "No se pudo leer con seguridad el folio o el monto; quedó para revisión humana.",
+                "detalle": "No se pudo leer el monto; pide una foto más clara o el comprobante completo.",
             }
 
         contrato = resultado.get("cedula_detectada")
