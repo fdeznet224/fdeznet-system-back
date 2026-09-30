@@ -16,6 +16,13 @@ const ESPERA_MINIMA_MS = 3 * 1000;
 const ESPERA_MAXIMA_MS = 90 * 1000;
 const INTERVALO_MS = 500;
 const EDAD_MAXIMA_S = 120;
+// En chats con LID WhatsApp a veces no devuelve el id del envío; entonces se
+// reconoce por texto durante este tiempo (una sola vez por envío).
+const TTL_TEXTO_MS = 2 * 60 * 1000;
+
+function normalizarTexto(texto) {
+    return String(texto || '').replace(/\s+/g, ' ').trim();
+}
 
 function idsDeMensaje(mensaje) {
     const id = mensaje?.id;
@@ -27,13 +34,16 @@ function idsDeMensaje(mensaje) {
 function crearRegistroEnvios() {
     const ids = new Map();
     const enCurso = new Map();
+    const textos = [];
 
     return {
         iniciarEnvio(chatId) {
             enCurso.set(chatId, (enCurso.get(chatId) || 0) + 1);
         },
-        terminarEnvio(chatId, respuesta) {
+        terminarEnvio(chatId, respuesta, texto) {
             for (const id of idsDeMensaje(respuesta)) ids.set(id, Date.now());
+            const normalizado = normalizarTexto(texto);
+            if (normalizado) textos.push({ texto: normalizado, fecha: Date.now() });
             const pendientes = (enCurso.get(chatId) || 1) - 1;
             if (pendientes > 0) enCurso.set(chatId, pendientes);
             else enCurso.delete(chatId);
@@ -46,12 +56,22 @@ function crearRegistroEnvios() {
             // como número (@c.us) o como identificador interno (@lid).
             return chatId === undefined ? enCurso.size > 0 : enCurso.has(chatId);
         },
-        esDelSistema(mensaje) {
-            return idsDeMensaje(mensaje).some((id) => ids.has(id));
+        esDelSistema(mensaje, ahora = Date.now()) {
+            if (idsDeMensaje(mensaje).some((id) => ids.has(id))) return true;
+            const normalizado = normalizarTexto(mensaje?.body);
+            const indice = textos.findIndex(
+                (t) => t.texto === normalizado && ahora - t.fecha <= TTL_TEXTO_MS,
+            );
+            if (!normalizado || indice === -1) return false;
+            textos.splice(indice, 1);
+            return true;
         },
         limpiar(ahora = Date.now()) {
             for (const [id, fecha] of ids) {
                 if (ahora - fecha > TTL_MS) ids.delete(id);
+            }
+            for (let i = textos.length - 1; i >= 0; i -= 1) {
+                if (ahora - textos[i].fecha > TTL_TEXTO_MS) textos.splice(i, 1);
             }
         },
     };

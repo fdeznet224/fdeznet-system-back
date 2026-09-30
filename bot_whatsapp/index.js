@@ -413,7 +413,7 @@ app.post('/enviar-mensaje', async (req, res) => {
                     response = await client.sendMessage(chatId, mensaje);
                 }
                 } finally {
-                    enviosDelSistema.terminarEnvio(chatId, response);
+                    enviosDelSistema.terminarEnvio(chatId, response, mensaje);
                 }
                 // whatsapp-web.js puede devolver el identificador serializado
                 // en distintas formas según la versión. El envío ya ocurrió;

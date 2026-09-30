@@ -106,7 +106,7 @@ bot_memory = {}
 
 # Agente de IA: los clientes suelen mandar varios mensajes seguidos; se espera
 # un momento y solo el último se atiende (los anteriores van como contexto).
-ESPERA_AGENTE_SEGUNDOS = 6
+ESPERA_AGENTE_SEGUNDOS = 4
 _ultimo_mensaje_agente: dict[str, int] = {}
 _tareas_agente: set = set()
 
