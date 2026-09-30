@@ -593,3 +593,30 @@ def test_cada_orden_del_agente_avisa_a_los_administradores(monkeypatch):
     assert resultado == {"orden_creada": True, "orden_id": 55}
     assert [n for n, _ in enviados] == ["9610000001", "9610000002"]
     assert "#55" in enviados[0][1] and "router wifi" in enviados[0][1] and "FdezNet2026" in enviados[0][1]
+
+
+# --------------------------------------------------------- datos de pago
+def _datos_de_pago(cliente):
+    class _Texto:
+        def scalar_one_or_none(self):
+            return "Banco Azteca · Tarjeta 5265"
+
+    db = _DB()
+
+    async def execute(_consulta):
+        return _Texto()
+
+    db.execute = execute
+    return asyncio.run(_contexto(cliente=cliente, db=db)._datos_de_pago())
+
+
+def test_los_datos_de_pago_llevan_el_contrato_para_el_concepto():
+    resultado = _datos_de_pago(CLIENTE)
+    assert resultado["concepto_para_este_cliente"] == "329B"
+    assert "exactamente 329B" in resultado["indicacion"] and "otra persona" in resultado["indicacion"]
+
+
+def test_sin_identificar_se_pide_el_contrato_en_el_concepto():
+    resultado = _datos_de_pago(None)
+    assert "concepto_para_este_cliente" not in resultado
+    assert "número de contrato" in resultado["indicacion"]

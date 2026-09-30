@@ -33,7 +33,7 @@ Hoy es {hoy}."""
 
 CONOCIMIENTO_INICIAL = """## Datos de pago
 - Usa la herramienta `datos_de_pago` para la cuenta y el titular.
-- En el concepto se escribe el NÚMERO DE CONTRATO del cliente (está en el nombre de su red WiFi o en mensajes anteriores).
+- En el concepto se escribe el NÚMERO DE CONTRATO del cliente (está en el nombre de su red WiFi o en mensajes anteriores), también si paga otra persona por él: así el pago se confirma solo.
 - Después de pagar, el cliente envía la foto del comprobante por este chat.
 
 ## Pago en efectivo (preguntar primero su zona o colonia)

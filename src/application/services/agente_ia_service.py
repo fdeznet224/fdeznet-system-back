@@ -665,7 +665,23 @@ class _Contexto:
                 )
             )
         ).scalar_one_or_none()
-        return {"datos_de_pago": texto or "No hay datos de pago configurados; pasa a un asesor."}
+        if not texto:
+            return {"datos_de_pago": "No hay datos de pago configurados; pasa a un asesor."}
+        resultado = {"datos_de_pago": texto}
+        if self.cliente and self.cliente.cedula:
+            # Sin folio, el pago solo se confirma solo si el depósito lleva algo
+            # del titular; el contrato en el concepto es lo más seguro.
+            resultado["concepto_para_este_cliente"] = self.cliente.cedula
+            resultado["indicacion"] = (
+                f"Dile que en el concepto escriba exactamente {self.cliente.cedula}, aunque pague otra "
+                "persona por él; así su pago se confirma solo."
+            )
+        else:
+            resultado["indicacion"] = (
+                "Dile que en el concepto escriba su número de contrato, aunque pague otra persona; "
+                "así su pago se confirma solo."
+            )
+        return resultado
 
     async def _leer_comprobante(self) -> dict:
         media_url = self.media_url or await self._ultima_imagen()
