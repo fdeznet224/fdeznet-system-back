@@ -509,3 +509,69 @@ def test_solo_con_ubicacion_basta_aunque_no_escriba_direccion(monkeypatch):
     contexto, _, _ = _contexto_con_avisos(monkeypatch)
     resultado = asyncio.run(contexto.usar("registrar_prospecto", {"nombre": "Arisel", "direccion": "", "ubicacion": "16.7521,-93.1152"}))
     assert resultado["orden_creada"] is True
+
+
+# ------------------------------------------- velocidad y avisos de órdenes
+def _contexto_velocidad(monkeypatch, lecturas_bps):
+    servicio = SimpleNamespace(id=5, user_pppoe="juan329b", estado="activo", plan=SimpleNamespace(velocidad_bajada=10240))
+
+    class _Una:
+        def scalars(self):
+            return self
+
+        def first(self):
+            return servicio
+
+    db = _DB()
+
+    async def execute(_consulta):
+        return _Una()
+
+    db.execute = execute
+    lecturas = iter(lecturas_bps)
+
+    class _Red:
+        def __init__(self, db_):
+            pass
+
+        async def verificar_trafico_servicio(self, servicio_id):
+            bajada, subida = next(lecturas)
+            return {"velocidad_bajada": bajada, "velocidad_subida": subida}
+
+    monkeypatch.setattr(agente_mod, "NetworkService", _Red)
+    monkeypatch.setattr(agente_mod, "SEGUNDOS_ENTRE_LECTURAS", 0)
+    return _contexto(cliente=CLIENTE, db=db)
+
+
+def test_lento_con_el_plan_al_tope_sugiere_revisar_dispositivos(monkeypatch):
+    # Tres lecturas en 6 s; MikroTik puede reportar la descarga como "subida".
+    contexto = _contexto_velocidad(monkeypatch, [(300_000, 8_100_000), (200_000, 9_540_000), (250_000, 7_000_000)])
+    resultado = asyncio.run(contexto.usar("medir_velocidad", {}))
+    assert resultado["consumo_actual_mbps"] == 9.5
+    assert resultado["plan_mbps"] == 10.0
+    assert resultado["porcentaje_del_plan"] == 95
+    assert "celulares" in resultado["interpretacion"]
+
+
+def test_lento_sin_consumo_apunta_a_wifi_o_dispositivo(monkeypatch):
+    contexto = _contexto_velocidad(monkeypatch, [(100_000, 50_000)] * 3)
+    resultado = asyncio.run(contexto.usar("medir_velocidad", {}))
+    assert resultado["consumo_actual_mbps"] == 0.1 and resultado["porcentaje_del_plan"] == 1
+    assert "WiFi" in resultado["interpretacion"]
+
+
+def test_cada_orden_del_agente_avisa_a_los_administradores(monkeypatch):
+    class _Soporte:
+        def __init__(self, db):
+            pass
+
+        async def crear_incidencia(self, **datos):
+            return SimpleNamespace(id=55)
+
+    monkeypatch.setattr(agente_mod, "SupportService", _Soporte)
+    contexto, enviados, _ = _contexto_con_avisos(monkeypatch)
+    contexto.cliente = CLIENTE
+    resultado = asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "FdezNet2026"}))
+    assert resultado == {"orden_creada": True, "orden_id": 55}
+    assert [n for n, _ in enviados] == ["9610000001", "9610000002"]
+    assert "#55" in enviados[0][1] and "router wifi" in enviados[0][1] and "FdezNet2026" in enviados[0][1]

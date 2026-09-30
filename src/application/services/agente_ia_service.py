@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import httpx
 from sqlalchemy import or_, select, update
+from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.services.agente_ia_prompt import CONOCIMIENTO_INICIAL, INSTRUCCIONES
@@ -27,6 +28,7 @@ from src.application.services.billing_service import BillingService
 from src.application.services.bot_flow_service import get_or_create_bot_config
 from src.application.services.bot_pausa_service import bot_en_pausa, pausar_bot
 from src.application.services.comprobante_service import ComprobanteService
+from src.application.services.network_service import NetworkService
 from src.application.services.orden_service import OrdenService
 from src.application.services.support_service import SupportService
 from src.infrastructure.models import (
@@ -37,6 +39,7 @@ from src.infrastructure.models import (
     MensajeChatModel,
     OrdenServicioModel,
     PlantillaMensajeModel,
+    ServicioModel,
     UsuarioModel,
     WhatsappIdentidadModel,
 )
@@ -51,11 +54,14 @@ MENSAJES_DE_CONTEXTO = 12
 VIGENCIA_NOMBRE = timedelta(hours=12)
 # Si nadie atiende al pasar a un asesor, el agente retoma la conversación.
 PAUSA_AL_PASAR_A_ASESOR = timedelta(minutes=30)
+# Medición de velocidad: 3 lecturas cada 2 s (6 s), como el panel.
+LECTURAS_VELOCIDAD = 3
+SEGUNDOS_ENTRE_LECTURAS = 2
 # US$ por millón de tokens (DeepSeek Flash, hora pico: el precio más alto).
 PRECIOS = {"entrada": Decimal("0.30"), "cache": Decimal("0.006"), "salida": Decimal("1.20")}
 
 CONSULTAS = {
-    "registrar_nombre", "identificar_cliente", "consultar_cuenta", "diagnosticar_conexion",
+    "registrar_nombre", "identificar_cliente", "consultar_cuenta", "diagnosticar_conexion", "medir_velocidad",
     "consultar_avisos", "datos_de_pago", "leer_comprobante",
 }
 ACCIONES = {
@@ -63,7 +69,7 @@ ACCIONES = {
     "solicitar_cambio_contrasena", "pasar_a_humano",
 }
 REQUIEREN_CLIENTE = {
-    "consultar_cuenta", "diagnosticar_conexion", "registrar_promesa",
+    "consultar_cuenta", "diagnosticar_conexion", "medir_velocidad", "registrar_promesa",
     "crear_orden_tecnica", "aplicar_comprobante", "solicitar_cambio_contrasena",
 }
 CATEGORIAS_ORDEN = ("sin_internet", "cable_roto", "potencia_baja", "lentitud", "router_wifi", "cambio_domicilio", "otro")
@@ -138,6 +144,7 @@ HERRAMIENTAS = [
                  {"contrato": {"type": "string"}}, ["contrato"]),
     _herramienta("consultar_cuenta", "Saldo del cliente identificado con el desglose de lo que debe."),
     _herramienta("diagnosticar_conexion", "Revisa en vivo la sesión PPPoE (MikroTik) y la ONU y su potencia (OLT) del cliente identificado."),
+    _herramienta("medir_velocidad", "Mide durante 6 segundos cuánto internet está consumiendo el cliente identificado y lo compara con su plan (para quejas de lentitud)."),
     _herramienta("consultar_avisos", "Avisos de mantenimiento o fallas enviados en las últimas 24 horas."),
     _herramienta("datos_de_pago", "Cuenta para depósito o transferencia."),
     _herramienta("leer_comprobante", "Lee la última imagen de comprobante que envió el cliente (monto, folio, contrato)."),
@@ -552,6 +559,63 @@ class _Contexto:
             "potencia_rx_dbm": olt.get("potencia_rx_dbm"),
         }
 
+    async def _medir_velocidad(self) -> dict:
+        servicio = (
+            await self.db.execute(
+                select(ServicioModel)
+                .options(joinedload(ServicioModel.plan))
+                .where(
+                    ServicioModel.cliente_id == self.cliente.id,
+                    ServicioModel.estado.in_(["activo", "suspendido"]),
+                )
+                .order_by(ServicioModel.id)
+                .limit(1)
+            )
+        ).scalars().first()
+        if not servicio or not servicio.user_pppoe:
+            return {"error": "El cliente no tiene un servicio con sesión de internet para medir."}
+        if servicio.estado == "suspendido":
+            return {"servicio": "suspendido", "explicacion": "El servicio está suspendido por adeudo; no hay consumo que medir."}
+        red = NetworkService(self.db)
+        lecturas = []
+        for numero in range(LECTURAS_VELOCIDAD):
+            if numero:
+                await asyncio.sleep(SEGUNDOS_ENTRE_LECTURAS)
+            lecturas.append(await red.verificar_trafico_servicio(servicio.id))
+        # MikroTik nombra subida/bajada desde el router; se toma la dirección
+        # con más tráfico, que en casa casi siempre es la descarga.
+        maximo_bps = max(
+            max(int(l.get("velocidad_bajada") or 0), int(l.get("velocidad_subida") or 0)) for l in lecturas
+        )
+        consumo_mbps = round(maximo_bps / 1_000_000, 1)
+        plan_mbps = (
+            round(servicio.plan.velocidad_bajada / 1024, 1)
+            if servicio.plan and servicio.plan.velocidad_bajada
+            else None
+        )
+        uso = round(100 * consumo_mbps / plan_mbps) if plan_mbps else None
+        if uso is None:
+            interpretacion = "No se conoce la velocidad del plan para comparar."
+        elif uso >= 80:
+            interpretacion = (
+                "Está usando casi toda la velocidad de su plan: el internet sí llega completo, pero sus "
+                "dispositivos lo están consumiendo. Sugiérele revisar cuántos celulares o equipos están "
+                "conectados (videos, descargas) y, si comparte la contraseña, cambiarla."
+            )
+        elif uso >= 30:
+            interpretacion = "El consumo es normal y el plan tiene margen."
+        else:
+            interpretacion = (
+                "Casi no hay consumo en este momento: si lo siente lento, puede ser la señal WiFi o el "
+                "dispositivo; sugiere reiniciar el módem o acercarse al equipo, y si sigue, diagnostica la conexión."
+            )
+        return {
+            "consumo_actual_mbps": consumo_mbps,
+            "plan_mbps": plan_mbps,
+            "porcentaje_del_plan": uso,
+            "interpretacion": interpretacion,
+        }
+
     async def _consultar_avisos(self) -> dict:
         desde = datetime.now() - timedelta(hours=24)
         avisos = (
@@ -653,6 +717,11 @@ class _Contexto:
             )
         except RuntimeError as exc:
             return {"orden_existente": True, "detalle": str(exc)}
+        await self._avisar_personal(
+            f"🛠️ *Nueva orden del agente de WhatsApp* #{orden.id}\n"
+            f"👤 {self.cliente.nombre} (contrato {self.cliente.cedula})\n"
+            f"🏷️ {categoria.replace('_', ' ')}\n📝 {descripcion}"
+        )
         return {"orden_creada": True, "orden_id": orden.id}
 
     async def _aplicar_comprobante(self, revision_id: int) -> dict:
