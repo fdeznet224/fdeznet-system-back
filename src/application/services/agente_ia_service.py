@@ -27,7 +27,11 @@ from src.application.services.agente_ia_prompt import CONOCIMIENTO_INICIAL, INST
 from src.application.services.billing_service import BillingService
 from src.application.services.bot_flow_service import get_or_create_bot_config
 from src.application.services.bot_pausa_service import bot_en_pausa, pausar_bot
-from src.application.services.comprobante_service import ComprobanteService, sugerir_cliente_por_concepto
+from src.application.services.comprobante_service import (
+    ComprobanteService,
+    personalizar_datos_pago,
+    sugerir_cliente_por_concepto,
+)
 from src.application.services.network_service import NetworkService
 from src.application.services.orden_service import OrdenService
 from src.application.services.support_service import SupportService
@@ -677,19 +681,17 @@ class _Contexto:
         ).scalar_one_or_none()
         if not texto:
             return {"datos_de_pago": "No hay datos de pago configurados; pasa a un asesor."}
-        resultado = {"datos_de_pago": texto}
-        if self.cliente and self.cliente.cedula:
-            # Sin folio, el pago solo se confirma solo si el depósito lleva algo
-            # del titular; el contrato en el concepto es lo más seguro.
-            resultado["concepto_para_este_cliente"] = self.cliente.cedula
-            resultado["indicacion"] = (
-                f"Dile que en el concepto escriba exactamente {self.cliente.cedula}, aunque pague otra "
-                "persona por él; así su pago se confirma solo."
-            )
-        else:
-            resultado["indicacion"] = (
-                "Dile que en el concepto escriba su número de contrato, aunque pague otra persona; "
-                "así su pago se confirma solo."
+        contrato = self.cliente.cedula if self.cliente and self.cliente.cedula else None
+        resultado = {
+            "datos_de_pago": personalizar_datos_pago(texto, contrato),
+            "indicacion": "Envía los datos de pago tal cual vienen, sin resumirlos, incluida la línea del contrato.",
+        }
+        if contrato:
+            resultado["concepto_para_este_cliente"] = contrato
+        elif "{contrato}" not in texto:
+            # Plantilla sin la variable: el agente lo recuerda con sus palabras.
+            resultado["indicacion"] += (
+                " Dile que en el concepto escriba su número de contrato, aunque pague otra persona."
             )
         return resultado
 

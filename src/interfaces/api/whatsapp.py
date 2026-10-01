@@ -61,6 +61,7 @@ from src.application.services.bank_email_service import (
     normalize_reference_for_match,
 )
 from src.application.services.billing_service import BillingService
+from src.application.services.comprobante_service import personalizar_datos_pago
 from src.application.services.finance_service import FinanceService
 from src.application.services.access_control_service import (
     verificar_acceso_cliente,
@@ -596,7 +597,8 @@ async def obtener_datos_pago(db: AsyncSession) -> str:
         )
     ).scalar_one_or_none()
     if plantilla and plantilla.texto.strip():
-        return "🏦 *Datos para realizar tu pago*\n\n" + plantilla.texto.strip()
+        # El bot de menú no sabe quién escribe: indica dónde ver el contrato.
+        return "🏦 *Datos para realizar tu pago*\n\n" + personalizar_datos_pago(plantilla.texto.strip(), None)
     return (
         "🏦 Los datos bancarios todavía no están publicados en el "
         "autoservicio. Tu solicitud quedó registrada y un asesor te enviará "

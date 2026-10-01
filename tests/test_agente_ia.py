@@ -596,10 +596,13 @@ def test_cada_orden_del_agente_avisa_a_los_administradores(monkeypatch):
 
 
 # --------------------------------------------------------- datos de pago
-def _datos_de_pago(cliente):
+PLANTILLA_DATOS = "Banco Azteca · Tarjeta 5265\n📝 Concepto: tu número de contrato es *{contrato}*. Escríbelo en el concepto."
+
+
+def _datos_de_pago(cliente, plantilla=PLANTILLA_DATOS):
     class _Texto:
         def scalar_one_or_none(self):
-            return "Banco Azteca · Tarjeta 5265"
+            return plantilla
 
     db = _DB()
 
@@ -610,13 +613,22 @@ def _datos_de_pago(cliente):
     return asyncio.run(_contexto(cliente=cliente, db=db)._datos_de_pago())
 
 
-def test_los_datos_de_pago_llevan_el_contrato_para_el_concepto():
+def test_los_datos_de_pago_le_dicen_su_numero_de_contrato():
     resultado = _datos_de_pago(CLIENTE)
+    assert "tu número de contrato es *329B*" in resultado["datos_de_pago"]
     assert resultado["concepto_para_este_cliente"] == "329B"
-    assert "exactamente 329B" in resultado["indicacion"] and "otra persona" in resultado["indicacion"]
+    assert "tal cual" in resultado["indicacion"]
 
 
-def test_sin_identificar_se_pide_el_contrato_en_el_concepto():
+def test_sin_identificar_no_se_revela_ningun_contrato():
     resultado = _datos_de_pago(None)
+    assert "{contrato}" not in resultado["datos_de_pago"]
+    assert "el que viene en el nombre de tu red WiFi" in resultado["datos_de_pago"]
     assert "concepto_para_este_cliente" not in resultado
+
+
+def test_plantilla_sin_la_variable_sigue_funcionando():
+    resultado = _datos_de_pago(CLIENTE, plantilla="Banco Azteca · Tarjeta 5265")
+    assert resultado["datos_de_pago"] == "Banco Azteca · Tarjeta 5265"
+    resultado = _datos_de_pago(None, plantilla="Banco Azteca · Tarjeta 5265")
     assert "número de contrato" in resultado["indicacion"]

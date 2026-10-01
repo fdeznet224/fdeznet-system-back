@@ -88,6 +88,20 @@ async def sugerir_cliente_por_concepto(db: AsyncSession, concepto: str | None):
     return await db.get(ClienteModel, empatados[0]) if len(empatados) == 1 else None
 
 
+SIN_CONTRATO_CONOCIDO = "el que viene en el nombre de tu red WiFi"
+
+
+def personalizar_datos_pago(texto: str, contrato: str | None) -> str:
+    """Pone el contrato del cliente en la plantilla de datos de pago.
+
+    "{contrato}" se cambia por su número solo si ya se identificó con él; si
+    no, se le indica dónde encontrarlo (no se revela a quien no lo dio).
+    """
+    if contrato:
+        return texto.replace("{contrato}", contrato)
+    return texto.replace("*{contrato}*", SIN_CONTRATO_CONOCIDO).replace("{contrato}", SIN_CONTRATO_CONOCIDO)
+
+
 def clave_de_transferencia(revision: ComprobantePagoRevisionModel) -> str | None:
     """Código único de la transferencia, sin importar quién la reclama.
 
