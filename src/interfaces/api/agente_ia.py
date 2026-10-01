@@ -25,7 +25,9 @@ ROLES_CHAT = ["admin", "supervisor", "tecnico"]
 
 
 class ConfiguracionAgenteRequest(BaseModel):
-    modo: Literal["apagado", "sugerencia", "automatico"]
+    # Lo que no se envía se deja como está: el selector de quién contesta solo
+    # cambia el modo y la pestaña del agente solo cambia el conocimiento.
+    modo: Optional[Literal["apagado", "sugerencia", "automatico"]] = None
     conocimiento: Optional[str] = Field(default=None, max_length=20000)
 
 
@@ -107,13 +109,15 @@ async def guardar_configuracion(
     current_user=Depends(role_required(["admin"])),
 ):
     config = await get_or_create_bot_config(db)
-    if datos.modo != "apagado" and not config.agente_api_key:
-        raise HTTPException(
-            400,
-            "Primero agrega la clave de IA en Configuración → Integraciones y claves",
-        )
-    config.agente_modo = datos.modo
-    config.agente_conocimiento = (datos.conocimiento or "").strip() or None
+    if datos.modo is not None:
+        if datos.modo != "apagado" and not config.agente_api_key:
+            raise HTTPException(
+                400,
+                "Primero agrega la clave de IA en Configuración → Integraciones y claves",
+            )
+        config.agente_modo = datos.modo
+    if datos.conocimiento is not None:
+        config.agente_conocimiento = datos.conocimiento.strip() or None
     await db.commit()
     return {"status": "ok", "modo": config.agente_modo}
 

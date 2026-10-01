@@ -309,6 +309,22 @@ def test_no_se_enciende_el_agente_sin_clave(monkeypatch):
     assert config.agente_modo == "apagado"
 
 
+def test_guardar_el_modo_no_borra_el_conocimiento_ni_al_reves(monkeypatch):
+    config = _config_bot()
+    config.agente_api_key, config.agente_conocimiento, config.agente_modo = "sk-x", "Planes y precios", "automatico"
+
+    async def obtener(_db):
+        return config
+
+    monkeypatch.setattr(api_agente, "get_or_create_bot_config", obtener)
+    asyncio.run(api_agente.guardar_configuracion(
+        api_agente.ConfiguracionAgenteRequest(modo="apagado"), db=_DB(), current_user=None))
+    assert config.agente_modo == "apagado" and config.agente_conocimiento == "Planes y precios"
+    asyncio.run(api_agente.guardar_configuracion(
+        api_agente.ConfiguracionAgenteRequest(conocimiento="Horario 8 a 20"), db=_DB(), current_user=None))
+    assert config.agente_modo == "apagado" and config.agente_conocimiento == "Horario 8 a 20"
+
+
 def test_guardar_conexion_sin_clave_conserva_la_guardada(monkeypatch):
     config = _config_bot()
     config.agente_api_key = "sk-guardada"
