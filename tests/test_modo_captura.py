@@ -13,7 +13,7 @@ from src.application.services.comprobante_service import ComprobanteService, cla
 from src.application.services.ocr_service import OCRService
 
 AHORA = datetime.now().replace(microsecond=0)
-CONFIG = SimpleNamespace(validar_pagos_con="captura", ventana_dias=3, cuentas_destino_permitidas="6342,5265")
+CONFIG = SimpleNamespace(validar_pagos_con="captura", ventana_dias=3, cuentas_destino_permitidas="6342,5265", activo=False)
 CLIENTE = SimpleNamespace(id=248, nombre="Margarita Moreno Lopez", cedula="D440", estado="activo")
 ADMIN = SimpleNamespace(id=1, rol="admin")
 
@@ -32,7 +32,8 @@ def _revision(**cambios):
         telefono="95133743751296@lid", folio_detectado=None, monto_detectado=Decimal("300.00"),
         fecha_pago_detectada=AHORA - timedelta(minutes=5), fecha_recepcion=AHORA,
         huella_captura="SC-0123456789ABCDEF", motivo_revision="sin_referencia", notas_revision=None,
-        transaccion_correo_id=None,
+        transaccion_correo_id=None, concepto_detectado="margarita moreno lopez", auditoria_banco=None,
+        fecha_revision=None,
     )
     datos.update(cambios)
     return SimpleNamespace(**datos)
@@ -50,13 +51,17 @@ class _Primero:
 
 
 class _DB:
-    def __init__(self, revision, clave_usada=False):
+    def __init__(self, revision, clave_usada=False, conteos=None):
         self.revision = revision
         self.clave_usada = clave_usada
         self.agregados = []
+        # Respuestas en orden: folio usado, otra revisión, pagos del mes, capturas de hoy.
+        self.respuestas = list(conteos or [])
 
     async def scalar(self, _consulta):
-        return 99 if self.clave_usada else None
+        if self.clave_usada:
+            return 99
+        return self.respuestas.pop(0) if self.respuestas else None
 
     async def execute(self, _consulta):
         return _Primero(ADMIN)
@@ -74,7 +79,7 @@ class _DB:
         return None
 
 
-def _aplicar(monkeypatch, revision=None, factura=None, clave_usada=False, idempotente=False):
+def _aplicar(monkeypatch, revision=None, factura=None, clave_usada=False, idempotente=False, conteos=None, cliente=None):
     cobros, alertas = [], []
 
     class _Billing:
@@ -87,7 +92,7 @@ def _aplicar(monkeypatch, revision=None, factura=None, clave_usada=False, idempo
 
     monkeypatch.setattr(comprobante_mod, "BillingService", _Billing)
     revision = revision or _revision()
-    db = _DB(revision, clave_usada)
+    db = _DB(revision, clave_usada, conteos)
 
     async def avisar(numero, texto):
         alertas.append(texto)
@@ -100,7 +105,7 @@ def _aplicar(monkeypatch, revision=None, factura=None, clave_usada=False, idempo
     monkeypatch.setattr(db, "get", lambda modelo, llave: (
         config_alertas() if modelo.__name__ == "ConfiguracionSistema" else asyncio.sleep(0, revision)
     ))
-    resultado = asyncio.run(servicio.aplicar_por_captura(revision, CLIENTE, factura or _factura(), CONFIG))
+    resultado = asyncio.run(servicio.aplicar_por_captura(revision, cliente or CLIENTE, factura or _factura(), CONFIG))
     return resultado, revision, db, cobros, alertas
 
 
@@ -194,3 +199,144 @@ def test_en_modo_captura_no_se_concilia_con_el_correo(monkeypatch):
     monkeypatch.setattr(jobs, "SessionLocal", _Sesion)
     asyncio.run(jobs.tarea_conciliar_correos_bancarios())
     assert llamadas == ["adelantados"]
+
+
+
+# ------------------------------------------------------------- límites
+def test_mas_del_doble_de_la_deuda_lo_revisa_una_persona(monkeypatch):
+    resultado, revision, _, cobros, _ = _aplicar(monkeypatch, revision=_revision(monto_detectado=Decimal("900.00")))
+    assert resultado["estado"] == "monto_mayor_al_normal" and not cobros and revision.estado == "pendiente"
+
+
+def test_dos_meses_juntos_si_se_aplican(monkeypatch):
+    resultado, *_ = _aplicar(monkeypatch, revision=_revision(monto_detectado=Decimal("600.00")))
+    assert resultado["aplicado"] is True
+
+
+def test_el_segundo_pago_por_captura_del_mes_lo_revisa_una_persona(monkeypatch):
+    resultado, _, _, cobros, _ = _aplicar(monkeypatch, conteos=[None, None, 1, 0])
+    assert resultado["estado"] == "segundo_pago_del_mes" and not cobros
+
+
+def test_muchas_capturas_del_mismo_chat_en_un_dia(monkeypatch):
+    resultado, _, _, cobros, _ = _aplicar(monkeypatch, conteos=[None, None, 0, 2])
+    assert resultado["estado"] == "muchas_capturas_hoy" and not cobros
+
+
+def test_queda_pendiente_de_auditar_y_con_prioridad_si_reconecta(monkeypatch):
+    _, revision, *_ = _aplicar(monkeypatch)
+    assert revision.auditoria_banco == "pendiente"
+    cortado = SimpleNamespace(**{**vars(CLIENTE), "estado": "suspendido"})
+    _, revision, *_ = _aplicar(monkeypatch, cliente=cortado)
+    assert revision.auditoria_banco == "prioridad"
+
+
+def test_avisa_si_el_concepto_no_traia_el_contrato(monkeypatch):
+    resultado, *_ = _aplicar(monkeypatch)
+    assert resultado["concepto_traia_contrato"] is False
+    resultado, *_ = _aplicar(monkeypatch, revision=_revision(concepto_detectado="pago D440"))
+    assert resultado["concepto_traia_contrato"] is True
+
+
+# ------------------------------------------- auditoría con el correo del banco
+from src.application.services.bank_email_service import BankEmailService  # noqa: E402
+
+
+class _DBAuditoria:
+    def __init__(self, revisiones):
+        self.revisiones = revisiones
+
+    async def execute(self, _consulta):
+        revisiones = self.revisiones
+
+        class _R:
+            def scalars(self):
+                return self
+
+            def all(self):
+                return revisiones
+
+        return _R()
+
+    async def get(self, *_a):
+        return CLIENTE
+
+    async def commit(self):
+        return None
+
+
+def _auditar(monkeypatch, revisiones, encontrado=None, candidatos=()):
+    servicio = BankEmailService()
+    monkeypatch.setattr(servicio, "get_config", lambda _db: asyncio.sleep(0, CONFIG))
+    monkeypatch.setattr(servicio, "find_match", lambda _db, _r: asyncio.sleep(0, (encontrado, "x")))
+    monkeypatch.setattr(servicio, "_candidatos_sin_referencia", lambda *_a: asyncio.sleep(0, list(candidatos)))
+    return asyncio.run(servicio.auditar_pagos_por_captura(_DBAuditoria(revisiones)))
+
+
+def _aprobada(**cambios):
+    return _revision(**{"estado": "aprobado", "pago_id": 700, "auditoria_banco": "pendiente",
+                        "fecha_revision": datetime.now() - timedelta(hours=1), "cliente_id": 248, **cambios})
+
+
+def test_si_llega_el_deposito_se_liga_y_queda_confirmado(monkeypatch):
+    deposito = SimpleNamespace(id=82, estado="disponible", pago_id=None, conciliada_en=None)
+    revision = _aprobada(folio_detectado="2026093040014BMOVP020422198180")
+    assert _auditar(monkeypatch, [revision], encontrado=deposito) == []
+    assert revision.auditoria_banco == "confirmado" and revision.transaccion_correo_id == 82
+    assert deposito.estado == "conciliada" and deposito.pago_id == 700
+
+
+def test_sin_folio_basta_un_unico_deposito_del_mismo_monto_y_hora(monkeypatch):
+    deposito = SimpleNamespace(id=90, estado="disponible", pago_id=None, conciliada_en=None)
+    revision = _aprobada()
+    _auditar(monkeypatch, [revision], candidatos=[deposito])
+    assert revision.auditoria_banco == "confirmado"
+
+
+def test_sin_deposito_en_24_horas_se_avisa(monkeypatch):
+    reciente = _aprobada(id=1)
+    vieja = _aprobada(id=2, fecha_revision=datetime.now() - timedelta(hours=25))
+    reconexion = _aprobada(id=3, auditoria_banco="prioridad", fecha_revision=datetime.now() - timedelta(hours=3))
+    avisos = _auditar(monkeypatch, [reciente, vieja, reconexion])
+    assert [a["id"] for a in avisos] == [2, 3] and avisos[1]["reconexion"] is True
+    assert reciente.auditoria_banco == "pendiente" and vieja.auditoria_banco == "sin_deposito"
+
+
+def test_en_modo_captura_con_correo_se_audita(monkeypatch):
+    llamadas = []
+    config = SimpleNamespace(**{**vars(CONFIG), "activo": True})
+
+    class _Banco:
+        async def get_config(self, _db):
+            return config
+
+        async def sync(self, _db):
+            llamadas.append("sync")
+
+        async def auditar_pagos_por_captura(self, _db):
+            llamadas.append("auditar")
+            return [{"id": 2, "cliente": "X", "monto": 300, "folio": "SC-1", "reconexion": False}]
+
+    class _Comprobantes:
+        def __init__(self, _db):
+            pass
+
+        async def aplicar_adelantados_por_captura(self):
+            llamadas.append("adelantados")
+
+    class _Sesion:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_a):
+            return None
+
+    async def alerta(mensaje, _db, tipo_evento="alerta_router"):
+        llamadas.append("alerta")
+
+    monkeypatch.setattr(jobs, "BankEmailService", _Banco)
+    monkeypatch.setattr(jobs, "ComprobanteService", _Comprobantes)
+    monkeypatch.setattr(jobs, "SessionLocal", _Sesion)
+    monkeypatch.setattr(jobs, "enviar_alertas_whatsapp", alerta)
+    asyncio.run(jobs.tarea_conciliar_correos_bancarios())
+    assert llamadas == ["adelantados", "sync", "auditar", "alerta"]

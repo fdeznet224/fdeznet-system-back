@@ -781,7 +781,13 @@ class _Contexto:
 
     async def _aplicar_comprobante(self, revision_id: int, confirmar_cliente_sugerido: bool = False) -> dict:
         if self.cliente:
-            return await ComprobanteService(self.db).conciliar(int(revision_id), self.cliente.id)
+            resultado = await ComprobanteService(self.db).conciliar(int(revision_id), self.cliente.id)
+            if resultado.get("aplicado") and not resultado.get("concepto_traia_contrato"):
+                resultado["recordatorio"] = (
+                    f"Al final dile que la próxima vez escriba {self.cliente.cedula} en el concepto de su "
+                    "transferencia para que su pago se confirme al instante."
+                )
+            return resultado
         # Sin contrato: el cliente confirmó el nombre que trae el concepto. El
         # cliente lo calcula el sistema desde la captura (el modelo no puede
         # elegir otro) y solo sirve para aplicar ESTE pago: no da acceso a la
@@ -795,6 +801,12 @@ class _Contexto:
         revision.cliente_id = sugerido.id
         await self.db.commit()
         resultado = await ComprobanteService(self.db).conciliar(revision.id, sugerido.id)
+        if resultado.get("aplicado") and not resultado.get("concepto_traia_contrato"):
+            # No se le dice el contrato: es lo que da acceso a la cuenta.
+            resultado["recordatorio"] = (
+                "Al final dile que la próxima vez escriba su número de contrato (viene en el nombre de su "
+                "red WiFi) en el concepto, para que su pago se confirme al instante. No le digas el contrato."
+            )
         return {**resultado, "cliente": sugerido.nombre}
 
     async def _solicitar_cambio_contrasena(self, nueva: str) -> dict:

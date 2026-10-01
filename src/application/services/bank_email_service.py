@@ -477,6 +477,10 @@ REINTENTAR_SIN_REFERENCIA = timedelta(hours=2)
 # que lo revise en la app del banco (a veces el aviso no llega).
 AVISAR_SIN_CORREO = timedelta(hours=2)
 ESPERANDO_CORREO = {"esperando_confirmacion", "sin_referencia", "correo_bancario_no_encontrado"}
+# Auditoría de los pagos aprobados solo con la captura: si su depósito no
+# aparece en el correo del banco en este tiempo, se avisa a los administradores.
+AUDITAR_CAPTURA_EN = timedelta(hours=24)
+AUDITAR_RECONEXION_EN = timedelta(hours=2)
 
 
 def aplicar_pago_desde(factura: FacturaModel) -> datetime | None:
@@ -1091,6 +1095,57 @@ class BankEmailService:
             "transaction_id": transaction.id,
             **result,
         }
+
+    async def auditar_pagos_por_captura(self, db: AsyncSession) -> list[dict]:
+        """Busca en el correo del banco el depósito de cada pago por captura.
+
+        El pago ya se aplicó con la captura; esto solo confirma que el dinero
+        llegó. Si aparece, se liga el depósito; si no aparece a tiempo, se
+        devuelve para avisar a los administradores (una sola vez).
+        """
+        pendientes = (
+            await db.execute(
+                select(ComprobantePagoRevisionModel).where(
+                    ComprobantePagoRevisionModel.estado == "aprobado",
+                    ComprobantePagoRevisionModel.auditoria_banco.in_(["pendiente", "prioridad"]),
+                )
+            )
+        ).scalars().all()
+        sin_deposito = []
+        ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+        config = await self.get_config(db)
+        for revision in pendientes:
+            if normalize_reference(revision.folio_detectado):
+                transaction, _motivo = await self.find_match(db, revision)
+            else:
+                # Solo se confirma que el dinero llegó (el pago ya se aplicó):
+                # basta un único depósito del mismo monto y hora, aunque lo
+                # haya mandado un familiar con otro nombre.
+                candidatos = await self._candidatos_sin_referencia(
+                    db, config, revision, Decimal(revision.monto_detectado or 0)
+                )
+                transaction = candidatos[0] if len(candidatos) == 1 else None
+            if transaction is not None:
+                transaction.estado = "conciliada"
+                transaction.pago_id = revision.pago_id
+                transaction.conciliada_en = ahora
+                revision.transaccion_correo_id = transaction.id
+                revision.auditoria_banco = "confirmado"
+                await db.commit()
+                continue
+            plazo = AUDITAR_RECONEXION_EN if revision.auditoria_banco == "prioridad" else AUDITAR_CAPTURA_EN
+            if revision.fecha_revision and datetime.now() - revision.fecha_revision >= plazo:
+                revision.auditoria_banco = "sin_deposito"
+                await db.commit()
+                cliente = await db.get(ClienteModel, revision.cliente_id) if revision.cliente_id else None
+                sin_deposito.append({
+                    "id": revision.id,
+                    "cliente": f"{cliente.nombre} ({cliente.cedula})" if cliente else revision.telefono,
+                    "monto": revision.monto_detectado,
+                    "folio": revision.folio_detectado or revision.huella_captura,
+                    "reconexion": plazo == AUDITAR_RECONEXION_EN,
+                })
+        return sin_deposito
 
     @staticmethod
     async def comprobantes_sin_correo(db: AsyncSession, ya_avisados: set[int]) -> list[dict]:

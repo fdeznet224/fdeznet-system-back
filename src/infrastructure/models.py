@@ -2180,6 +2180,9 @@ class ComprobantePagoRevisionModel(Base):
     # Para confirmar al titular cuando la captura no trae folio.
     concepto_detectado = Column(String(120), nullable=True)
     cuentas_detectadas = Column(String(60), nullable=True)
+    # Pagos aprobados solo con la captura: el correo del banco se revisa
+    # después para auditar ("pendiente", "prioridad", "confirmado", "sin_deposito").
+    auditoria_banco = Column(String(20), nullable=True)
     fecha_recepcion = Column(
         DateTime,
         nullable=False,

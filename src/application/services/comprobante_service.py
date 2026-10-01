@@ -39,6 +39,9 @@ from src.infrastructure.models import (
 logger = logging.getLogger(__name__)
 # Una captura puede llegar con unos minutos de desfase en el reloj del celular.
 TOLERANCIA_FUTURO = timedelta(minutes=10)
+# Límites del modo captura: lo que se sale de lo normal lo revisa una persona.
+MAX_VECES_LA_DEUDA = 2
+MAX_CAPTURAS_POR_CHAT_AL_DIA = 2
 
 
 MESES_EN_CONCEPTO = {
@@ -351,6 +354,11 @@ class ComprobanteService:
             return await self._a_revision(revision, "monto_no_coincide", f"Captura ${monto}; deuda ${deuda}",
                                           extra={"estado": "monto_menor_a_la_deuda", "monto": str(monto),
                                                  "deuda": str(deuda)})
+        limite = await self._fuera_de_lo_normal(revision, cliente, monto, deuda)
+        if limite:
+            motivo, nota = limite
+            return await self._a_revision(revision, motivo, nota, extra={
+                "detalle": "El pago se sale de lo normal y lo revisa un asesor; dile que quedó en revisión."})
 
         revision.cliente_id = cliente.id
         revision.factura_id = factura.id
@@ -403,6 +411,9 @@ class ComprobanteService:
         revision.pago_id = resultado.get("pago_id")
         revision.motivo_revision = "aprobado_por_captura"
         revision.fecha_revision = datetime.now()
+        # Reconectar con una captura es lo más tentador de falsear: su
+        # depósito se busca primero y se avisa antes si no aparece.
+        revision.auditoria_banco = "prioridad" if cliente.estado == "suspendido" else "pendiente"
         self.db.add(PagoAutovalidadoModel(
             cliente_id=cliente.id,
             monto=monto,
@@ -419,7 +430,36 @@ class ComprobanteService:
             "monto": str(monto),
             "reactivado": reactivado,
             "sigue_suspendido": cliente.estado == "suspendido" and not reactivado,
+            # Para que se acostumbren a escribir su contrato en el concepto.
+            "concepto_traia_contrato": contrato_en_concepto(cliente.cedula, palabras(revision.concepto_detectado)),
         }
+
+    async def _fuera_de_lo_normal(self, revision, cliente, monto, deuda) -> tuple[str, str] | None:
+        if deuda > 0 and monto > deuda * MAX_VECES_LA_DEUDA:
+            return "monto_mayor_al_normal", f"Captura ${monto}; deuda ${deuda}"
+        inicio_mes = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        pagos_del_mes = await self.db.scalar(
+            select(func.count(ComprobantePagoRevisionModel.id)).where(
+                ComprobantePagoRevisionModel.id != revision.id,
+                ComprobantePagoRevisionModel.cliente_id == cliente.id,
+                ComprobantePagoRevisionModel.motivo_revision == "aprobado_por_captura",
+                ComprobantePagoRevisionModel.fecha_revision >= inicio_mes,
+            )
+        )
+        if pagos_del_mes:
+            return "segundo_pago_del_mes", "Ya tiene un pago por captura este mes"
+        inicio_dia = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        capturas_hoy = await self.db.scalar(
+            select(func.count(ComprobantePagoRevisionModel.id)).where(
+                ComprobantePagoRevisionModel.id != revision.id,
+                ComprobantePagoRevisionModel.telefono == revision.telefono,
+                ComprobantePagoRevisionModel.fecha_recepcion >= inicio_dia,
+                ComprobantePagoRevisionModel.monto_detectado.is_not(None),
+            )
+        )
+        if (capturas_hoy or 0) >= MAX_CAPTURAS_POR_CHAT_AL_DIA:
+            return "muchas_capturas_hoy", f"Este chat mandó {capturas_hoy + 1} capturas hoy"
+        return None
 
     async def _a_revision(self, revision, motivo: str, nota: str | None, extra: dict | None = None) -> dict:
         revision.estado = "pendiente"

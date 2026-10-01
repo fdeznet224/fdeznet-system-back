@@ -48,8 +48,15 @@ async def tarea_conciliar_correos_bancarios():
         config = await service.get_config(db)
         if (config.validar_pagos_con or "correo") == "captura":
             # Solo con la captura: no se espera el correo del banco; el día 1
-            # se aplican las capturas de pagos adelantados.
+            # se aplican las capturas de pagos adelantados. Si el correo está
+            # configurado, se usa por detrás para auditar esos pagos.
             await ComprobanteService(db).aplicar_adelantados_por_captura()
+            if config.activo:
+                try:
+                    await service.sync(db)
+                except BankEmailError:
+                    return
+                await avisar_pagos_sin_deposito(db, await service.auditar_pagos_por_captura(db))
             return
         try:
             sync_result = await service.sync(db)
@@ -60,6 +67,21 @@ async def tarea_conciliar_correos_bancarios():
             # El detalle ya queda guardado en configuracion_correo_banco.
             return
         await avisar_comprobantes_sin_correo(db)
+
+
+async def avisar_pagos_sin_deposito(db, sin_deposito: list[dict]) -> int:
+    """Pagos aplicados con la captura cuyo depósito no llegó al banco."""
+    for item in sin_deposito:
+        await enviar_alertas_whatsapp(
+            "🔎 *Pago por captura sin depósito en el banco*\n"
+            f"{item['cliente']} · ${item['monto']} · código {item['folio']}\n"
+            f"Comprobante #{item['id']}: se aplicó con la captura"
+            + (" y reconectó el servicio" if item["reconexion"] else "")
+            + ", pero su depósito no aparece en los avisos del banco. Revísalo en la app del banco.",
+            db,
+            tipo_evento="alerta_comprobante",
+        )
+    return len(sin_deposito)
 
 
 async def avisar_comprobantes_sin_correo(db) -> int:
