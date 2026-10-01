@@ -88,6 +88,7 @@ class BankEmailTestRequest(BaseModel):
 def _response(config) -> dict:
     return {
         "activo": config.activo,
+        "validar_pagos_con": config.validar_pagos_con or "correo",
         "auto_aprobar": config.auto_aprobar,
         "proveedor": config.proveedor,
         "correo": config.correo,
@@ -153,6 +154,29 @@ async def save_configuration(
     config.tolerancia_monto = data.tolerancia_monto
     config.requiere_dkim = data.requiere_dkim
     config.ultimo_error = None
+    await db.commit()
+    await db.refresh(config)
+    return _response(config)
+
+
+class ModoValidacionRequest(BaseModel):
+    validar_pagos_con: str = Field(pattern=r"^(correo|captura)$")
+
+
+@router.put("/modo-validacion")
+async def guardar_modo_validacion(
+    data: ModoValidacionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    """Elige si el pago se confirma con el correo del banco o solo con la captura."""
+    config = await BankEmailService().get_config(db)
+    if data.validar_pagos_con == "captura" and not BankEmailService.allowed_destination_accounts(config):
+        raise HTTPException(
+            status_code=400,
+            detail="Indica primero las cuentas receptoras: se usan para rechazar transferencias a otras cuentas",
+        )
+    config.validar_pagos_con = data.validar_pagos_con
     await db.commit()
     await db.refresh(config)
     return _response(config)

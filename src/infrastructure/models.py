@@ -1644,6 +1644,9 @@ class ConfiguracionCorreoBancoModel(Base):
     ventana_dias = Column(Integer, nullable=False, default=3, server_default="3")
     tolerancia_monto = Column(Numeric(12, 2), nullable=False, default=0, server_default="0.00")
     requiere_dkim = Column(Boolean, nullable=False, default=True, server_default="1")
+    # "correo": el pago se confirma con el aviso del banco. "captura": solo con
+    # los datos de la captura (código único que no se puede reusar).
+    validar_pagos_con = Column(String(20), nullable=False, default="correo", server_default="correo")
     ultimo_uid = Column(String(50), nullable=True)
     credencial_verificada_en = Column(DateTime, nullable=True)
     ultima_revision = Column(DateTime, nullable=True)

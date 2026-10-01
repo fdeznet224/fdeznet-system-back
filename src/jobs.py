@@ -28,6 +28,7 @@ from src.application.services.router_monitor_service import (
 )
 from src.application.services.vpn_service import leer_handshakes_wireguard
 from src.application.services.bank_email_service import BankEmailError, BankEmailService
+from src.application.services.comprobante_service import ComprobanteService
 from src.application.services.storage_service import cleanup_storage, close_period, previous_period
 
 
@@ -44,6 +45,12 @@ async def tarea_conciliar_correos_bancarios():
     """Importa avisos bancarios y concilia comprobantes aún pendientes."""
     async with SessionLocal() as db:
         service = BankEmailService()
+        config = await service.get_config(db)
+        if (config.validar_pagos_con or "correo") == "captura":
+            # Solo con la captura: no se espera el correo del banco; el día 1
+            # se aplican las capturas de pagos adelantados.
+            await ComprobanteService(db).aplicar_adelantados_por_captura()
+            return
         try:
             sync_result = await service.sync(db)
             if sync_result.get("status") == "disabled":

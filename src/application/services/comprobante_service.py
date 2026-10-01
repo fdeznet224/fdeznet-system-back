@@ -8,7 +8,7 @@ monto y fecha que la captura (BankEmailService.transaction_match_reason).
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.application.services.bank_email_service import (
     BankEmailError,
     BankEmailService,
+    aplicar_pago_desde,
     normalize_reference,
     normalize_reference_for_match,
 )
@@ -29,9 +30,23 @@ from src.infrastructure.models import (
     ConfiguracionSistema,
     FacturaModel,
     PagoAutovalidadoModel,
+    UsuarioModel,
 )
 
 logger = logging.getLogger(__name__)
+# Una captura puede llegar con unos minutos de desfase en el reloj del celular.
+TOLERANCIA_FUTURO = timedelta(minutes=10)
+
+
+def clave_de_transferencia(revision: ComprobantePagoRevisionModel) -> str | None:
+    """Código único de la transferencia, sin importar quién la reclama.
+
+    El folio o clave de rastreo si la captura lo trae; si no, la huella con
+    monto, fecha y hora al segundo y terminaciones de cuenta. No lleva el
+    contrato: la misma captura reenviada para otro contrato debe dar el mismo
+    código para que rebote.
+    """
+    return normalize_reference_for_match(revision.folio_detectado) or revision.huella_captura
 _ocr = OCRService()
 
 
@@ -133,6 +148,7 @@ class ComprobanteService:
                 "estado": "sin_referencia",
                 "revision_id": revision.id,
                 "monto": str(monto),
+                "contrato_en_captura": resultado.get("cedula_detectada"),
                 "hora_en_captura": resultado.get("fecha_pago"),
                 "detalle": (
                     "Se leyó el monto pero la captura no muestra clave de rastreo ni referencia. "
@@ -172,6 +188,9 @@ class ComprobanteService:
         factura = await self._factura_cobrable(cliente_id)
         if not factura:
             return {"aplicado": False, "estado": "sin_deuda_pendiente"}
+        config = await self.correo.get_config(self.db)
+        if (getattr(config, "validar_pagos_con", None) or "correo") == "captura":
+            return await self.aplicar_por_captura(revision, cliente, factura, config)
 
         monto = FinanceService.dinero(revision.monto_detectado or 0)
         deuda = Decimal(factura.saldo_pendiente or 0)
@@ -225,6 +244,182 @@ class ComprobanteService:
                 "aplicar_el": resultado.get("aplicar_el"),
             }
         return {"aplicado": False, "estado": resultado.get("status") or "sin_confirmacion_bancaria"}
+
+    async def aplicar_por_captura(self, revision, cliente, factura, config) -> dict:
+        """Modo "solo captura": se aplica con los datos de la captura.
+
+        Sin correo del banco, la protección es que el código único de la
+        transferencia no se pueda usar dos veces, que la fecha sea reciente y
+        que el monto cubra la deuda.
+        """
+        clave = clave_de_transferencia(revision)
+        if not clave:
+            return {
+                "aplicado": False,
+                "estado": "captura_incompleta",
+                "detalle": "No se leyó el folio ni la fecha y hora: pide el comprobante completo.",
+            }
+        ahora = datetime.now()
+        fecha = revision.fecha_pago_detectada
+        if fecha is None and not revision.folio_detectado:
+            return {"aplicado": False, "estado": "captura_incompleta",
+                    "detalle": "No se leyó la fecha y hora de la transferencia."}
+        if fecha is not None:
+            # Contra el momento en que llegó la captura (un adelantado se
+            # aplica días después y no por eso es una captura vieja).
+            recibida = revision.fecha_recepcion or ahora
+            if fecha > recibida + TOLERANCIA_FUTURO:
+                return await self._a_revision(revision, "fecha_de_captura_invalida",
+                                              f"La captura dice {fecha:%d/%m/%Y %H:%M}, posterior a cuando llegó")
+            if fecha < recibida - timedelta(days=max(1, config.ventana_dias or 3)):
+                return await self._a_revision(revision, "captura_antigua",
+                                              f"La transferencia es del {fecha:%d/%m/%Y}")
+
+        if await self._clave_ya_usada(clave, revision.id):
+            revision.estado = "rechazado"
+            revision.motivo_revision = "captura_ya_utilizada"
+            revision.notas_revision = f"El código {clave} ya se usó en otro pago"
+            revision.fecha_revision = ahora
+            await self.db.commit()
+            await self.alertar_folio_duplicado(revision.telefono, clave)
+            return {"aplicado": False, "estado": "duplicado", "pago_ya_registrado": True, "folio": clave}
+
+        monto = FinanceService.dinero(revision.monto_detectado or 0)
+        deuda = Decimal(factura.saldo_pendiente or 0)
+        if monto <= 0 or monto < deuda:
+            return await self._a_revision(revision, "monto_no_coincide", f"Captura ${monto}; deuda ${deuda}",
+                                          extra={"estado": "monto_menor_a_la_deuda", "monto": str(monto),
+                                                 "deuda": str(deuda)})
+
+        revision.cliente_id = cliente.id
+        revision.factura_id = factura.id
+        aplicar_desde = aplicar_pago_desde(factura)
+        if aplicar_desde and ahora < aplicar_desde:
+            revision.motivo_revision = "pago_adelantado"
+            revision.notas_revision = f"Se aplica el {aplicar_desde:%d/%m/%Y}"
+            await self.db.commit()
+            return {"aplicado": False, "estado": "pago_adelantado", "monto": str(monto),
+                    "aplicar_el": aplicar_desde.date().isoformat(),
+                    "detalle": "La captura es válida; es del mes siguiente y se aplica solo ese día."}
+
+        operador = (
+            await self.db.execute(
+                select(UsuarioModel)
+                .where(UsuarioModel.rol == "admin", UsuarioModel.activo.is_(True))
+                .order_by(UsuarioModel.id)
+                .limit(1)
+            )
+        ).scalars().first()
+        if operador is None:
+            return await self._a_revision(revision, "sin_administrador_activo", None)
+        revision.estado = "procesando"
+        await self.db.commit()
+        try:
+            resultado = await BillingService(self.db).registrar_pago_completo(
+                factura_id=factura.id,
+                usuario_operador=operador,
+                metodo_pago="autovalidado",
+                monto=monto,
+                referencia=normalize_reference(revision.folio_detectado) or clave,
+                # La clave de la transferencia: aunque dos mensajes lleguen a la
+                # vez, la misma captura no genera dos pagos.
+                clave_idempotencia=f"captura:{clave}",
+            )
+        except ValueError as exc:
+            await self.db.rollback()
+            return await self._a_revision(
+                await self.db.get(ComprobantePagoRevisionModel, revision.id), "error_al_aplicar", str(exc)[:500]
+            )
+        revision = await self.db.get(ComprobantePagoRevisionModel, revision.id)
+        if resultado.get("idempotente"):
+            revision.estado = "rechazado"
+            revision.motivo_revision = "captura_ya_utilizada"
+            revision.notas_revision = f"El código {clave} ya se usó en otro pago"
+            revision.fecha_revision = datetime.now()
+            await self.db.commit()
+            return {"aplicado": False, "estado": "duplicado", "pago_ya_registrado": True, "folio": clave}
+        revision.estado = "aprobado"
+        revision.pago_id = resultado.get("pago_id")
+        revision.motivo_revision = "aprobado_por_captura"
+        revision.fecha_revision = datetime.now()
+        self.db.add(PagoAutovalidadoModel(
+            cliente_id=cliente.id,
+            monto=monto,
+            folio_banco=clave[:100],
+            banco_emisor="captura",
+            fecha_pago_banco=fecha.isoformat() if fecha else None,
+            whatsapp_remitente=(revision.telefono or "")[:20],
+        ))
+        await self.db.commit()
+        reactivado = bool(resultado.get("reactivado"))
+        return {
+            "aplicado": True,
+            "estado": "pago_confirmado_por_captura",
+            "monto": str(monto),
+            "reactivado": reactivado,
+            "sigue_suspendido": cliente.estado == "suspendido" and not reactivado,
+        }
+
+    async def _a_revision(self, revision, motivo: str, nota: str | None, extra: dict | None = None) -> dict:
+        revision.estado = "pendiente"
+        revision.motivo_revision = motivo
+        if nota:
+            revision.notas_revision = nota
+        await self.db.commit()
+        return {"aplicado": False, "estado": motivo, "detalle": nota, **(extra or {})}
+
+    async def _clave_ya_usada(self, clave: str, revision_id: int) -> bool:
+        usado = await self.db.scalar(
+            select(PagoAutovalidadoModel.id).where(referencia_canonica_sql(PagoAutovalidadoModel.folio_banco) == clave)
+        )
+        if usado:
+            return True
+        otra = await self.db.scalar(
+            select(ComprobantePagoRevisionModel.id).where(
+                ComprobantePagoRevisionModel.id != revision_id,
+                ComprobantePagoRevisionModel.pago_id.is_not(None),
+                (
+                    (ComprobantePagoRevisionModel.huella_captura == clave)
+                    | (referencia_canonica_sql(ComprobantePagoRevisionModel.folio_detectado) == clave)
+                ),
+            )
+        )
+        return bool(otra)
+
+    async def aplicar_adelantados_por_captura(self) -> int:
+        """Día 1: aplica las capturas válidas que esperaban al mes que cubren."""
+        config = await self.correo.get_config(self.db)
+        if (getattr(config, "validar_pagos_con", None) or "correo") != "captura":
+            return 0
+        revisiones = (
+            await self.db.execute(
+                select(ComprobantePagoRevisionModel).where(
+                    ComprobantePagoRevisionModel.estado == "pendiente",
+                    ComprobantePagoRevisionModel.motivo_revision == "pago_adelantado",
+                    ComprobantePagoRevisionModel.cliente_id.is_not(None),
+                    ComprobantePagoRevisionModel.transaccion_correo_id.is_(None),
+                )
+            )
+        ).scalars().all()
+        aplicados = 0
+        for revision in revisiones:
+            apartada = await self.db.get(FacturaModel, revision.factura_id) if revision.factura_id else None
+            desde = aplicar_pago_desde(apartada) if apartada else None
+            if desde and datetime.now() < desde:
+                continue
+            # Por si mientras tanto se pagó por otro lado.
+            factura = await self._factura_cobrable(revision.cliente_id)
+            if not factura:
+                await self._a_revision(revision, "sin_deuda_pendiente", "Al aplicarlo ya no había deuda pendiente")
+                continue
+            cliente = await self.db.get(ClienteModel, revision.cliente_id)
+            try:
+                resultado = await self.aplicar_por_captura(revision, cliente, factura, config)
+                aplicados += int(bool(resultado.get("aplicado")))
+            except Exception:
+                logger.exception("No se pudo aplicar el pago adelantado %s", revision.id)
+                await self.db.rollback()
+        return aplicados
 
     async def _estado_folio_existente(self, folio: str) -> dict | None:
         canonico = normalize_reference_for_match(folio)
