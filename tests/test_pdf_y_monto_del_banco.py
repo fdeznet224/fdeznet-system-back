@@ -6,6 +6,8 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from src.application.services import ocr_service
 from src.application.services.bank_email_service import BankEmailService
 from src.application.services.ocr_service import OCRService, leer_pdf
@@ -197,3 +199,71 @@ def test_un_codigo_de_mas_de_30_caracteres_no_es_folio():
 def test_el_monto_no_se_toma_de_la_fecha():
     datos = OCRService.extraer_datos("Monto IVA Clave 30 de septiembre de 2026 $ 300.00")
     assert datos["monto"] == 300.0
+
+
+
+# ------------------------------------------ CEP a una cuenta que no es del ISP
+from src.application.services.comprobante_service import ComprobanteService  # noqa: E402
+from src.application.services.ocr_service import terminaciones_de_cuenta  # noqa: E402
+
+
+def test_el_cep_dice_la_cuenta_beneficiaria():
+    assert OCRService.extraer_datos(CEP)["cuenta_beneficiaria"] == "014100605514952222"
+
+
+def test_terminaciones_de_tarjeta_y_de_clabe():
+    assert terminaciones_de_cuenta("4027665833605265") == {"5265"}
+    # En la CLABE el último dígito es de control: la cuenta termina en 6342.
+    assert terminaciones_de_cuenta("127180000000063429") == {"3429", "6342"}
+
+
+class _DBComprobantes:
+    def __init__(self):
+        self.agregados = []
+
+    def add(self, objeto):
+        self.agregados.append(objeto)
+
+    async def commit(self):
+        return None
+
+    async def refresh(self, objeto):
+        objeto.id = 21
+
+    async def execute(self, _consulta):
+        class _R:
+            def scalars(self):
+                return self
+
+            def first(self):
+                return None
+
+        return _R()
+
+
+def _leer_cep(beneficiario):
+    class _OCR:
+        async def procesar_ticket(self, _url):
+            return {**OCRService.extraer_datos(CEP), "cuenta_beneficiaria": beneficiario}
+
+    correo = SimpleNamespace(get_config=lambda _db: asyncio.sleep(0, CONFIG))
+    db = _DBComprobantes()
+    resultado = asyncio.run(ComprobanteService(db, ocr=_OCR(), correo=correo).leer(
+        "whatsapp-media://document_x.pdf", "1@lid", 191, 9
+    ))
+    return resultado, db.agregados
+
+
+def test_un_cep_a_otra_cuenta_no_sirve_como_comprobante():
+    resultado, agregados = _leer_cep("014100605514950199")  # Santander del propio cliente
+    assert resultado["estado"] == "otra_cuenta"
+    assert resultado["cuenta_del_comprobante"] == "0199"
+    assert agregados[0].estado == "rechazado"
+    assert agregados[0].motivo_revision == "beneficiario_no_es_del_isp"
+
+
+@pytest.mark.parametrize("beneficiario", ["4027665833605265", "127180000000063429"])
+def test_un_cep_a_la_tarjeta_o_a_la_clabe_del_isp_si_sirve(beneficiario):
+    resultado, agregados = _leer_cep(beneficiario)
+    assert resultado["estado"] == "leido"
+    assert agregados[0].motivo_revision == "esperando_confirmacion"

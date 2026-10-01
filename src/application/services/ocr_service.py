@@ -87,8 +87,11 @@ def datos_cep(texto_crudo: str) -> dict | None:
                 fecha_pago = datetime(int(anio), numero_mes, int(dia), int(hora), int(minuto), int(segundo))
             except ValueError:
                 fecha_pago = None
-    # CLABE (18), tarjeta (16) o celular (10) del ordenante y del beneficiario.
-    cuentas = sorted({numero[-4:] for numero in re.findall(r"\b(\d{18}|\d{16})\b", texto)})
+    # CLABE (18) o tarjeta (16): primero la del ordenante, después la del
+    # beneficiario (la "Cadena Original" las repite en el mismo orden).
+    numeros = list(dict.fromkeys(re.findall(r"\b(\d{18}|\d{16})\b", texto)))
+    cuentas = sorted({numero[-4:] for numero in numeros})
+    beneficiario = numeros[1] if len(numeros) >= 2 else None
     return {
         "folio": folio,
         "monto": monto,
@@ -97,8 +100,22 @@ def datos_cep(texto_crudo: str) -> dict | None:
         "cuentas": cuentas,
         "concepto": None,
         "huella": huella_captura(monto, fecha_pago, cuentas),
+        "cuenta_beneficiaria": beneficiario,
         "exito": monto > 0,
     }
+
+
+def terminaciones_de_cuenta(numero: str) -> set[str]:
+    """Cómo puede terminar la cuenta de un número de tarjeta o de una CLABE.
+
+    En la CLABE el último dígito es de control: los 4 últimos de la cuenta
+    son los dígitos 14 a 17.
+    """
+    numero = re.sub(r"\D", "", numero or "")
+    terminaciones = {numero[-4:]} if len(numero) >= 4 else set()
+    if len(numero) == 18:
+        terminaciones.add(numero[-5:-1])
+    return terminaciones
 
 
 class OCRService:

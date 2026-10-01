@@ -22,7 +22,7 @@ from src.application.services.bank_email_service import (
 )
 from src.application.services.billing_service import BillingService
 from src.application.services.finance_service import FinanceService
-from src.application.services.ocr_service import OCRService
+from src.application.services.ocr_service import OCRService, terminaciones_de_cuenta
 from src.infrastructure.models import (
     ClienteModel,
     ComprobantePagoRevisionModel,
@@ -58,6 +58,41 @@ class ComprobanteService:
         resultado = await self.ocr.procesar_ticket(media_url)
         monto = Decimal(str(resultado.get("monto") or 0))
         folio = normalize_reference(resultado.get("folio"))
+
+        # CEP de Banxico: dice a qué cuenta llegó el dinero. Si no es una de
+        # las cuentas del ISP, es otra transferencia (por ejemplo entre sus
+        # propias cuentas) y no sirve como comprobante.
+        beneficiario = resultado.get("cuenta_beneficiaria")
+        if beneficiario:
+            permitidas = BankEmailService.allowed_destination_accounts(
+                await self.correo.get_config(self.db)
+            )
+            if permitidas and not terminaciones_de_cuenta(beneficiario) & permitidas:
+                revision = ComprobantePagoRevisionModel(
+                    cliente_id=cliente_id,
+                    mensaje_chat_id=mensaje_chat_id,
+                    telefono=telefono,
+                    media_url=media_url,
+                    monto_detectado=monto if monto > 0 else None,
+                    folio_detectado=folio,
+                    fecha_pago_detectada=resultado.get("fecha_pago"),
+                    estado="rechazado",
+                    motivo_revision="beneficiario_no_es_del_isp",
+                    notas_revision=f"El CEP es de una transferencia a la cuenta terminación {beneficiario[-4:]}",
+                    fecha_revision=datetime.now(),
+                )
+                self.db.add(revision)
+                await self.db.commit()
+                await self.db.refresh(revision)
+                return {
+                    "estado": "otra_cuenta",
+                    "revision_id": revision.id,
+                    "cuenta_del_comprobante": beneficiario[-4:],
+                    "detalle": (
+                        "Este comprobante es de una transferencia a otra cuenta (terminación "
+                        f"{beneficiario[-4:]}), no a la de la empresa. No lo apliques."
+                    ),
+                }
         huella = resultado.get("huella")
 
         if resultado.get("exito") and folio:
