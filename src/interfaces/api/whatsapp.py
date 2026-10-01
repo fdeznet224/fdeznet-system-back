@@ -708,6 +708,9 @@ class AprobarComprobanteRequest(BaseModel):
     notas: Optional[str] = Field(default=None, max_length=1000)
     # Depósito que la persona elige en la bandeja cuando hay varios posibles.
     transaccion_correo_id: Optional[int] = Field(default=None, gt=0)
+    # El correo del banco no llegó y un administrador confirmó el pago en la
+    # app o la banca en línea del banco.
+    verificado_en_banco: bool = False
 
 
 MOTIVOS_DEPOSITO_RECHAZADO = {
@@ -1143,6 +1146,106 @@ async def depositos_posibles_comprobante(
     return {"depositos": await BankEmailService().depositos_posibles(db, comprobante)}
 
 
+async def _avisar_administradores(db: AsyncSession, texto: str) -> None:
+    config = await db.get(ConfiguracionSistema, 1)
+    for numero in [n.strip() for n in (getattr(config, "telefonos_alerta", "") or "").split(",") if n.strip()]:
+        try:
+            await WhatsAppService().enviar_mensaje(telefono=numero, mensaje=texto, tipo_evento="alerta_pago_manual")
+        except Exception:
+            logger.exception("No se pudo avisar al administrador %s", numero)
+
+
+async def _aprobar_verificado_en_banco(db, comprobante, datos, current_user) -> dict:
+    """Aprueba sin correo del banco: un administrador lo confirmó en el banco.
+
+    A veces el aviso del banco no llega. Queda registrado quién lo verificó y
+    dónde, el folio no se puede volver a usar y se avisa a los administradores.
+    """
+    if current_user.rol != "admin":
+        raise HTTPException(status_code=403, detail="Solo un administrador puede aprobar sin el correo del banco")
+    nota = (datos.notas or "").strip()
+    if len(nota) < 5:
+        raise HTTPException(
+            status_code=400,
+            detail="Escribe dónde lo verificaste, por ejemplo: app Azteca, 30/09 08:58, $300",
+        )
+    if not datos.monto:
+        raise HTTPException(status_code=400, detail="Confirma el monto que viste en el banco")
+    referencia = normalize_reference(datos.referencia) or normalize_reference(comprobante.folio_detectado)
+    if referencia:
+        canonica = normalize_reference_for_match(referencia)
+        usado = await db.scalar(
+            select(PagoAutovalidadoModel.id).where(
+                func.replace(func.replace(func.upper(PagoAutovalidadoModel.folio_banco), "O", "0"), "I", "1")
+                == canonica
+            )
+        )
+        otro = await db.scalar(
+            select(ComprobantePagoRevisionModel.id).where(
+                ComprobantePagoRevisionModel.id != comprobante.id,
+                ComprobantePagoRevisionModel.pago_id.is_not(None),
+                func.replace(func.replace(func.upper(ComprobantePagoRevisionModel.folio_detectado), "O", "0"), "I", "1")
+                == canonica,
+            )
+        )
+        if usado or otro:
+            raise HTTPException(status_code=409, detail="Ese folio ya se usó en otro pago")
+    factura = (
+        await db.get(FacturaModel, datos.factura_id)
+        if datos.factura_id
+        else await _factura_sugerida_revision(db, datos.cliente_id)
+    )
+    if not factura or factura.cliente_id != datos.cliente_id:
+        raise HTTPException(status_code=400, detail="No se encontró una factura pendiente del cliente")
+
+    comprobante.estado = "procesando"
+    comprobante.cliente_id = datos.cliente_id
+    comprobante.factura_id = factura.id
+    comprobante.revisado_por_id = current_user.id
+    await db.commit()
+    try:
+        resultado = await BillingService(db).registrar_pago_completo(
+            factura_id=factura.id,
+            usuario_operador=current_user,
+            metodo_pago="transferencia",
+            monto=datos.monto,
+            referencia=referencia,
+            clave_idempotencia=f"comprobante-revision:{comprobante.id}",
+        )
+    except ValueError as exc:
+        await db.rollback()
+        comprobante = await db.get(ComprobantePagoRevisionModel, comprobante.id)
+        comprobante.estado = "pendiente"
+        comprobante.notas_revision = f"Error al aprobar: {exc}"
+        await db.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    comprobante = await db.get(ComprobantePagoRevisionModel, comprobante.id)
+    comprobante.estado = "aprobado"
+    comprobante.pago_id = resultado.get("pago_id")
+    comprobante.fecha_revision = datetime.now()
+    comprobante.motivo_revision = "verificado_en_banco_sin_correo"
+    comprobante.notas_revision = f"Verificado en el banco por {current_user.usuario}: {nota}"[:1000]
+    if referencia:
+        db.add(PagoAutovalidadoModel(
+            cliente_id=datos.cliente_id,
+            monto=datos.monto,
+            folio_banco=referencia,
+            banco_emisor="verificado_manual",
+            whatsapp_remitente=(comprobante.telefono or "")[:20],
+        ))
+    await db.commit()
+    cliente = await db.get(ClienteModel, datos.cliente_id)
+    await _avisar_administradores(
+        db,
+        "✅ *Pago aprobado sin correo del banco*\n"
+        f"Cliente: {cliente.nombre if cliente else datos.cliente_id} · ${datos.monto}\n"
+        f"Comprobante #{comprobante.id} · aprobó {current_user.usuario}\n"
+        f"Nota: {nota}",
+    )
+    return {"status": "aprobado", "verificado_en_banco": True, **resultado}
+
+
 @router.post("/comprobantes-revision/{comprobante_id}/aprobar")
 async def aprobar_comprobante_revision(
     comprobante_id: int,
@@ -1161,6 +1264,9 @@ async def aprobar_comprobante_revision(
         raise HTTPException(status_code=404, detail="Comprobante no encontrado")
     if comprobante.estado in {"aprobado", "rechazado"}:
         raise HTTPException(status_code=409, detail="El comprobante ya fue revisado")
+
+    if datos.verificado_en_banco and not datos.transaccion_correo_id:
+        return await _aprobar_verificado_en_banco(db, comprobante, datos, current_user)
 
     correo_service = BankEmailService()
     config_correo = await correo_service.get_config(db)

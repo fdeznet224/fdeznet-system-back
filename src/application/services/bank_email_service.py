@@ -473,6 +473,10 @@ COINCIDENCIAS_VALIDAS = {"coincidencia_exacta", "coincidencia_sin_referencia"}
 # "pago confirmado" no llegue de madrugada.
 HORA_APLICAR_ADELANTADOS = time(8, 0)
 REINTENTAR_SIN_REFERENCIA = timedelta(hours=2)
+# Si en este tiempo no llegó el correo del banco, se avisa al personal para
+# que lo revise en la app del banco (a veces el aviso no llega).
+AVISAR_SIN_CORREO = timedelta(hours=2)
+ESPERANDO_CORREO = {"esperando_confirmacion", "sin_referencia", "correo_bancario_no_encontrado"}
 
 
 def aplicar_pago_desde(factura: FacturaModel) -> datetime | None:
@@ -1087,6 +1091,36 @@ class BankEmailService:
             "transaction_id": transaction.id,
             **result,
         }
+
+    @staticmethod
+    async def comprobantes_sin_correo(db: AsyncSession, ya_avisados: set[int]) -> list[dict]:
+        """Comprobantes que llevan 2 horas esperando un correo que no llega."""
+        ahora = datetime.now()
+        revisiones = (
+            await db.execute(
+                select(ComprobantePagoRevisionModel)
+                .where(
+                    ComprobantePagoRevisionModel.estado == "pendiente",
+                    ComprobantePagoRevisionModel.monto_detectado.is_not(None),
+                    ComprobantePagoRevisionModel.motivo_revision.in_(ESPERANDO_CORREO),
+                    ComprobantePagoRevisionModel.fecha_recepcion <= ahora - AVISAR_SIN_CORREO,
+                    ComprobantePagoRevisionModel.fecha_recepcion >= ahora - AVISAR_SIN_CORREO * 3,
+                )
+                .order_by(ComprobantePagoRevisionModel.id)
+            )
+        ).scalars().all()
+        pendientes = []
+        for revision in revisiones:
+            if revision.id in ya_avisados:
+                continue
+            cliente = await db.get(ClienteModel, revision.cliente_id) if revision.cliente_id else None
+            pendientes.append({
+                "id": revision.id,
+                "cliente": f"{cliente.nombre} ({cliente.cedula})" if cliente else f"chat {revision.telefono}",
+                "monto": revision.monto_detectado,
+                "folio": revision.folio_detectado,
+            })
+        return pendientes
 
     async def reconcile_pending(self, db: AsyncSession, limit: int = 30) -> dict:
         config = await self.get_config(db)
