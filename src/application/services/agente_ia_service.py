@@ -809,7 +809,7 @@ class _Contexto:
             # No se le dice el contrato: es lo que da acceso a la cuenta.
             resultado["recordatorio"] = (
                 "Al final dile que la próxima vez escriba su número de contrato (aparece en los avisos y "
-                "recordatorios que le mandamos por WhatsApp) en el concepto, para que su pago se confirme al "
+                "recordatorios que le mandamos por WhatsApp y casi siempre en el nombre de su red WiFi) en el concepto, para que su pago se confirme al "
                 "instante. No le digas el contrato."
             )
         return {**resultado, "cliente": sugerido.nombre}

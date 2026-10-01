@@ -88,7 +88,10 @@ async def sugerir_cliente_por_concepto(db: AsyncSession, concepto: str | None):
     return await db.get(ClienteModel, empatados[0]) if len(empatados) == 1 else None
 
 
-SIN_CONTRATO_CONOCIDO = "el que aparece en los avisos y recordatorios que te mandamos por WhatsApp"
+SIN_CONTRATO_CONOCIDO = (
+    "el que aparece en los avisos y recordatorios que te mandamos por WhatsApp "
+    "(casi siempre también en el nombre de tu red WiFi)"
+)
 
 
 def personalizar_datos_pago(texto: str, contrato: str | None) -> str:
