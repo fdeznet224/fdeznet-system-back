@@ -73,6 +73,12 @@ def datos_cep(texto_crudo: str) -> dict | None:
         return None
     monto = float(valores.group(1).replace(",", ""))
     folio = valores.group(3).upper()
+    # "Clave de rastreo 30 de septiembre de 2026 INTERNET AGUSTIN VELASCO $ 300.00"
+    concepto = re.search(
+        r"clave de rastreo\s+\d{1,2} de [a-záéíóú]+ de \d{4}\s+(.{2,80}?)\s+\$\s*[\d,]+\.\d{2}",
+        texto,
+        re.IGNORECASE,
+    )
     fecha_pago = None
     operacion = re.search(
         r"fecha de operaci[oó]n en el spei\W*(\d{1,2}) de ([a-z]+) de (\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})",
@@ -98,7 +104,7 @@ def datos_cep(texto_crudo: str) -> dict | None:
         "cedula_detectada": None,
         "fecha_pago": fecha_pago,
         "cuentas": cuentas,
-        "concepto": None,
+        "concepto": concepto.group(1).strip() if concepto else None,
         "huella": huella_captura(monto, fecha_pago, cuentas),
         "cuenta_beneficiaria": beneficiario,
         "exito": monto > 0,

@@ -27,13 +27,14 @@ from src.application.services.agente_ia_prompt import CONOCIMIENTO_INICIAL, INST
 from src.application.services.billing_service import BillingService
 from src.application.services.bot_flow_service import get_or_create_bot_config
 from src.application.services.bot_pausa_service import bot_en_pausa, pausar_bot
-from src.application.services.comprobante_service import ComprobanteService
+from src.application.services.comprobante_service import ComprobanteService, sugerir_cliente_por_concepto
 from src.application.services.network_service import NetworkService
 from src.application.services.orden_service import OrdenService
 from src.application.services.support_service import SupportService
 from src.infrastructure.models import (
     AgenteInteraccionModel,
     ClienteModel,
+    ComprobantePagoRevisionModel,
     ConfiguracionSistema,
     FacturaModel,
     MensajeChatModel,
@@ -161,8 +162,12 @@ HERRAMIENTAS = [
                  {"categoria": {"type": "string", "enum": list(CATEGORIAS_ORDEN)},
                   "descripcion": {"type": "string"},
                   "ubicacion": _UBICACION}, ["categoria", "descripcion"]),
-    _herramienta("aplicar_comprobante", "Concilia un comprobante leído con el correo bancario y, si coincide, aplica el pago.",
-                 {"revision_id": {"type": "integer"}}, ["revision_id"]),
+    _herramienta("aplicar_comprobante", "Valida un comprobante leído y, si cumple, aplica el pago a la cuenta del cliente.",
+                 {"revision_id": {"type": "integer"},
+                  "confirmar_cliente_sugerido": {
+                      "type": "boolean",
+                      "description": "true solo si el cliente no identificado confirmó que el pago es para el cliente_sugerido de leer_comprobante",
+                  }}, ["revision_id"]),
     _herramienta("solicitar_cambio_contrasena", "Pide al personal cambiar la contraseña del WiFi del cliente identificado.",
                  {"nueva": {"type": "string"}}, ["nueva"]),
     _herramienta("pasar_a_humano", "Pasa la conversación a un asesor y pausa el agente en este chat.",
@@ -471,10 +476,15 @@ class _Contexto:
         ):
             self.nombre_contacto = identidad.nombre_contacto
 
+    @staticmethod
+    def _pago_con_cliente_sugerido(nombre: str, argumentos: dict) -> bool:
+        """Aplicar un comprobante al cliente que el sistema sugirió por el concepto."""
+        return nombre == "aplicar_comprobante" and argumentos.get("confirmar_cliente_sugerido") is True
+
     async def usar(self, nombre: str, argumentos: dict) -> dict:
         if nombre not in CONSULTAS | ACCIONES:
             return {"error": "Herramienta desconocida"}
-        if nombre in REQUIEREN_CLIENTE and not self.cliente:
+        if nombre in REQUIEREN_CLIENTE and not self.cliente and not self._pago_con_cliente_sugerido(nombre, argumentos):
             return {"error": "Cliente no identificado: pídele su número de contrato y usa identificar_cliente."}
         if nombre in CONSULTAS:
             try:
@@ -492,7 +502,7 @@ class _Contexto:
         return {"estado": "pendiente", "nota": "Se ejecutará cuando se envíe esta respuesta; redáctala como si ya se estuviera gestionando."}
 
     async def ejecutar_accion(self, nombre: str, argumentos: dict) -> dict:
-        if nombre in REQUIEREN_CLIENTE and not self.cliente:
+        if nombre in REQUIEREN_CLIENTE and not self.cliente and not self._pago_con_cliente_sugerido(nombre, argumentos):
             return {"error": "Cliente no identificado"}
         try:
             return await getattr(self, "_" + nombre)(**argumentos)
@@ -769,8 +779,23 @@ class _Contexto:
         )
         return {"orden_creada": True, "orden_id": orden.id}
 
-    async def _aplicar_comprobante(self, revision_id: int) -> dict:
-        return await ComprobanteService(self.db).conciliar(int(revision_id), self.cliente.id)
+    async def _aplicar_comprobante(self, revision_id: int, confirmar_cliente_sugerido: bool = False) -> dict:
+        if self.cliente:
+            return await ComprobanteService(self.db).conciliar(int(revision_id), self.cliente.id)
+        # Sin contrato: el cliente confirmó el nombre que trae el concepto. El
+        # cliente lo calcula el sistema desde la captura (el modelo no puede
+        # elegir otro) y solo sirve para aplicar ESTE pago: no da acceso a la
+        # cuenta, para eso sigue pidiéndose el contrato.
+        revision = await self.db.get(ComprobantePagoRevisionModel, int(revision_id))
+        if not revision or revision.telefono != self.telefono:
+            return {"error": "Ese comprobante no es de este chat."}
+        sugerido = await sugerir_cliente_por_concepto(self.db, revision.concepto_detectado)
+        if not sugerido:
+            return {"error": "La captura no trae un nombre que coincida con un solo cliente; pídele su número de contrato."}
+        revision.cliente_id = sugerido.id
+        await self.db.commit()
+        resultado = await ComprobanteService(self.db).conciliar(revision.id, sugerido.id)
+        return {**resultado, "cliente": sugerido.nombre}
 
     async def _solicitar_cambio_contrasena(self, nueva: str) -> dict:
         nueva = (nueva or "").strip()

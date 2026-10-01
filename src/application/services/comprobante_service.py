@@ -15,9 +15,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.services.bank_email_service import (
+    PALABRAS_GENERICAS,
     BankEmailError,
     BankEmailService,
     aplicar_pago_desde,
+    contrato_en_concepto,
+    palabras,
     normalize_reference,
     normalize_reference_for_match,
 )
@@ -36,6 +39,50 @@ from src.infrastructure.models import (
 logger = logging.getLogger(__name__)
 # Una captura puede llegar con unos minutos de desfase en el reloj del celular.
 TOLERANCIA_FUTURO = timedelta(minutes=10)
+
+
+MESES_EN_CONCEPTO = {
+    "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+    "septiembre", "setiembre", "octubre", "noviembre", "diciembre", "sept", "oct", "nov", "dic",
+}
+
+
+async def sugerir_cliente_por_concepto(db: AsyncSession, concepto: str | None):
+    """Cliente cuyo nombre o contrato viene en el concepto de la transferencia.
+
+    "INTERNET AGUSTIN VELASCO" -> agustin velasco -> Agustín Velasco Balcázar.
+    Solo se sugiere si hay UN cliente: por su contrato, o con al menos nombre y
+    apellido. El agente le pregunta al cliente si es él antes de aplicar.
+    """
+    texto = palabras(concepto) - PALABRAS_GENERICAS - MESES_EN_CONCEPTO
+    if not texto:
+        return None
+    clientes = (
+        await db.execute(
+            select(ClienteModel.id, ClienteModel.nombre, ClienteModel.cedula)
+            .where(ClienteModel.estado != "eliminado")
+        )
+    ).all()
+    por_contrato = [
+        c for c in clientes
+        if c.cedula
+        and (not c.cedula.strip().isdigit() or len(c.cedula.strip()) >= 4)
+        and contrato_en_concepto(c.cedula, texto)
+    ]
+    if len(por_contrato) == 1:
+        return await db.get(ClienteModel, por_contrato[0].id)
+    tokens = {t for t in texto if len(t) >= 3 and t.isalpha()}
+    puntajes = []
+    for c in clientes:
+        nombre = {p for p in palabras(c.nombre) if len(p) >= 3 and p not in PALABRAS_GENERICAS}
+        coinciden = len(nombre & tokens)
+        if coinciden >= 2:
+            puntajes.append((coinciden, c.id))
+    if not puntajes:
+        return None
+    mejor = max(n for n, _ in puntajes)
+    empatados = [cliente_id for n, cliente_id in puntajes if n == mejor]
+    return await db.get(ClienteModel, empatados[0]) if len(empatados) == 1 else None
 
 
 def clave_de_transferencia(revision: ComprobantePagoRevisionModel) -> str | None:
@@ -141,10 +188,23 @@ class ComprobanteService:
         await self.db.commit()
         await self.db.refresh(revision)
 
+        sugerencia = {}
+        if not cliente_id and revision.concepto_detectado:
+            sugerido = await sugerir_cliente_por_concepto(self.db, revision.concepto_detectado)
+            if sugerido:
+                sugerencia = {
+                    "cliente_sugerido": sugerido.nombre,
+                    "como_confirmar": (
+                        f"Pregúntale si el pago es para {sugerido.nombre}. Si confirma, usa "
+                        "aplicar_comprobante con confirmar_cliente_sugerido=true; no le digas su contrato."
+                    ),
+                }
+
         if not resultado.get("exito") and monto > 0:
             # Pantallas de "transferencia exitosa" que no muestran referencia:
             # se puede empatar por monto y hora con el correo del banco.
             return {
+                **sugerencia,
                 "estado": "sin_referencia",
                 "revision_id": revision.id,
                 "monto": str(monto),
@@ -170,6 +230,7 @@ class ComprobanteService:
                 await self.db.execute(select(ClienteModel).where(ClienteModel.cedula == contrato))
             ).scalars().first()
         return {
+            **sugerencia,
             "estado": "leido",
             "revision_id": revision.id,
             "monto": str(monto),
