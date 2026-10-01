@@ -599,10 +599,13 @@ def test_cada_orden_del_agente_avisa_a_los_administradores(monkeypatch):
 PLANTILLA_DATOS = "Banco Azteca · Tarjeta 5265\n📝 Concepto: tu número de contrato es *{contrato}*. Escríbelo en el concepto."
 
 
-def _datos_de_pago(cliente, plantilla=PLANTILLA_DATOS):
+def _datos_de_pago(cliente, plantilla=PLANTILLA_DATOS, registrados=(), telefono_busqueda=None):
     class _Texto:
         def scalar_one_or_none(self):
             return plantilla
+
+        def all(self):
+            return [SimpleNamespace(cedula=c, telefono=t) for c, t in registrados]
 
     db = _DB()
 
@@ -610,7 +613,9 @@ def _datos_de_pago(cliente, plantilla=PLANTILLA_DATOS):
         return _Texto()
 
     db.execute = execute
-    return asyncio.run(_contexto(cliente=cliente, db=db)._datos_de_pago())
+    contexto = _contexto(cliente=cliente, db=db)
+    contexto.telefono_busqueda = telefono_busqueda
+    return asyncio.run(contexto._datos_de_pago())
 
 
 def test_los_datos_de_pago_le_dicen_su_numero_de_contrato():
@@ -623,7 +628,7 @@ def test_los_datos_de_pago_le_dicen_su_numero_de_contrato():
 def test_sin_identificar_no_se_revela_ningun_contrato():
     resultado = _datos_de_pago(None)
     assert "{contrato}" not in resultado["datos_de_pago"]
-    assert "el que viene en el nombre de tu red WiFi" in resultado["datos_de_pago"]
+    assert "el que aparece en los avisos y recordatorios" in resultado["datos_de_pago"]
     assert "concepto_para_este_cliente" not in resultado
 
 
@@ -632,3 +637,22 @@ def test_plantilla_sin_la_variable_sigue_funcionando():
     assert resultado["datos_de_pago"] == "Banco Azteca · Tarjeta 5265"
     resultado = _datos_de_pago(None, plantilla="Banco Azteca · Tarjeta 5265")
     assert "número de contrato" in resultado["indicacion"]
+
+
+
+def test_desde_el_telefono_registrado_se_muestra_su_contrato():
+    # Es el mismo número al que le llegan los avisos con su contrato.
+    resultado = _datos_de_pago(None, registrados=[("D440", "961 123 4567")], telefono_busqueda="5219611234567@c.us")
+    assert "tu número de contrato es *D440*" in resultado["datos_de_pago"]
+
+
+def test_telefono_compartido_por_varios_clientes_no_muestra_ninguno():
+    registrados = [("D440", "9611234567"), ("D441", "529611234567")]
+    resultado = _datos_de_pago(None, registrados=registrados, telefono_busqueda="5219611234567@c.us")
+    assert "D44" not in resultado["datos_de_pago"]
+    assert "avisos y recordatorios" in resultado["datos_de_pago"]
+
+
+def test_un_lid_no_sirve_para_buscar_el_contrato():
+    resultado = _datos_de_pago(None, registrados=[("D440", "9611234567")], telefono_busqueda="123456789012345@lid")
+    assert "D440" not in resultado["datos_de_pago"]

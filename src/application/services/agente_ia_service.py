@@ -682,6 +682,8 @@ class _Contexto:
         if not texto:
             return {"datos_de_pago": "No hay datos de pago configurados; pasa a un asesor."}
         contrato = self.cliente.cedula if self.cliente and self.cliente.cedula else None
+        if not contrato:
+            contrato = await self._contrato_del_telefono_registrado()
         resultado = {
             "datos_de_pago": personalizar_datos_pago(texto, contrato),
             "indicacion": "Envía los datos de pago tal cual vienen, sin resumirlos, incluida la línea del contrato.",
@@ -806,8 +808,9 @@ class _Contexto:
         if resultado.get("aplicado") and not resultado.get("concepto_traia_contrato"):
             # No se le dice el contrato: es lo que da acceso a la cuenta.
             resultado["recordatorio"] = (
-                "Al final dile que la próxima vez escriba su número de contrato (viene en el nombre de su "
-                "red WiFi) en el concepto, para que su pago se confirme al instante. No le digas el contrato."
+                "Al final dile que la próxima vez escriba su número de contrato (aparece en los avisos y "
+                "recordatorios que le mandamos por WhatsApp) en el concepto, para que su pago se confirme al "
+                "instante. No le digas el contrato."
             )
         return {**resultado, "cliente": sugerido.nombre}
 
@@ -877,6 +880,32 @@ class _Contexto:
             f"🧾 Orden de instalación #{orden.id}"
         )
         return {"orden_creada": True, "orden_id": orden.id}
+
+    async def _contrato_del_telefono_registrado(self) -> str | None:
+        """Contrato del cliente cuyo teléfono registrado es el de este chat.
+
+        Es el mismo número al que ya le llegan los avisos con su contrato, así
+        que mostrárselo no revela nada nuevo. Solo sirve para los datos de pago:
+        no identifica al cliente para consultar la cuenta. Si el teléfono lo
+        comparten varios clientes, no se muestra ninguno.
+        """
+        telefono = self._telefono_de_contacto()
+        if not telefono:
+            return None
+        filas = (
+            await self.db.execute(
+                select(ClienteModel.cedula, ClienteModel.telefono).where(
+                    ClienteModel.estado != "eliminado",
+                    ClienteModel.cedula.is_not(None),
+                    ClienteModel.telefono.like(f"%{telefono}%"),
+                )
+            )
+        ).all()
+        contratos = {
+            fila.cedula for fila in filas
+            if re.sub(r"\D", "", fila.telefono or "")[-10:] == telefono
+        }
+        return contratos.pop() if len(contratos) == 1 else None
 
     def _telefono_de_contacto(self) -> str | None:
         """Teléfono real del chat (un LID no sirve para llamar)."""
