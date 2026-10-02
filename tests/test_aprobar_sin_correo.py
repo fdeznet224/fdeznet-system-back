@@ -127,3 +127,62 @@ def test_se_avisa_una_sola_vez_por_comprobante(monkeypatch):
     assert asyncio.run(jobs.avisar_comprobantes_sin_correo(None)) == 1
     assert asyncio.run(jobs.avisar_comprobantes_sin_correo(None)) == 0
     assert "Comprobante #17" in enviados[0][0] and enviados[0][1] == "alerta_comprobante"
+
+
+# ------------------------------------------- modo captura: aprobar en el panel
+def _aprobar_captura(monkeypatch, usuario=CAJERO, folio_usado=False, idempotente=False, comprobante=None, **datos):
+    cobros = []
+
+    class _Billing:
+        def __init__(self, _db):
+            pass
+
+        async def registrar_pago_completo(self, **kwargs):
+            cobros.append(kwargs)
+            return {"pago_id": 901, "idempotente": idempotente}
+
+    monkeypatch.setattr(whatsapp, "BillingService", _Billing)
+    comprobante = _comprobante(**{"folio_detectado": "000000254", "monto_detectado": Decimal("420.00"),
+                                  "huella_captura": None, "auditoria_banco": None, **(comprobante or {})})
+    db = _DB(comprobante, folio_usado)
+    solicitud = whatsapp.AprobarComprobanteRequest(cliente_id=248, factura_id=1134, **datos)
+    resultado = asyncio.run(whatsapp._aprobar_por_captura_en_panel(db, comprobante, solicitud, usuario))
+    return resultado, comprobante, db, cobros
+
+
+def test_en_modo_captura_se_aprueba_sin_deposito_del_banco(monkeypatch):
+    # Pago fuera de horario: el banco no mandó correo.
+    resultado, comprobante, db, cobros = _aprobar_captura(monkeypatch)
+    assert resultado["por_captura"] is True
+    assert cobros[0]["monto"] == Decimal("420.00")
+    assert cobros[0]["clave_idempotencia"] == "captura:000000254"
+    assert comprobante.estado == "aprobado" and comprobante.pago_id == 901
+    assert comprobante.motivo_revision == "aprobado_en_panel_por_captura"
+    assert comprobante.notas_revision == "Aprobado con la captura por caja"
+    assert comprobante.auditoria_banco == "pendiente"
+    assert db.agregados[0].folio_banco == "000000254"
+
+
+def test_en_modo_captura_azteca_a_azteca_no_se_audita(monkeypatch):
+    _, comprobante, _, _ = _aprobar_captura(monkeypatch, comprobante={"folio_detectado": "MX100000001"})
+    assert comprobante.auditoria_banco == "interna_azteca"
+
+
+def test_en_modo_captura_no_se_aprueba_una_captura_ya_usada(monkeypatch):
+    with pytest.raises(HTTPException) as error:
+        _aprobar_captura(monkeypatch, folio_usado=True)
+    assert error.value.status_code == 409
+
+
+def test_en_modo_captura_sin_folio_ni_huella_pide_la_referencia(monkeypatch):
+    with pytest.raises(HTTPException) as error:
+        _aprobar_captura(monkeypatch, comprobante={"folio_detectado": None})
+    assert error.value.status_code == 400
+    resultado, _, _, cobros = _aprobar_captura(monkeypatch, comprobante={"folio_detectado": None}, referencia="ABC123456")
+    assert cobros[0]["referencia"] == "ABC123456"
+
+
+def test_en_modo_captura_si_el_cobro_ya_existia_no_se_aprueba_dos_veces(monkeypatch):
+    with pytest.raises(HTTPException) as error:
+        _aprobar_captura(monkeypatch, idempotente=True)
+    assert error.value.status_code == 409

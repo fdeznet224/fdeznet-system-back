@@ -61,7 +61,12 @@ from src.application.services.bank_email_service import (
     normalize_reference_for_match,
 )
 from src.application.services.billing_service import BillingService
-from src.application.services.comprobante_service import normalizar_contrato, personalizar_datos_pago
+from src.application.services.comprobante_service import (
+    ComprobanteService,
+    es_interna_azteca,
+    normalizar_contrato,
+    personalizar_datos_pago,
+)
 from src.application.services.finance_service import FinanceService
 from src.application.services.access_control_service import (
     verificar_acceso_cliente,
@@ -1070,11 +1075,14 @@ async def listar_comprobantes_revision(
             ),
             "archivo_url": f"/whatsapp/comprobantes-revision/{item.id}/archivo",
         })
+    config_correo = await BankEmailService().get_config(db)
     return {
         "items": items,
         "total": total,
         "pagina": pagina,
         "limite": limite,
+        # En modo captura se aprueba sin depósito del banco.
+        "validar_pagos_con": getattr(config_correo, "validar_pagos_con", None) or "correo",
     }
 
 
@@ -1248,6 +1256,80 @@ async def _aprobar_verificado_en_banco(db, comprobante, datos, current_user) -> 
     return {"status": "aprobado", "verificado_en_banco": True, **resultado}
 
 
+async def _aprobar_por_captura_en_panel(db, comprobante, datos, current_user) -> dict:
+    """Modo captura: quien revisa aprueba con la captura, sin correo del banco.
+
+    Los pagos fuera de horario o de Azteca a Azteca no traen correo; esperar
+    uno dejaba el botón bloqueado. La protección es la misma que en la
+    aprobación automática: el folio (o la huella) no se puede usar dos veces.
+    """
+    monto = datos.monto or comprobante.monto_detectado
+    if not monto:
+        raise HTTPException(status_code=400, detail="Escribe el monto de la captura")
+    referencia = normalize_reference(datos.referencia) or normalize_reference(comprobante.folio_detectado)
+    clave = normalize_reference_for_match(referencia) or comprobante.huella_captura
+    if not clave:
+        raise HTTPException(status_code=400, detail="Escribe el folio o referencia que trae la captura")
+    if await ComprobanteService(db)._clave_ya_usada(clave, comprobante.id):
+        raise HTTPException(status_code=409, detail="Esa captura ya se usó en otro pago")
+    factura = (
+        await db.get(FacturaModel, datos.factura_id)
+        if datos.factura_id
+        else await _factura_sugerida_revision(db, datos.cliente_id)
+    )
+    if not factura or factura.cliente_id != datos.cliente_id:
+        raise HTTPException(status_code=400, detail="No se encontró una factura pendiente del cliente")
+
+    comprobante.estado = "procesando"
+    comprobante.cliente_id = datos.cliente_id
+    comprobante.factura_id = factura.id
+    comprobante.revisado_por_id = current_user.id
+    if referencia:
+        comprobante.folio_detectado = referencia
+    await db.commit()
+    try:
+        resultado = await BillingService(db).registrar_pago_completo(
+            factura_id=factura.id,
+            usuario_operador=current_user,
+            metodo_pago="transferencia",
+            monto=monto,
+            referencia=referencia or clave,
+            # Misma llave que la aprobación automática: la captura no paga dos veces.
+            clave_idempotencia=f"captura:{clave}",
+        )
+    except ValueError as exc:
+        await db.rollback()
+        comprobante = await db.get(ComprobantePagoRevisionModel, comprobante.id)
+        comprobante.estado = "pendiente"
+        comprobante.notas_revision = f"Error al aprobar: {exc}"
+        await db.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    comprobante = await db.get(ComprobantePagoRevisionModel, comprobante.id)
+    if resultado.get("idempotente"):
+        comprobante.estado = "pendiente"
+        await db.commit()
+        raise HTTPException(status_code=409, detail="Esa captura ya se usó en otro pago")
+    comprobante.estado = "aprobado"
+    comprobante.pago_id = resultado.get("pago_id")
+    comprobante.fecha_revision = datetime.now()
+    comprobante.motivo_revision = "aprobado_en_panel_por_captura"
+    comprobante.notas_revision = (
+        f"Aprobado con la captura por {current_user.usuario}"
+        + (f": {datos.notas.strip()}" if (datos.notas or "").strip() else "")
+    )[:1000]
+    comprobante.auditoria_banco = "interna_azteca" if es_interna_azteca(referencia) else "pendiente"
+    db.add(PagoAutovalidadoModel(
+        cliente_id=datos.cliente_id,
+        monto=monto,
+        folio_banco=clave[:100],
+        banco_emisor="captura_panel",
+        whatsapp_remitente=(comprobante.telefono or "")[:20],
+    ))
+    await db.commit()
+    return {"status": "aprobado", "por_captura": True, **resultado}
+
+
 @router.post("/comprobantes-revision/{comprobante_id}/aprobar")
 async def aprobar_comprobante_revision(
     comprobante_id: int,
@@ -1272,6 +1354,12 @@ async def aprobar_comprobante_revision(
 
     correo_service = BankEmailService()
     config_correo = await correo_service.get_config(db)
+    if (
+        not datos.transaccion_correo_id
+        and not comprobante.transaccion_correo_id
+        and (getattr(config_correo, "validar_pagos_con", None) or "correo") == "captura"
+    ):
+        return await _aprobar_por_captura_en_panel(db, comprobante, datos, current_user)
     transaction = None
     if datos.transaccion_correo_id:
         transaction = (
