@@ -29,6 +29,7 @@ from src.application.services.bot_flow_service import get_or_create_bot_config
 from src.application.services.bot_pausa_service import bot_en_pausa, pausar_bot
 from src.application.services.comprobante_service import (
     ComprobanteService,
+    normalizar_contrato,
     personalizar_datos_pago,
     sugerir_cliente_por_concepto,
 )
@@ -531,7 +532,7 @@ class _Contexto:
         return {"registrado": True, "nombre": nombre}
 
     async def _identificar_cliente(self, contrato: str) -> dict:
-        contrato = (contrato or "").strip().upper()
+        contrato = normalizar_contrato(contrato)
         registro = await self.db.get(WhatsappIdentidadModel, self.telefono)
         ahora = datetime.now()
         if (

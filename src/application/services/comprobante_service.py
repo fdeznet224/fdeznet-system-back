@@ -42,6 +42,14 @@ TOLERANCIA_FUTURO = timedelta(minutes=10)
 # Límites del modo captura: lo que se sale de lo normal lo revisa una persona.
 MAX_VECES_LA_DEUDA = 2
 MAX_CAPTURAS_POR_CHAT_AL_DIA = 2
+# Capturas leídas a las que todavía no se les intentó aplicar el pago: si el
+# mismo chat la vuelve a mandar (o el agente la relee), se retoma.
+SIN_INTENTO_DE_APLICAR = {"esperando_confirmacion", "sin_referencia"}
+
+
+def normalizar_contrato(contrato: str | None) -> str:
+    """Los contratos son hexadecimales: la O y la I del OCR o del cliente son 0 y 1."""
+    return (contrato or "").strip().upper().replace("O", "0").replace("I", "1")
 
 
 MESES_EN_CONCEPTO = {
@@ -177,36 +185,43 @@ class ComprobanteService:
                 }
         huella = resultado.get("huella")
 
+        estado_previo, previa = None, None
         if resultado.get("exito") and folio:
-            estado_previo = await self._estado_folio_existente(folio)
-            if estado_previo:
-                return {"estado": "duplicado", "folio": folio, **estado_previo}
-        if huella:
-            estado_previo = await self._estado_huella_existente(huella, telefono, media_url)
-            if estado_previo:
-                return {"estado": "duplicado", "folio": folio or huella, **estado_previo}
+            estado_previo, previa = await self._estado_folio_existente(folio, telefono, media_url)
+        if not estado_previo and huella:
+            estado_previo, previa = await self._estado_huella_existente(huella, telefono, media_url)
+        if estado_previo and not self._sin_aplicar_de_este_chat(previa, telefono):
+            return {"estado": "duplicado", "folio": folio or huella, **estado_previo}
 
-        revision = ComprobantePagoRevisionModel(
-            cliente_id=cliente_id,
-            mensaje_chat_id=mensaje_chat_id,
-            telefono=telefono,
-            media_url=media_url,
-            monto_detectado=monto if monto > 0 else None,
-            folio_detectado=folio,
-            cedula_detectada=resultado.get("cedula_detectada"),
-            fecha_pago_detectada=resultado.get("fecha_pago"),
-            huella_captura=huella,
-            concepto_detectado=(resultado.get("concepto") or "")[:120] or None,
-            cuentas_detectadas=",".join(resultado.get("cuentas") or [])[:60] or None,
-            motivo_revision=(
-                "esperando_confirmacion"
-                if resultado.get("exito")
-                else "sin_referencia" if monto > 0 else "ocr_no_legible"
-            ),
-        )
-        self.db.add(revision)
-        await self.db.commit()
-        await self.db.refresh(revision)
+        if previa is not None:
+            # La misma captura de este chat, leída antes de identificar al
+            # cliente: se retoma para poder aplicarla (no es un reenvío).
+            revision = previa
+            if cliente_id and not revision.cliente_id:
+                revision.cliente_id = cliente_id
+                await self.db.commit()
+        else:
+            revision = ComprobantePagoRevisionModel(
+                cliente_id=cliente_id,
+                mensaje_chat_id=mensaje_chat_id,
+                telefono=telefono,
+                media_url=media_url,
+                monto_detectado=monto if monto > 0 else None,
+                folio_detectado=folio,
+                cedula_detectada=normalizar_contrato(resultado.get("cedula_detectada")) or None,
+                fecha_pago_detectada=resultado.get("fecha_pago"),
+                huella_captura=huella,
+                concepto_detectado=(resultado.get("concepto") or "")[:120] or None,
+                cuentas_detectadas=",".join(resultado.get("cuentas") or [])[:60] or None,
+                motivo_revision=(
+                    "esperando_confirmacion"
+                    if resultado.get("exito")
+                    else "sin_referencia" if monto > 0 else "ocr_no_legible"
+                ),
+            )
+            self.db.add(revision)
+            await self.db.commit()
+            await self.db.refresh(revision)
 
         sugerencia = {}
         if not cliente_id and revision.concepto_detectado:
@@ -243,7 +258,7 @@ class ComprobanteService:
                 "detalle": "No se pudo leer el monto; pide una foto más clara o el comprobante completo.",
             }
 
-        contrato = resultado.get("cedula_detectada")
+        contrato = normalizar_contrato(resultado.get("cedula_detectada")) or None
         cliente_en_captura = None
         if contrato:
             cliente_en_captura = (
@@ -539,7 +554,17 @@ class ComprobanteService:
                 await self.db.rollback()
         return aplicados
 
-    async def _estado_folio_existente(self, folio: str) -> dict | None:
+    @staticmethod
+    def _sin_aplicar_de_este_chat(revision, telefono: str) -> bool:
+        return (
+            revision is not None
+            and revision.telefono == telefono
+            and not revision.pago_id
+            and revision.estado == "pendiente"
+            and revision.motivo_revision in SIN_INTENTO_DE_APLICAR
+        )
+
+    async def _estado_folio_existente(self, folio: str, telefono: str, media_url: str):
         canonico = normalize_reference_for_match(folio)
         pago = (
             await self.db.execute(
@@ -560,13 +585,21 @@ class ComprobanteService:
             )
         ).scalars().first()
         if not pago and not revision:
-            return None
-        return {
+            return None, None
+        estado = {
             "pago_ya_registrado": bool(pago or (revision and revision.pago_id)),
             "estado_revision": revision.estado if revision else None,
         }
+        if revision:
+            estado.update(
+                revision_id=revision.id,
+                # Releer la misma imagen del mismo mensaje no es un reenvío.
+                misma_imagen=revision.media_url == media_url,
+                otro_telefono=revision.telefono != telefono,
+            )
+        return estado, revision
 
-    async def _estado_huella_existente(self, huella: str, telefono: str, media_url: str) -> dict | None:
+    async def _estado_huella_existente(self, huella: str, telefono: str, media_url: str):
         """La misma captura (monto, hora y cuentas) ya se había recibido."""
         revision = (
             await self.db.execute(
@@ -578,7 +611,7 @@ class ComprobanteService:
         ).scalars().first()
         # Una captura rechazada sin pago se puede volver a revisar.
         if not revision or (revision.estado == "rechazado" and not revision.pago_id):
-            return None
+            return None, None
         return {
             "pago_ya_registrado": bool(revision.pago_id),
             "estado_revision": revision.estado,
@@ -586,7 +619,7 @@ class ComprobanteService:
             # Releer la misma imagen del mismo mensaje no es un reenvío.
             "misma_imagen": revision.media_url == media_url,
             "otro_telefono": revision.telefono != telefono,
-        }
+        }, revision
 
     async def alertar_folio_duplicado(self, telefono: str, folio: str) -> None:
         """Mismo aviso de posible fraude que manda el bot de menú."""

@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 WHATSAPP_UPLOADS = Path(__file__).resolve().parents[3] / "bot_whatsapp" / "uploads"
 # Los comprobantes del banco caben en una o dos páginas.
 MAX_PAGINAS_PDF = 2
+# Datos fijos de una persona o cuenta que salen en la captura y se repiten
+# cada mes: RFC, CURP, tarjeta o CLABE. No identifican la transferencia.
+RE_NO_ES_FOLIO = re.compile(
+    r"[A-Z&]{3,4}\d{6}[A-Z0-9]{3}"
+    r"|[A-Z]{4}\d{6}[HM][A-Z]{5}[A-Z0-9]\d"
+    r"|\d{15,16}|\d{18}"
+)
 
 
 def leer_pdf(contenido: bytes) -> tuple[str, list[bytes]]:
@@ -187,7 +194,7 @@ class OCRService:
             candidatos = [
                 candidato
                 for candidato in candidatos
-                if 10 <= len(candidato) <= 30
+                if 10 <= len(candidato) <= 30 and not RE_NO_ES_FOLIO.fullmatch(candidato)
             ]
             if candidatos:
                 folio = max(candidatos, key=len)

@@ -672,3 +672,26 @@ def test_telefono_compartido_por_varios_clientes_no_muestra_ninguno():
 def test_un_lid_no_sirve_para_buscar_el_contrato():
     resultado = _datos_de_pago(None, registrados=[("D440", "9611234567")], telefono_busqueda="123456789012345@lid")
     assert "D440" not in resultado["datos_de_pago"]
+
+
+def test_el_contrato_con_o_en_lugar_de_cero_identifica_al_cliente():
+    # El OCR lee "BDOF" donde el contrato es BD0F.
+    db = _DB()
+    consultas = []
+
+    class _Resultado:
+        def scalars(self):
+            return self
+
+        def first(self):
+            return CLIENTE
+
+    async def execute(consulta):
+        consultas.append(str(consulta.compile(compile_kwargs={"literal_binds": True})))
+        return _Resultado()
+
+    db.execute = execute
+    contexto = _contexto(cliente=None, db=db)
+    asyncio.run(contexto.usar("identificar_cliente", {"contrato": "bdof"}))
+
+    assert "'BD0F'" in consultas[0]

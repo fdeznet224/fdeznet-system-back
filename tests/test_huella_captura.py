@@ -136,3 +136,59 @@ def test_solo_se_alerta_fraude_si_ya_se_pago_o_viene_de_otro_numero(monkeypatch,
     monkeypatch.setattr(agente_mod, "ComprobanteService", comprobantes)
     asyncio.run(contexto._leer_comprobante())
     assert bool(avisos) is alerta
+
+
+CAPTURA_CON_FOLIO = "Transferencia exitosa Monto $140.00 Folio MX100000001 Cuenta ****6745"
+
+
+class _OCRConFolio:
+    async def procesar_ticket(self, _url):
+        return OCRService.extraer_datos(CAPTURA_CON_FOLIO)
+
+
+def _leer_con_folio(previa, media_url="whatsapp-media://ticket.jpg", telefono="111@lid"):
+    db = _DB(previa)
+    servicio = ComprobanteService(db, ocr=_OCRConFolio(), correo=SimpleNamespace())
+    return asyncio.run(servicio.leer(media_url, telefono, 199, 6)), db
+
+
+def test_releer_la_misma_imagen_con_folio_ya_pagado_no_es_reenvio():
+    # Imagen y luego un texto: el agente relee la misma imagen.
+    previa = SimpleNamespace(id=25, estado="aprobado", pago_id=501, media_url="whatsapp-media://ticket.jpg",
+                             telefono="111@lid", motivo_revision="aprobado_por_captura")
+    resultado, _ = _leer_con_folio(previa)
+    assert resultado["estado"] == "duplicado"
+    assert resultado["misma_imagen"] is True and resultado["otro_telefono"] is False
+
+
+@pytest.mark.parametrize("motivo", ["esperando_confirmacion", "sin_referencia"])
+def test_la_captura_pendiente_del_mismo_chat_se_retoma_para_aplicarla(motivo):
+    # La captura se leyó antes de identificar al cliente.
+    previa = SimpleNamespace(id=23, estado="pendiente", pago_id=None, media_url="whatsapp-media://nueva.jpg",
+                             telefono="111@lid", motivo_revision=motivo, cliente_id=None,
+                             concepto_detectado=None)
+    resultado, db = _leer(previa)
+    assert resultado["estado"] == "sin_referencia"
+    assert resultado["revision_id"] == 23
+    assert previa.cliente_id == 248
+    assert db.agregados == []
+
+
+def test_la_captura_pendiente_de_otro_chat_sigue_siendo_duplicada():
+    previa = SimpleNamespace(id=23, estado="pendiente", pago_id=None, media_url="whatsapp-media://x.jpg",
+                             telefono="222@lid", motivo_revision="sin_referencia", cliente_id=None)
+    resultado, _ = _leer(previa)
+    assert resultado["estado"] == "duplicado" and resultado["otro_telefono"] is True
+
+
+def test_una_captura_que_ya_paso_por_revision_no_se_retoma():
+    previa = SimpleNamespace(id=23, estado="pendiente", pago_id=None, media_url="whatsapp-media://nueva.jpg",
+                             telefono="111@lid", motivo_revision="segundo_pago_del_mes", cliente_id=248)
+    resultado, _ = _leer(previa)
+    assert resultado["estado"] == "duplicado"
+
+
+@pytest.mark.parametrize("dato", ["XAXX010101AB1", "XEXX010101HNEXXXA4", "4000000000000002", "012180001234567897"])
+def test_rfc_curp_tarjeta_o_clabe_no_se_toman_como_folio(dato):
+    datos = OCRService.extraer_datos(f"Transferencia exitosa $300.00 RFC {dato} Concepto bd0f")
+    assert datos["folio"] is None
