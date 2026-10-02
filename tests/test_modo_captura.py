@@ -340,3 +340,30 @@ def test_en_modo_captura_con_correo_se_audita(monkeypatch):
     monkeypatch.setattr(jobs, "enviar_alertas_whatsapp", alerta)
     asyncio.run(jobs.tarea_conciliar_correos_bancarios())
     assert llamadas == ["adelantados", "sync", "auditar", "alerta"]
+
+
+CAPTURA_AZTECA = (
+    "Enviaste a una cuenta $140.00 02/Oct/2026 13:37:33 (CST) Cuenta origen Guardadito ***6745 "
+    "Cuenta destino ARISEL F******** Banco Azteca ***265 Folio: MX100000001"
+)
+
+
+def test_la_captura_de_la_app_azteca_trae_folio_y_hora():
+    datos = OCRService.extraer_datos(CAPTURA_AZTECA)
+    assert datos["folio"] == "MX100000001"
+    assert datos["monto"] == 140.0
+    assert datos["fecha_pago"] == datetime(2026, 10, 2, 13, 37, 33)
+
+
+def test_azteca_a_azteca_no_se_audita_con_el_correo(monkeypatch):
+    # Transferencia interna: el banco no manda correo y no debe alertar "sin depósito".
+    revision = _revision(folio_detectado="MX100000001", huella_captura=None)
+    resultado, revision, *_ = _aplicar(monkeypatch, revision=revision)
+    assert resultado["aplicado"] is True
+    assert revision.auditoria_banco == "interna_azteca"
+
+
+def test_un_spei_de_otro_banco_se_sigue_auditando(monkeypatch):
+    revision = _revision(folio_detectado="12345P05202610020000000001", huella_captura=None)
+    _, revision, *_ = _aplicar(monkeypatch, revision=revision)
+    assert revision.auditoria_banco == "pendiente"

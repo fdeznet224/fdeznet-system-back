@@ -8,6 +8,7 @@ monto y fecha que la captura (BankEmailService.transaction_match_reason).
 """
 
 import logging
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -45,6 +46,16 @@ MAX_CAPTURAS_POR_CHAT_AL_DIA = 2
 # Capturas leídas a las que todavía no se les intentó aplicar el pago: si el
 # mismo chat la vuelve a mandar (o el agente la relee), se retoma.
 SIN_INTENTO_DE_APLICAR = {"esperando_confirmacion", "sin_referencia"}
+
+
+# Folio de la app de Banco Azteca ("Folio: MX204707619"). Las cuentas del ISP
+# son de Azteca, así que es una transferencia interna: no pasa por SPEI y el
+# banco no manda correo para auditarla.
+RE_FOLIO_AZTECA = re.compile(r"MX\d{8,}")
+
+
+def es_interna_azteca(folio: str | None) -> bool:
+    return bool(RE_FOLIO_AZTECA.fullmatch(normalize_reference(folio) or ""))
 
 
 def normalizar_contrato(contrato: str | None) -> str:
@@ -445,7 +456,10 @@ class ComprobanteService:
         revision.fecha_revision = datetime.now()
         # Reconectar con una captura es lo más tentador de falsear: su
         # depósito se busca primero y se avisa antes si no aparece.
-        revision.auditoria_banco = "prioridad" if cliente.estado == "suspendido" else "pendiente"
+        if es_interna_azteca(revision.folio_detectado):
+            revision.auditoria_banco = "interna_azteca"
+        else:
+            revision.auditoria_banco = "prioridad" if cliente.estado == "suspendido" else "pendiente"
         self.db.add(PagoAutovalidadoModel(
             cliente_id=cliente.id,
             monto=monto,

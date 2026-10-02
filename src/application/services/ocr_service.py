@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 WHATSAPP_UPLOADS = Path(__file__).resolve().parents[3] / "bot_whatsapp" / "uploads"
 # Los comprobantes del banco caben en una o dos páginas.
 MAX_PAGINAS_PDF = 2
+MESES_CORTOS = {
+    "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8,
+    "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dic": 12,
+}
 # Datos fijos de una persona o cuenta que salen en la captura y se repiten
 # cada mes: RFC, CURP, tarjeta o CLABE. No identifican la transferencia.
 RE_NO_ES_FOLIO = re.compile(
@@ -247,6 +251,19 @@ class OCRService:
                 )
             except ValueError:
                 fecha_pago = None
+        if fecha_pago is None:
+            # App de Banco Azteca: "02/Oct/2026 13:37:33 (CST)".
+            match = re.search(
+                r"(\d{1,2})[/ -]([a-z]{3,4})\.?[/ -](\d{4})\D{0,20}?(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?",
+                texto,
+            )
+            mes = MESES_CORTOS.get(match.group(2)) if match else None
+            if mes:
+                dia, _, anio, hora, minuto, segundo = match.groups()
+                try:
+                    fecha_pago = datetime(int(anio), mes, int(dia), int(hora), int(minuto), int(segundo or 0))
+                except ValueError:
+                    fecha_pago = None
 
         # Texto del concepto: "Concepto de transferencia: margarita moreno lopez 30/09/2026".
         concepto = None
