@@ -192,3 +192,9 @@ def test_una_captura_que_ya_paso_por_revision_no_se_retoma():
 def test_rfc_curp_tarjeta_o_clabe_no_se_toman_como_folio(dato):
     datos = OCRService.extraer_datos(f"Transferencia exitosa $300.00 RFC {dato} Concepto bd0f")
     assert datos["folio"] is None
+
+
+@pytest.mark.parametrize("escrito, contrato", [(" bdof ", "BD0F"), ("2e3a", "2E3A"), ("DI0O", "D100"), (None, "")])
+def test_el_contrato_se_normaliza_con_o_por_cero_e_i_por_uno(escrito, contrato):
+    from src.application.services.comprobante_service import normalizar_contrato
+    assert normalizar_contrato(escrito) == contrato

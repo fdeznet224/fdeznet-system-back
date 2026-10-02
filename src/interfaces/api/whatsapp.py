@@ -61,7 +61,7 @@ from src.application.services.bank_email_service import (
     normalize_reference_for_match,
 )
 from src.application.services.billing_service import BillingService
-from src.application.services.comprobante_service import personalizar_datos_pago
+from src.application.services.comprobante_service import normalizar_contrato, personalizar_datos_pago
 from src.application.services.finance_service import FinanceService
 from src.application.services.access_control_service import (
     verificar_acceso_cliente,
@@ -529,7 +529,7 @@ async def buscar_cliente_para_staff(
                 joinedload(ClienteModel.onu_asignada),
                 joinedload(ClienteModel.caja_nap),
             )
-            .where(ClienteModel.cedula == contrato.upper().strip())
+            .where(ClienteModel.cedula == normalizar_contrato(contrato))
         )
     ).scalar_one_or_none()
     if not cliente:
@@ -785,7 +785,7 @@ def renderizar_mensaje_campana(
 # ⚙️ FUNCION AUXILIAR: VALIDACIÓN FINAL (CAPA 3)
 # ==========================================
 async def procesar_validacion_final_pago(mensaje_texto, estado, telefono_raw, db, wa_service):
-    cedula_input = mensaje_texto.upper().strip()
+    cedula_input = normalizar_contrato(mensaje_texto)
     cliente_final = await db.get(ClienteModel, estado["cliente_id"])
 
     # Verificación de firma: debe escribir su número de contrato exacto.
@@ -2086,7 +2086,7 @@ async def webhook_recibir_mensaje(
 
                 # 🛡️ CAPA 2: Triangulación de Identidad
                 if cedula_ocr:
-                    stmt_c_ocr = select(ClienteModel).where(ClienteModel.cedula == cedula_ocr)
+                    stmt_c_ocr = select(ClienteModel).where(ClienteModel.cedula == normalizar_contrato(cedula_ocr))
                     cliente_ocr = (await db.execute(stmt_c_ocr)).scalars().first()
                     
                     if cliente_ocr:
@@ -2144,7 +2144,7 @@ async def webhook_recibir_mensaje(
             return {"status": "bot_confirmando_pago"}
 
         elif estado["paso"] == "PEDIR_CEDULA_PAGO":
-            cedula_input = mensaje_texto.upper().strip()
+            cedula_input = normalizar_contrato(mensaje_texto)
             stmt_c = select(ClienteModel).where(ClienteModel.cedula == cedula_input)
             cliente_final = (await db.execute(stmt_c)).scalars().first()
             
@@ -2171,7 +2171,7 @@ async def webhook_recibir_mensaje(
 
         # --- FLUJO 2: PROMESA DE PAGO ---
         elif estado["paso"] == "VALIDAR_CEDULA_PROMESA":
-            cedula_input = mensaje_texto.upper().strip()
+            cedula_input = normalizar_contrato(mensaje_texto)
             stmt_c = select(ClienteModel).where(ClienteModel.cedula == cedula_input)
             cliente_final = (await db.execute(stmt_c)).scalars().first()
 
@@ -2259,7 +2259,7 @@ async def webhook_recibir_mensaje(
 
         # --- FLUJO 4: DIAGNÓSTICO BÁSICO SIN INTERNET ---
         elif estado["paso"] == "VALIDAR_CEDULA_SOPORTE":
-            cedula_input = mensaje_texto.upper().strip()
+            cedula_input = normalizar_contrato(mensaje_texto)
             cliente_final = (
                 await db.execute(
                     select(ClienteModel).where(
@@ -2333,7 +2333,7 @@ async def webhook_recibir_mensaje(
 
         # --- FLUJO 3: ESTADO DEL SERVICIO ---
         elif estado["paso"] == "VALIDAR_CEDULA_ESTADO":
-            cedula_input = mensaje_texto.upper().strip()
+            cedula_input = normalizar_contrato(mensaje_texto)
             stmt_c = select(ClienteModel).options(joinedload(ClienteModel.plan)).where(ClienteModel.cedula == cedula_input)
             cliente_final = (await db.execute(stmt_c)).scalars().first()
 
