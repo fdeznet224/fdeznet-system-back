@@ -339,7 +339,8 @@ def test_en_modo_captura_con_correo_se_audita(monkeypatch):
     monkeypatch.setattr(jobs, "SessionLocal", _Sesion)
     monkeypatch.setattr(jobs, "enviar_alertas_whatsapp", alerta)
     asyncio.run(jobs.tarea_conciliar_correos_bancarios())
-    assert llamadas == ["adelantados", "sync", "auditar", "alerta"]
+    # Sin depósito queda solo como nota en el panel: no se avisa por WhatsApp.
+    assert llamadas == ["adelantados", "sync", "auditar"]
 
 
 CAPTURA_AZTECA = (

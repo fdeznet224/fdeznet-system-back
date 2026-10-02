@@ -1048,6 +1048,7 @@ async def listar_comprobantes_revision(
                 else None
             ),
             "pago_id": item.pago_id,
+            "auditoria_banco": item.auditoria_banco,
             "validacion_correo": (
                 {
                     "id": item.transaccion_correo.id,

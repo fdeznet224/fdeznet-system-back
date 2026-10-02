@@ -56,7 +56,10 @@ async def tarea_conciliar_correos_bancarios():
                     await service.sync(db)
                 except BankEmailError:
                     return
-                await avisar_pagos_sin_deposito(db, await service.auditar_pagos_por_captura(db))
+                # Solo queda como nota en el panel ("sin_deposito"): los pagos
+                # fuera de horario o de Azteca a Azteca no traen correo y el
+                # dueño confía en las capturas; no se avisa por WhatsApp.
+                await service.auditar_pagos_por_captura(db)
             return
         try:
             sync_result = await service.sync(db)
@@ -67,21 +70,6 @@ async def tarea_conciliar_correos_bancarios():
             # El detalle ya queda guardado en configuracion_correo_banco.
             return
         await avisar_comprobantes_sin_correo(db)
-
-
-async def avisar_pagos_sin_deposito(db, sin_deposito: list[dict]) -> int:
-    """Pagos aplicados con la captura cuyo depósito no llegó al banco."""
-    for item in sin_deposito:
-        await enviar_alertas_whatsapp(
-            "🔎 *Pago por captura sin depósito en el banco*\n"
-            f"{item['cliente']} · ${item['monto']} · código {item['folio']}\n"
-            f"Comprobante #{item['id']}: se aplicó con la captura"
-            + (" y reconectó el servicio" if item["reconexion"] else "")
-            + ", pero su depósito no aparece en los avisos del banco. Revísalo en la app del banco.",
-            db,
-            tipo_evento="alerta_comprobante",
-        )
-    return len(sin_deposito)
 
 
 async def avisar_comprobantes_sin_correo(db) -> int:
