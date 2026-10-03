@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import ssl
 import urllib.parse
 import urllib.request
@@ -11,6 +12,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.infrastructure.models import OLTModel, ClienteModel
+
+# Causa de la última caída que reporta la OLT -> qué pasó, en palabras del ISP.
+CAUSAS_CAIDA = {
+    "power off": ("corte_luz", "Se quedó sin luz eléctrica (apagón o la desconectaron)"),
+    "dying gasp": ("corte_luz", "Se quedó sin luz eléctrica (apagón o la desconectaron)"),
+    "onu signal los": ("fibra", "Perdió la señal de la fibra: posible fibra cortada, doblada o conector flojo"),
+    "onu ploam los": ("fibra", "Perdió la sincronía con la OLT: casi siempre fibra o conector"),
+    "los": ("fibra", "Perdió la señal de la fibra: posible fibra cortada, doblada o conector flojo"),
+    "lofi": ("fibra", "Perdió la señal de la fibra: posible fibra cortada, doblada o conector flojo"),
+    "losi": ("fibra", "Perdió la señal de la fibra: posible fibra cortada, doblada o conector flojo"),
+}
+
+
+def interpretar_causa_caida(razon: Any) -> Optional[Dict[str, str]]:
+    texto = " ".join(str(razon or "").lower().split())
+    if not texto or texto in {"n/a", "none", "-"}:
+        return None
+    tipo, detalle = CAUSAS_CAIDA.get(texto, ("otra", f"La OLT reporta: {razon}"))
+    return {"tipo": tipo, "detalle": detalle, "original": str(razon)}
+
+
+def _numero(valor: Any) -> Optional[float]:
+    """Primer número del texto de la OLT: "3.32(V)", "89035 s", "-19.96"."""
+    encontrado = re.search(r"-?\d+(?:\.\d+)?", str(valor or ""))
+    return float(encontrado.group()) if encontrado else None
 
 
 class VsolApiService:
@@ -140,7 +166,8 @@ class VsolApiService:
 
         return payloads
 
-    def _login_y_consultar_sync(self, olt: OLTModel) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    def _abrir_sesion_sync(self, olt: OLTModel):
+        """Inicia sesión en el panel web de la OLT; devuelve (opener, base_url, verify_ssl)."""
         usuario = getattr(olt, "api_user", None)
         password = getattr(olt, "api_password", None)
 
@@ -180,7 +207,10 @@ class VsolApiService:
 
         if str(user_resp.get("retcode")) != "0":
             raise ValueError(f"No se pudo validar sesión VSOL: {user_resp}")
+        return opener, base_url, verify_ssl
 
+    def _login_y_consultar_sync(self, olt: OLTModel) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        opener, base_url, verify_ssl = self._abrir_sesion_sync(olt)
         payloads_pon = self._descubrir_payloads_pon_sync(opener, base_url, verify_ssl)
 
         auth_all: List[Dict[str, Any]] = []
@@ -337,6 +367,7 @@ class VsolApiService:
                 "last_register_time": status_item.get("last_register_time"),
                 "last_deregister_time": status_item.get("last_deregister_time"),
                 "last_deregister_reason": status_item.get("last_deregister_reason"),
+                "causa_ultima_caida": interpretar_causa_caida(status_item.get("last_deregister_reason")),
                 "rx_power": optical_item.get("rx_power"),
                 "tx_power": optical_item.get("tx_power"),
                 "rx_state": optical_item.get("rx_state"),
@@ -349,6 +380,116 @@ class VsolApiService:
             unificada["recomendacion"] = self._recomendacion(unificada.get("rx_power"), estado)
             resultado.append(unificada)
         return resultado
+
+    # ------------------------------------------------------------ una ONU
+    @staticmethod
+    def _post_form(servicio, opener, base_url, accion, datos, verify_ssl):
+        return servicio._request_json_sync(
+            opener, f"{base_url}/action/{accion}", method="POST",
+            data=urllib.parse.urlencode(datos).encode("utf-8"), verify_ssl=verify_ssl,
+        )
+
+    @staticmethod
+    def _propiedades(lista) -> Dict[str, str]:
+        return {
+            str(item.get("property", "")).strip(): str(item.get("value", "")).strip()
+            for item in (lista or [])
+            if isinstance(item, dict)
+        }
+
+    def _onu_en_pon_sync(self, opener, base_url, verify_ssl, pon: int, onuid: int) -> Optional[Dict[str, Any]]:
+        """La ONU autorizada en ese PON y número (para confirmar su serial)."""
+        for payload in self._descubrir_payloads_pon_sync(opener, base_url, verify_ssl):
+            datos = dict(urllib.parse.parse_qsl(payload.decode("utf-8")))
+            if datos and str(datos.get("portid")) != str(pon):
+                continue
+            auth = self._post_form(self, opener, base_url, "gpononuauthinfo", datos, verify_ssl)
+            for item in (auth.get("data") or {}).get("onuAuth_list") or []:
+                numero = str(item.get("onu_id") or "").split(":")[-1].strip()
+                if str(item.get("pon_id")) == str(pon) and numero == str(onuid):
+                    return item
+        return None
+
+    def _detalle_onu_sync(self, olt: OLTModel, pon: int, onuid: int) -> Dict[str, Any]:
+        opener, base_url, verify_ssl = self._abrir_sesion_sync(olt)
+        ubicacion = {"slotid": 0, "ponid": pon, "onuid": onuid}
+        detalle = self._propiedades(
+            (self._post_form(self, opener, base_url, "gpononudetail", {**ubicacion, "who": 100}, verify_ssl)
+             .get("data") or {}).get("onu_detail_info")
+        )
+        optica = self._propiedades(
+            (self._post_form(self, opener, base_url, "gpononuoptical", ubicacion, verify_ssl)
+             .get("data") or {}).get("onu_optical_info")
+        )
+        historial = self._request_json_sync(
+            opener,
+            f"{base_url}/action/gpononutimetampdetail?ponid={int(pon)}&onuid={int(onuid)}&select=3",
+            verify_ssl=verify_ssl,
+        )
+        caidas = []
+        for item in (historial.get("data") or {}).get("offOnuReasonDtail_list") or []:
+            causa = interpretar_causa_caida(item.get("reason"))
+            if causa:
+                caidas.append({"fecha": item.get("time"), **causa})
+        distancia = _numero(optica.get("Distance"))
+        uptime = _numero(detalle.get("System Uptime"))
+        return {
+            "pon": pon,
+            "onuid": onuid,
+            "distancia_m": int(distancia) if distancia else None,
+            "temperatura_c": _numero(optica.get("Temperature")),
+            "voltaje_v": _numero(optica.get("Power Feed Voltage")),
+            "corriente_laser_ma": _numero(optica.get("Laser Bias Current")),
+            "rx_dbm": _numero(optica.get("Rx Optical Level(ONU)")),
+            "tx_dbm": _numero(optica.get("Tx Optical Level")),
+            "rx_minimo_dbm": _numero(optica.get("Lower Rx Optical Threshold")),
+            "rx_maximo_dbm": _numero(optica.get("Upper Rx Optical Threshold")),
+            "encendida_segundos": int(uptime) if uptime else None,
+            "firmware": detalle.get("Main Software Version") or None,
+            "version_hardware": detalle.get("Version") or None,
+            "estado_operativo": detalle.get("Operate Status") or None,
+            "estado_admin": detalle.get("Admin Status") or None,
+            "historial_caidas": caidas,
+        }
+
+    async def detalle_onu(self, olt_id: int, pon: int, onuid: int) -> Dict[str, Any]:
+        olt = await self.db.get(OLTModel, olt_id)
+        if not olt:
+            raise ValueError("OLT no encontrada.")
+        return await asyncio.to_thread(self._detalle_onu_sync, olt, int(pon), int(onuid))
+
+    @staticmethod
+    def payload_reinicio_onu(pon: int, onuid: int) -> Dict[str, Any]:
+        """Reinicio (reboot) de una ONU: who=1 en gpononuauthinfo.
+
+        OJO: en ese mismo endpoint who=0 BORRA la ONU. Este payload se arma
+        solo aquí y siempre con who=1.
+        """
+        return {"who": 1, "slotid": 0, "portid": int(pon), "onuid": int(onuid)}
+
+    def _reiniciar_onu_sync(self, olt: OLTModel, pon: int, onuid: int, serial: str) -> Dict[str, Any]:
+        opener, base_url, verify_ssl = self._abrir_sesion_sync(olt)
+        actual = self._onu_en_pon_sync(opener, base_url, verify_ssl, pon, onuid)
+        serial_actual = self._normalizar_sn((actual or {}).get("info") or (actual or {}).get("Info"))
+        if not actual or serial_actual != self._normalizar_sn(serial):
+            raise ValueError(
+                "La ONU de ese PON y número ya no es la misma (cambió el serial). Vuelve a escanear la OLT."
+            )
+        respuesta = self._post_form(
+            self, opener, base_url, "gpononuauthinfo", self.payload_reinicio_onu(pon, onuid), verify_ssl
+        )
+        if str(respuesta.get("retcode")) != "0":
+            datos = respuesta.get("data") or {}
+            raise ValueError(f"La OLT no aceptó el reinicio: {datos.get('msg') or datos.get('result') or respuesta}")
+        return {"reiniciada": True, "pon": pon, "onuid": onuid, "serial": serial_actual}
+
+    async def reiniciar_onu(self, olt_id: int, pon: int, onuid: int, serial: str) -> Dict[str, Any]:
+        olt = await self.db.get(OLTModel, olt_id)
+        if not olt:
+            raise ValueError("OLT no encontrada.")
+        if not (1 <= int(onuid) <= 128) or int(pon) < 1:
+            raise ValueError("PON u ONU inválidos.")
+        return await asyncio.to_thread(self._reiniciar_onu_sync, olt, int(pon), int(onuid), serial)
 
     async def listar_onus_unificadas(self, olt_id: int) -> Dict[str, Any]:
         olt = await self.db.get(OLTModel, olt_id)

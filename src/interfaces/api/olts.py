@@ -165,6 +165,47 @@ async def monitoreo_olt_vsol_api(
         raise HTTPException(status_code=500, detail=f"Error consultando VSOL API: {str(e)}")
 
 
+@router.get("/{olt_id}/onus/{pon}/{onuid}/detalle")
+async def detalle_onu_vsol_api(
+    olt_id: int,
+    pon: int,
+    onuid: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Distancia, temperatura, voltaje, firmware e historial de caídas de una ONU."""
+    try:
+        return {"status": "success", "data": await VsolApiService(db).detalle_onu(olt_id, pon, onuid)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo consultar la ONU: {str(e)[:200]}")
+
+
+class ReiniciarOnuRequest(BaseModel):
+    # Serial que el usuario ve en pantalla: si la ONU de ese PON/número
+    # cambió desde el último escaneo, no se reinicia otra por error.
+    serial: str
+
+
+@router.post("/{olt_id}/onus/{pon}/{onuid}/reiniciar")
+async def reiniciar_onu_vsol_api(
+    olt_id: int,
+    pon: int,
+    onuid: int,
+    datos: ReiniciarOnuRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Reinicia (reboot, no reset de fábrica) una ONU por la API de la OLT."""
+    try:
+        return {"status": "success", "data": await VsolApiService(db).reiniciar_onu(olt_id, pon, onuid, datos.serial)}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo reiniciar la ONU: {str(e)[:200]}")
+
+
 @router.get("/{olt_id}/onus-api")
 async def listar_onus_vsol_api(
     olt_id: int,
