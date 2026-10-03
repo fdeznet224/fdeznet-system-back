@@ -5,13 +5,14 @@ import ssl
 import urllib.parse
 import urllib.request
 import http.cookiejar
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.infrastructure.models import OLTModel, ClienteModel
+from src.infrastructure.models import OLTModel, ClienteModel, LogActividadModel
 
 # Causa de la última caída que reporta la OLT -> qué pasó, en palabras del ISP.
 CAUSAS_CAIDA = {
@@ -31,6 +32,42 @@ def interpretar_causa_caida(razon: Any) -> Optional[Dict[str, str]]:
         return None
     tipo, detalle = CAUSAS_CAIDA.get(texto, ("otra", f"La OLT reporta: {razon}"))
     return {"tipo": tipo, "detalle": detalle, "original": str(razon)}
+
+
+# Margen entre el reinicio y el nuevo registro de la ONU en la OLT.
+MARGEN_REINICIO = timedelta(minutes=10)
+RE_RUTA_REINICIO = re.compile(r"/olts/(\d+)/onus/(\d+)/(\d+)/reiniciar$")
+
+
+def segundos_encendida(alive_time: Any) -> Optional[int]:
+    """"1 01:05:35" (días hh:mm:ss) o "00:00:16" -> segundos."""
+    encontrado = re.fullmatch(r"\s*(?:(\d+)\s+)?(\d+):(\d{2}):(\d{2})\s*", str(alive_time or ""))
+    if not encontrado:
+        return None
+    dias, horas, minutos, segundos = (int(v or 0) for v in encontrado.groups())
+    return ((dias * 24 + horas) * 60 + minutos) * 60 + segundos
+
+
+def causa_por_reinicio(onu: Dict[str, Any], reiniciada_en: datetime, usuario: Optional[str], ahora: datetime):
+    """La última caída fue el reinicio hecho desde el sistema, no una falla.
+
+    Tras el reinicio la OLT anota "ONU Signal LOS", que parece falla de fibra.
+    """
+    quien = f" por {usuario}" if usuario else ""
+    hora = reiniciada_en.strftime("%d/%m %H:%M")
+    if str(onu.get("estado_fisico")) != "online":
+        if ahora - reiniciada_en <= MARGEN_REINICIO:
+            return {"tipo": "reinicio", "detalle": f"Reiniciándose: se reinició desde el sistema{quien} ({hora})",
+                    "original": str(onu.get("last_deregister_reason") or "")}
+        return None
+    encendida = segundos_encendida(onu.get("alive_time"))
+    if encendida is None:
+        return None
+    registro = ahora - timedelta(seconds=encendida)
+    if reiniciada_en - timedelta(minutes=1) <= registro <= reiniciada_en + MARGEN_REINICIO:
+        return {"tipo": "reinicio", "detalle": f"Se reinició desde el sistema{quien} ({hora}), no es una falla",
+                "original": str(onu.get("last_deregister_reason") or "")}
+    return None
 
 
 def _numero(valor: Any) -> Optional[float]:
@@ -491,6 +528,37 @@ class VsolApiService:
             raise ValueError("PON u ONU inválidos.")
         return await asyncio.to_thread(self._reiniciar_onu_sync, olt, int(pon), int(onuid), serial)
 
+    async def _marcar_reinicios(self, olt_id: int, onus: List[Dict[str, Any]]) -> None:
+        """Si la última caída fue un reinicio hecho desde el sistema, se dice así."""
+        ahora = datetime.now()
+        try:
+            registros = (
+                await self.db.execute(
+                    select(LogActividadModel.ruta, LogActividadModel.fecha, LogActividadModel.usuario_nombre)
+                    .where(
+                        LogActividadModel.ruta.like(f"%/olts/{int(olt_id)}/onus/%/reiniciar"),
+                        LogActividadModel.estado_http < 400,
+                        LogActividadModel.fecha >= ahora - timedelta(days=3),
+                    )
+                    .order_by(LogActividadModel.fecha.desc())
+                )
+            ).all()
+        except Exception:
+            return
+        ultimo: Dict[Tuple[str, str], Tuple[datetime, Optional[str]]] = {}
+        for ruta, fecha, usuario in registros:
+            encontrado = RE_RUTA_REINICIO.search(ruta or "")
+            if encontrado and fecha:
+                ultimo.setdefault((encontrado.group(2), encontrado.group(3)), (fecha, usuario))
+        if not ultimo:
+            return
+        for onu in onus:
+            clave = (str(onu.get("pon_id")), str(onu.get("onu_id") or "").split(":")[-1])
+            if clave in ultimo:
+                causa = causa_por_reinicio(onu, *ultimo[clave], ahora)
+                if causa:
+                    onu["causa_ultima_caida"] = causa
+
     async def listar_onus_unificadas(self, olt_id: int) -> Dict[str, Any]:
         olt = await self.db.get(OLTModel, olt_id)
         if not olt:
@@ -499,6 +567,7 @@ class VsolApiService:
         onus = self._deduplicar_onus_por_serial(
             self._unificar_onus(auth, optical, status)
         )
+        await self._marcar_reinicios(olt.id, onus)
         return {
             "olt_id": olt.id,
             "olt_nombre": olt.nombre,

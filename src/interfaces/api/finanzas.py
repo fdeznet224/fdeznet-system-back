@@ -1,7 +1,7 @@
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Annotated, Optional, Literal
 from datetime import date
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func, desc, false
 from sqlalchemy.orm import joinedload, selectinload
@@ -21,11 +21,14 @@ from src.infrastructure.models import (
     ZonaModel,
     RouterModel,
     ServicioAdicionalModel,
+    ConfiguracionSistema,
+    PlantillaMensajeModel,
 )
 
 # Servicios
 from src.application.services.billing_service import BillingService
-from src.application.services.comprobante_service import normalizar_contrato
+from src.application.helpers.pdf_generator import generar_factura_pdf
+from src.application.services.comprobante_service import normalizar_contrato, personalizar_datos_pago
 from src.application.services.finance_service import (
     FinanceService,
     calcular_fecha_maxima_promesa,
@@ -375,6 +378,53 @@ async def get_listado_completo(
         })
 
     return {"items": items_response, "resumen": resumen}
+
+
+@router.get("/facturas/{factura_id}/pdf")
+async def descargar_factura_pdf(
+    factura_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero"])),
+):
+    """PDF de la factura (aviso de cobro con los datos de pago si hay saldo)."""
+    query = (
+        select(FacturaModel)
+        .options(joinedload(FacturaModel.cliente), selectinload(FacturaModel.conceptos))
+        .join(ClienteModel, ClienteModel.id == FacturaModel.cliente_id)
+        .where(FacturaModel.id == factura_id)
+    )
+    scope = _scope_condition(current_user)
+    if scope is not None:
+        query = query.where(scope)
+    factura = (await db.execute(query)).scalars().first()
+    if not factura:
+        raise HTTPException(status_code=404, detail="Factura no encontrada")
+    marca = await db.get(ConfiguracionSistema, 1)
+    plantilla_pago = (
+        await db.execute(
+            select(PlantillaMensajeModel.texto).where(
+                PlantillaMensajeModel.tipo == "datos_pago",
+                PlantillaMensajeModel.activo.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    hoy = date.today()
+    limite = factura.fecha_promesa_pago if (factura.es_promesa_activa and factura.fecha_promesa_pago) else factura.fecha_vencimiento
+    contenido = generar_factura_pdf(
+        factura,
+        factura.cliente,
+        marca,
+        vencida=bool(limite and limite < hoy),
+        datos_pago=personalizar_datos_pago(plantilla_pago, factura.cliente.cedula) if plantilla_pago else None,
+    )
+    return Response(
+        content=contenido,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="factura-{str(factura.id).zfill(6)}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ==========================================

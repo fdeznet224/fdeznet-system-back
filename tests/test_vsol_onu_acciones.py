@@ -104,3 +104,61 @@ def test_interpreta_la_causa_de_la_caida(razon, tipo):
 @pytest.mark.parametrize("razon", [None, "", "N/A"])
 def test_sin_causa_no_inventa_nada(razon):
     assert interpretar_causa_caida(razon) is None
+
+
+# ------------------------------------------- caída causada por un reinicio
+from datetime import datetime, timedelta  # noqa: E402
+
+from src.application.services.vsol_api_service import causa_por_reinicio, segundos_encendida  # noqa: E402
+
+AHORA = datetime(2026, 10, 3, 1, 0, 0)
+REINICIO = datetime(2026, 10, 3, 0, 55, 50)
+
+
+@pytest.mark.parametrize("texto, segundos", [
+    ("00:00:16", 16), ("1 01:05:35", 90335), ("9 23:01:48", 860508), ("N/A", None), (None, None),
+])
+def test_lee_el_tiempo_encendida_de_la_olt(texto, segundos):
+    assert segundos_encendida(texto) == segundos
+
+
+def test_la_onu_que_volvio_tras_el_reinicio_no_se_marca_como_fibra():
+    # Encendida hace 3 min: se registró justo después del reinicio.
+    onu = {"estado_fisico": "online", "alive_time": "00:03:00", "last_deregister_reason": "ONU Signal LOS"}
+    causa = causa_por_reinicio(onu, REINICIO, "FdezNet", AHORA)
+    assert causa["tipo"] == "reinicio" and "FdezNet" in causa["detalle"]
+
+
+def test_mientras_se_reinicia_se_dice_que_se_esta_reiniciando():
+    onu = {"estado_fisico": "offline", "alive_time": "N/A"}
+    assert causa_por_reinicio(onu, AHORA - timedelta(minutes=1), None, AHORA)["tipo"] == "reinicio"
+
+
+def test_una_caida_posterior_al_reinicio_si_se_reporta():
+    # Se volvió a registrar horas después del reinicio: esa caída no fue el reinicio.
+    onu = {"estado_fisico": "online", "alive_time": "00:10:00"}
+    assert causa_por_reinicio(onu, AHORA - timedelta(hours=5), None, AHORA) is None
+
+
+def test_apagada_mucho_despues_del_reinicio_no_se_disfraza():
+    onu = {"estado_fisico": "offline", "alive_time": "N/A"}
+    assert causa_por_reinicio(onu, AHORA - timedelta(hours=1), None, AHORA) is None
+
+
+def test_marca_solo_la_onu_reiniciada_de_esa_olt():
+    class _Resultado:
+        def all(self):
+            return [("/api/olts/7/onus/4/22/reiniciar", datetime.now() - timedelta(minutes=2), "FdezNet")]
+
+    class _DB:
+        async def execute(self, _consulta):
+            return _Resultado()
+
+    servicio = VsolApiService(_DB())
+    reiniciada = {"pon_id": "4", "onu_id": "GPON0/4:22", "estado_fisico": "online", "alive_time": "00:01:00",
+                  "causa_ultima_caida": {"tipo": "fibra"}}
+    otra = {"pon_id": "4", "onu_id": "GPON0/4:23", "estado_fisico": "online", "alive_time": "00:01:00",
+            "causa_ultima_caida": {"tipo": "fibra"}}
+    asyncio.run(servicio._marcar_reinicios(7, [reiniciada, otra]))
+    assert reiniciada["causa_ultima_caida"]["tipo"] == "reinicio"
+    assert otra["causa_ultima_caida"]["tipo"] == "fibra"

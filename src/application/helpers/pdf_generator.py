@@ -321,3 +321,194 @@ async def generar_recibo_pdf(
     doc.build(elements)
     
     return ruta_completa
+
+
+ESTADOS_FACTURA_PDF = {
+    "pagada": "PAGADA",
+    "pendiente": "PENDIENTE DE PAGO",
+    "vencida": "VENCIDA",
+    "anulada": "ANULADA",
+    "sin_cargo": "SIN CARGO",
+    "consolidada": "CONSOLIDADA",
+}
+
+
+def _texto_whatsapp_a_pdf(texto):
+    """Quita el formato de WhatsApp (*negritas*, _cursivas_), emojis e invisibles.
+
+    La fuente del PDF no tiene emojis: saldrían como cuadros.
+    """
+    import unicodedata
+
+    lineas = []
+    for linea in str(texto or "").replace("*", "").replace("_", " ").splitlines():
+        limpia = "".join(
+            c for c in linea
+            if c.isalpha() or unicodedata.category(c) not in {"So", "Sk", "Cs", "Cf", "Co", "Mn"}
+        )
+        lineas.append(" ".join(limpia.split()))
+    return escape("\n".join(lineas).strip()).replace("\n", "<br/>")
+
+
+def generar_factura_pdf(
+    factura,
+    cliente,
+    marca,
+    vencida=False,
+    datos_pago=None,
+):
+    """PDF de una factura (aviso de cobro); devuelve los bytes del archivo.
+
+    No es un comprobante fiscal (CFDI). Se arma en memoria para no dejar
+    datos de clientes en disco.
+    """
+    import io
+
+    buffer = io.BytesIO()
+    empresa = getattr(marca, "empresa_nombre", None) or "Mi ISP"
+    COLOR_PRIMARIO = color_seguro(getattr(marca, "color_primario", None), "#1e3a8a")
+    COLOR_ACENTO = color_seguro(getattr(marca, "color_secundario", None), "#2563eb")
+    COLOR_TEXTO = colors.HexColor("#334155")
+    COLOR_LINEAS = colors.HexColor("#e2e8f0")
+    estado = "vencida" if vencida and factura.estado == "pendiente" else factura.estado
+    COLOR_ESTADO = {
+        "pagada": colors.HexColor("#047857"),
+        "vencida": colors.HexColor("#be123c"),
+        "anulada": colors.HexColor("#64748b"),
+    }.get(estado, colors.HexColor("#b45309"))
+
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4, rightMargin=15 * mm, leftMargin=15 * mm, topMargin=15 * mm, bottomMargin=15 * mm,
+        title=f"Factura {factura.id}", author=empresa,
+    )
+    styles = getSampleStyleSheet()
+    s_label = ParagraphStyle("L", parent=styles["Normal"], fontSize=8, textColor=colors.grey, leading=10, fontName="Helvetica-Bold")
+    s_valor = ParagraphStyle("V", parent=styles["Normal"], fontSize=10, textColor=COLOR_TEXTO, leading=14)
+    s_normal = ParagraphStyle("N", parent=styles["Normal"], fontSize=9, textColor=COLOR_TEXTO, leading=12)
+    s_titulo = ParagraphStyle("T", parent=styles["Normal"], fontSize=18, fontName="Helvetica-Bold", textColor=COLOR_PRIMARIO)
+    s_sub = ParagraphStyle("S", parent=styles["Normal"], fontSize=10, textColor=colors.grey, alignment=2)
+    s_estado = ParagraphStyle("E", parent=styles["Normal"], fontSize=11, fontName="Helvetica-Bold", textColor=COLOR_ESTADO, alignment=1)
+    s_total = ParagraphStyle("Tot", parent=styles["Normal"], fontSize=16, fontName="Helvetica-Bold", textColor=COLOR_ACENTO, alignment=2)
+
+    def dinero(valor):
+        return f"MX${Decimal(str(valor or 0)):,.2f}"
+
+    def tabla(filas, anchos, encabezado=True):
+        t = Table(filas, colWidths=anchos)
+        estilo = [
+            ("LINEBELOW", (0, 1 if encabezado else 0), (-1, -1), 0.5, COLOR_LINEAS),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]
+        if encabezado:
+            estilo.append(("LINEBELOW", (0, 0), (-1, 0), 1, COLOR_PRIMARIO))
+        t.setStyle(TableStyle(estilo))
+        return t
+
+    elementos = []
+    encabezado = Table(
+        [[Paragraph(escape(str(empresa).upper()), s_titulo),
+          Paragraph(f"<b>FACTURA DE SERVICIO</b><br/>Folio: #{str(factura.id).zfill(6)}", s_sub)]],
+        colWidths=[100 * mm, 80 * mm],
+    )
+    encabezado.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, COLOR_LINEAS),
+    ]))
+    elementos += [encabezado, Spacer(1, 5 * mm)]
+
+    barra = Table([[Paragraph(ESTADOS_FACTURA_PDF.get(estado, str(estado).upper()), s_estado)]], colWidths=[180 * mm])
+    barra.setStyle(TableStyle([
+        ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("LINEABOVE", (0, 0), (-1, -1), 0.5, COLOR_ESTADO), ("LINEBELOW", (0, 0), (-1, -1), 0.5, COLOR_ESTADO),
+    ]))
+    elementos += [barra, Spacer(1, 5 * mm)]
+
+    emisor = [f"<b>{escape(str(empresa).upper())}</b>"]
+    for valor, prefijo in (
+        (getattr(marca, "empresa_direccion", None), ""),
+        (getattr(marca, "empresa_telefono", None), "Tel: "),
+        (getattr(marca, "empresa_email", None), "Email: "),
+    ):
+        if valor:
+            emisor.append(prefijo + escape(str(valor)))
+    receptor = [f"<b>{escape(str(cliente.nombre or '').upper())}</b>"]
+    if cliente.cedula:
+        receptor.append(f"Contrato: <b>{escape(str(cliente.cedula))}</b>")
+    if cliente.telefono:
+        receptor.append(f"Tel: {escape(str(cliente.telefono))}")
+    if cliente.direccion:
+        receptor.append(escape(str(cliente.direccion)))
+    elementos.append(Table(
+        [[Paragraph("EMISOR", s_label), Paragraph("CLIENTE", s_label)],
+         [Paragraph("<br/>".join(emisor), s_normal), Paragraph("<br/>".join(receptor), s_normal)],
+         [Spacer(1, 4 * mm), Spacer(1, 4 * mm)],
+         [Paragraph("FECHA DE EMISIÓN", s_label), Paragraph("FECHA DE VENCIMIENTO", s_label)],
+         [Paragraph(formatear_fecha_en_espanol(factura.fecha_emision), s_valor),
+          Paragraph(formatear_fecha_en_espanol(
+              factura.fecha_promesa_pago if getattr(factura, "es_promesa_activa", False) and factura.fecha_promesa_pago
+              else factura.fecha_vencimiento), s_valor)]],
+        colWidths=[90 * mm, 90 * mm],
+        style=TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]),
+    ))
+    elementos.append(Spacer(1, 6 * mm))
+
+    conceptos = [c for c in (getattr(factura, "conceptos", None) or []) if getattr(c, "monto_original", None) is not None]
+    filas = [[Paragraph("CONCEPTO", s_label), Paragraph("IMPORTE", s_label)]]
+    if conceptos:
+        for c in conceptos:
+            texto = f"<b>{escape(str(c.concepto or 'Concepto'))}</b>"
+            if c.descripcion:
+                texto += f"<br/><font color='#64748b'>{escape(str(c.descripcion))}</font>"
+            filas.append([Paragraph(texto, s_normal), Paragraph(dinero(c.monto_original), s_valor)])
+    else:
+        texto = f"<b>{escape(str(factura.concepto or 'Servicio de internet'))}</b>"
+        detalle = factura.detalles or factura.descripcion
+        if detalle:
+            texto += f"<br/><font color='#64748b'>{escape(str(detalle))}</font>"
+        filas.append([Paragraph(texto, s_normal), Paragraph(dinero(factura.total), s_valor)])
+    elementos += [tabla(filas, [140 * mm, 40 * mm]), Spacer(1, 4 * mm)]
+
+    detalle_periodo = construir_detalle_facturacion(
+        periodo_desde=factura.periodo_desde,
+        periodo_hasta=factura.periodo_hasta,
+        dias_con_servicio=getattr(factura, "dias_con_servicio", None),
+        dias_sin_servicio=getattr(factura, "dias_sin_servicio", None),
+        ajuste_suspension=getattr(factura, "ajuste_suspension", None),
+        cargos_adicionales=getattr(factura, "cargos_adicionales_total", None),
+    )
+    if detalle_periodo:
+        filas = [[Paragraph("DETALLE DEL PERIODO", s_label), Paragraph("VALOR", s_label)]]
+        filas += [[Paragraph(escape(a), s_normal), Paragraph(escape(b), s_valor)] for a, b in detalle_periodo]
+        elementos += [tabla(filas, [140 * mm, 40 * mm]), Spacer(1, 4 * mm)]
+
+    total = Decimal(str(factura.total or 0))
+    saldo = Decimal(str(factura.saldo_pendiente or 0))
+    resumen = [
+        [Paragraph("Total de la factura", s_normal), Paragraph(dinero(total), s_valor)],
+        [Paragraph("Pagado", s_normal), Paragraph(dinero(max(total - saldo, Decimal(0))), s_valor)],
+    ]
+    elementos += [tabla(resumen, [140 * mm, 40 * mm], encabezado=False), Spacer(1, 4 * mm)]
+    elementos.append(Table(
+        [[Paragraph(f"CANTIDAD EN LETRA: {convertir_monto_a_texto(saldo if saldo > 0 else total)}", s_label),
+          Table([[Paragraph("SALDO PENDIENTE" if saldo > 0 else "TOTAL", s_label)],
+                 [Paragraph(dinero(saldo if saldo > 0 else total), s_total)]], colWidths=[70 * mm])]],
+        colWidths=[110 * mm, 70 * mm],
+        style=TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, -1), "RIGHT")]),
+    ))
+
+    if datos_pago and saldo > 0 and factura.estado not in ("anulada", "pagada"):
+        elementos += [Spacer(1, 6 * mm), Paragraph("CÓMO PAGAR", s_label), Spacer(1, 2 * mm),
+                      Paragraph(_texto_whatsapp_a_pdf(datos_pago), s_normal)]
+
+    elementos.append(Spacer(1, 8 * mm))
+    nota = getattr(marca, "pie_recibo", None) or f"Documento emitido por {empresa}."
+    elementos.append(Paragraph(
+        f"<font color='#94a3b8' size='7'>{escape(str(nota))} Este documento no es un comprobante fiscal (CFDI). "
+        f"Generado el {formatear_fecha_en_espanol(datetime.now(), incluir_hora=True)}.</font>",
+        styles["Normal"],
+    ))
+    doc.build(elementos)
+    return buffer.getvalue()
