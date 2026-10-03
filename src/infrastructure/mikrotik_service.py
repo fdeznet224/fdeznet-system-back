@@ -382,15 +382,13 @@ class MikroTikService:
                     "to-addresses": ip_servidor_portal, "to-ports": "80",
                     "comment": "=== PORTAL COBRANZA ==="
                 }
-                if not self._request("GET", f"/ip/firewall/nat?comment==== PORTAL COBRANZA ==="):
-                    self._request("PUT", "/ip/firewall/nat", payload_nat)
+                self._asegurar_regla_unica("/ip/firewall/nat", payload_nat)
 
             payload_filter = {
                 "chain": "forward", "src-address-list": LISTA_CORTE,
                 "action": "drop", "comment": "=== BLOQUEO MOROSOS ==="
             }
-            if not self._request("GET", f"/ip/firewall/filter?comment==== BLOQUEO MOROSOS ==="):
-                self._request("PUT", "/ip/firewall/filter", payload_filter)
+            self._asegurar_regla_unica("/ip/firewall/filter", payload_filter)
 
             if solo_whatsapp:
                 self._activar_corte_whatsapp(int(kbps))
@@ -521,6 +519,21 @@ class MikroTikService:
                 )
             return creados[0][".id"]
         return creado[".id"]
+
+    def _asegurar_regla_unica(self, ruta: str, payload: dict):
+        """Una sola regla con ese comentario: la crea o borra las copias.
+
+        Antes, si la consulta fallaba (VPN lenta, tiempo de espera) se tomaba
+        como "no existe" y se creaba otra copia; ahora un error no crea nada.
+        """
+        existentes = self._buscar(ruta, "comment", payload["comment"])
+        if not existentes:
+            self._request("PUT", ruta, payload, raise_on_error=True)
+            return
+        for sobrante in existentes[1:]:
+            self._request(
+                "DELETE", f"{ruta}/{sobrante['.id']}", raise_on_error=True
+            )
 
     def _eliminar_items(self, ruta: str, campo: str, valores):
         for valor in valores:

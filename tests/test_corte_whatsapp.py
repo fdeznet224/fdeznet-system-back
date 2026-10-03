@@ -211,6 +211,45 @@ def test_corte_total_no_toca_nada_de_whatsapp():
     assert [m for m, *_ in mk.escrituras] == ["PUT"]
 
 
+def test_el_bloqueo_de_morosos_se_busca_con_la_consulta_codificada():
+    mk = _router_con_reglas_previas()
+    mk.inicializar_firewall_corte()
+    consultas = []
+    original = mk._request
+
+    def espiar(method, endpoint, payload=None, raise_on_error=False):
+        if method == "GET":
+            consultas.append(endpoint)
+        return original(method, endpoint, payload, raise_on_error)
+
+    mk._request = espiar
+    mk.inicializar_firewall_corte()
+
+    assert "/ip/firewall/filter?comment=%3D%3D%3D%20BLOQUEO%20MOROSOS%20%3D%3D%3D" in consultas
+
+
+def test_borra_las_copias_repetidas_del_bloqueo_de_morosos():
+    # Así estaban los routers: la regla se había creado hasta 7 veces.
+    mk = _router_con_reglas_previas()
+    bloqueo = {"chain": "forward", "src-address-list": "CORTE_FDEZNET",
+               "action": "drop", "comment": "=== BLOQUEO MOROSOS ==="}
+    mk.tablas["/ip/firewall/filter"] += [
+        {".id": f"*B{n}", **bloqueo} for n in range(7)
+    ]
+
+    ok, _ = mk.inicializar_firewall_corte(solo_whatsapp=True)
+
+    assert ok
+    bloqueos = [r for r in mk.tablas["/ip/firewall/filter"] if r.get("comment") == "=== BLOQUEO MOROSOS ==="]
+    assert [r[".id"] for r in bloqueos] == ["*B0"]
+    assert _comentarios_forward(mk, "/ip/firewall/filter")[:4] == [
+        "=== CORTE WHATSAPP SALIDA ===",
+        "=== CORTE WHATSAPP ENTRADA ===",
+        "=== CORTE DNS UDP ===",
+        "=== CORTE DNS TCP ===",
+    ]
+
+
 def test_suspender_cierra_conexiones_abiertas_del_cliente():
     mk = _RouterOSFalso({"/ip/firewall/address-list": []})
 
