@@ -25,6 +25,7 @@ from src.infrastructure.models import (
 
 # Servicios
 from src.application.services.billing_service import BillingService
+from src.application.services.comprobante_service import normalizar_contrato
 from src.application.services.finance_service import (
     FinanceService,
     calcular_fecha_maxima_promesa,
@@ -217,15 +218,20 @@ async def get_listado_completo(
         )
     if cliente_id: query = query.where(FacturaModel.cliente_id == cliente_id)
     
-    # Filtro de Búsqueda por Texto
+    # Búsqueda por nombre, contrato o folio de la factura (en todas las fechas).
+    busqueda = (busqueda or "").strip()
     if busqueda:
         termino = f"%{busqueda.lower()}%"
-        query = query.where(
-            or_(
-                func.lower(ClienteModel.nombre).like(termino),
-                func.lower(ClienteModel.cedula).like(termino)
-            )
-        )
+        condiciones = [
+            func.lower(ClienteModel.nombre).like(termino),
+            func.lower(ClienteModel.cedula).like(termino),
+            # "bdof" escrito con O encuentra el contrato BD0F.
+            ClienteModel.cedula == normalizar_contrato(busqueda),
+        ]
+        folio = busqueda.lstrip("#")
+        if folio.isdigit():
+            condiciones.append(FacturaModel.id == int(folio))
+        query = query.where(or_(*condiciones))
     
     # Filtro de Estado Inteligente
     today = date.today()
