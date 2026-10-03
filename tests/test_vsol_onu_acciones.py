@@ -30,6 +30,8 @@ class _OLTFalsa(VsolApiService):
         datos = dict(urllib.parse.parse_qsl(data.decode())) if data else {}
         if method == "POST":
             self.posts.append((accion, datos))
+        if accion == "loginout":
+            return {"retcode": "0"}
         if accion == "gpononuauthinfo" and "who" not in datos:
             return {"retcode": "0", "data": {"onuAuth_list": [
                 {"pon_id": datos["portid"], "onu_id": f"GPON0/{datos['portid']}:3", "info": self.serial_en_olt},
@@ -67,15 +69,18 @@ def test_reinicia_la_onu_si_el_serial_coincide():
     olt = _OLTFalsa()
     resultado = asyncio.run(olt.reiniciar_onu(7, 2, 3, "hwtc0000aaaa"))
     assert resultado["reiniciada"] is True
-    escrituras = [(a, d) for a, d in olt.posts if "who" in d]
+    escrituras = [(a, d) for a, d in olt.posts if a != "loginout" and "who" in d]
     assert escrituras == [("gpononuauthinfo", {"who": "1", "slotid": "0", "portid": "2", "onuid": "3"})]
+    assert olt.posts[-1] == ("loginout", {"who": "1"})
 
 
 def test_no_reinicia_si_en_ese_lugar_ya_hay_otra_onu():
     olt = _OLTFalsa(serial_en_olt="HWTC0000BBBB")
     with pytest.raises(ValueError, match="ya no es la misma"):
         asyncio.run(olt.reiniciar_onu(7, 2, 3, "HWTC0000AAAA"))
-    assert all("who" not in d for _a, d in olt.posts)
+    assert all("who" not in d for a, d in olt.posts if a != "loginout")
+    # Aunque se rechace, la sesión en la OLT se cierra.
+    assert olt.posts[-1] == ("loginout", {"who": "1"})
 
 
 def test_no_acepta_numeros_de_onu_invalidos():
@@ -162,3 +167,21 @@ def test_marca_solo_la_onu_reiniciada_de_esa_olt():
     asyncio.run(servicio._marcar_reinicios(7, [reiniciada, otra]))
     assert reiniciada["causa_ultima_caida"]["tipo"] == "reinicio"
     assert otra["causa_ultima_caida"]["tipo"] == "fibra"
+
+
+def test_el_detalle_cierra_la_sesion_en_la_olt():
+    olt = _OLTFalsa()
+    asyncio.run(olt.detalle_onu(7, 1, 2))
+    assert olt.posts[-1] == ("loginout", {"who": "1"})
+
+
+def test_el_escaneo_cierra_la_sesion_aunque_falle_a_la_mitad():
+    olt = _OLTFalsa()
+
+    def falla(*_a, **_k):
+        raise TimeoutError("la OLT no respondió")
+
+    olt._descubrir_payloads_pon_sync = falla
+    with pytest.raises(TimeoutError):
+        olt._login_y_consultar_sync(OLT)
+    assert olt.posts == [("loginout", {"who": "1"})]

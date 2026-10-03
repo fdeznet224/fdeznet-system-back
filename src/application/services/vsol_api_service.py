@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import re
 import ssl
@@ -246,48 +247,71 @@ class VsolApiService:
             raise ValueError(f"No se pudo validar sesión VSOL: {user_resp}")
         return opener, base_url, verify_ssl
 
-    def _login_y_consultar_sync(self, olt: OLTModel) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    def _cerrar_sesion_sync(self, opener, base_url: str, verify_ssl: bool) -> None:
+        """Cierra la sesión en la OLT (igual que el botón de salir del panel).
+
+        Sin esto cada consulta deja una sesión abierta; la OLT admite pocas a
+        la vez y podría no dejar entrar al panel web.
+        """
+        try:
+            self._request_json_sync(
+                opener, f"{base_url}/action/loginout", method="POST",
+                data=urllib.parse.urlencode({"who": "1"}).encode("utf-8"), verify_ssl=verify_ssl,
+            )
+        except Exception:
+            # La consulta ya terminó; si no se pudo cerrar, la OLT la caduca sola.
+            pass
+
+    @contextlib.contextmanager
+    def _sesion(self, olt: OLTModel):
         opener, base_url, verify_ssl = self._abrir_sesion_sync(olt)
-        payloads_pon = self._descubrir_payloads_pon_sync(opener, base_url, verify_ssl)
+        try:
+            yield opener, base_url, verify_ssl
+        finally:
+            self._cerrar_sesion_sync(opener, base_url, verify_ssl)
 
-        auth_all: List[Dict[str, Any]] = []
-        optical_all: List[Dict[str, Any]] = []
-        status_all: List[Dict[str, Any]] = []
+    def _login_y_consultar_sync(self, olt: OLTModel) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        with self._sesion(olt) as (opener, base_url, verify_ssl):
+            payloads_pon = self._descubrir_payloads_pon_sync(opener, base_url, verify_ssl)
 
-        for payload in payloads_pon:
-            auth = self._request_json_sync(
-                opener,
-                f"{base_url}/action/gpononuauthinfo",
-                method="POST",
-                data=payload,
-                verify_ssl=verify_ssl,
+            auth_all: List[Dict[str, Any]] = []
+            optical_all: List[Dict[str, Any]] = []
+            status_all: List[Dict[str, Any]] = []
+
+            for payload in payloads_pon:
+                auth = self._request_json_sync(
+                    opener,
+                    f"{base_url}/action/gpononuauthinfo",
+                    method="POST",
+                    data=payload,
+                    verify_ssl=verify_ssl,
+                )
+
+                optical = self._request_json_sync(
+                    opener,
+                    f"{base_url}/action/gpononuopticalinfo",
+                    method="POST",
+                    data=payload,
+                    verify_ssl=verify_ssl,
+                )
+
+                status = self._request_json_sync(
+                    opener,
+                    f"{base_url}/action/gpononustatusinfo",
+                    method="POST",
+                    data=payload,
+                    verify_ssl=verify_ssl,
+                )
+
+                auth_all.extend(auth.get("data", {}).get("onuAuth_list", []) or [])
+                optical_all.extend(optical.get("data", {}).get("onuOpticalInfo_list", []) or [])
+                status_all.extend(status.get("data", {}).get("onuStatus_list", []) or [])
+
+            return (
+                {"retcode": "0", "data": {"onuAuth_list": auth_all}},
+                {"retcode": "0", "data": {"onuOpticalInfo_list": optical_all}},
+                {"retcode": "0", "data": {"onuStatus_list": status_all}},
             )
-
-            optical = self._request_json_sync(
-                opener,
-                f"{base_url}/action/gpononuopticalinfo",
-                method="POST",
-                data=payload,
-                verify_ssl=verify_ssl,
-            )
-
-            status = self._request_json_sync(
-                opener,
-                f"{base_url}/action/gpononustatusinfo",
-                method="POST",
-                data=payload,
-                verify_ssl=verify_ssl,
-            )
-
-            auth_all.extend(auth.get("data", {}).get("onuAuth_list", []) or [])
-            optical_all.extend(optical.get("data", {}).get("onuOpticalInfo_list", []) or [])
-            status_all.extend(status.get("data", {}).get("onuStatus_list", []) or [])
-
-        return (
-            {"retcode": "0", "data": {"onuAuth_list": auth_all}},
-            {"retcode": "0", "data": {"onuOpticalInfo_list": optical_all}},
-            {"retcode": "0", "data": {"onuStatus_list": status_all}},
-        )
 
     async def _consultar_api(self, olt: OLTModel) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
         return await asyncio.to_thread(self._login_y_consultar_sync, olt)
@@ -448,46 +472,46 @@ class VsolApiService:
         return None
 
     def _detalle_onu_sync(self, olt: OLTModel, pon: int, onuid: int) -> Dict[str, Any]:
-        opener, base_url, verify_ssl = self._abrir_sesion_sync(olt)
-        ubicacion = {"slotid": 0, "ponid": pon, "onuid": onuid}
-        detalle = self._propiedades(
-            (self._post_form(self, opener, base_url, "gpononudetail", {**ubicacion, "who": 100}, verify_ssl)
-             .get("data") or {}).get("onu_detail_info")
-        )
-        optica = self._propiedades(
-            (self._post_form(self, opener, base_url, "gpononuoptical", ubicacion, verify_ssl)
-             .get("data") or {}).get("onu_optical_info")
-        )
-        historial = self._request_json_sync(
-            opener,
-            f"{base_url}/action/gpononutimetampdetail?ponid={int(pon)}&onuid={int(onuid)}&select=3",
-            verify_ssl=verify_ssl,
-        )
-        caidas = []
-        for item in (historial.get("data") or {}).get("offOnuReasonDtail_list") or []:
-            causa = interpretar_causa_caida(item.get("reason"))
-            if causa:
-                caidas.append({"fecha": item.get("time"), **causa})
-        distancia = _numero(optica.get("Distance"))
-        uptime = _numero(detalle.get("System Uptime"))
-        return {
-            "pon": pon,
-            "onuid": onuid,
-            "distancia_m": int(distancia) if distancia else None,
-            "temperatura_c": _numero(optica.get("Temperature")),
-            "voltaje_v": _numero(optica.get("Power Feed Voltage")),
-            "corriente_laser_ma": _numero(optica.get("Laser Bias Current")),
-            "rx_dbm": _numero(optica.get("Rx Optical Level(ONU)")),
-            "tx_dbm": _numero(optica.get("Tx Optical Level")),
-            "rx_minimo_dbm": _numero(optica.get("Lower Rx Optical Threshold")),
-            "rx_maximo_dbm": _numero(optica.get("Upper Rx Optical Threshold")),
-            "encendida_segundos": int(uptime) if uptime else None,
-            "firmware": detalle.get("Main Software Version") or None,
-            "version_hardware": detalle.get("Version") or None,
-            "estado_operativo": detalle.get("Operate Status") or None,
-            "estado_admin": detalle.get("Admin Status") or None,
-            "historial_caidas": caidas,
-        }
+        with self._sesion(olt) as (opener, base_url, verify_ssl):
+            ubicacion = {"slotid": 0, "ponid": pon, "onuid": onuid}
+            detalle = self._propiedades(
+                (self._post_form(self, opener, base_url, "gpononudetail", {**ubicacion, "who": 100}, verify_ssl)
+                 .get("data") or {}).get("onu_detail_info")
+            )
+            optica = self._propiedades(
+                (self._post_form(self, opener, base_url, "gpononuoptical", ubicacion, verify_ssl)
+                 .get("data") or {}).get("onu_optical_info")
+            )
+            historial = self._request_json_sync(
+                opener,
+                f"{base_url}/action/gpononutimetampdetail?ponid={int(pon)}&onuid={int(onuid)}&select=3",
+                verify_ssl=verify_ssl,
+            )
+            caidas = []
+            for item in (historial.get("data") or {}).get("offOnuReasonDtail_list") or []:
+                causa = interpretar_causa_caida(item.get("reason"))
+                if causa:
+                    caidas.append({"fecha": item.get("time"), **causa})
+            distancia = _numero(optica.get("Distance"))
+            uptime = _numero(detalle.get("System Uptime"))
+            return {
+                "pon": pon,
+                "onuid": onuid,
+                "distancia_m": int(distancia) if distancia else None,
+                "temperatura_c": _numero(optica.get("Temperature")),
+                "voltaje_v": _numero(optica.get("Power Feed Voltage")),
+                "corriente_laser_ma": _numero(optica.get("Laser Bias Current")),
+                "rx_dbm": _numero(optica.get("Rx Optical Level(ONU)")),
+                "tx_dbm": _numero(optica.get("Tx Optical Level")),
+                "rx_minimo_dbm": _numero(optica.get("Lower Rx Optical Threshold")),
+                "rx_maximo_dbm": _numero(optica.get("Upper Rx Optical Threshold")),
+                "encendida_segundos": int(uptime) if uptime else None,
+                "firmware": detalle.get("Main Software Version") or None,
+                "version_hardware": detalle.get("Version") or None,
+                "estado_operativo": detalle.get("Operate Status") or None,
+                "estado_admin": detalle.get("Admin Status") or None,
+                "historial_caidas": caidas,
+            }
 
     async def detalle_onu(self, olt_id: int, pon: int, onuid: int) -> Dict[str, Any]:
         olt = await self.db.get(OLTModel, olt_id)
@@ -505,20 +529,20 @@ class VsolApiService:
         return {"who": 1, "slotid": 0, "portid": int(pon), "onuid": int(onuid)}
 
     def _reiniciar_onu_sync(self, olt: OLTModel, pon: int, onuid: int, serial: str) -> Dict[str, Any]:
-        opener, base_url, verify_ssl = self._abrir_sesion_sync(olt)
-        actual = self._onu_en_pon_sync(opener, base_url, verify_ssl, pon, onuid)
-        serial_actual = self._normalizar_sn((actual or {}).get("info") or (actual or {}).get("Info"))
-        if not actual or serial_actual != self._normalizar_sn(serial):
-            raise ValueError(
-                "La ONU de ese PON y número ya no es la misma (cambió el serial). Vuelve a escanear la OLT."
+        with self._sesion(olt) as (opener, base_url, verify_ssl):
+            actual = self._onu_en_pon_sync(opener, base_url, verify_ssl, pon, onuid)
+            serial_actual = self._normalizar_sn((actual or {}).get("info") or (actual or {}).get("Info"))
+            if not actual or serial_actual != self._normalizar_sn(serial):
+                raise ValueError(
+                    "La ONU de ese PON y número ya no es la misma (cambió el serial). Vuelve a escanear la OLT."
+                )
+            respuesta = self._post_form(
+                self, opener, base_url, "gpononuauthinfo", self.payload_reinicio_onu(pon, onuid), verify_ssl
             )
-        respuesta = self._post_form(
-            self, opener, base_url, "gpononuauthinfo", self.payload_reinicio_onu(pon, onuid), verify_ssl
-        )
-        if str(respuesta.get("retcode")) != "0":
-            datos = respuesta.get("data") or {}
-            raise ValueError(f"La OLT no aceptó el reinicio: {datos.get('msg') or datos.get('result') or respuesta}")
-        return {"reiniciada": True, "pon": pon, "onuid": onuid, "serial": serial_actual}
+            if str(respuesta.get("retcode")) != "0":
+                datos = respuesta.get("data") or {}
+                raise ValueError(f"La OLT no aceptó el reinicio: {datos.get('msg') or datos.get('result') or respuesta}")
+            return {"reiniciada": True, "pon": pon, "onuid": onuid, "serial": serial_actual}
 
     async def reiniciar_onu(self, olt_id: int, pon: int, onuid: int, serial: str) -> Dict[str, Any]:
         olt = await self.db.get(OLTModel, olt_id)
