@@ -25,6 +25,13 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
 SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
 ALGORITHM = os.getenv("ALGORITHM", "HS256").strip().upper()
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+# El técnico trabaja en campo toda la jornada (a veces sin señal): su sesión
+# dura el día para no pedirle la contraseña al volver a tener internet.
+TECNICO_TOKEN_EXPIRE_MINUTES = int(os.getenv("TECNICO_TOKEN_EXPIRE_MINUTES", "720"))
+
+
+def minutos_de_sesion(rol: str | None) -> int:
+    return TECNICO_TOKEN_EXPIRE_MINUTES if (rol or "").strip().lower() == "tecnico" else ACCESS_TOKEN_EXPIRE_MINUTES
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
 LOGIN_WINDOW_SECONDS = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))

@@ -1,5 +1,3 @@
-import os
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +25,8 @@ async def login_access_token(
         response.set_cookie(
             key="fdeznet_access",
             value=result["access_token"],
-            max_age=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60")) * 60,
+            # Igual que el token: los técnicos tienen sesión de jornada.
+            max_age=int(result["expira_en_minutos"]) * 60,
             httponly=True,
             secure=forwarded_scheme == "https",
             samesite="strict",
