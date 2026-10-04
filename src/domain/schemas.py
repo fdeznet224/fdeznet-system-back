@@ -543,6 +543,8 @@ class ZonaBase(BaseModel):
     router_id: Optional[int] = None
     olt_id: Optional[int] = None
     plantilla_id: Optional[int] = None
+    # Colonias que cubre, separadas por coma.
+    colonias: Optional[str] = Field(default=None, max_length=2000)
 
 class ZonaCreate(ZonaBase):
     nombre: str = Field(..., min_length=2, max_length=100)

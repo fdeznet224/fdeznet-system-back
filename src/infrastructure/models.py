@@ -159,6 +159,8 @@ class ZonaModel(Base):
     router_id = Column(Integer, ForeignKey("routers.id", ondelete="SET NULL"), nullable=True)
     olt_id = Column(Integer, ForeignKey("olts.id", ondelete="SET NULL"), nullable=True)
     plantilla_id = Column(Integer, ForeignKey("plantillas_facturacion.id", ondelete="SET NULL"), nullable=True)
+    # Colonias que cubre, separadas por coma: el agente de WhatsApp las usa para ubicar al interesado.
+    colonias = Column(Text, nullable=True)
     
     clientes = relationship("ClienteModel", back_populates="zona")
     # Relación inversa con NAPs

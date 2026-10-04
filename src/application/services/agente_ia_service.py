@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.services.agente_ia_prompt import CONOCIMIENTO_INICIAL, INSTRUCCIONES
 from src.application.services.billing_service import BillingService
+from src.application.services.cobertura_service import zona_y_plan
 from src.application.services.bot_flow_service import get_or_create_bot_config
 from src.application.services.bot_pausa_service import bot_en_pausa, pausar_bot
 from src.application.services.comprobante_service import (
@@ -157,6 +158,7 @@ HERRAMIENTAS = [
     _herramienta("leer_comprobante", "Lee la última imagen de comprobante que envió el cliente (monto, folio, contrato)."),
     _herramienta("registrar_prospecto", "Registra a una persona nueva que quiere contratar: crea la orden de instalación y avisa al personal.",
                  {"nombre": {"type": "string"},
+                  "colonia": {"type": "string", "description": "la colonia o zona que dijo"},
                   "direccion": {"type": "string", "description": "colonia, calle y referencias"},
                   "ubicacion": _UBICACION,
                   "plan": {"type": "string"},
@@ -841,7 +843,8 @@ class _Contexto:
         return {"pasado_a_asesor": True, "motivo": motivo}
 
     async def _registrar_prospecto(
-        self, nombre: str, direccion: str, plan: str = "", telefono: str = "", ubicacion: str = ""
+        self, nombre: str, direccion: str, plan: str = "", telefono: str = "", ubicacion: str = "",
+        colonia: str = "",
     ) -> dict:
         nombre = " ".join((nombre or self.nombre_contacto or "").split())[:150]
         mapa = enlace_ubicacion(ubicacion)
@@ -865,12 +868,15 @@ class _Contexto:
             ).scalar_one_or_none()
             if existente:
                 return {"orden_existente": True, "orden_id": existente}
+        # La colonia dice la zona (MikroTik, OLT, cobro) y con ella el plan pedido.
+        zona, plan_elegido = await zona_y_plan(self.db, colonia, direccion, plan)
         usuario = self.usuario or await self._usuario_sistema()
         orden = await OrdenService(self.db).crear(
             SimpleNamespace(
                 tipo="instalacion", prioridad="normal", cliente_id=None,
                 prospecto_nombre=nombre, prospecto_telefono=contacto, prospecto_direccion=direccion,
                 tecnico_id=None, caja_nap_sugerida_id=None, puerto_nap_sugerido=None, fecha_programada=None,
+                zona_id=zona.id if zona else None, plan_id=plan_elegido.id if plan_elegido else None,
                 motivo="prospecto_whatsapp",
                 descripcion=f"[Agente WhatsApp] Quiere contratar{' el plan ' + plan if plan else ''}. Chat: {self.telefono}",
             ),
@@ -878,10 +884,15 @@ class _Contexto:
         )
         await self._avisar_personal(
             f"🆕 *Nuevo interesado por WhatsApp*\n👤 {nombre}\n📍 {direccion}\n"
+            f"🗺️ Zona: {zona.nombre if zona else 'sin reconocer (' + (colonia or 'colonia no indicada') + ')'}\n"
             f"📶 Plan: {plan or 'por definir'}\n📱 {contacto or self.telefono}\n"
             f"🧾 Orden de instalación #{orden.id}"
         )
-        return {"orden_creada": True, "orden_id": orden.id}
+        resultado = {"orden_creada": True, "orden_id": orden.id}
+        if not zona:
+            # No se rechaza: el personal confirma la cobertura al revisar la solicitud.
+            resultado["zona"] = "no reconocida: dile que un asesor confirmará la cobertura de su colonia"
+        return resultado
 
     async def _contrato_del_telefono_registrado(self) -> str | None:
         """Contrato del cliente cuyo teléfono registrado es el de este chat.

@@ -5,6 +5,17 @@ from sqlalchemy import select, func
 from src.infrastructure.models import OLTModel, PlantillaFacturacionModel, RouterModel, ServicioModel, ZonaModel
 from src.domain.schemas import ZonaCreate
 
+def limpiar_colonias(texto):
+    """Lista de colonias separadas por coma, sin espacios de más ni repetidas."""
+    vistas, colonias = set(), []
+    for colonia in (texto or "").replace(";", ",").replace("\n", ",").split(","):
+        colonia = " ".join(colonia.split())
+        if colonia and colonia.casefold() not in vistas:
+            vistas.add(colonia.casefold())
+            colonias.append(colonia)
+    return ", ".join(colonias) or None
+
+
 class ZoneService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -33,7 +44,9 @@ class ZoneService:
 
     async def crear_zona(self, datos: ZonaCreate):
         """Crea una nueva zona con la infraestructura que la atiende."""
-        nueva = ZonaModel(nombre=datos.nombre.strip(), **await self._infraestructura(datos))
+        nueva = ZonaModel(
+            nombre=datos.nombre.strip(), colonias=limpiar_colonias(datos.colonias), **await self._infraestructura(datos)
+        )
         self.db.add(nueva)
         await self.db.commit()
         await self.db.refresh(nueva)
@@ -46,6 +59,7 @@ class ZoneService:
             raise LookupError("Zona no encontrada")
 
         zona.nombre = datos.nombre.strip()
+        zona.colonias = limpiar_colonias(datos.colonias)
         for campo, valor in (await self._infraestructura(datos)).items():
             setattr(zona, campo, valor)
 

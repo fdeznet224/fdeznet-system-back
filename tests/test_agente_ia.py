@@ -441,6 +441,11 @@ def _contexto_con_avisos(monkeypatch, telefono_busqueda="5219611234567@c.us", or
         pausas.append((llave, motivo, duracion))
 
     monkeypatch.setattr(agente_mod, "pausar_bot", pausar)
+
+    async def sin_zona(*_args):
+        return None, None
+
+    monkeypatch.setattr(agente_mod, "zona_y_plan", sin_zona)
     servicio = AgenteIAService(db, enviar=enviar)
     contexto = _Contexto(servicio, SimpleNamespace(mensaje_chat_id=1), "automatico", "82769002647735@lid", telefono_busqueda, None)
     contexto.nombre_contacto = "Arisel"
@@ -477,7 +482,7 @@ def test_un_interesado_queda_como_orden_de_instalacion_y_se_avisa(monkeypatch):
         "nombre": "Arisel Fernández", "direccion": "Vicente Guerrero, frente a la escuela", "plan": "Estándar $300",
     }))
 
-    assert resultado == {"orden_creada": True, "orden_id": 321}
+    assert resultado["orden_creada"] is True and resultado["orden_id"] == 321
     orden = creadas[0]
     assert orden.tipo == "instalacion" and orden.cliente_id is None
     assert orden.prospecto_telefono == "9611234567"
@@ -695,3 +700,67 @@ def test_el_contrato_con_o_en_lugar_de_cero_identifica_al_cliente():
     asyncio.run(contexto.usar("identificar_cliente", {"contrato": "bdof"}))
 
     assert "'BD0F'" in consultas[0]
+
+
+# ------------------------------------------- colonia -> zona del interesado
+def test_la_colonia_dice_la_zona_y_el_plan_por_nombre_o_precio():
+    from src.application.services.cobertura_service import elegir_plan, elegir_zona
+
+    paraiso = SimpleNamespace(id=1, nombre="Paraíso", colonias="Barrio Nuevo, El Recreo")
+    merced = SimpleNamespace(id=2, nombre="La Merced", colonias=None)
+    zonas = [paraiso, merced]
+    assert elegir_zona(zonas, "vivo en el barrio nuevo cerca de la iglesia") is paraiso
+    assert elegir_zona(zonas, "", "Col. la merced, calle 5") is merced
+    assert elegir_zona(zonas, "paraiso") is paraiso
+    assert elegir_zona(zonas, "Tuxtla centro") is None
+
+    planes = [SimpleNamespace(id=1, nombre="Básico", precio=270), SimpleNamespace(id=2, nombre="Estándar", precio=350)]
+    assert elegir_plan(planes, "el estandar") is planes[1]
+    assert elegir_plan(planes, "el de 270") is planes[0]
+    assert elegir_plan(planes, "") is None
+
+
+def test_el_interesado_queda_con_su_zona_y_plan(monkeypatch):
+    creadas = []
+
+    class _Ordenes:
+        def __init__(self, db):
+            pass
+
+        async def crear(self, datos, usuario):
+            creadas.append(datos)
+            return SimpleNamespace(id=50)
+
+    async def zona_y_plan(_db, colonia, direccion, plan):
+        assert colonia == "Barrio Nuevo" and plan == "Estándar"
+        return SimpleNamespace(id=1, nombre="Paraíso"), SimpleNamespace(id=2)
+
+    monkeypatch.setattr(agente_mod, "OrdenService", _Ordenes)
+    contexto, enviados, _ = _contexto_con_avisos(monkeypatch)
+    monkeypatch.setattr(agente_mod, "zona_y_plan", zona_y_plan)
+
+    resultado = asyncio.run(contexto.usar("registrar_prospecto", {
+        "nombre": "Arisel", "colonia": "Barrio Nuevo", "direccion": "Calle 3, casa azul", "plan": "Estándar",
+    }))
+
+    assert resultado == {"orden_creada": True, "orden_id": 50}
+    assert (creadas[0].zona_id, creadas[0].plan_id) == (1, 2)
+    assert "Zona: Paraíso" in enviados[0][1]
+
+
+def test_colonia_sin_zona_se_registra_igual_y_lo_confirma_un_asesor(monkeypatch):
+    class _Ordenes:
+        def __init__(self, db):
+            pass
+
+        async def crear(self, datos, usuario):
+            assert datos.zona_id is None
+            return SimpleNamespace(id=51)
+
+    monkeypatch.setattr(agente_mod, "OrdenService", _Ordenes)
+    contexto, enviados, _ = _contexto_con_avisos(monkeypatch)
+    resultado = asyncio.run(contexto.usar("registrar_prospecto", {
+        "nombre": "Arisel", "colonia": "Otra Colonia", "direccion": "Calle 3, casa azul",
+    }))
+    assert resultado["orden_creada"] is True and "asesor" in resultado["zona"]
+    assert "sin reconocer (Otra Colonia)" in enviados[0][1]
