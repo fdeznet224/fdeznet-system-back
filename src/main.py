@@ -13,6 +13,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from src.jobs import (
     tarea_conciliar_correos_bancarios,
     tarea_conciliar_mikrotik,
+    tarea_retomar_chats_pausados,
     tarea_cron_unificada,
     tarea_mantenimiento_almacenamiento,
     tarea_baja_automatica,
@@ -155,6 +156,14 @@ async def lifespan(app: FastAPI):
     
     # Monitoreo (1 min), Clientes (3 min), Facturación/Cortes (1 hora/día)
     scheduler.add_job(tarea_monitoreo_routers, 'interval', minutes=1)
+    scheduler.add_job(
+        tarea_retomar_chats_pausados,
+        "interval",
+        minutes=1,
+        id="retomar_chats_pausados",
+        coalesce=True,
+        max_instances=1,
+    )
     scheduler.add_job(tarea_sincronizar_clientes, 'interval', minutes=3)
     scheduler.add_job(
         tarea_baja_automatica,

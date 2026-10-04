@@ -85,6 +85,8 @@ from src.application.services.bot_flow_service import (
 from src.application.services.support_service import SupportService
 from src.application.services.agente_ia_service import AgenteIAService
 from src.application.services.bot_pausa_service import (
+    PAUSA_INTERVENCION,
+    anotar_mensaje_en_pausa,
     bot_en_pausa,
     clave_telefono,
     pausar_bot,
@@ -1661,7 +1663,7 @@ async def webhook_salida_manual(
         wa_id=(str(datos.get("wa_id") or "")[:100] or None),
     )
     db.add(mensaje)
-    await pausar_bot(db, clave, "respuesta_celular")
+    await pausar_bot(db, clave, "respuesta_celular", duracion=PAUSA_INTERVENCION)
     cerrar_sesion_bot(telefono_raw)
     cerrar_sesion_bot(telefono)
     await db.commit()
@@ -1734,6 +1736,10 @@ async def webhook_recibir_mensaje(
     )
     db.add(nuevo_mensaje)
     await db.commit()
+    # Si un asesor tiene pausado el chat, este mensaje queda anotado para que
+    # el agente lo atienda cuando la pausa termine (si nadie lo contestó).
+    if await anotar_mensaje_en_pausa(db, telefono_busqueda or telefono_raw, nuevo_mensaje.id):
+        await db.commit()
 
     await manager.broadcast({
         "type": "NEW_MESSAGE",
@@ -2792,7 +2798,7 @@ async def enviar_mensaje_chat(
         creado_por_id=current_user.id,
     )
     db.add(nuevo_mensaje)
-    await pausar_bot(db, telefono_limpio, "respuesta_panel")
+    await pausar_bot(db, telefono_limpio, "respuesta_panel", duracion=PAUSA_INTERVENCION)
     cerrar_sesion_bot(telefono_limpio)
     await db.commit()
     await db.refresh(nuevo_mensaje)

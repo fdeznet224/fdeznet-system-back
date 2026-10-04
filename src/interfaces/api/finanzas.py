@@ -1,3 +1,4 @@
+import logging
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Annotated, Optional, Literal
 from datetime import date
@@ -28,13 +29,37 @@ from src.infrastructure.models import (
 # Servicios
 from src.application.services.billing_service import BillingService
 from src.application.helpers.pdf_generator import generar_factura_pdf
-from src.application.services.comprobante_service import normalizar_contrato, personalizar_datos_pago
+from src.application.services.comprobante_service import (
+    ComprobanteService,
+    normalizar_contrato,
+    personalizar_datos_pago,
+)
 from src.application.services.finance_service import (
     FinanceService,
     calcular_fecha_maxima_promesa,
 )
 
 router = APIRouter(prefix="/finanzas", tags=["Módulo Financiero"])
+logger = logging.getLogger(__name__)
+
+
+async def _cerrar_comprobantes_pagados(db, cliente_id, resultado, monto, usuario) -> None:
+    """Un pago manual cierra el comprobante de WhatsApp del mismo cobro.
+
+    Nunca afecta el pago: si falla, solo se registra en el log.
+    """
+    if not isinstance(resultado, dict) or resultado.get("idempotente"):
+        return
+    pago_ids = resultado.get("pago_ids") or ([resultado["pago_id"]] if resultado.get("pago_id") else [])
+    try:
+        cerrados = await ComprobanteService(db).resolver_por_pago_manual(
+            cliente_id, pago_ids, monto, getattr(usuario, "usuario", None)
+        )
+        if cerrados:
+            resultado["comprobantes_cerrados"] = cerrados
+    except Exception:
+        await db.rollback()
+        logger.exception("No se pudieron cerrar los comprobantes del cliente %s", cliente_id)
 
 
 def _scope_condition(current_user):
@@ -510,7 +535,7 @@ async def cobrar_cliente(
     """Un solo cobro por el total; se aplica de lo más antiguo a lo reciente."""
     await _cliente_en_alcance(db, cliente_id, current_user)
     try:
-        return await BillingService(db).registrar_pago_cliente(
+        resultado = await BillingService(db).registrar_pago_cliente(
             cliente_id=cliente_id,
             usuario_operador=current_user,
             metodo_pago=data.metodo_pago,
@@ -521,6 +546,8 @@ async def cobrar_cliente(
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _cerrar_comprobantes_pagados(db, cliente_id, resultado, data.monto_recibido, current_user)
+    return resultado
 
 
 # ==========================================
@@ -548,10 +575,11 @@ async def registrar_cobro(
             clave_idempotencia=data.clave_idempotencia,
             concepto_ids=data.concepto_ids or None,
         )
-        return resultado
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _cerrar_comprobantes_pagados(db, cliente.id, resultado, data.monto_recibido, current_user)
+    return resultado
 
 
 @router.post("/pagos/{pago_id}/anular")

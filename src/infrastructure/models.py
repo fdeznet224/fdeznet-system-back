@@ -1935,6 +1935,9 @@ class BotPausaModel(Base):
     pausado_hasta = Column(DateTime, nullable=False)
     motivo = Column(String(40), nullable=False)
     actualizado_en = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+    # Mensaje del cliente que llegó durante la pausa y nadie contestó: el
+    # agente lo atiende cuando la pausa vence.
+    mensaje_pendiente_id = Column(Integer, nullable=True)
 
 
 class FlujoBotModel(Base):

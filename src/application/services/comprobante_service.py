@@ -35,6 +35,7 @@ from src.infrastructure.models import (
     FacturaModel,
     PagoAutovalidadoModel,
     UsuarioModel,
+    WhatsappIdentidadModel,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,8 @@ TOLERANCIA_FUTURO = timedelta(minutes=10)
 # Límites del modo captura: lo que se sale de lo normal lo revisa una persona.
 MAX_VECES_LA_DEUDA = 2
 MAX_CAPTURAS_POR_CHAT_AL_DIA = 2
+# Comprobantes que se cierran solos cuando se registra el pago a mano.
+DIAS_COMPROBANTE_PAGO_MANUAL = 7
 # Capturas leídas a las que todavía no se les intentó aplicar el pago: si el
 # mismo chat la vuelve a mandar (o el agente la relee), se retoma.
 SIN_INTENTO_DE_APLICAR = {"esperando_confirmacion", "sin_referencia"}
@@ -227,9 +230,16 @@ class ComprobanteService:
                 motivo_revision=(
                     "esperando_confirmacion"
                     if resultado.get("exito")
-                    else "sin_referencia" if monto > 0 else "ocr_no_legible"
+                    else "sin_referencia" if monto > 0 else "no_es_comprobante"
                 ),
             )
+            if monto <= 0 and not resultado.get("exito"):
+                # El agente revisa toda foto que le mandan (módem, router...).
+                # Sin monto no es un comprobante: no se deja pendiente; si era
+                # un pago borroso, el agente pide otra foto y esa sí entra.
+                revision.estado = "rechazado"
+                revision.fecha_revision = datetime.now()
+                revision.notas_revision = "La imagen no parece un comprobante: no se leyó ningún monto"
             self.db.add(revision)
             await self.db.commit()
             await self.db.refresh(revision)
@@ -648,6 +658,87 @@ class ComprobanteService:
         )
         for numero in numeros:
             await self.avisar_admin(numero, texto)
+
+    async def resolver_por_pago_manual(
+        self, cliente_id: int, pago_ids: list[int], monto, usuario: str | None = None
+    ) -> list[int]:
+        """Cierra los comprobantes pendientes que ya se cobraron a mano.
+
+        Si alguien registra el pago en el sistema, el comprobante que el
+        cliente mandó por WhatsApp ya no debe quedarse esperando revisión.
+        Se toma uno del mismo monto o, si mandó varios (252 + 100), todos los
+        que sumen el pago. Su folio queda bloqueado para que no se cobre otra vez.
+        """
+        if not pago_ids:
+            return []
+        cliente = await self.db.get(ClienteModel, cliente_id)
+        if not cliente:
+            return []
+        chats = set(
+            (
+                await self.db.execute(
+                    select(WhatsappIdentidadModel.telefono).where(
+                        WhatsappIdentidadModel.cliente_id == cliente_id,
+                        WhatsappIdentidadModel.verificado_en.isnot(None),
+                    )
+                )
+            ).scalars().all()
+        )
+        telefono = re.sub(r"\D", "", cliente.telefono or "")[-10:]
+        pendientes = (
+            await self.db.execute(
+                select(ComprobantePagoRevisionModel)
+                .where(
+                    ComprobantePagoRevisionModel.estado == "pendiente",
+                    ComprobantePagoRevisionModel.pago_id.is_(None),
+                    ComprobantePagoRevisionModel.monto_detectado.is_not(None),
+                    ComprobantePagoRevisionModel.fecha_recepcion
+                    >= datetime.now() - timedelta(days=DIAS_COMPROBANTE_PAGO_MANUAL),
+                )
+                .order_by(ComprobantePagoRevisionModel.fecha_recepcion.desc())
+            )
+        ).scalars().all()
+
+        def es_del_cliente(revision) -> bool:
+            if revision.cliente_id == cliente_id or revision.telefono in chats:
+                return True
+            numero = str(revision.telefono or "")
+            return bool(
+                telefono and len(telefono) == 10 and not numero.endswith("@lid")
+                and re.sub(r"\D", "", numero)[-10:] == telefono
+            )
+
+        candidatos = [r for r in pendientes if es_del_cliente(r)]
+        monto = FinanceService.dinero(monto or 0)
+        exactos = [r for r in candidatos if FinanceService.dinero(r.monto_detectado) == monto]
+        if exactos:
+            elegidos = exactos[:1]
+        elif candidatos and sum(FinanceService.dinero(r.monto_detectado) for r in candidatos) == monto:
+            elegidos = candidatos
+        else:
+            return []
+
+        ahora = datetime.now()
+        nota = f"Pagado manualmente (pago #{pago_ids[0]})" + (f" por {usuario}" if usuario else "")
+        for indice, revision in enumerate(elegidos):
+            revision.estado = "aprobado"
+            revision.motivo_revision = "pagado_manualmente"
+            revision.cliente_id = cliente_id
+            revision.fecha_revision = ahora
+            revision.notas_revision = nota
+            if indice == 0:
+                revision.pago_id = pago_ids[0]
+            clave = clave_de_transferencia(revision)
+            if clave and not await self._clave_ya_usada(clave, revision.id):
+                self.db.add(PagoAutovalidadoModel(
+                    cliente_id=cliente_id,
+                    monto=revision.monto_detectado,
+                    folio_banco=clave[:100],
+                    banco_emisor="pago_manual",
+                    whatsapp_remitente=(revision.telefono or "")[:20],
+                ))
+        await self.db.commit()
+        return [r.id for r in elegidos]
 
     async def _factura_cobrable(self, cliente_id: int):
         factura = (

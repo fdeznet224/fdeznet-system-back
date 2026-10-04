@@ -410,6 +410,25 @@ async def tarea_reactivar_servicios_pagados():
 # ==========================================
 # 2.5 CONCILIACIÓN BD -> MIKROTIK
 # ==========================================
+async def tarea_retomar_chats_pausados():
+    """El agente vuelve a los chats donde un asesor intervino y ya dejó de escribir."""
+    from src.application.services.bot_pausa_service import retomar_chats_pausados
+    from src.interfaces.api.whatsapp import lanzar_agente
+
+    async with SessionLocal() as db:
+        try:
+            return await retomar_chats_pausados(db, lanzar_agente)
+        except Exception as exc:
+            await db.rollback()
+            db.add(LogCronjobModel(
+                nivel="ERROR",
+                origen="AgenteIA",
+                mensaje=f"No se pudieron retomar los chats pausados: {str(exc)[:300]}",
+            ))
+            await db.commit()
+            return 0
+
+
 async def tarea_conciliar_mikrotik():
     """Repara periódicamente diferencias de activación y suspensión."""
     print("🛡️ [RED] Conciliando estados deseados con MikroTik...")
