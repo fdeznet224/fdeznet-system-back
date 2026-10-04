@@ -166,9 +166,13 @@ class WhatsAppService:
                     resp.status_code,
                     resp.text,
                 )
-                # "No LID for user": WhatsApp no encontró ese número, así
-                # que el mensaje no salió. Es seguro mandarlo por otro chat.
-                if "No LID for user" in str(detalle or ""):
+                # WhatsApp no encontró ese número ("No LID for user" o el
+                # aviso del puente tras probar 521 y 52): el mensaje no salió.
+                # Es seguro mandarlo por otro chat.
+                if any(
+                    marca in str(detalle or "")
+                    for marca in ("No LID for user", "NUMERO_SIN_WHATSAPP")
+                ):
                     return {
                         "ok": False,
                         "wa_id": None,

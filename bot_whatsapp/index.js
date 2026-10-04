@@ -16,7 +16,7 @@ const path = require('path');
 const crypto = require('crypto');
 const mime = require('mime-types');
 const { descargarMediaConReintentos, describirError } = require('./media-utils');
-const { resolverTelefonoEntrante } = require('./phone-utils');
+const { resolverChatSalida, resolverTelefonoEntrante } = require('./phone-utils');
 const {
     crearRegistroEnvios,
     esEscritaPorPersona,
@@ -392,7 +392,7 @@ app.post('/enviar-mensaje', async (req, res) => {
         );
         if (!promesaEnvio) {
             promesaEnvio = (async () => {
-                const chatId = numero.includes('@') ? numero : `${numero}@c.us`;
+                const chatId = await resolverChatSalida(client, numero);
                 let response;
                 enviosDelSistema.iniciarEnvio(chatId);
                 try {

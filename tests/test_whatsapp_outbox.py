@@ -272,3 +272,26 @@ def test_el_puente_con_no_lid_se_marca_sin_whatsapp(monkeypatch):
     resultado = asyncio.run(WhatsAppService().enviar_mensaje_detallado("9611172026", "Hola"))
     assert resultado["sin_whatsapp"] is True
     assert resultado["incierto"] is False and resultado["ok"] is False
+
+
+def test_el_aviso_del_puente_de_numero_sin_whatsapp_tambien_cuenta(monkeypatch):
+    class _Respuesta:
+        status_code = 404
+        text = '{"error":"NUMERO_SIN_WHATSAPP: 5219611172026 / 529611172026 no tiene WhatsApp"}'
+
+        def json(self):
+            return {"error": "NUMERO_SIN_WHATSAPP: 5219611172026 / 529611172026 no tiene WhatsApp"}
+
+    class _Cliente:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return None
+
+        async def post(self, *_a, **_k):
+            return _Respuesta()
+
+    monkeypatch.setattr("src.infrastructure.whatsapp_client.httpx.AsyncClient", lambda **_k: _Cliente())
+    resultado = asyncio.run(WhatsAppService().enviar_mensaje_detallado("9611172026", "Hola"))
+    assert resultado["sin_whatsapp"] is True and resultado["reintentable"] is False

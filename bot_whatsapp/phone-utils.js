@@ -50,8 +50,54 @@ async function resolverTelefonoEntrante(client, msg) {
     return remitente;
 }
 
+/**
+ * Variantes de un número mexicano: WhatsApp guarda las cuentas antiguas como
+ * 521 + 10 dígitos y las nuevas como 52 + 10 dígitos.
+ */
+function variantesNumero(valor) {
+    const digitos = String(valor || '').replace(/\D/g, '');
+    if (!digitos) return [];
+    const variantes = [digitos];
+    if (digitos.length === 13 && digitos.startsWith('521')) variantes.push(`52${digitos.slice(3)}`);
+    if (digitos.length === 12 && digitos.startsWith('52')) variantes.push(`521${digitos.slice(2)}`);
+    return variantes;
+}
+
+/**
+ * Chat al que se envía un mensaje saliente. Le pregunta a WhatsApp el ID real
+ * del número (como hace WhatsApp Web al escribir un número a mano) en vez de
+ * suponer "521...@c.us", que falla con "No LID for user" en cuentas 52.
+ */
+async function resolverChatSalida(client, numero) {
+    const texto = String(numero || '').trim();
+    if (texto.includes('@')) return texto;
+    const variantes = variantesNumero(texto);
+    if (!variantes.length) {
+        const error = new Error('NUMERO_SIN_WHATSAPP: número vacío');
+        error.statusCode = 404;
+        throw error;
+    }
+    if (!client || typeof client.getNumberId !== 'function') return `${variantes[0]}@c.us`;
+    let consultado = false;
+    for (const variante of variantes) {
+        try {
+            const wid = await client.getNumberId(variante);
+            consultado = true;
+            if (wid?._serialized) return wid._serialized;
+        } catch (error) {
+            // Si WhatsApp no responde la consulta, se intenta la siguiente variante.
+        }
+    }
+    if (!consultado) return `${variantes[0]}@c.us`;
+    const error = new Error(`NUMERO_SIN_WHATSAPP: ${variantes.join(' / ')} no tiene WhatsApp`);
+    error.statusCode = 404;
+    throw error;
+}
+
 module.exports = {
     comoIdTelefono,
+    resolverChatSalida,
+    variantesNumero,
     esTelefonoWhatsApp,
     resolverTelefonoEntrante,
 };
