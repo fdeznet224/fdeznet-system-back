@@ -539,9 +539,13 @@ class PlantillaResponse(BillingTemplateRequest):
 # ==========================================
 class ZonaBase(BaseModel):
     nombre: str
+    # Infraestructura que atiende la zona (cada ISP la configura).
+    router_id: Optional[int] = None
+    olt_id: Optional[int] = None
+    plantilla_id: Optional[int] = None
 
 class ZonaCreate(ZonaBase):
-    pass
+    nombre: str = Field(..., min_length=2, max_length=100)
 
 class ZonaResponse(ZonaBase):
     model_config = ConfigDict(from_attributes=True)

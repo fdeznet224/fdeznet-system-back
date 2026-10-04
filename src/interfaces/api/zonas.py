@@ -58,14 +58,16 @@ async def editar_zona(
     current_user = Depends(role_required(["admin"])) # 🔒 Solo Admin
 ):
     """
-    Actualiza el nombre de una zona.
+    Actualiza el nombre y la infraestructura (MikroTik, OLT y plantilla) de una zona.
     """
     service = ZoneService(db)
     try:
         # Nota: Asegúrate de tener el método editar_zona en tu servicio
         return await service.editar_zona(zona_id, datos)
-    except ValueError as e:
+    except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

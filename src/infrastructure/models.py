@@ -154,6 +154,11 @@ class ZonaModel(Base):
     __tablename__ = "zonas"
     id = Column(Integer, primary_key=True, index=True)
     nombre = Column(String(100))
+    # Infraestructura que atiende la zona: al elegirla en un alta se
+    # preseleccionan. La OLT es opcional (zonas por radioenlace).
+    router_id = Column(Integer, ForeignKey("routers.id", ondelete="SET NULL"), nullable=True)
+    olt_id = Column(Integer, ForeignKey("olts.id", ondelete="SET NULL"), nullable=True)
+    plantilla_id = Column(Integer, ForeignKey("plantillas_facturacion.id", ondelete="SET NULL"), nullable=True)
     
     clientes = relationship("ClienteModel", back_populates="zona")
     # Relación inversa con NAPs
