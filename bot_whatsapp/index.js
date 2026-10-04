@@ -17,6 +17,7 @@ const crypto = require('crypto');
 const mime = require('mime-types');
 const { descargarMediaConReintentos, describirError } = require('./media-utils');
 const { resolverChatSalida, resolverTelefonoEntrante } = require('./phone-utils');
+const { crearVinculador } = require('./vincular-envios');
 const {
     crearRegistroEnvios,
     esEscritaPorPersona,
@@ -79,6 +80,22 @@ let client = null;
 let isReady = false;
 let lastQR = null;
 const backendIdPorWaId = new Map();
+// Envíos del sistema cuyo id no devolvió sendMessage (ver vincular-envios.js).
+const vinculador = crearVinculador();
+
+/** Avisa al backend qué wa_id tiene su mensaje, para ligar entregado/leído. */
+async function ligarEnvio(waId, mensajeChatId, ack) {
+    backendIdPorWaId.set(waId, Number(mensajeChatId));
+    try {
+        await postBackend('/whatsapp/webhook/ack', {
+            wa_id: waId,
+            ack: Math.max(Number(ack) || 1, 1),
+            mensaje_chat_id: Number(mensajeChatId),
+        });
+    } catch (e) {
+        console.error('❌ Error ligando envío con su id de WhatsApp:', e.message);
+    }
+}
 const enviosCompletados = new Map();
 const enviosEnCurso = new Map();
 // Mensajes que manda el sistema; los demás que salen del celular son de una persona.
@@ -290,6 +307,10 @@ function iniciarMotor() {
     // Respuesta escrita por alguien del equipo desde el celular: el backend
     // la guarda en el historial y pausa el bot en ese chat.
     client.on('message_create', async (msg) => {
+        if (msg.fromMe && msg.id?.id) {
+            const mensajeChatId = vinculador.mensajeCreado(msg.body, msg.to, msg.id.id);
+            if (mensajeChatId) await ligarEnvio(msg.id.id, mensajeChatId, msg.ack);
+        }
         if (!esRespuestaPropia(msg)) return;
         try {
             if (!(await esEscritaPorPersona(msg, enviosDelSistema))) return;
@@ -418,10 +439,15 @@ app.post('/enviar-mensaje', async (req, res) => {
                 // whatsapp-web.js puede devolver el identificador serializado
                 // en distintas formas según la versión. El envío ya ocurrió;
                 // nunca debemos convertirlo en HTTP 500 por leer id.id.
-                const waId = response?.id?.id
+                let waId = response?.id?.id
                     || response?.id?._serialized
                     || response?.id?.serialized
                     || null;
+                if (!waId && mensajeChatId) {
+                    // WhatsApp no devolvió el id: se liga con message_create.
+                    waId = vinculador.envioSinId(mensaje, chatId, mensajeChatId);
+                    if (waId) await ligarEnvio(waId, mensajeChatId, 1);
+                }
                 const resultado = {
                     status: 'sent',
                     wa_id: waId,

@@ -295,3 +295,28 @@ def test_el_aviso_del_puente_de_numero_sin_whatsapp_tambien_cuenta(monkeypatch):
     monkeypatch.setattr("src.infrastructure.whatsapp_client.httpx.AsyncClient", lambda **_k: _Cliente())
     resultado = asyncio.run(WhatsAppService().enviar_mensaje_detallado("9611172026", "Hola"))
     assert resultado["sin_whatsapp"] is True and resultado["reintentable"] is False
+
+
+def test_un_reintento_exitoso_quita_el_ack_de_error(monkeypatch):
+    # Así quedó el aviso de pago de Miguel: falló (503) y luego salió, pero ack seguía en -1.
+    registro = SimpleNamespace(
+        estado_envio="procesando", ack=-1, wa_id=None, enviado_en=None, ultimo_error="503",
+        proximo_intento_en=None, bloqueado_hasta=None, intentos=2, max_intentos=5,
+    )
+
+    class _Sesion:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return None
+
+        async def get(self, _modelo, _id):
+            return registro
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr("src.infrastructure.database.SessionLocal", lambda: _Sesion())
+    asyncio.run(WhatsAppQueue()._actualizar_registro(13002, ENVIADO))
+    assert registro.ack == 1 and registro.estado_envio == "enviado" and registro.ultimo_error is None

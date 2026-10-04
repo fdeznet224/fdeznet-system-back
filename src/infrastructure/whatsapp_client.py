@@ -538,10 +538,8 @@ class WhatsAppQueue:
                             registro.wa_id = (
                                 resultado.get("wa_id") or registro.wa_id
                             )
-                            if (
-                                registro.ack != -1
-                                and (registro.ack or 0) < 1
-                            ):
+                            # También tras un intento fallido (ack -1): ya salió.
+                            if (registro.ack or 0) < 1:
                                 registro.ack = 1
                             if registro.estado_envio not in {
                                 "entregado",
