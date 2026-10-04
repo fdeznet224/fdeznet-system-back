@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.services.activacion_service import ActivacionService, ActivacionTecnicoRequest
+from src.application.services import chat_orden_service as chat_orden
 from src.application.services.client_service import ClientService
 from src.application.services.orden_service import OrdenService
 from src.domain.schemas import InstalacionRequest
@@ -550,3 +551,92 @@ async def activar_solicitud(
     except (ValueError, PermissionError, RuntimeError) as error:
         await db.rollback()
         manejar_error(error)
+
+
+class MensajeOrden(BaseModel):
+    mensaje: str = Field(min_length=1, max_length=4000)
+
+
+@router.get("/chat/no-leidos")
+async def no_leidos_de_ordenes(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Mensajes sin leer de cada orden de instalación abierta (clientes y prospectos)."""
+    from sqlalchemy import select
+
+    from src.infrastructure.models import OrdenServicioModel
+
+    ordenes = (
+        await db.execute(
+            select(OrdenServicioModel).where(
+                OrdenServicioModel.tipo == "instalacion",
+                OrdenServicioModel.estado.notin_(["terminada", "cancelada"]),
+            )
+        )
+    ).scalars().all()
+    return await chat_orden.no_leidos_por_orden(db, ordenes)
+
+
+@router.get("/{orden_id}/chat")
+async def chat_de_orden(
+    orden_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    try:
+        orden = await OrdenService(db).obtener(orden_id, current_user)
+    except (ValueError, PermissionError) as error:
+        manejar_error(error)
+    return await chat_orden.mensajes_de_orden(db, orden)
+
+
+@router.post("/{orden_id}/chat/enviar")
+async def enviar_a_orden(
+    orden_id: int,
+    datos: MensajeOrden,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    from src.infrastructure.models import ClienteModel
+    from src.interfaces.api.whatsapp import encolar_mensaje_manual, telefono_whatsapp
+
+    try:
+        orden = await OrdenService(db).obtener(orden_id, current_user)
+    except (ValueError, PermissionError) as error:
+        manejar_error(error)
+    cliente = await db.get(ClienteModel, orden.cliente_id) if orden.cliente_id else None
+    telefono = telefono_whatsapp(cliente.telefono) if cliente and cliente.telefono else chat_orden.telefono_para_responder(orden)
+    if not telefono:
+        raise HTTPException(404, "La orden no tiene teléfono ni chat de WhatsApp")
+    return await encolar_mensaje_manual(db, telefono, cliente.id if cliente else None, datos.mensaje, current_user)
+
+
+@router.get("/{orden_id}/chat/archivo/{nombre}")
+async def archivo_de_orden(
+    orden_id: int,
+    nombre: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Adjuntos del chat de la orden, sin publicar el directorio de WhatsApp."""
+    from sqlalchemy import select
+
+    from src.infrastructure.models import MensajeChatModel
+
+    try:
+        orden = await OrdenService(db).obtener(orden_id, current_user)
+    except (ValueError, PermissionError) as error:
+        manejar_error(error)
+    nombre_seguro = Path(nombre).name
+    filtro = chat_orden.filtro_mensajes(orden)
+    if nombre_seguro != nombre or not nombre_seguro or filtro is None:
+        raise HTTPException(404, "Archivo no disponible")
+    vinculado = await db.scalar(
+        select(MensajeChatModel.id).where(filtro, MensajeChatModel.mensaje.contains(nombre_seguro)).limit(1)
+    )
+    uploads = (Path(__file__).resolve().parents[3] / "bot_whatsapp" / "uploads").resolve()
+    archivo = (uploads / nombre_seguro).resolve()
+    if vinculado is None or archivo.parent != uploads or not archivo.is_file() or archivo.is_symlink():
+        raise HTTPException(404, "Archivo no disponible")
+    return FileResponse(archivo)

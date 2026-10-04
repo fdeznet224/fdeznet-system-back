@@ -2780,16 +2780,24 @@ async def enviar_mensaje_chat(
         raise HTTPException(status_code=403, detail=str(error)) from error
     cliente = await db.get(ClienteModel, cliente_id)
     if not cliente or not cliente.telefono: raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return await encolar_mensaje_manual(db, telefono_whatsapp(cliente.telefono), cliente.id, data.mensaje, current_user)
 
-    telefono_limpio = cliente.telefono.replace("+", "").replace(" ", "")
+
+def telefono_whatsapp(telefono: str) -> str:
+    """10 dígitos de México -> 521XXXXXXXXXX, como lo usa WhatsApp."""
+    telefono_limpio = (telefono or "").replace("+", "").replace(" ", "")
     if len(telefono_limpio) == 10: telefono_limpio = f"521{telefono_limpio}"
     elif len(telefono_limpio) == 12 and telefono_limpio.startswith("52"): telefono_limpio = f"521{telefono_limpio[2:]}"
+    return telefono_limpio
 
+
+async def encolar_mensaje_manual(db, telefono_limpio: str, cliente_id, mensaje: str, current_user):
+    """Mensaje escrito desde el panel: pausa el bot en ese chat y lo encola."""
     nuevo_mensaje = MensajeChatModel(
-        cliente_id=cliente.id,
+        cliente_id=cliente_id,
         telefono=telefono_limpio,
         direccion="salida",
-        mensaje=data.mensaje,
+        mensaje=mensaje,
         tipo_mensaje="texto",
         tipo_evento="chat_manual",
         leido=True,
