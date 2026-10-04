@@ -1482,7 +1482,8 @@ class ClientService:
             LEFT JOIN cajas_nap nap ON c.caja_nap_id = nap.id 
             LEFT JOIN zonas z ON c.zona_id = z.id
             LEFT JOIN inventario_onus inv ON c.onu_id = inv.id -- 👇 Cruzamos con el inventario
-            LEFT JOIN facturas f ON c.id = f.cliente_id AND f.estado = 'pendiente'
+            -- Deuda real: también las vencidas (antes solo contaba "pendiente").
+            LEFT JOIN facturas f ON c.id = f.cliente_id AND f.estado IN ('pendiente', 'vencida') AND f.saldo_pendiente > 0
             WHERE c.estado != 'pendiente_instalacion'
             GROUP BY c.id ORDER BY c.id DESC
         """)
