@@ -28,6 +28,7 @@ from src.application.services.bank_email_service import (
 from src.application.services.billing_service import BillingService
 from src.application.services.finance_service import FinanceService
 from src.application.services.ocr_service import OCRService, terminaciones_de_cuenta
+from src.application.services.usuario_sistema_service import usuario_agente_ia
 from src.infrastructure.models import (
     ClienteModel,
     ComprobantePagoRevisionModel,
@@ -424,16 +425,8 @@ class ComprobanteService:
                     "aplicar_el": aplicar_desde.date().isoformat(),
                     "detalle": "La captura es válida; es del mes siguiente y se aplica solo ese día."}
 
-        operador = (
-            await self.db.execute(
-                select(UsuarioModel)
-                .where(UsuarioModel.rol == "admin", UsuarioModel.activo.is_(True))
-                .order_by(UsuarioModel.id)
-                .limit(1)
-            )
-        ).scalars().first()
-        if operador is None:
-            return await self._a_revision(revision, "sin_administrador_activo", None)
+        # Queda registrado como "Agente IA", no como un administrador.
+        operador = await usuario_agente_ia(self.db)
         revision.estado = "procesando"
         await self.db.commit()
         try:

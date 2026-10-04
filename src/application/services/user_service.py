@@ -180,6 +180,9 @@ class UserService:
         stmt = select(UsuarioModel).options(
             selectinload(UsuarioModel.routers_asignados),
             selectinload(UsuarioModel.zonas_asignadas),
+        ).where(
+            # "Agente IA" y otros usuarios de sistema no son personal editable.
+            UsuarioModel.rol != "sistema"
         ).order_by(UsuarioModel.id)
         
         result = await self.db.execute(stmt)

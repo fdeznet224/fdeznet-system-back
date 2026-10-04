@@ -36,6 +36,7 @@ from src.application.services.comprobante_service import (
 from src.application.services.network_service import NetworkService
 from src.application.services.orden_service import OrdenService
 from src.application.services.support_service import SupportService
+from src.application.services.usuario_sistema_service import usuario_agente_ia
 from src.infrastructure.models import (
     AgenteInteraccionModel,
     ClienteModel,
@@ -930,14 +931,5 @@ class _Contexto:
                 logger.exception("No se pudo avisar al personal en %s", numero)
 
     async def _usuario_sistema(self) -> UsuarioModel:
-        usuario = (
-            await self.db.execute(
-                select(UsuarioModel)
-                .where(UsuarioModel.rol == "admin", UsuarioModel.activo.is_(True))
-                .order_by(UsuarioModel.id)
-                .limit(1)
-            )
-        ).scalars().first()
-        if not usuario:
-            raise RuntimeError("No hay un usuario administrador activo para registrar la orden")
-        return usuario
+        """Lo que hace el agente queda a nombre de "Agente IA"."""
+        return await usuario_agente_ia(self.db)
