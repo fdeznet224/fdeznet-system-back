@@ -166,6 +166,20 @@ class WhatsAppService:
                     resp.status_code,
                     resp.text,
                 )
+                # "No LID for user": WhatsApp no encontró ese número, así
+                # que el mensaje no salió. Es seguro mandarlo por otro chat.
+                if "No LID for user" in str(detalle or ""):
+                    return {
+                        "ok": False,
+                        "wa_id": None,
+                        "error": (
+                            "Ese número no tiene WhatsApp o WhatsApp no lo "
+                            f"encontró ({detalle})"
+                        )[:2000],
+                        "reintentable": False,
+                        "incierto": False,
+                        "sin_whatsapp": True,
+                    }
                 # Un 500 del puente puede ocurrir después de que WhatsApp
                 # aceptó el envío. Reintentarlo automáticamente puede
                 # duplicar el mensaje; requiere revisión/reenvío manual.
@@ -340,6 +354,10 @@ class WhatsAppQueue:
                         ruta=datos.get("ruta"),
                         mensaje_chat_id=mensaje_id,
                     )
+                    if resultado.get("sin_whatsapp") and datos.get("cliente_id"):
+                        resultado = await self._enviar_por_chat_verificado(
+                            mensaje_id, datos, resultado
+                        )
 
                     if resultado["ok"]:
                         tipo = "PDF + Texto" if datos.get("ruta") else "Texto"
@@ -397,6 +415,61 @@ class WhatsAppQueue:
                     self.is_running = True
                     asyncio.create_task(self.procesar_cola())
 
+    async def _chat_verificado_del_cliente(self, cliente_id: int, numero_fallido: str):
+        """Chat que el cliente identificó con su contrato (por ejemplo un @lid)."""
+        from sqlalchemy import select
+        from src.infrastructure.database import SessionLocal
+        from src.infrastructure.models import WhatsappIdentidadModel
+
+        async with SessionLocal() as db:
+            return (
+                await db.execute(
+                    select(WhatsappIdentidadModel.telefono)
+                    .where(
+                        WhatsappIdentidadModel.cliente_id == cliente_id,
+                        WhatsappIdentidadModel.verificado_en.isnot(None),
+                        WhatsappIdentidadModel.telefono != numero_fallido,
+                    )
+                    .order_by(WhatsappIdentidadModel.verificado_en.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+    async def _enviar_por_chat_verificado(self, mensaje_id, datos, resultado):
+        """El número registrado no tiene WhatsApp: se usa el chat verificado."""
+        alterno = await self._chat_verificado_del_cliente(
+            datos["cliente_id"], datos["numero"]
+        )
+        if not alterno:
+            return resultado
+        nuevo = await self.service.enviar_mensaje_detallado(
+            telefono=alterno,
+            mensaje=datos["mensaje"],
+            ruta=datos.get("ruta"),
+            mensaje_chat_id=mensaje_id,
+        )
+        if nuevo["ok"]:
+            logger.info(
+                "📨 %s no tiene WhatsApp; enviado al chat verificado %s",
+                datos["numero"],
+                alterno,
+            )
+            await self._cambiar_destino(mensaje_id, alterno)
+        return nuevo
+
+    async def _cambiar_destino(self, mensaje_id, telefono: str):
+        if not mensaje_id:
+            return
+        from src.infrastructure.database import SessionLocal
+        from src.infrastructure.models import MensajeChatModel
+
+        async with SessionLocal() as db:
+            registro = await db.get(MensajeChatModel, mensaje_id)
+            if registro:
+                # Así el aviso aparece en la conversación donde el cliente escribe.
+                registro.telefono = telefono[:20]
+                await db.commit()
+
     async def _reclamar_registro(self, mensaje_id: int):
         from sqlalchemy import select
         from src.infrastructure.database import SessionLocal
@@ -434,6 +507,7 @@ class WhatsAppQueue:
             await db.commit()
             return {
                 "numero": registro.telefono,
+                "cliente_id": registro.cliente_id,
                 "mensaje": registro.mensaje,
                 "ruta": registro.ruta_archivo,
                 "intervalo": (

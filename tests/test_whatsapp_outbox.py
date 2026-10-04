@@ -199,3 +199,76 @@ def test_worker_puede_procesar_tarea_recuperada_solo_con_id(monkeypatch):
         mensaje_chat_id=44,
     )
     cola._actualizar_registro.assert_awaited_once()
+
+
+# ------------------------------------------ número sin WhatsApp ("No LID")
+SIN_WHATSAPP = {
+    "ok": False, "wa_id": None, "error": "Ese número no tiene WhatsApp", "reintentable": False,
+    "incierto": False, "sin_whatsapp": True,
+}
+ENVIADO = {"ok": True, "wa_id": "wa-lid", "error": None, "reintentable": False, "incierto": False}
+
+
+def _procesar(monkeypatch, respuestas, chat_verificado="199347383861472@lid", cliente_id=171):
+    cola = WhatsAppQueue()
+    cola._reclamar_registro = AsyncMock(return_value={
+        "numero": "5219611172026", "cliente_id": cliente_id, "mensaje": "¡Pago Confirmado!", "ruta": None,
+    })
+    cola.service.enviar_mensaje_detallado = AsyncMock(side_effect=respuestas)
+    cola._chat_verificado_del_cliente = AsyncMock(return_value=chat_verificado)
+    cola._cambiar_destino = AsyncMock()
+    cola._actualizar_registro = AsyncMock(return_value=True)
+    monkeypatch.setattr("src.infrastructure.whatsapp_client.asyncio.sleep", AsyncMock())
+
+    async def ejecutar():
+        await cola.queue.put({"mensaje_chat_id": 12993, "intervalo": 1})
+        await cola.procesar_cola()
+
+    asyncio.run(ejecutar())
+    return cola
+
+
+def test_si_el_numero_no_tiene_whatsapp_se_envia_al_chat_verificado(monkeypatch):
+    cola = _procesar(monkeypatch, [SIN_WHATSAPP, ENVIADO])
+    llamadas = cola.service.enviar_mensaje_detallado.await_args_list
+    assert [c.kwargs["telefono"] for c in llamadas] == ["5219611172026", "199347383861472@lid"]
+    cola._cambiar_destino.assert_awaited_once_with(12993, "199347383861472@lid")
+    assert cola._actualizar_registro.await_args.args[1]["ok"] is True
+
+
+def test_sin_chat_verificado_queda_fallido_y_no_incierto(monkeypatch):
+    cola = _procesar(monkeypatch, [SIN_WHATSAPP], chat_verificado=None)
+    resultado = cola._actualizar_registro.await_args.args[1]
+    assert resultado["ok"] is False and resultado["incierto"] is False
+    cola._cambiar_destino.assert_not_awaited()
+
+
+def test_otros_errores_no_cambian_de_chat(monkeypatch):
+    error = {"ok": False, "wa_id": None, "error": "HTTP 500", "reintentable": False, "incierto": True}
+    cola = _procesar(monkeypatch, [error])
+    assert cola.service.enviar_mensaje_detallado.await_count == 1
+    cola._chat_verificado_del_cliente.assert_not_awaited()
+
+
+def test_el_puente_con_no_lid_se_marca_sin_whatsapp(monkeypatch):
+    class _Respuesta:
+        status_code = 500
+        text = '{"error":"No LID for user"}'
+
+        def json(self):
+            return {"error": "No LID for user"}
+
+    class _Cliente:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return None
+
+        async def post(self, *_a, **_k):
+            return _Respuesta()
+
+    monkeypatch.setattr("src.infrastructure.whatsapp_client.httpx.AsyncClient", lambda **_k: _Cliente())
+    resultado = asyncio.run(WhatsAppService().enviar_mensaje_detallado("9611172026", "Hola"))
+    assert resultado["sin_whatsapp"] is True
+    assert resultado["incierto"] is False and resultado["ok"] is False
