@@ -801,6 +801,14 @@ class ClienteCreate(ClienteBase):
     def validar_mac_address(cls, value):
         return normalizar_mac(value)
 
+class ClienteUpdate(ClienteBase):
+    """Edición de la ficha: la MAC se valida en el servicio, solo si cambió.
+
+    Muchas fichas traen en la MAC el serial de la ONU (datos anteriores); el
+    formulario la manda sin cambios y no debe impedir guardar lo demás.
+    """
+
+
 class ClienteResponse(ClienteBase):
     model_config = ConfigDict(from_attributes=True)
 

@@ -43,6 +43,7 @@ from src.infrastructure import RefPPP
 # Schemas Globales
 from src.domain.schemas import (
     ClienteCreate, 
+    ClienteUpdate,
     ClienteResponse, 
     ClienteFullResponse
 )
@@ -454,7 +455,7 @@ async def completar_instalacion(
 @router.put("/{cliente_id}", response_model=ClienteResponse)
 async def editar_cliente(
     cliente_id: int, 
-    datos: ClienteCreate, 
+    datos: ClienteUpdate, 
     db: AsyncSession = Depends(get_db),
     current_user = Depends(role_required(["admin", "supervisor"]))
 ):

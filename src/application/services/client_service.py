@@ -35,7 +35,7 @@ from src.infrastructure.models import (
     OrdenServicioModel,
     PuertoNapModel,
 )
-from src.domain.schemas import ClienteCreate, InstalacionRequest
+from src.domain.schemas import ClienteCreate, ClienteUpdate, InstalacionRequest
 from src.infrastructure.repositories import ClienteRepository
 
 # Servicios Externos
@@ -59,6 +59,23 @@ from src.utils.mikrotik import (
     formatear_rate_limit_dhcp,
     normalizar_mac,
 )
+
+def mac_editada(nueva, actual):
+    """(cambia, valor) para la MAC al editar la ficha.
+
+    Si no cambió se deja como está (aunque sea un serial de ONU de datos
+    anteriores); si cambió debe ser una MAC válida.
+    """
+    nueva = (nueva or "").strip()
+    if nueva == (actual or "").strip():
+        return False, None
+    if not nueva:
+        return True, None
+    try:
+        return True, normalizar_mac(nueva)
+    except ValueError as exc:
+        raise ValueError(f"MAC WAN/CPE: {exc}") from exc
+
 
 class ClientService:
     def __init__(self, db: AsyncSession):
@@ -946,7 +963,7 @@ class ClientService:
     # ==========================================
     # 3. EDITAR CLIENTE (GENERAL)
     # ==========================================
-    async def editar_cliente(self, cliente_id: int, datos: ClienteCreate):
+    async def editar_cliente(self, cliente_id: int, datos: ClienteUpdate):
         from sqlalchemy import select, update
         # 1. Buscar el cliente en la base de datos
         stmt = select(ClienteModel).where(ClienteModel.id == cliente_id)
@@ -957,6 +974,15 @@ class ClientService:
     
         # 2. Convertir esquema Pydantic a diccionario
         update_data = datos.model_dump(exclude_unset=True)
+
+        # La MAC solo se valida si cambió: muchas fichas traen el serial de la
+        # ONU en ese campo y el formulario lo reenvía tal cual al guardar.
+        if "mac_address" in update_data:
+            cambia, valor = mac_editada(update_data["mac_address"], cliente_db.mac_address)
+            if cambia:
+                update_data["mac_address"] = valor
+            else:
+                update_data.pop("mac_address")
     
         # 3. LIMPIEZA DE LLAVES FORÁNEAS
         campos_fk = [
