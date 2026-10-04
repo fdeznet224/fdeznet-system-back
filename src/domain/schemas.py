@@ -800,6 +800,9 @@ class ClienteBase(BaseModel):
     estado: str = "pendiente_instalacion"
 
 class ClienteCreate(ClienteBase):
+    # Contrato apartado por quien da de alta (el que se escribió en el conector).
+    contrato_apartado: Optional[str] = Field(default=None, max_length=20)
+
     @field_validator("mac_address")
     @classmethod
     def validar_mac_address(cls, value):

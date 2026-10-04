@@ -50,6 +50,7 @@ from src.application.services.notification_service import NotificationService
 from src.application.services.ftth_service import FTTHService
 from src.application.services.finance_service import FinanceService
 from src.application.services.ipam_service import IPAMService
+from src.application.services.contrato_service import ContratoService, generar_codigo_contrato
 from src.application.services.access_control_service import (
     verificar_instalacion_asignada,
 )
@@ -359,6 +360,7 @@ class ClientService:
         # 🔥 AQUÍ ESTÁ EL ESCUDO: Quitamos la basura virtual antes de guardar 🔥
         datos_dict.pop("identificador_onu", None)
         datos_dict.pop("mac_address", None)
+        contrato_apartado = (datos_dict.pop("contrato_apartado", None) or "").strip().upper()
 
         # 🚀 Ahora sí, la base de datos lo aceptará sin quejarse
         nuevo_cliente = ClienteModel(**datos_dict)
@@ -388,16 +390,17 @@ class ClientService:
                         motivo="Reservada para instalación pendiente",
                     )
             
-            # E. LÓGICA: HEXADECIMAL ALEATORIO
-            caracteres_hex = "0123456789ABCDEF"
-            while True:
-                codigo_hex = ''.join(random.choices(caracteres_hex, k=4))
-                stmt_check = select(ClienteModel).where(ClienteModel.cedula == codigo_hex)
-                existe = await self.db.execute(stmt_check)
-                if not existe.scalar_one_or_none():
-                    break
-            
-            nuevo_cliente.cedula = codigo_hex
+            # E. Número de contrato: el apartado de quien da de alta (el que
+            # el técnico escribió en el conector) o uno nuevo, único también
+            # entre los apartados.
+            if contrato_apartado:
+                if not usuario_operador:
+                    raise ValueError("Para usar un contrato apartado se necesita un usuario")
+                nuevo_cliente.cedula = await ContratoService(self.db).usar(
+                    usuario_operador, contrato_apartado, nuevo_cliente.id
+                )
+            else:
+                nuevo_cliente.cedula = await generar_codigo_contrato(self.db)
 
             # Creamos el contrato/servicio pendiente del abonado.
             servicio_principal = await self._obtener_o_crear_servicio(

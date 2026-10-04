@@ -1542,6 +1542,26 @@ class PromesaPagoHistorialModel(Base):
 # ==========================================
 # 4. SISTEMA Y CONFIGURACIÓN
 # ==========================================
+class ContratoReservadoModel(Base):
+    """Número de contrato apartado para un técnico antes de instalar.
+
+    El técnico lo ve en su celular (incluso sin internet), lo escribe en el
+    conector de la caja NAP y al dar de alta al cliente se usa ese número.
+    El código es único entre todos los apartados y no se reutiliza.
+    """
+
+    __tablename__ = "contratos_reservados"
+
+    id = Column(Integer, primary_key=True)
+    codigo = Column(String(20), nullable=False, unique=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False)
+    reservado_en = Column(DateTime, nullable=False, default=datetime.now)
+    usado_en = Column(DateTime, nullable=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id", ondelete="SET NULL"), nullable=True)
+    # Se libera si no se usa a tiempo o si el técnico lo descarta.
+    liberado_en = Column(DateTime, nullable=True)
+
+
 class UsuarioModel(Base):
     __tablename__ = "usuarios"
     id = Column(Integer, primary_key=True, index=True)

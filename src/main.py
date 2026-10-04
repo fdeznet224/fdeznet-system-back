@@ -47,6 +47,7 @@ from src.interfaces.api import (
     bajas,
     clients,
     configuracion,
+    contratos,
     control_plane,
     dashboard,
     finanzas,
@@ -326,6 +327,7 @@ app.include_router(olts.router, dependencies=licensed)
 app.include_router(inventario.router, dependencies=licensed)
 app.include_router(auditoria.router, dependencies=licensed_audit)
 app.include_router(ordenes.router, dependencies=licensed)
+app.include_router(contratos.router, dependencies=licensed)
 app.include_router(ftth.router, dependencies=licensed)
 app.include_router(support.router, dependencies=licensed)
 app.include_router(sync.router, dependencies=licensed)
