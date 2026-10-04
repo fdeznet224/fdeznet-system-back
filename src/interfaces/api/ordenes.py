@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.application.services.activacion_service import ActivacionService, ActivacionTecnicoRequest
 from src.application.services.client_service import ClientService
 from src.application.services.orden_service import OrdenService
 from src.domain.schemas import InstalacionRequest
@@ -64,6 +65,8 @@ class OrdenCrear(BaseModel):
     prospecto_nombre: Optional[str] = Field(default=None, max_length=150)
     prospecto_telefono: Optional[str] = Field(default=None, max_length=20)
     prospecto_direccion: Optional[str] = Field(default=None, max_length=255)
+    zona_id: Optional[int] = Field(default=None, gt=0)
+    plan_id: Optional[int] = Field(default=None, gt=0)
     tecnico_id: Optional[int] = None
     prioridad: str = Field(
         default="normal",
@@ -157,6 +160,8 @@ def serializar_orden(orden):
         "prospecto_nombre": orden.prospecto_nombre,
         "prospecto_telefono": orden.prospecto_telefono,
         "prospecto_direccion": orden.prospecto_direccion,
+        "zona_id": orden.zona_id,
+        "plan_id": orden.plan_id,
         "tecnico": _usuario_resumen(orden.tecnico),
         "creado_por": _usuario_resumen(orden.creado_por),
         "prioridad": orden.prioridad,
@@ -275,9 +280,14 @@ async def listar_ordenes(
 async def crear_orden(
     datos: OrdenCrear,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(role_required(["admin", "supervisor"])),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
 ):
     try:
+        if current_user.rol == "tecnico":
+            # El técnico solo levanta solicitudes de instalación y le quedan a él.
+            if datos.tipo != "instalacion" or datos.cliente_id:
+                raise PermissionError("El técnico solo puede registrar solicitudes de instalación")
+            datos.tecnico_id = current_user.id
         orden = await OrdenService(db).crear(datos, current_user)
         return serializar_orden(orden)
     except (ValueError, PermissionError, RuntimeError) as error:
@@ -510,4 +520,33 @@ async def completar_instalacion_guiada(
         )
         return serializar_orden(orden)
     except (ValueError, PermissionError, RuntimeError) as error:
+        manejar_error(error)
+
+
+@router.get("/{orden_id}/activacion")
+async def catalogo_activacion(
+    orden_id: int,
+    zona_id: Optional[int] = Query(default=None, gt=0),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Todo lo que el técnico necesita para activar la solicitud, según la zona."""
+    try:
+        return await ActivacionService(db).catalogo(orden_id, current_user, zona_id)
+    except (ValueError, PermissionError, RuntimeError) as error:
+        manejar_error(error)
+
+
+@router.post("/{orden_id}/activar")
+async def activar_solicitud(
+    orden_id: int,
+    datos: ActivacionTecnicoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["tecnico"])),
+):
+    """Solo el técnico da de alta: crea el cliente desde la solicitud, lo activa y cierra la orden."""
+    try:
+        return await ActivacionService(db).activar(orden_id, datos, current_user)
+    except (ValueError, PermissionError, RuntimeError) as error:
+        await db.rollback()
         manejar_error(error)

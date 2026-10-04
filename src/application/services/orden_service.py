@@ -101,6 +101,8 @@ class OrdenService:
             prospecto_nombre=datos.prospecto_nombre,
             prospecto_telefono=datos.prospecto_telefono,
             prospecto_direccion=datos.prospecto_direccion,
+            zona_id=getattr(datos, "zona_id", None),
+            plan_id=getattr(datos, "plan_id", None),
             tecnico_id=tecnico.id if tecnico else None,
             creado_por_id=usuario.id,
             prioridad=prioridad,

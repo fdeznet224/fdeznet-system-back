@@ -421,6 +421,9 @@ class OrdenServicioModel(Base):
     prospecto_nombre = Column(String(150), nullable=True)
     prospecto_telefono = Column(String(20), nullable=True)
     prospecto_direccion = Column(String(255), nullable=True)
+    # Lo que pidió el prospecto: la zona da MikroTik, OLT y plantilla.
+    zona_id = Column(Integer, ForeignKey("zonas.id", ondelete="SET NULL"), nullable=True)
+    plan_id = Column(Integer, ForeignKey("planes.id", ondelete="SET NULL"), nullable=True)
     tecnico_id = Column(
         Integer,
         ForeignKey("usuarios.id", ondelete="SET NULL"),

@@ -159,8 +159,12 @@ class ClientService:
         datos: ClienteCreate,
         background_tasks: BackgroundTasks,
         usuario_operador=None,
+        orden_solicitud_id: int | None = None,
     ):
         """
+        Con orden_solicitud_id el cliente nace de esa solicitud de instalación
+        (prospecto) y no se crea otra orden.
+
         Crea la orden en BD, cambia el estado del equipo en Inventario a 'INSTALADO'
         y genera un ID Hexadecimal Aleatorio.
         """
@@ -406,6 +410,29 @@ class ClientService:
             servicio_principal = await self._obtener_o_crear_servicio(
                 nuevo_cliente
             )
+            if orden_solicitud_id is not None:
+                solicitud = await self.db.get(OrdenServicioModel, orden_solicitud_id)
+                if (
+                    not solicitud
+                    or solicitud.tipo != "instalacion"
+                    or solicitud.cliente_id is not None
+                    or solicitud.estado in {"terminada", "cancelada"}
+                ):
+                    raise ValueError("La solicitud de instalación ya no está abierta")
+                solicitud.cliente_id = nuevo_cliente.id
+                solicitud.servicio_id = servicio_principal.id
+                self.db.add(
+                    HistorialEstadoOrdenModel(
+                        orden_id=solicitud.id,
+                        usuario_id=usuario_operador.id if usuario_operador else None,
+                        estado_anterior=solicitud.estado,
+                        estado_nuevo=solicitud.estado,
+                        comentario=f"Solicitud convertida en el cliente con contrato {nuevo_cliente.cedula}",
+                    )
+                )
+                await self.db.commit()
+                return await self._recargar_cliente(nuevo_cliente.id)
+
             # La instalación deja de representarse únicamente como cliente.
             estado_orden = (
                 "asignada" if nuevo_cliente.tecnico_id else "pendiente"
