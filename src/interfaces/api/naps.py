@@ -17,6 +17,19 @@ class PuertoNapOcupadoResponse(BaseModel):
     puerto_nap: int
     cedula: Optional[str] = None
 
+class NapSugeridaResponse(BaseModel):
+    id: int
+    nombre: str
+    ubicacion: Optional[str] = None
+    zona_id: Optional[int] = None
+    zona_nombre: Optional[str] = None
+    olt_id: Optional[int] = None
+    olt_nombre: Optional[str] = None
+    capacidad: Optional[int] = None
+    puertos_libres: int
+    distancia_m: int
+    posicion_estimada: bool
+
 # ==========================================
 # CATÁLOGO DE NAPs
 # ==========================================
@@ -36,6 +49,28 @@ async def listar_cajas_nap(
         zona_id=zona_id,
         router_id=router_id,
         olt_id=olt_id,
+    )
+
+
+@router.get("/naps/cercanas", response_model=List[NapSugeridaResponse])
+async def sugerir_cajas_nap(
+    latitud: float = Query(ge=-90, le=90),
+    longitud: float = Query(ge=-180, le=180),
+    zona_id: Optional[int] = Query(default=None, ge=1),
+    olt_id: Optional[int] = Query(default=None, ge=1),
+    limite: int = Query(default=3, ge=1, le=10),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(
+        role_required(["admin", "supervisor", "tecnico"])
+    ),
+):
+    """Cajas NAP más cercanas al domicilio, para sugerir cuál usar."""
+    return await NapService(db).sugerir_naps(
+        latitud=latitud,
+        longitud=longitud,
+        zona_id=zona_id,
+        olt_id=olt_id,
+        limite=limite,
     )
 
 

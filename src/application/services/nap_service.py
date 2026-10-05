@@ -1,7 +1,11 @@
+import math
+import re
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, func, select
 from src.infrastructure.models import (
     CajaNapModel,
+    ClienteModel,
     OLTModel,
     PuertoNapModel,
     ServicioModel,
@@ -10,6 +14,51 @@ from src.infrastructure.models import (
 from src.domain.schemas import CajaNapCreate
 from sqlalchemy.orm import joinedload, selectinload
 from src.application.services.ftth_service import FTTHService
+
+RE_COORDENADAS = re.compile(r"(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)")
+RADIO_TIERRA_M = 6_371_000
+
+
+def parsear_coordenadas(texto):
+    """'16.7521, -93.1154' (o un enlace de Maps que las traiga) → (lat, lng)."""
+    if not texto:
+        return None
+    encontrado = RE_COORDENADAS.search(str(texto))
+    if not encontrado:
+        return None
+    lat, lng = float(encontrado.group(1)), float(encontrado.group(2))
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180) or (lat == 0 and lng == 0):
+        return None
+    return lat, lng
+
+
+def distancia_metros(a, b):
+    """Distancia en línea recta (haversine) entre dos puntos (lat, lng)."""
+    lat1, lng1 = map(math.radians, a)
+    lat2, lng2 = map(math.radians, b)
+    h = (
+        math.sin((lat2 - lat1) / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin((lng2 - lng1) / 2) ** 2
+    )
+    return 2 * RADIO_TIERRA_M * math.asin(math.sqrt(h))
+
+
+def ordenar_por_cercania(origen, candidatas):
+    """Ordena NAPs por distancia al domicilio.
+
+    Cada candidata trae "posicion" (lat, lng) y "puertos_libres"; las que no
+    tienen puertos libres van al final aunque estén más cerca, porque no
+    sirven para conectar a nadie.
+    """
+    resultado = []
+    for caja in candidatas:
+        if not caja.get("posicion"):
+            continue
+        distancia = distancia_metros(origen, caja["posicion"])
+        resultado.append({**caja, "distancia_m": round(distancia)})
+    resultado.sort(key=lambda c: (c["puertos_libres"] <= 0, c["distancia_m"]))
+    return resultado
+
 
 class NapService:
     def __init__(self, db: AsyncSession):
@@ -91,6 +140,122 @@ class NapService:
 
         await self.db.commit()
         return respuesta
+
+    async def sugerir_naps(
+        self,
+        latitud: float,
+        longitud: float,
+        zona_id: int | None = None,
+        olt_id: int | None = None,
+        limite: int = 3,
+    ):
+        """Cajas NAP más cercanas a un domicilio.
+
+        Usa las coordenadas registradas de la caja; si no tiene, estima su
+        posición con el promedio de los domicilios ya conectados a ella.
+        """
+        stmt = select(CajaNapModel).options(
+            selectinload(CajaNapModel.zona),
+            selectinload(CajaNapModel.olt),
+        )
+        if zona_id is not None:
+            stmt = stmt.where(CajaNapModel.zona_id == zona_id)
+        if olt_id is not None:
+            stmt = stmt.where(CajaNapModel.olt_id == olt_id)
+        cajas = (await self.db.execute(stmt)).scalars().all()
+        if not cajas:
+            return []
+
+        sin_coordenadas = [
+            c.id for c in cajas if not parsear_coordenadas(c.coordenadas)
+        ]
+        estimadas = {}
+        if sin_coordenadas:
+            for modelo, condicion in (
+                (ServicioModel, ServicioModel.estado != "cancelado"),
+                (ClienteModel, True),
+            ):
+                filas = await self.db.execute(
+                    select(
+                        modelo.caja_nap_id,
+                        func.avg(modelo.latitud),
+                        func.avg(modelo.longitud),
+                    )
+                    .where(
+                        modelo.caja_nap_id.in_(sin_coordenadas),
+                        modelo.latitud.isnot(None),
+                        modelo.longitud.isnot(None),
+                        modelo.latitud != 0,
+                        condicion,
+                    )
+                    .group_by(modelo.caja_nap_id)
+                )
+                for caja_id, lat, lng in filas.all():
+                    if lat is not None and lng is not None:
+                        estimadas.setdefault(caja_id, (float(lat), float(lng)))
+
+        candidatas = []
+        for caja in cajas:
+            registrada = parsear_coordenadas(caja.coordenadas)
+            posicion = registrada or estimadas.get(caja.id)
+            if not posicion:
+                continue
+            # Mismo criterio que la sincronización de puertos: servicios
+            # vigentes y clientes antiguos ocupan; dañados y reservados
+            # tampoco se pueden usar.
+            usados = set(
+                (
+                    await self.db.execute(
+                        select(ServicioModel.puerto_nap).where(
+                            ServicioModel.caja_nap_id == caja.id,
+                            ServicioModel.puerto_nap.isnot(None),
+                            ServicioModel.estado != "cancelado",
+                        )
+                    )
+                ).scalars()
+            )
+            usados |= set(
+                (
+                    await self.db.execute(
+                        select(ClienteModel.puerto_nap).where(
+                            ClienteModel.caja_nap_id == caja.id,
+                            ClienteModel.puerto_nap.isnot(None),
+                        )
+                    )
+                ).scalars()
+            )
+            usados |= set(
+                (
+                    await self.db.execute(
+                        select(PuertoNapModel.numero).where(
+                            PuertoNapModel.caja_nap_id == caja.id,
+                            PuertoNapModel.estado.in_(("danado", "reservado")),
+                        )
+                    )
+                ).scalars()
+            )
+            capacidad = caja.capacidad or 0
+            libres = capacidad - len({p for p in usados if 1 <= p <= capacidad})
+            candidatas.append(
+                {
+                    "id": caja.id,
+                    "nombre": caja.nombre,
+                    "ubicacion": caja.ubicacion,
+                    "zona_id": caja.zona_id,
+                    "zona_nombre": caja.zona.nombre if caja.zona else None,
+                    "olt_id": caja.olt_id,
+                    "olt_nombre": caja.olt.nombre if caja.olt else None,
+                    "capacidad": caja.capacidad,
+                    "puertos_libres": max(libres, 0),
+                    "posicion": posicion,
+                    "posicion_estimada": registrada is None,
+                }
+            )
+
+        ordenadas = ordenar_por_cercania((latitud, longitud), candidatas)[:limite]
+        for caja in ordenadas:
+            caja.pop("posicion")
+        return ordenadas
 
     async def crear_nap(self, datos: CajaNapCreate):
         """Registra una nueva caja en la base de datos."""
