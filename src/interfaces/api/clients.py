@@ -94,6 +94,9 @@ class ClientePortalResponse(BaseModel):
     velocidad_subida: int    
     precio_plan: Decimal
     
+    # Para abrir la ruta en el mapa.
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
     # Financiero: el técnico solo lo ve de sus clientes.
     estado_cuenta_visible: bool = True
     total_deuda: Optional[Decimal] = None
@@ -229,6 +232,8 @@ async def obtener_datos_portal(
         "velocidad_bajada": cliente.plan.velocidad_bajada if cliente.plan else 0,
         "velocidad_subida": cliente.plan.velocidad_subida if cliente.plan else 0,
         "precio_plan": cliente.plan.precio if cliente.plan else 0.0,
+        "latitud": cliente.latitud,
+        "longitud": cliente.longitud,
         "estado_cuenta_visible": cuenta_visible,
         "total_deuda": total_deuda if cuenta_visible else None,
         "facturas_pendientes": vencidas_count if cuenta_visible else None,

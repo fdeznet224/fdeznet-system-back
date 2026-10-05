@@ -147,6 +147,8 @@ def serializar_orden(orden):
                 "alias": orden.servicio.alias,
                 "direccion": orden.servicio.direccion,
                 "estado": orden.servicio.estado,
+                "latitud": orden.servicio.latitud,
+                "longitud": orden.servicio.longitud,
             }
             if orden.servicio
             else None
@@ -160,6 +162,8 @@ def serializar_orden(orden):
                 "telefono": orden.cliente.telefono,
                 "direccion": orden.cliente.direccion,
                 "estado": orden.cliente.estado,
+                "latitud": orden.cliente.latitud,
+                "longitud": orden.cliente.longitud,
             }
             if orden.cliente
             else None

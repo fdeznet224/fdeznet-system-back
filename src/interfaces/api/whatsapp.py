@@ -68,9 +68,6 @@ from src.application.services.comprobante_service import (
     personalizar_datos_pago,
 )
 from src.application.services.finance_service import FinanceService
-from src.application.services.access_control_service import (
-    verificar_acceso_cliente,
-)
 from src.application.services.whatsapp_outbox_service import (
     ESTADOS_SALIDA,
     WhatsAppOutboxService,
@@ -1120,10 +1117,7 @@ async def ver_archivo_chat(
     current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
 ):
     """Entrega adjuntos del chat sin publicar el directorio de WhatsApp."""
-    try:
-        await verificar_acceso_cliente(db, current_user, cliente_id)
-    except PermissionError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
+    # Cualquier técnico puede escribirle a un cliente para coordinar la visita.
     nombre_seguro = Path(nombre).name
     if nombre_seguro != nombre or not nombre_seguro:
         raise HTTPException(status_code=404, detail="Archivo no disponible")
@@ -2752,10 +2746,7 @@ async def obtener_historial_chat(
         role_required(["admin", "supervisor", "tecnico"])
     ),
 ):
-    try:
-        await verificar_acceso_cliente(db, current_user, cliente_id)
-    except PermissionError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
+    # Cualquier técnico puede escribirle a un cliente para coordinar la visita.
     stmt = select(MensajeChatModel).where(MensajeChatModel.cliente_id == cliente_id).order_by(MensajeChatModel.fecha.asc())
     mensajes = (await db.execute(stmt)).scalars().all()
 
@@ -2774,10 +2765,7 @@ async def enviar_mensaje_chat(
         role_required(["admin", "supervisor", "tecnico"])
     ),
 ):
-    try:
-        await verificar_acceso_cliente(db, current_user, cliente_id)
-    except PermissionError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
+    # Cualquier técnico puede escribirle a un cliente para coordinar la visita.
     cliente = await db.get(ClienteModel, cliente_id)
     if not cliente or not cliente.telefono: raise HTTPException(status_code=404, detail="Cliente no encontrado")
     return await encolar_mensaje_manual(db, telefono_whatsapp(cliente.telefono), cliente.id, data.mensaje, current_user)
