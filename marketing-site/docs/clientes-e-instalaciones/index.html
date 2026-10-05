@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/assets/site.css?v=20261005">
+  <link rel="stylesheet" href="/assets/site.css?v=20261006">
   <title>Clientes e instalaciones | FdezPay</title>
 </head>
 <body>
@@ -30,7 +30,7 @@
         <p class="eyebrow">Guía 03 de 08</p>
         <h1>De la solicitud al servicio activo</h1>
         <p>Un cliente nuevo pasa por una solicitud, una visita del técnico y la activación. Al activar, el sistema crea el PPPoE en el MikroTik, ocupa el puerto de la caja NAP, liga la ONU y genera su primer cobro.</p>
-        <div class="guide-meta"><span>Solicitud → visita → activación</span><span>Contratos apartados</span><span>Varios domicilios por cliente</span></div>
+        <div class="guide-meta"><span>Solicitud → visita → activación</span><span>Contratos apartados</span><span>Varios domicilios por cliente</span><span>4 capturas</span></div>
       </div>
     </section>
 
@@ -58,6 +58,7 @@
 <h2>Registra la solicitud de instalación</h2>
 <p>Las solicitudes llegan por tres caminos y todas terminan en <strong>Operaciones → Órdenes / Instalaciones</strong>, pestaña <strong>Instalaciones</strong>:</p>
 <div class="doc-grid"><div class="doc-card"><h3>Desde la oficina</h3><p>Pulsa <strong>Nueva Orden</strong> y captura nombre, teléfono/WhatsApp, zona, plan que pidió y dirección con referencias.</p></div><div class="doc-card"><h3>Desde WhatsApp</h3><p>Si usas el agente de IA, la persona elige plan, comparte su ubicación y la solicitud aparece sola con el origen <strong>Agente IA</strong>.</p></div><div class="doc-card"><h3>Desde una caja NAP</h3><p>En <strong>Cajas NAP</strong>, el botón <strong>Crear orden aquí</strong> registra la instalación en esa caja.</p></div></div>
+<div class="figure-grid"><figure class="doc-figure"><a href="/assets/docs/clientes-e-instalaciones/01-instalaciones.webp" target="_blank" rel="noopener"><img src="/assets/docs/clientes-e-instalaciones/01-instalaciones.webp" alt="Lista de instalaciones" loading="lazy"></a><figcaption>Instalaciones con su técnico, visita y estado.</figcaption></figure><figure class="doc-figure"><a href="/assets/docs/clientes-e-instalaciones/02-nueva-solicitud.webp" target="_blank" rel="noopener"><img src="/assets/docs/clientes-e-instalaciones/02-nueva-solicitud.webp" alt="Formulario de nueva solicitud" loading="lazy"></a><figcaption><strong>Nueva solicitud</strong> desde la oficina.</figcaption></figure></div>
 <div class="doc-callout">Cuando la persona comparte su ubicación por WhatsApp, la solicitud guarda las coordenadas y el técnico tendrá el botón <strong>Cómo llegar</strong> directo a Google Maps.</div>
         </section>
 
@@ -72,6 +73,7 @@
 <p class="kicker">Paso 3</p>
 <h2>Usa contratos apartados</h2>
 <p>Cada técnico recibe una lista de <strong>números de contrato apartados</strong>. Los escribe con marcador en el conector de la caja NAP al instalar y el mismo número queda como contrato del cliente.</p>
+<figure class="doc-figure doc-figure-medium"><a href="/assets/docs/clientes-e-instalaciones/03-contratos-apartados.webp" target="_blank" rel="noopener"><img src="/assets/docs/clientes-e-instalaciones/03-contratos-apartados.webp" alt="Contratos apartados del técnico" loading="lazy"></a><figcaption>El siguiente contrato y los que siguen, en la app del técnico.</figcaption></figure>
 <ul class="check-list"><li>El técnico ve en su inicio el <strong>siguiente contrato</strong> que le toca.</li><li>La lista se guarda en el celular: funciona aunque no haya señal en la comunidad.</li><li>Si un número se dañó o no se usará, se puede <strong>descartar</strong>.</li><li>También puede pedir que el sistema genere uno nuevo o escribir otro contrato apartado.</li></ul>
 <div class="doc-callout">El número de contrato es también la llave del cliente en WhatsApp: con él consulta su saldo y reporta pagos. Por eso conviene que esté escrito en el conector y en el nombre de su red WiFi.</div>
         </section>
@@ -82,6 +84,7 @@
 <p>La activación normalmente la hace el técnico desde su celular al terminar la instalación (detalle en la guía 04). Captura:</p>
 <div class="table-wrap doc-table"><table><thead><tr><th>Dato</th><th>Detalle</th></tr></thead><tbody><tr><th>Titular, zona y plan</th><td>Vienen de la solicitud; se pueden corregir.</td></tr><tr><th>Cobro</th><td>La plantilla de facturación (día de pago) que le corresponde.</td></tr><tr><th>Contrato</th><td>El siguiente apartado, uno generado por el sistema u otro apartado.</td></tr><tr><th>ONU instalada</th><td>Se busca por serial o MAC o se escanea su código.</td></tr><tr><th>MAC WAN/CPE</th><td>Solo si tu red la usa; no es el serial GPON.</td></tr><tr><th>Caja NAP y puerto</th><td>Dónde quedó conectado.</td></tr><tr><th>Potencia medida</th><td>Opcional, en dBm.</td></tr></tbody></table></div>
 <p>Al confirmar, el sistema:</p>
+<div class="figure-grid figure-grid-phones"><figure class="doc-figure doc-figure-phone"><a href="/assets/docs/clientes-e-instalaciones/04-servicio-activo.webp" target="_blank" rel="noopener"><img src="/assets/docs/clientes-e-instalaciones/04-servicio-activo.webp" alt="Pantalla de servicio activo" loading="lazy"></a><figcaption>Resultado de la activación: datos PPPoE y señal de la ONU.</figcaption></figure></div>
 <ul class="check-list"><li>Crea el usuario PPPoE en el MikroTik con la velocidad del plan.</li><li>Marca la ONU como instalada y el puerto NAP como ocupado.</li><li>Cierra la orden de instalación.</li><li>Calcula el <strong>primer cobro prorrateado</strong>: desde el día de activación hasta el fin del periodo. No se regala un mes, salvo que elijas meses gratis.</li></ul>
 <div class="doc-callout">Si el técnico corrigió nombre, plan o zona, el cambio queda anotado para que el administrador lo revise.</div>
         </section>

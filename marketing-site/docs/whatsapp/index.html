@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/assets/site.css?v=20261005">
+  <link rel="stylesheet" href="/assets/site.css?v=20261006">
   <title>WhatsApp | FdezPay</title>
 </head>
 <body>
@@ -30,7 +30,7 @@
         <p class="eyebrow">Guía 06 de 08</p>
         <h1>Atiende a tus clientes con agente de IA o bot</h1>
         <p>El número de WhatsApp de tu empresa queda conectado al sistema. Desde ahí se envían avisos y recibos, y un agente de IA o un bot de menú atiende a tus clientes las 24 horas.</p>
-        <div class="guide-meta"><span>Tu propio número</span><span>Agente de IA o menú</span><span>Comprobantes automáticos</span></div>
+        <div class="guide-meta"><span>Tu propio número</span><span>Agente de IA o menú</span><span>Comprobantes automáticos</span><span>4 capturas</span></div>
       </div>
     </section>
 
@@ -58,6 +58,7 @@
 <h2>Elige quién contesta a los clientes</h2>
 <p>En <strong>Configuración → Bot de WhatsApp</strong> eliges una de tres formas:</p>
 <div class="table-wrap doc-table"><table><thead><tr><th>Modo</th><th>Cómo funciona</th></tr></thead><tbody><tr><th>Agente de IA</th><td>Contesta solo, las 24 horas, consultando el sistema: cuenta, conexión, promesas y comprobantes.</td></tr><tr><th>Agente de IA con aprobación</th><td>El agente redacta la respuesta y un asesor la aprueba antes de enviarla. Recomendado para empezar.</td></tr><tr><th>Bot de flujo (menú)</th><td>Contesta con el menú de opciones que armas en el editor visual.</td></tr></tbody></table></div>
+<figure class="doc-figure"><a href="/assets/docs/whatsapp/01-quien-contesta.webp" target="_blank" rel="noopener"><img src="/assets/docs/whatsapp/01-quien-contesta.webp" alt="Pantalla Bot de WhatsApp" loading="lazy"></a><figcaption>Elige quién contesta y edita el conocimiento del agente.</figcaption></figure>
 <p>El agente necesita una clave de IA: cárgala en <strong>Configuración → Integraciones y claves</strong> (clave, modelo y servidor compatible) y pulsa <strong>Probar conexión</strong>.</p>
         </section>
 
@@ -83,8 +84,10 @@
 <p>En <strong>Configuración → Integraciones y claves → Correo bancario</strong> eliges <strong>cómo se confirman los pagos</strong>:</p>
 <div class="table-wrap doc-table"><table><thead><tr><th>Opción</th><th>Cómo funciona</th></tr></thead><tbody><tr><th>Solo con la captura</th><td>Se aplica al momento con los datos de la captura (folio, o monto, fecha y hora). Cada transferencia genera un código único: si alguien reenvía la misma captura, rebota. El correo del banco queda solo como auditoría.</td></tr><tr><th>Con el correo del banco</th><td>Se aplica cuando llega a Gmail el aviso del banco con el mismo folio, o el mismo monto y hora. Más seguro, pero depende de que el correo llegue.</td></tr></tbody></table></div>
 <p>Para el correo del banco capturas la cuenta de Gmail, una <strong>contraseña de aplicación</strong> de Google, el remitente exacto del banco, las terminaciones de tus cuentas receptoras, la ventana de búsqueda y la tolerancia de monto.</p>
+<figure class="doc-figure"><a href="/assets/docs/whatsapp/02-integraciones.webp" target="_blank" rel="noopener"><img src="/assets/docs/whatsapp/02-integraciones.webp" alt="Correo bancario en Integraciones y claves" loading="lazy"></a><figcaption>Cómo se confirman los pagos y datos del correo bancario.</figcaption></figure>
 <h3>Comprobantes por revisar</h3>
 <p>Lo dudoso no se aplica solo: queda en <strong>Operaciones → Comprobantes por revisar</strong>. Ahí ves la captura o el PDF, buscas el depósito en el correo del banco y pulsas <strong>Aprobar</strong> o <strong>Rechazar</strong>. Si el correo no llegó pero lo verificaste en la app del banco, puedes aprobarlo dejando la nota de dónde lo viste.</p>
+<figure class="doc-figure"><a href="/assets/docs/whatsapp/03-comprobantes.webp" target="_blank" rel="noopener"><img src="/assets/docs/whatsapp/03-comprobantes.webp" alt="Comprobantes por revisar" loading="lazy"></a><figcaption>La captura, el cliente, el depósito encontrado en el banco y los botones Aprobar o Rechazar.</figcaption></figure>
 <div class="doc-callout">Van a revisión, entre otros: pagos de más del doble de la deuda, un segundo pago por captura en el mes o demasiadas capturas de un mismo chat. En <strong>Teléfonos de alerta</strong> registra quién recibe por WhatsApp los avisos de posible fraude.</div>
         </section>
 
@@ -92,6 +95,7 @@
 <p class="kicker">Paso 4</p>
 <h2>Avisos automáticos y plantillas</h2>
 <p>En <strong>Configuración → Plantillas de Mensajes</strong> editas los textos automáticos: factura nueva, recordatorio, corte, reconexión, recibo y técnico en camino. Usan variables como <code>{contrato}</code> o <code>{detalle_cobro}</code> que el sistema reemplaza con los datos de cada cliente. Ahí también van los <strong>datos para depósito o transferencia</strong>.</p>
+<figure class="doc-figure"><a href="/assets/docs/whatsapp/04-plantillas.webp" target="_blank" rel="noopener"><img src="/assets/docs/whatsapp/04-plantillas.webp" alt="Plantillas de WhatsApp" loading="lazy"></a><figcaption>Plantillas de mensajes con sus variables.</figcaption></figure>
 <p>Cada mensaje queda en la <strong>Bandeja WhatsApp</strong> (Operaciones) con su estado: pendiente, enviado, entregado, leído o fallido. Los fallidos se reintentan solos y puedes reenviarlos a mano.</p>
 <p>Para escribirle a un cliente desde el panel, abre su ficha en <strong>Clientes</strong> y pulsa <strong>WhatsApp</strong>: abre la conversación en el WhatsApp de tu equipo. Si escribes desde el número de la empresa, el bot se pausa 2 horas en ese chat.</p>
         </section>

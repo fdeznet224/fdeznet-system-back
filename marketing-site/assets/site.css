@@ -241,6 +241,9 @@ td { color: #b6c9c2; }
 .doc-table tbody th { width: 28%; color: var(--text); }
 .guide-next { margin-top: 30px; }
 .doc-callout + .doc-callout { margin-top: 12px; }
+.figure-grid-phones { grid-template-columns: repeat(auto-fill, minmax(280px, 340px)); justify-content: start; }
+.doc-figure-phone a { background: #0b0f17; }
+.doc-figure-phone img { max-height: none; }
 .guide-pager { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 34px; }
 .guide-pager a { display: block; padding: 17px 19px; border: 1px solid var(--line); border-radius: 15px; background: rgba(255,255,255,.02); transition: .2s ease; }
 .guide-pager a:hover { border-color: var(--green); transform: translateY(-2px); }
@@ -297,6 +300,7 @@ td { color: #b6c9c2; }
   .docs-sidebar strong { display: none; }
   .docs-sidebar a { flex: 0 0 auto; padding: 7px 11px; border: 1px solid var(--line); border-radius: 50px; }
   .flow-steps, .figure-grid, .figure-grid-three { grid-template-columns: 1fr; }
+  .figure-grid-phones { grid-template-columns: minmax(0, 340px); }
   .figure-grid-three .doc-figure-narrow { max-width: 360px; }
   .guide-feature { grid-template-columns: auto 1fr; }
   .guide-feature-arrow { display: none; }

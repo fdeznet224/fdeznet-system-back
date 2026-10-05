@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/assets/site.css?v=20261005">
+  <link rel="stylesheet" href="/assets/site.css?v=20261006">
   <title>Red de fibra | FdezPay</title>
 </head>
 <body>
@@ -30,7 +30,7 @@
         <p class="eyebrow">Guía 02 de 08</p>
         <h1>Registra tus OLT, cajas NAP y equipos</h1>
         <p>Con la red de fibra registrada, cada cliente queda ligado a su OLT, su caja NAP, su puerto y su ONU. Así el técnico sabe dónde conectar y el sistema puede diagnosticar la señal.</p>
-        <div class="guide-meta"><span>4 etapas</span><span>GPON y EPON</span><span>OLT por VPN</span></div>
+        <div class="guide-meta"><span>4 etapas</span><span>GPON y EPON</span><span>OLT por VPN</span><span>8 capturas</span></div>
       </div>
     </section>
 
@@ -58,6 +58,7 @@
 <p class="kicker">Paso 1</p>
 <h2>Registra la OLT</h2>
 <p>Abre <strong>Infraestructura → Radar OLT</strong> y pulsa <strong>+ Nueva OLT</strong>.</p>
+<figure class="doc-figure doc-figure-medium"><a href="/assets/docs/red-de-fibra/04-nueva-olt.webp" target="_blank" rel="noopener"><img src="/assets/docs/red-de-fibra/04-nueva-olt.webp" alt="Formulario Nueva OLT" loading="lazy"></a><figcaption>Formulario de <strong>Nueva OLT</strong>: nombre, IP, tecnología, modelo y tipo de integración.</figcaption></figure>
 <div class="table-wrap doc-table"><table><thead><tr><th>Campo</th><th>Qué debes indicar</th></tr></thead><tbody><tr><th>Nombre</th><td>Cómo la reconoces, por ejemplo el nombre de la zona.</td></tr><tr><th>IP Gestión</th><td>IP de administración de la OLT (por VPN o red privada).</td></tr><tr><th>Tecnología</th><td><strong>GPON</strong> o <strong>EPON</strong>.</td></tr><tr><th>Modelo</th><td>Modelo del equipo, por ejemplo V1600GS.</td></tr><tr><th>Tipo de integración</th><td><strong>VSOL API</strong> para OLT VSOL con API web, <strong>SNMP</strong> para lectura por comunidad SNMP, o <strong>Auto</strong>.</td></tr><tr><th>API: protocolo, puerto, usuario y contraseña</th><td>Los datos de acceso web de la OLT cuando usas la API.</td></tr><tr><th>SNMP Community</th><td>Comunidad de lectura, normalmente <code>public</code>.</td></tr></tbody></table></div>
 <div class="doc-callout">Deja <strong>Verificar SSL</strong> apagado si la OLT usa un certificado propio. Usa un usuario dedicado para el sistema y no compartas la contraseña administrativa.</div>
         </section>
@@ -66,8 +67,10 @@
 <p class="kicker">Paso 2</p>
 <h2>Revisa tus ONUs en el Radar</h2>
 <p>En <strong>Radar OLT</strong> elige la OLT y pulsa <strong>Escanear</strong>. El escaneo empieza solo cuando eliges una OLT, para no cargar el equipo sin necesidad.</p>
+<div class="figure-grid"><figure class="doc-figure"><a href="/assets/docs/red-de-fibra/01-radar-elegir.webp" target="_blank" rel="noopener"><img src="/assets/docs/red-de-fibra/01-radar-elegir.webp" alt="Radar OLT para elegir la OLT" loading="lazy"></a><figcaption>Elige la OLT que quieres escanear.</figcaption></figure><figure class="doc-figure"><a href="/assets/docs/red-de-fibra/02-radar-onus.webp" target="_blank" rel="noopener"><img src="/assets/docs/red-de-fibra/02-radar-onus.webp" alt="Radar con la lista de ONUs" loading="lazy"></a><figcaption>Resumen y lista de ONUs con su cliente, potencia y calidad.</figcaption></figure></div>
 <div class="table-wrap doc-table"><table><thead><tr><th>Filtro</th><th>Para qué sirve</th></tr></thead><tbody><tr><th>Online / Offline-LOS</th><td>Ver qué ONUs tienen o perdieron señal.</td></tr><tr><th>Con cliente / No registradas</th><td>Encontrar ONUs conectadas que aún no están ligadas a un cliente.</td></tr><tr><th>Señal crítica / regular</th><td>Detectar potencias que necesitan revisión antes de que el cliente se quede sin servicio.</td></tr><tr><th>Buscar</th><td>Por cliente, número de contrato, teléfono, IP, serial o PON.</td></tr></tbody></table></div>
 <p>Con <strong>Ver datos</strong> abres el detalle de la ONU: distancia a la OLT, temperatura, voltaje, potencia RX y TX, firmware, tiempo encendida y la <strong>última caída con su motivo</strong> (por ejemplo, corte de luz en la casa o pérdida de señal de la fibra). Desde ahí también se puede reiniciar la ONU.</p>
+<figure class="doc-figure"><a href="/assets/docs/red-de-fibra/03-detalle-onu.webp" target="_blank" rel="noopener"><img src="/assets/docs/red-de-fibra/03-detalle-onu.webp" alt="Detalle de una ONU" loading="lazy"></a><figcaption>Detalle de la ONU: diagnóstico en la OLT, última caída y botón <strong>Reiniciar ONU</strong>.</figcaption></figure>
 <div class="doc-callout">Un corte de luz y un corte de fibra se ven igual para el cliente (“no tengo internet”). El motivo de la caída te dice si hay que mandar técnico o solo pedir que revise la corriente.</div>
         </section>
 
@@ -75,8 +78,10 @@
 <p class="kicker">Paso 3</p>
 <h2>Da de alta las cajas NAP</h2>
 <p>Abre <strong>Infraestructura → Cajas NAP (Fibra)</strong> y pulsa <strong>Nueva NAP</strong>.</p>
+<figure class="doc-figure"><a href="/assets/docs/red-de-fibra/05-cajas-nap.webp" target="_blank" rel="noopener"><img src="/assets/docs/red-de-fibra/05-cajas-nap.webp" alt="Cajas NAP en el mapa" loading="lazy"></a><figcaption>Las cajas aparecen en el mapa y en tarjetas con su ocupación.</figcaption></figure>
 <div class="table-wrap doc-table"><table><thead><tr><th>Campo</th><th>Qué debes indicar</th></tr></thead><tbody><tr><th>Zona / Colonia</th><td>La zona que atiende la caja.</td></tr><tr><th>OLT y Puerto PON</th><td>De qué OLT y de qué puerto PON sale la fibra de esta caja.</td></tr><tr><th>Identificador de Caja</th><td>El nombre escrito en la caja, por ejemplo <code>P1-CN-2-A</code>.</td></tr><tr><th>Referencia Física</th><td>Cómo encontrarla: “poste frente a la escuela”.</td></tr><tr><th>Coordenadas GPS</th><td>Latitud y longitud, por ejemplo <code>16.7521, -93.1154</code>.</td></tr><tr><th>Puertos Totales</th><td>Salidas del splitter: 8, 16…</td></tr></tbody></table></div>
 <p>Con <strong>Ver Puertos</strong> ves qué puerto está libre u ocupado, a qué cliente pertenece y el serial de su ONU. Con <strong>Crear orden aquí</strong> registras una instalación directamente en esa caja.</p>
+<div class="figure-grid"><figure class="doc-figure"><a href="/assets/docs/red-de-fibra/06-nueva-nap.webp" target="_blank" rel="noopener"><img src="/assets/docs/red-de-fibra/06-nueva-nap.webp" alt="Formulario Nueva Caja NAP" loading="lazy"></a><figcaption>Formulario de <strong>Nueva NAP</strong>.</figcaption></figure><figure class="doc-figure"><a href="/assets/docs/red-de-fibra/07-puertos-nap.webp" target="_blank" rel="noopener"><img src="/assets/docs/red-de-fibra/07-puertos-nap.webp" alt="Puertos de una caja NAP" loading="lazy"></a><figcaption><strong>Ver Puertos</strong>: libres en verde, ocupados en rojo.</figcaption></figure></div>
 <div class="doc-callout"><strong>¿Tienes tus cajas en Google Earth?</strong> Si tu planta externa está en un archivo KML o KMZ con el nombre y la ubicación de cada caja, pide a soporte que la cargue en bloque: se importan con coordenadas, OLT y PON sin capturarlas una por una.</div>
 <div class="doc-callout">Usa una nomenclatura fija para el identificador (PON, calle y lado de la calle, por ejemplo). Es lo que el técnico lee en el poste y lo que busca en la app.</div>
         </section>
@@ -85,6 +90,7 @@
 <p class="kicker">Paso 4</p>
 <h2>Lleva el inventario de ONUs</h2>
 <p>En <strong>Operaciones → Inventario / Bodega</strong> pulsa <strong>Ingresar Equipo</strong>. Puedes escanear el código de barras o escribir el identificador, elegir la tecnología y el modelo y guardar el equipo en stock.</p>
+<figure class="doc-figure"><a href="/assets/docs/red-de-fibra/08-inventario.webp" target="_blank" rel="noopener"><img src="/assets/docs/red-de-fibra/08-inventario.webp" alt="Bodega e inventario de equipos" loading="lazy"></a><figcaption>Bodega e Inventario con los equipos por estado.</figcaption></figure>
 <div class="table-wrap doc-table"><table><thead><tr><th>Estado</th><th>Significa</th></tr></thead><tbody><tr><th>Bodega</th><td>Disponible para instalar.</td></tr><tr><th>Instalado</th><td>Ligado a un cliente.</td></tr><tr><th>A recoger</th><td>El cliente se dio de baja y hay que recuperar el equipo.</td></tr><tr><th>Avería</th><td>Dañado, incompleto o en revisión.</td></tr></tbody></table></div>
 <div class="doc-callout"><strong>GPON o EPON.</strong> En GPON el identificador es el serial (por ejemplo <code>HWTC…</code>); en EPON es la MAC de la ONU. Captúralo exactamente como lo reporta la OLT para que el sistema la reconozca.</div>
 <p>Puedes <strong>asignar equipos a un técnico</strong> para que los lleve en su ruta. Al activar un cliente, el técnico elige la ONU de la lista o la escanea y el inventario se actualiza solo.</p>

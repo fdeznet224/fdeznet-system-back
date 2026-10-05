@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/assets/site.css?v=20261005">
+  <link rel="stylesheet" href="/assets/site.css?v=20261006">
   <title>Facturación y cobranza | FdezPay</title>
 </head>
 <body>
@@ -30,7 +30,7 @@
         <p class="eyebrow">Guía 05 de 08</p>
         <h1>Cobra, corta y reconecta sin hojas de cálculo</h1>
         <p>Las facturas se generan solas según el ciclo de cobro de cada cliente. El sistema corta a quien no pagó, reconecta en cuanto paga y te deja un historial claro de cada peso.</p>
-        <div class="guide-meta"><span>Prepago y postpago</span><span>Corte y reconexión automáticos</span><span>App del cobrador</span></div>
+        <div class="guide-meta"><span>Prepago y postpago</span><span>Corte y reconexión automáticos</span><span>App del cobrador</span><span>5 capturas</span></div>
       </div>
     </section>
 
@@ -65,6 +65,7 @@
 <h2>Consulta y administra facturas</h2>
 <p>En <strong>Finanzas → Facturas</strong> filtras por fecha de vencimiento, emisión o pago, por router y por estado (pagado, pendiente, vencido, anulado), y buscas por nombre, contrato o folio.</p>
 <ul><li><strong>Cobrar</strong> una factura desde la lista.</li><li><strong>Descargar PDF</strong> del recibo.</li><li><strong>Anular</strong> una factura sin borrar su historial.</li><li>Emitir de inmediato las facturas que ya tocan.</li></ul>
+<figure class="doc-figure"><a href="/assets/docs/facturacion-y-cobranza/01-facturas.webp" target="_blank" rel="noopener"><img src="/assets/docs/facturacion-y-cobranza/01-facturas.webp" alt="Gestión financiera de facturas" loading="lazy"></a><figcaption>Facturas con resumen por estado, filtros y acciones.</figcaption></figure>
 <p>Para agregar un cargo (instalación, equipo, servicio extra) usa <strong>Cargo manual</strong> o <strong>Servicios adicionales</strong> en la ficha del cliente: se suman a su factura abierta para que pague todo junto.</p>
         </section>
 
@@ -75,6 +76,7 @@
 <h3>Terminal del cobrador</h3>
 <p>Los usuarios con rol <strong>Cobrador / Cajero</strong> entran a una pantalla para celular con cuatro pestañas:</p>
 <div class="table-wrap doc-table"><table><thead><tr><th>Pestaña</th><th>Uso</th></tr></thead><tbody><tr><th>Cobrar</th><td>Busca por nombre, contrato o IP; pulsa <strong>Registrar Pago</strong>, elige efectivo o transferencia, anota la referencia y confirma.</td></tr><tr><th>Promesas</th><td>Promesas activas y cuándo vencen.</td></tr><tr><th>Historial</th><td>Cobros del día, incluidos los pendientes de sincronizar.</td></tr><tr><th>Cierre</th><td>Resumen del periodo por método de pago para entregar el dinero.</td></tr></tbody></table></div>
+<div class="figure-grid figure-grid-phones"><figure class="doc-figure doc-figure-phone"><a href="/assets/docs/facturacion-y-cobranza/02-cobrador.webp" target="_blank" rel="noopener"><img src="/assets/docs/facturacion-y-cobranza/02-cobrador.webp" alt="Terminal del cobrador" loading="lazy"></a><figcaption>Búsqueda y clientes con adeudo.</figcaption></figure><figure class="doc-figure doc-figure-phone"><a href="/assets/docs/facturacion-y-cobranza/05-cobrador-cobro.webp" target="_blank" rel="noopener"><img src="/assets/docs/facturacion-y-cobranza/05-cobrador-cobro.webp" alt="Cobro de un cliente" loading="lazy"></a><figcaption>Un solo total con todo lo que debe.</figcaption></figure><figure class="doc-figure doc-figure-phone"><a href="/assets/docs/facturacion-y-cobranza/03-cobrador-cierre.webp" target="_blank" rel="noopener"><img src="/assets/docs/facturacion-y-cobranza/03-cobrador-cierre.webp" alt="Cierre del cobrador" loading="lazy"></a><figcaption>Cierre por método de pago.</figcaption></figure></div>
 <div class="doc-callout">Cada cobrador ve solo las <strong>zonas de cobranza</strong> que le asignaste. Si se queda sin señal, sus cobros se guardan y se envían al reconectarse.</div>
         </section>
 
@@ -91,6 +93,7 @@
 <h2>Revisa el corte de cobranza</h2>
 <p><strong>Finanzas → Cortes de Cobranza</strong> muestra cada pago con su cajero, zona, router, método, factura y monto. Filtra por fechas y operador para cuadrar el efectivo de cada persona.</p>
 <div class="table-wrap doc-table"><table><thead><tr><th>Acción</th><th>Cuándo usarla</th></tr></thead><tbody><tr><th>Corregir cobro</th><td>Se cobró al cliente equivocado: indicas el contrato correcto, la factura destino y el motivo.</td></tr><tr><th>Anular pago</th><td>El pago no procede. Solo se revierte el último pago aplicado y nunca uno de una caja cerrada.</td></tr></tbody></table></div>
+<figure class="doc-figure"><a href="/assets/docs/facturacion-y-cobranza/04-corte-cobranza.webp" target="_blank" rel="noopener"><img src="/assets/docs/facturacion-y-cobranza/04-corte-cobranza.webp" alt="Corte de cobranza" loading="lazy"></a><figcaption>Corte de Cobranza con los pagos del día y las acciones Corregir y Anular.</figcaption></figure>
 <p><strong>Finanzas → Estadísticas</strong> resume los ingresos por router y periodo.</p>
         </section>
 

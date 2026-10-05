@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/assets/site.css?v=20261005">
+  <link rel="stylesheet" href="/assets/site.css?v=20261006">
   <title>Administración | FdezPay</title>
 </head>
 <body>
@@ -30,13 +30,14 @@
         <p class="eyebrow">Guía 08 de 08</p>
         <h1>Usuarios, marca, respaldos y actualizaciones</h1>
         <p>Lo que el administrador revisa de vez en cuando: quién entra y qué puede ver, cómo se ve el sistema con tu marca, que los respaldos estén al día y que tengas la versión más reciente.</p>
-        <div class="guide-meta"><span>Roles por persona</span><span>Marca blanca</span><span>Respaldos cifrados</span></div>
+        <div class="guide-meta"><span>Roles por persona</span><span>Marca blanca</span><span>Respaldos cifrados</span><span>4 capturas</span></div>
       </div>
     </section>
 
     <div class="container docs-layout guide-layout">
       <aside class="docs-sidebar" aria-label="Contenido de la guía">
         <strong>En esta guía</strong>
+        <a href="#configuracion">Dónde está todo</a>
         <a href="#usuarios">Usuarios y roles</a>
         <a href="#marca">Marca blanca</a>
         <a href="#respaldos">Respaldos</a>
@@ -46,10 +47,18 @@
       </aside>
 
       <article class="docs-content">
+        <section class="doc-section" id="configuracion">
+<p class="kicker">Punto de partida</p>
+<h2>Configuración General</h2>
+<p>Todas las herramientas de esta guía están en <strong>Configuración → General</strong>, agrupadas en tarjetas.</p>
+<figure class="doc-figure"><a href="/assets/docs/administracion/04-configuracion.webp" target="_blank" rel="noopener"><img src="/assets/docs/administracion/04-configuracion.webp" alt="Configuración General" loading="lazy"></a><figcaption>Herramientas administrativas de Configuración General.</figcaption></figure>
+        </section>
+
         <section class="doc-section" id="usuarios">
 <p class="kicker">Accesos</p>
 <h2>Usuarios y roles</h2>
 <p>En <strong>Configuración → Usuarios del Sistema</strong> crea una cuenta por persona. Nunca compartan el usuario <code>admin</code>.</p>
+<figure class="doc-figure"><a href="/assets/docs/administracion/01-usuarios.webp" target="_blank" rel="noopener"><img src="/assets/docs/administracion/01-usuarios.webp" alt="Gestión de usuarios" loading="lazy"></a><figcaption>Usuarios con su rol y los routers o zonas que pueden ver.</figcaption></figure>
 <div class="table-wrap doc-table"><table><thead><tr><th>Rol</th><th>Qué puede hacer</th></tr></thead><tbody><tr><th>Administrador General</th><td>Todo el sistema: configuración, finanzas, red y usuarios.</td></tr><tr><th>Cobrador / Cajero</th><td>La terminal de cobro de sus zonas: cobros, promesas, historial y cierre.</td></tr><tr><th>Técnico Instalador</th><td>La app del técnico: agenda, activaciones, ficha técnica y retiros.</td></tr></tbody></table></div>
 <ul><li><strong>Routers permitidos</strong> y <strong>zonas de cobranza</strong> limitan lo que ve cada persona.</li><li>El <strong>WhatsApp del personal</strong> (con código de país) lo identifica en el bot técnico.</li><li>Puedes desactivar una cuenta sin borrarla.</li></ul>
         </section>
@@ -58,6 +67,7 @@
 <p class="kicker">Imagen</p>
 <h2>Tu marca en el sistema</h2>
 <p>En <strong>Configuración → Marca blanca</strong> cambias el nombre del ISP y del sistema, el logotipo, el favicon, los colores, el teléfono, el correo, la dirección y el pie de los recibos. La vista previa muestra el resultado antes de guardar.</p>
+<figure class="doc-figure"><a href="/assets/docs/administracion/02-marca-blanca.webp" target="_blank" rel="noopener"><img src="/assets/docs/administracion/02-marca-blanca.webp" alt="Marca blanca" loading="lazy"></a><figcaption>Marca blanca con vista previa.</figcaption></figure>
 <p>En <strong>Parámetros PPPoE</strong> defines cómo se generan las contraseñas PPPoE de los clientes nuevos.</p>
         </section>
 
@@ -67,6 +77,7 @@
 <p>En <strong>Configuración → Respaldos y recuperación</strong>:</p>
 <div class="table-wrap doc-table"><table><thead><tr><th>Opción</th><th>Uso</th></tr></thead><tbody><tr><th>Respaldar cada cuántos días</th><td>Frecuencia del respaldo automático (alrededor de las 3:20 a. m.).</td></tr><tr><th>Conservar respaldos durante (días)</th><td>Antigüedad máxima de un respaldo.</td></tr><tr><th>Guardar solo los más recientes</th><td>Cuántos respaldos se conservan; los más viejos se borran solos. 5 por defecto.</td></tr><tr><th>Qué incluir</th><td>La base de datos siempre va; además configuración, archivos, evidencias, sesión de WhatsApp y VPN.</td></tr></tbody></table></div>
 <p>Cada respaldo se cifra y se verifica. Desde la misma pantalla puedes crear uno al momento, verificarlo o restaurarlo.</p>
+<figure class="doc-figure"><a href="/assets/docs/administracion/03-respaldos.webp" target="_blank" rel="noopener"><img src="/assets/docs/administracion/03-respaldos.webp" alt="Respaldos y recuperación" loading="lazy"></a><figcaption>Programación, qué incluir y cuántos respaldos guardar.</figcaption></figure>
 <div class="doc-callout doc-warning">Guarda una copia fuera del servidor. Un respaldo que solo vive en la misma VPS no te protege si esa VPS se pierde.</div>
         </section>
 
