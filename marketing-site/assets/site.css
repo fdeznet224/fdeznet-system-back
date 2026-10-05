@@ -207,6 +207,39 @@ td { color: #b6c9c2; }
 .doc-card p { margin: 0; font-size: .83rem; }
 .check-list { padding-left: 0; list-style: none; }
 .check-list li::before { content: "✓"; color: var(--green); margin-right: 9px; }
+.breadcrumbs { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 26px; color: var(--muted); font-size: .78rem; }
+.breadcrumbs a { color: var(--green); }
+.guide-hero h1 { max-width: 900px; font-size: clamp(2.6rem, 5vw, 4.6rem); }
+.guide-meta { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 25px; }
+.guide-meta span { padding: 7px 11px; border: 1px solid var(--line); border-radius: 50px; background: rgba(255,255,255,.025); color: #c8d8d3; font-size: .72rem; font-weight: 700; }
+.guide-layout { grid-template-columns: 270px minmax(0, 1fr); }
+.guide-feature { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 18px; margin-top: 25px; padding: 23px; border: 1px solid rgba(110,231,183,.28); border-radius: 17px; background: linear-gradient(120deg, rgba(110,231,183,.08), rgba(255,255,255,.015)); transition: .2s ease; }
+.guide-feature:hover { transform: translateY(-2px); border-color: var(--green); }
+.guide-feature-number { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 13px; background: var(--green); color: var(--ink); font: 800 .9rem "Space Grotesk"; }
+.guide-feature strong, .guide-feature small { display: block; }
+.guide-feature strong { font: 700 1.05rem "Space Grotesk"; }
+.guide-feature small { margin-top: 4px; color: var(--muted); font-size: .73rem; }
+.guide-feature-arrow { color: var(--green); font-size: 1.5rem; }
+.flow-steps { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin: 25px 0; padding: 0; list-style: none; counter-reset: none; }
+.flow-steps li { display: flex; align-items: center; gap: 13px; margin: 0; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.02); }
+.flow-steps li > span { display: grid; flex: 0 0 auto; place-items: center; width: 31px; height: 31px; border-radius: 9px; background: rgba(110,231,183,.1); color: var(--green); font-weight: 800; }
+.flow-steps strong, .flow-steps small { display: block; }
+.flow-steps strong { color: var(--text); font-size: .84rem; }
+.flow-steps small { margin-top: 2px; color: var(--muted); font-size: .7rem; }
+.figure-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 25px 0; align-items: start; }
+.figure-grid-three { grid-template-columns: .55fr .55fr 1.9fr; }
+.doc-figure { margin: 25px 0; padding: 12px; border: 1px solid var(--line); border-radius: 17px; background: #0a1714; overflow: hidden; }
+.figure-grid .doc-figure { margin: 0; }
+.doc-figure a { display: flex; min-height: 90px; align-items: center; justify-content: center; overflow: hidden; border-radius: 11px; background: #050414; }
+.doc-figure img { display: block; width: 100%; height: auto; max-height: 720px; object-fit: contain; transition: transform .22s ease; }
+.doc-figure a:hover img { transform: scale(1.01); }
+.doc-figure figcaption { padding: 11px 5px 2px; color: var(--muted); font-size: .73rem; }
+.doc-figure-narrow img { width: auto; max-width: 100%; max-height: 500px; }
+.doc-figure-medium { max-width: 720px; }
+.doc-table { margin: 22px 0; border-radius: 15px; }
+.doc-table table { min-width: 590px; }
+.doc-table tbody th { width: 28%; color: var(--text); }
+.guide-next { margin-top: 30px; }
 
 .reveal { opacity: 0; transform: translateY(18px); transition: opacity .55s ease, transform .55s ease; }
 .reveal.visible { opacity: 1; transform: none; }
@@ -254,6 +287,10 @@ td { color: #b6c9c2; }
   .docs-sidebar { position: static; max-height: none; display: flex; gap: 8px; overflow-x: auto; padding: 0 0 12px; }
   .docs-sidebar strong { display: none; }
   .docs-sidebar a { flex: 0 0 auto; padding: 7px 11px; border: 1px solid var(--line); border-radius: 50px; }
+  .flow-steps, .figure-grid, .figure-grid-three { grid-template-columns: 1fr; }
+  .figure-grid-three .doc-figure-narrow { max-width: 360px; }
+  .guide-feature { grid-template-columns: auto 1fr; }
+  .guide-feature-arrow { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

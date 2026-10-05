@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Guía paso a paso para configurar FdezPay: VPN, MikroTik, planes, redes IP, ciclos de cobro, zonas e importación de clientes.">
+  <meta name="theme-color" content="#07110f">
+  <link rel="canonical" href="https://dev.fdezpay.com/docs/configuracion-inicial/">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2218%22 fill=%22%236ee7b7%22/><path d=%22M20 16h28v9H30v8h15v9H30v16H20z%22 fill=%22%2307110f%22/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/site.css?v=73e2158">
+  <title>Configuración inicial e importación | FdezPay</title>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container nav-wrap">
+      <a class="brand" href="/"><span class="brand-mark">F</span><span>FdezNet <em>ISP</em></span></a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="main-nav"><span></span><span></span><span></span><span class="sr-only">Abrir menú</span></button>
+      <nav id="main-nav" class="main-nav"><a href="/">Inicio</a><a href="/docs/">Documentación</a><a href="#vpn">VPN</a><a href="#mikrotik">MikroTik</a><a href="#importacion">Importación</a></nav>
+      <div class="nav-actions"><a class="text-link" href="https://fdezpay.com/login">Acceder</a><a class="button button-small" data-whatsapp href="#">Solicitar ayuda</a></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="docs-hero guide-hero">
+      <div class="container">
+        <nav class="breadcrumbs" aria-label="Ruta"><a href="/docs/">Documentación</a><span>›</span><span>Configuración inicial</span></nav>
+        <p class="eyebrow">Guía paso a paso</p>
+        <h1>Configura la red e importa tus clientes</h1>
+        <p>Prepara FdezPay desde el primer acceso: conecta el MikroTik, registra planes y redes, define la cobranza, organiza zonas y carga los clientes existentes.</p>
+        <div class="guide-meta"><span>10 etapas</span><span>28 capturas</span><span>RouterOS v7+</span></div>
+      </div>
+    </section>
+
+    <div class="container docs-layout guide-layout">
+      <aside class="docs-sidebar" aria-label="Contenido de la guía">
+        <strong>En esta guía</strong>
+        <a href="#resumen">Orden recomendado</a>
+        <a href="#requisitos">Requisitos</a>
+        <a href="#configuracion">Abrir Configuración</a>
+        <a href="#vpn">1. Túnel VPN</a>
+        <a href="#mikrotik">2. Nodo MikroTik</a>
+        <a href="#planes">3. Planes</a>
+        <a href="#ipam">4. Redes IP</a>
+        <a href="#cobro">5. Ciclos de cobro</a>
+        <a href="#zonas">6. Zonas</a>
+        <a href="#importacion">7. Importar clientes</a>
+        <a href="#comprobacion">Comprobación final</a>
+      </aside>
+
+      <article class="docs-content">
+        <section class="doc-section" id="resumen">
+          <p class="kicker">Antes de comenzar</p>
+          <h2>Orden recomendado</h2>
+          <p>Completa los catálogos antes de importar. Así cada cliente podrá quedar asociado al router, plan, red, ciclo de cobro y zona correctos desde el primer momento.</p>
+          <ol class="flow-steps">
+            <li><span>1</span><div><strong>VPN, si se necesita</strong><small>Conectividad privada hacia el MikroTik y sus redes internas.</small></div></li>
+            <li><span>2</span><div><strong>Nodo MikroTik</strong><small>Vinculación mediante RouterOS REST.</small></div></li>
+            <li><span>3</span><div><strong>Planes de Internet</strong><small>Precios y velocidades comerciales.</small></div></li>
+            <li><span>4</span><div><strong>Redes IP</strong><small>Segmentos y gateways administrados por IPAM.</small></div></li>
+            <li><span>5</span><div><strong>Ciclos de cobro</strong><small>Generación, pago, gracia, corte y reconexión.</small></div></li>
+            <li><span>6</span><div><strong>Zonas</strong><small>Colonias, barrios, comunidades o sectores.</small></div></li>
+            <li><span>7</span><div><strong>Importación</strong><small>Descarga, revisión y carga del Excel por MikroTik.</small></div></li>
+          </ol>
+          <div class="doc-callout"><strong>La VPN es opcional.</strong> Si la VPS ya puede alcanzar una IP pública o dominio del MikroTik, vincula el nodo directamente y continúa con los planes.</div>
+        </section>
+
+        <section class="doc-section" id="requisitos">
+          <p class="kicker">Preparación</p>
+          <h2>Requisitos previos</h2>
+          <ul class="check-list">
+            <li>FdezPay instalado y una cuenta con permisos administrativos.</li>
+            <li>MikroTik con RouterOS v7 o superior.</li>
+            <li>Usuario dedicado del router con permisos suficientes para REST.</li>
+            <li>Conectividad mediante WireGuard o una dirección pública accesible.</li>
+            <li>Método de gestión definido: PPPoE o IP estática.</li>
+          </ul>
+          <div class="doc-callout doc-warning"><strong>Seguridad:</strong> evita usar la cuenta administrativa principal. Crea una cuenta dedicada, limita su origen y nunca publiques contraseñas, llaves privadas ni tokens.</div>
+        </section>
+
+        <section class="doc-section" id="configuracion">
+          <p class="kicker">Punto de partida</p>
+          <h2>Abre las herramientas administrativas</h2>
+          <p>Desde el Dashboard despliega <strong>Configuración</strong>. En la pantalla General encontrarás Túneles VPN, Plantillas de Facturación, Gestión de Zonas e Importar Clientes.</p>
+          <div class="figure-grid figure-grid-three">
+            <figure class="doc-figure doc-figure-narrow"><a href="/assets/docs/configuracion-inicial/01-dashboard.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/01-dashboard.png" alt="Menú principal del Dashboard de FdezPay" loading="lazy"></a><figcaption>1. Abre el Dashboard.</figcaption></figure>
+            <figure class="doc-figure doc-figure-narrow"><a href="/assets/docs/configuracion-inicial/02-menu-configuracion.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/02-menu-configuracion.png" alt="Menú Configuración desplegado" loading="lazy"></a><figcaption>2. Despliega Configuración.</figcaption></figure>
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/03-herramientas-administrativas.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/03-herramientas-administrativas.png" alt="Panel de herramientas administrativas de FdezPay" loading="lazy"></a><figcaption>3. Selecciona la herramienta que vas a configurar.</figcaption></figure>
+          </div>
+        </section>
+
+        <section class="doc-section" id="vpn">
+          <p class="kicker">Paso 1</p>
+          <h2>Crea un túnel VPN hacia el MikroTik</h2>
+          <p>Utiliza WireGuard cuando el router no tenga una dirección pública alcanzable desde la VPS. En <strong>Configuración → Túneles VPN</strong>, pulsa <strong>Nuevo túnel</strong> y selecciona <strong>Nodo / Router</strong>.</p>
+          <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/04-infraestructura-vpn.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/04-infraestructura-vpn.png" alt="Pantalla Infraestructura VPN con el botón Nuevo túnel" loading="lazy"></a><figcaption>Abre Infraestructura VPN y pulsa Nuevo túnel.</figcaption></figure>
+          <h3>Datos del acceso</h3>
+          <div class="table-wrap doc-table"><table><thead><tr><th>Campo</th><th>Qué debes indicar</th></tr></thead><tbody><tr><th>Tipo</th><td><strong>Nodo / Router</strong> para conectar un MikroTik.</td></tr><tr><th>Identificador</th><td>Un nombre reconocible, por ejemplo Torre Principal o Router Zona Norte.</td></tr><tr><th>Subredes detrás del MikroTik</th><td>Redes internas que también deberán alcanzarse: ONUs, antenas, APs u otros equipos.</td></tr></tbody></table></div>
+          <div class="figure-grid">
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/05-formulario-vpn.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/05-formulario-vpn.png" alt="Formulario para crear un acceso VPN de tipo Nodo o Router" loading="lazy"></a><figcaption>Selecciona Nodo / Router y escribe un identificador.</figcaption></figure>
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/06-subredes-vpn.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/06-subredes-vpn.png" alt="Ejemplo de subredes CIDR detrás de un MikroTik" loading="lazy"></a><figcaption>Agrega una o varias redes en formato CIDR.</figcaption></figure>
+          </div>
+          <div class="doc-callout"><strong>Formato correcto:</strong> usa redes como <code>192.168.2.0/24</code>, no una dirección de equipo como <code>192.168.2.1/24</code>. Puedes separar varias redes con coma o salto de línea; FdezPay las normaliza al crear el túnel.</div>
+          <h3>Genera las llaves y aplica el script</h3>
+          <ol>
+            <li>Pulsa <strong>Generar llaves</strong>.</li>
+            <li>En la tarjeta creada, abre <strong>Script MikroTik</strong> y pulsa <strong>Copiar</strong>.</li>
+            <li>Abre una terminal del router mediante WinBox, WebFig o SSH.</li>
+            <li>Pega y ejecuta el script completo.</li>
+            <li>Conserva la IP privada asignada; la usarás al vincular el nodo.</li>
+          </ol>
+          <div class="figure-grid">
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/07-tunel-creado.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/07-tunel-creado.png" alt="Tarjeta de un túnel VPN creado" loading="lazy"></a><figcaption>La tarjeta muestra la IP VPN y las subredes anunciadas.</figcaption></figure>
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/08-script-mikrotik.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/08-script-mikrotik.png" alt="Script WireGuard generado para MikroTik" loading="lazy"></a><figcaption>Copia el script completo en la terminal del MikroTik.</figcaption></figure>
+          </div>
+        </section>
+
+        <section class="doc-section" id="mikrotik">
+          <p class="kicker">Paso 2</p>
+          <h2>Vincula el MikroTik como nodo</h2>
+          <p>Abre <strong>Infraestructura → Nodos / Routers</strong> y pulsa <strong>Vincular Nodo</strong>.</p>
+          <div class="figure-grid figure-grid-three">
+            <figure class="doc-figure doc-figure-narrow"><a href="/assets/docs/configuracion-inicial/09-menu-infraestructura.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/09-menu-infraestructura.png" alt="Acceso al menú Infraestructura" loading="lazy"></a><figcaption>Abre Infraestructura.</figcaption></figure>
+            <figure class="doc-figure doc-figure-narrow"><a href="/assets/docs/configuracion-inicial/10-menu-nodos.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/10-menu-nodos.png" alt="Opción Nodos y Routers en el menú" loading="lazy"></a><figcaption>Selecciona Nodos / Routers.</figcaption></figure>
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/11-nodos-mikrotik.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/11-nodos-mikrotik.png" alt="Pantalla de Nodos MikroTik" loading="lazy"></a><figcaption>Pulsa Vincular Nodo.</figcaption></figure>
+          </div>
+          <div class="table-wrap doc-table"><table><thead><tr><th>Campo</th><th>Uso</th></tr></thead><tbody><tr><th>Nombre</th><td>Identificador interno del router.</td></tr><tr><th>Dirección IP</th><td>IP privada asignada por la VPN o IP/dominio público accesible.</td></tr><tr><th>Usuario y contraseña</th><td>Credenciales dedicadas para la integración REST.</td></tr><tr><th>Puerto</th><td>Puerto WWW/HTTP de RouterOS REST; normalmente <strong>80</strong>.</td></tr><tr><th>Modo</th><td>PPPoE para PPP Secrets o IP estática según el diseño de red.</td></tr></tbody></table></div>
+          <div class="doc-callout doc-warning"><strong>No uses 8728 por costumbre.</strong> Ese puerto corresponde al API tradicional. La integración de FdezPay con RouterOS v7 usa REST sobre el servicio WWW/HTTP, normalmente puerto 80 o el puerto personalizado de ese servicio.</div>
+          <div class="figure-grid">
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/12-formulario-nodo.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/12-formulario-nodo.png" alt="Formulario para vincular un nodo MikroTik" loading="lazy"></a><figcaption>Completa conectividad, credenciales y modo de tráfico.</figcaption></figure>
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/13-datos-nodo.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/13-datos-nodo.png" alt="Ejemplo de datos de un nodo conectado por VPN" loading="lazy"></a><figcaption>Ejemplo con IP VPN y puerto WWW 80.</figcaption></figure>
+          </div>
+          <p>Después de vincularlo, utiliza <strong>Ping</strong> en la tarjeta. Si no responde, revisa IP, puerto WWW, credenciales, VPN y firewall antes de continuar.</p>
+          <figure class="doc-figure doc-figure-medium"><a href="/assets/docs/configuracion-inicial/14-nodo-vinculado.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/14-nodo-vinculado.png" alt="Tarjeta de un nodo MikroTik vinculado" loading="lazy"></a><figcaption>Nodo vinculado y listo para probar conectividad.</figcaption></figure>
+        </section>
+
+        <section class="doc-section" id="planes">
+          <p class="kicker">Paso 3</p>
+          <h2>Crea los planes de Internet</h2>
+          <p>En <strong>Infraestructura → Planes de Internet</strong>, pulsa <strong>Nuevo Plan</strong>. Crea todos los planes comerciales que utilizarás antes de descargar el Excel de importación.</p>
+          <div class="figure-grid">
+            <figure class="doc-figure doc-figure-narrow"><a href="/assets/docs/configuracion-inicial/18-menu-planes.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/18-menu-planes.png" alt="Opción Planes de Internet en Infraestructura" loading="lazy"></a><figcaption>Abre Planes de Internet.</figcaption></figure>
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/19-planes-internet.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/19-planes-internet.png" alt="Listado de planes con el botón Nuevo Plan" loading="lazy"></a><figcaption>Pulsa Nuevo Plan.</figcaption></figure>
+          </div>
+          <p>Indica nombre comercial, precio, router destino, bajada y subida. Las ráfagas son opcionales; si no las utilizas, conserva sus valores en cero.</p>
+          <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/20-formulario-plan.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/20-formulario-plan.png" alt="Formulario de un perfil QoS de Internet" loading="lazy"></a><figcaption>Ejemplo de un perfil QoS de 10 Mbps sin ráfagas.</figcaption></figure>
+        </section>
+
+        <section class="doc-section" id="ipam">
+          <p class="kicker">Paso 4</p>
+          <h2>Registra las redes IP de clientes</h2>
+          <p>IPAM permite controlar qué segmentos pertenecen a cada router y reduce el riesgo de reutilizar una dirección ya ocupada. Abre <strong>Infraestructura → Redes IP (Pools)</strong> y pulsa <strong>Nueva Red</strong>.</p>
+          <div class="figure-grid">
+            <figure class="doc-figure doc-figure-narrow"><a href="/assets/docs/configuracion-inicial/15-menu-redes-ip.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/15-menu-redes-ip.png" alt="Opción Redes IP en Infraestructura" loading="lazy"></a><figcaption>Abre Redes IP (Pools).</figcaption></figure>
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/16-gestion-ipam.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/16-gestion-ipam.png" alt="Pantalla de Gestión de Redes IPAM" loading="lazy"></a><figcaption>Pulsa Nueva Red.</figcaption></figure>
+          </div>
+          <p>Selecciona el router, escribe un nombre, el segmento CIDR y su gateway. Para una red /24 con gateway <code>192.168.2.1</code>, el segmento normalmente será <code>192.168.2.0/24</code>.</p>
+          <figure class="doc-figure doc-figure-medium"><a href="/assets/docs/configuracion-inicial/17-formulario-red-ip.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/17-formulario-red-ip.png" alt="Formulario para registrar una red IP" loading="lazy"></a><figcaption>Registra la red completa, no una IP de host.</figcaption></figure>
+        </section>
+
+        <section class="doc-section" id="cobro">
+          <p class="kicker">Paso 5</p>
+          <h2>Configura los ciclos de cobro</h2>
+          <p>En <strong>Configuración → Plantillas de Facturación</strong>, crea una política por cada calendario utilizado. Por ejemplo, puedes tener clientes con pago el día 1 y otros con pago el día 15.</p>
+          <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/21-plantillas-cobro.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/21-plantillas-cobro.png" alt="Pantalla de Plantillas de Cobro" loading="lazy"></a><figcaption>Pulsa Nuevo ciclo.</figcaption></figure>
+          <div class="table-wrap doc-table"><table><thead><tr><th>Campo</th><th>Significado</th></tr></thead><tbody><tr><th>Anticipación</th><td>Días antes del pago en los que se genera la factura.</td></tr><tr><th>Día de pago</th><td>Fecha principal de vencimiento mensual.</td></tr><tr><th>Gracia</th><td>Días posteriores al pago antes del corte.</td></tr><tr><th>IVA</th><td>Porcentaje aplicable; utiliza 0 cuando no corresponda.</td></tr><tr><th>Reconexión</th><td>Cargo después de reactivar; utiliza 0 si no se cobra.</td></tr><tr><th>WhatsApp</th><td>Activa los avisos automáticos del ciclo.</td></tr></tbody></table></div>
+          <div class="figure-grid">
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/22-formulario-ciclo.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/22-formulario-ciclo.png" alt="Formulario para crear un ciclo de cobro" loading="lazy"></a><figcaption>La simulación muestra generación, pago y corte.</figcaption></figure>
+            <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/23-ciclo-configurado.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/23-ciclo-configurado.png" alt="Ejemplo de ciclo de cobro configurado" loading="lazy"></a><figcaption>Ejemplo: pago día 1 y corte día 11.</figcaption></figure>
+          </div>
+        </section>
+
+        <section class="doc-section" id="zonas">
+          <p class="kicker">Paso 6</p>
+          <h2>Crea las zonas geográficas</h2>
+          <p>Las zonas organizan clientes por colonia, barrio, comunidad o sector. Un mismo MikroTik puede atender varias; durante la preparación del Excel podrás asignar la zona correcta a cada cliente.</p>
+          <ol><li>Escribe el nombre de la zona.</li><li>Pulsa <strong>Crear Zona</strong>.</li><li>Repite el proceso hasta completar tu cobertura.</li></ol>
+          <figure class="doc-figure doc-figure-medium"><a href="/assets/docs/configuracion-inicial/24-zonas.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/24-zonas.png" alt="Pantalla para crear y listar zonas geográficas" loading="lazy"></a><figcaption>Crea las zonas antes de preparar la importación.</figcaption></figure>
+        </section>
+
+        <section class="doc-section" id="importacion">
+          <p class="kicker">Paso 7</p>
+          <h2>Importa los clientes desde MikroTik</h2>
+          <p>Con los catálogos listos, abre <strong>Configuración → Importar Datos</strong>. Realiza un lote por MikroTik para que la revisión y la corrección de errores sean manejables.</p>
+          <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/25-importacion-masiva.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/25-importacion-masiva.png" alt="Pantalla inicial de Importación Masiva" loading="lazy"></a><figcaption>Primero configura los valores base del lote.</figcaption></figure>
+          <h3>Configura y descarga el lote</h3>
+          <p>Selecciona router, red IP, zona, plantilla de facturación y plan. Estos valores sirven como base; si el router contiene clientes distintos, podrás corregir cada fila en el Excel.</p>
+          <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/26-lote-configurado.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/26-lote-configurado.png" alt="Lote de importación con router, red, zona, ciclo y plan seleccionados" loading="lazy"></a><figcaption>Revisa los cinco valores y pulsa Descargar Plantilla.</figcaption></figure>
+          <h3>Revisa el archivo Excel</h3>
+          <p>Guarda la plantilla y revisa cada cliente. Corrige plan, zona, ciclo de cobro y red cuando el valor inicial no corresponda.</p>
+          <div class="doc-callout doc-warning"><strong>Los catálogos empiezan en 0.</strong> En las columnas de plan, zona y plantilla: el primer elemento es <code>0</code>, el segundo <code>1</code>, el tercero <code>2</code> y así sucesivamente.</div>
+          <figure class="doc-figure"><a href="/assets/docs/configuracion-inicial/27-guardar-excel.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/27-guardar-excel.png" alt="Ventana para guardar la plantilla Excel de clientes" loading="lazy"></a><figcaption>Conserva el formato .xlsx al guardar las correcciones.</figcaption></figure>
+          <h3>Sube e inicia la importación</h3>
+          <ol><li>Selecciona o arrastra el Excel corregido.</li><li>Comprueba que aparezca el nombre del archivo.</li><li>Pulsa <strong>Iniciar Importación</strong>.</li><li>Revisa clientes creados, registros con error y estado final.</li><li>Corrige los errores antes de continuar con el siguiente router.</li></ol>
+          <figure class="doc-figure doc-figure-medium"><a href="/assets/docs/configuracion-inicial/28-subir-excel.png" target="_blank" rel="noopener"><img src="/assets/docs/configuracion-inicial/28-subir-excel.png" alt="Archivo Excel listo para iniciar la importación" loading="lazy"></a><figcaption>Archivo seleccionado y listo para importar.</figcaption></figure>
+        </section>
+
+        <section class="doc-section" id="comprobacion">
+          <p class="kicker">Finalización</p>
+          <h2>Comprueba la configuración</h2>
+          <ul class="check-list">
+            <li>La VPN se creó sólo cuando fue necesaria y el peer tiene handshake.</li>
+            <li>El nodo responde a Ping y usa RouterOS REST por el puerto WWW correcto.</li>
+            <li>Todos los planes comerciales están asociados al router correspondiente.</li>
+            <li>Los segmentos y gateways están registrados en IPAM.</li>
+            <li>Las fechas de generación, pago, gracia y corte son correctas.</li>
+            <li>Las zonas necesarias existen antes de importar.</li>
+            <li>El Excel fue revisado fila por fila y conserva el formato .xlsx.</li>
+            <li>Los registros rechazados se corrigieron antes de cerrar el lote.</li>
+          </ul>
+          <div class="doc-callout"><strong>Flujo completo:</strong> VPN, si aplica → Nodo MikroTik → Planes → Redes IP → Ciclos de cobro → Zonas → Descargar y corregir Excel → Importar clientes.</div>
+          <p class="guide-next"><a class="button" href="/docs/">Volver al centro de documentación</a></p>
+        </section>
+      </article>
+    </div>
+  </main>
+
+  <footer class="footer"><div class="container footer-grid"><div><a class="brand" href="/"><span class="brand-mark">F</span><span>FdezNet <em>ISP</em></span></a><p>Software privado para proveedores de Internet inalámbrico y fibra óptica.</p></div><div><strong>Producto</strong><a href="/#plataforma">Funciones</a><a href="/#planes">Planes</a><a href="/#comparativa">Comparativa</a></div><div><strong>Ayuda</strong><a href="/docs/">Documentación</a><a href="https://fdezpay.com/login">Acceso al sistema</a><a data-whatsapp href="#">Contacto</a></div></div><div class="container footer-bottom"><span>© <span data-year></span> FdezNet.</span><span>La configuración puede variar según la red y la versión instalada</span></div></footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>
