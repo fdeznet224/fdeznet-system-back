@@ -119,3 +119,31 @@ def test_evidence_content_must_match_declared_mime():
         b"<script>alert(1)</script>",
         "image/png",
     )
+
+
+class _DBSolicitud:
+    def __init__(self, objetos):
+        self.objetos = objetos
+
+    async def get(self, modelo, ident):
+        return self.objetos.get((modelo.__name__, ident))
+
+
+def test_el_admin_corrige_zona_plan_y_datos_del_prospecto():
+    from src.application.services.orden_service import OrdenService as Servicio
+
+    db = _DBSolicitud({
+        ("ZonaModel", 5): SimpleNamespace(id=5, router_id=4),
+        ("PlanModel", 9): SimpleNamespace(id=9, router_id=4),
+        ("PlanModel", 3): SimpleNamespace(id=3, router_id=2),
+    })
+    orden = SimpleNamespace(cliente_id=None, zona_id=None, plan_id=None, prospecto_nombre="Ana", prospecto_telefono=None, prospecto_direccion=None)
+    asyncio.run(Servicio(db)._actualizar_solicitud(orden, {"zona_id": 5, "plan_id": 9, "prospecto_nombre": "  Ana   Lopez ", "prospecto_direccion": "Calle 3"}))
+    assert (orden.zona_id, orden.plan_id, orden.prospecto_nombre, orden.prospecto_direccion) == (5, 9, "Ana Lopez", "Calle 3")
+
+    with pytest.raises(ValueError, match="MikroTik"):
+        asyncio.run(Servicio(db)._actualizar_solicitud(orden, {"plan_id": 3}))
+
+    con_cliente = SimpleNamespace(cliente_id=10, zona_id=None, plan_id=None)
+    with pytest.raises(ValueError, match="cliente"):
+        asyncio.run(Servicio(db)._actualizar_solicitud(con_cliente, {"prospecto_nombre": "Otro"}))

@@ -12,8 +12,10 @@ from src.infrastructure.models import (
     HistorialEstadoOrdenModel,
     MaterialOrdenModel,
     OrdenServicioModel,
+    PlanModel,
     ServicioModel,
     UsuarioModel,
+    ZonaModel,
 )
 
 
@@ -202,6 +204,7 @@ class OrdenService:
                     destino,
                     "Asignación actualizada",
                 )
+        await self._actualizar_solicitud(orden, cambios)
         for campo in [
             "fecha_programada",
             "motivo",
@@ -215,6 +218,30 @@ class OrdenService:
         orden.version += 1
         await self.db.commit()
         return await self.obtener(orden.id)
+
+    async def _actualizar_solicitud(self, orden: OrdenServicioModel, cambios: dict):
+        """Corrige lo que pidió el prospecto: sus datos, la zona y el plan."""
+        datos_prospecto = {"prospecto_nombre", "prospecto_telefono", "prospecto_direccion"} & cambios.keys()
+        if datos_prospecto and orden.cliente_id:
+            raise ValueError("La orden ya es de un cliente: sus datos se editan en el cliente")
+        for campo in datos_prospecto:
+            valor = " ".join((cambios[campo] or "").split()) or None
+            if campo == "prospecto_nombre" and not valor:
+                raise ValueError("El nombre del prospecto es obligatorio")
+            setattr(orden, campo, valor)
+        if "zona_id" in cambios:
+            if cambios["zona_id"] and not await self.db.get(ZonaModel, cambios["zona_id"]):
+                raise ValueError("La zona no existe")
+            orden.zona_id = cambios["zona_id"]
+        if "plan_id" in cambios:
+            orden.plan_id = cambios["plan_id"]
+        if orden.plan_id:
+            plan = await self.db.get(PlanModel, orden.plan_id)
+            zona = await self.db.get(ZonaModel, orden.zona_id) if orden.zona_id else None
+            if not plan:
+                raise ValueError("El plan no existe")
+            if zona and zona.router_id and plan.router_id != zona.router_id:
+                raise ValueError("El plan no es del MikroTik de esa zona")
 
     async def cambiar_estado(
         self,

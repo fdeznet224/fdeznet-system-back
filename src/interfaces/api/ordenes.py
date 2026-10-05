@@ -86,6 +86,12 @@ class OrdenCrear(BaseModel):
 
 class OrdenActualizar(BaseModel):
     tecnico_id: Optional[int] = None
+    # Datos de la solicitud: lo que dijo el prospecto.
+    prospecto_nombre: Optional[str] = Field(default=None, min_length=2, max_length=150)
+    prospecto_telefono: Optional[str] = Field(default=None, max_length=20)
+    prospecto_direccion: Optional[str] = Field(default=None, max_length=255)
+    zona_id: Optional[int] = Field(default=None, gt=0)
+    plan_id: Optional[int] = Field(default=None, gt=0)
     prioridad: Optional[str] = Field(
         default=None,
         pattern=r"^(baja|normal|alta|urgente)$",
