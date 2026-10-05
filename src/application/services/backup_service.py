@@ -21,6 +21,7 @@ def default_backup_policy() -> dict:
         "activo": True,
         "frecuencia_dias": 1,
         "retencion_dias": min(365, max(3, retention)),
+        "max_respaldos": 5,
         "incluir_configuracion": True,
         "incluir_archivos_estaticos": True,
         "incluir_evidencias_ordenes": True,

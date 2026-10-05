@@ -18,6 +18,7 @@ readonly BACKUP_OPERATION_FILE="/var/lib/fdeznet/backup-operation.json"
 
 BACKUP_DIR="/var/backups/fdeznet"
 RETENTION_DAYS="14"
+MAX_BACKUPS="5"
 REMOTE_DIR=""
 LAST_BACKUP=""
 OLD_BACKEND=""
@@ -316,10 +317,23 @@ create_backup() {
   if [[ "$skip_retention" != "true" ]]; then
     find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg' -mtime "+$RETENTION_DAYS" -delete
     find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.tar.gz.gpg.sha256' -mtime "+$RETENTION_DAYS" -delete
+    prune_backups
   fi
   write_status "respaldado" "Respaldo cifrado y verificado"
   report "respaldado" "Respaldo cifrado y verificado"
   log "Respaldo verificado: $encrypted"
+}
+
+# Conserva solo los MAX_BACKUPS respaldos más recientes (el nombre es la fecha).
+prune_backups() {
+  local old
+  find "$BACKUP_DIR" -maxdepth 1 -type f -regextype posix-extended \
+    -regex '.*/[0-9]{8}-[0-9]{6}\.tar\.gz\.gpg' -printf '%f\n' \
+    | sort -r | tail -n "+$((MAX_BACKUPS + 1))" \
+    | while read -r old; do
+        rm -f -- "$BACKUP_DIR/$old" "$BACKUP_DIR/$old.sha256"
+        log "Respaldo antiguo eliminado: $old"
+      done
 }
 
 scheduled_backup() {
@@ -527,6 +541,7 @@ main() {
   RETENTION_DAYS="$(env_value FDEZNET_BACKUP_RETENTION_DAYS)"
   RETENTION_DAYS="${RETENTION_DAYS:-14}"
   RETENTION_DAYS="$(policy_value retencion_dias "$RETENTION_DAYS")"
+  MAX_BACKUPS="$(policy_value max_respaldos "$MAX_BACKUPS")"
   REMOTE_DIR="$(env_value FDEZNET_BACKUP_REMOTE_DIR)"
   APP_SERVICE_USER="$(systemctl show fdeznet-api.service -p User --value 2>/dev/null || true)"
   APP_SERVICE_USER="${APP_SERVICE_USER:-root}"
@@ -537,6 +552,7 @@ main() {
     RECOVERY_DATE="$(jq -r '.recuperacion_fecha // ""' "$STATUS_FILE")"
   fi
   [[ "$RETENTION_DAYS" =~ ^[0-9]{1,3}$ ]] || fail "Retención inválida"
+  [[ "$MAX_BACKUPS" =~ ^[0-9]{1,2}$ && "$MAX_BACKUPS" -ge 1 ]] || fail "Número de respaldos inválido"
   case "${1:-}" in
     backup-request) CURRENT_REQUEST_FILE="$MANUAL_BACKUP_REQUEST_FILE" ;;
     update)

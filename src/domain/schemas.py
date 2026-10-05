@@ -85,6 +85,8 @@ class BackupPolicyUpdate(BaseModel):
     activo: bool = True
     frecuencia_dias: int = Field(default=1, ge=1, le=30)
     retencion_dias: int = Field(default=14, ge=3, le=365)
+    # Además de los días, solo se guardan los N respaldos más recientes.
+    max_respaldos: int = Field(default=5, ge=1, le=60)
     incluir_configuracion: bool = True
     incluir_archivos_estaticos: bool = True
     incluir_evidencias_ordenes: bool = True

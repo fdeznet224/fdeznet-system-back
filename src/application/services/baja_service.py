@@ -336,10 +336,10 @@ class BajaService:
                 OrdenServicioModel,
                 baja.orden_retiro_id,
             )
-            if not orden or orden.estado != "trabajando":
-                raise ValueError(
-                    "La orden debe estar en estado trabajando para cerrar el retiro"
-                )
+            # El técnico solo va a recoger el equipo: lo cierra desde la
+            # agenda sin pasar por "en camino" ni "trabajando".
+            if not orden or orden.estado in {"terminada", "cancelada"}:
+                raise ValueError("La orden de retiro ya está cerrada")
         if not baja.onu_id:
             raise ValueError("La baja no tiene una ONU vinculada")
 

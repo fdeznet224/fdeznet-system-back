@@ -119,3 +119,10 @@ def test_tarea_privilegiada_se_solicita_sin_sudo(tmp_path, monkeypatch):
     assert response["status"] == "ok"
     assert request_file.read_text() == "requested\n"
     assert request_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_por_defecto_solo_se_guardan_los_cinco_respaldos_mas_recientes(backup_paths):
+    assert backup_service.load_backup_policy()["max_respaldos"] == 5
+    saved = backup_service.save_backup_policy(BackupPolicyUpdate(max_respaldos=8))
+    assert saved["max_respaldos"] == 8
+    assert backup_service.load_backup_policy()["max_respaldos"] == 8
