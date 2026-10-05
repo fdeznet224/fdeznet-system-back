@@ -185,3 +185,33 @@ def test_el_escaneo_cierra_la_sesion_aunque_falle_a_la_mitad():
     with pytest.raises(TimeoutError):
         olt._login_y_consultar_sync(OLT)
     assert olt.posts == [("loginout", {"who": "1"})]
+
+
+def test_ubicacion_de_la_onu_para_reiniciarla_desde_la_ficha():
+    from src.application.services.vsol_api_service import VsolApiService
+
+    assert VsolApiService.ubicacion_onu({"onu_id": "GPON0/3:12", "pon_id": None}) == (3, 12)
+    assert VsolApiService.ubicacion_onu({"onu_id": "GPON0/3:12", "pon_id": "5"}) == (5, 12)
+    assert VsolApiService.ubicacion_onu({"onu_id": ""}) is None
+
+
+def test_no_se_reinicia_si_la_olt_no_tiene_api():
+    import asyncio
+    from types import SimpleNamespace
+
+    import pytest
+
+    from src.application.services.vsol_api_service import VsolApiService
+
+    cliente = SimpleNamespace(id=5, olt_id=2, onu_asignada=SimpleNamespace(identificador="AABBCCDDEEFF"))
+    olt = SimpleNamespace(id=2, nombre="Paraiso", api_enabled=False)
+
+    class _DB:
+        async def execute(self, _consulta):
+            return SimpleNamespace(scalar_one_or_none=lambda: cliente)
+
+        async def get(self, _modelo, _ident):
+            return olt
+
+    with pytest.raises(ValueError, match="no permite reiniciar"):
+        asyncio.run(VsolApiService(_DB()).reiniciar_onu_de_cliente(5))

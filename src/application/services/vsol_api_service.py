@@ -552,6 +552,61 @@ class VsolApiService:
             raise ValueError("PON u ONU inválidos.")
         return await asyncio.to_thread(self._reiniciar_onu_sync, olt, int(pon), int(onuid), serial)
 
+    @staticmethod
+    def ubicacion_onu(onu: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+        """(PON, número) de la ONU: "GPON0/3:12" -> (3, 12)."""
+        texto = str(onu.get("onu_id") or "")
+        numero = texto.split(":")[-1]
+        pon = onu.get("pon_id")
+        if pon in (None, ""):
+            encontrado = re.search(r"/(\d+):", texto)
+            pon = encontrado.group(1) if encontrado else None
+        try:
+            pon, numero = int(pon), int(numero)
+        except (TypeError, ValueError):
+            return None
+        return (pon, numero) if pon > 0 and numero > 0 else None
+
+    async def reiniciar_onu_de_cliente(self, cliente_id: int, usuario=None) -> Dict[str, Any]:
+        """Reinicio normal (no de fábrica) de la ONU del cliente, ubicándola por su serial."""
+        cliente = (
+            await self.db.execute(
+                select(ClienteModel).options(selectinload(ClienteModel.onu_asignada)).where(ClienteModel.id == cliente_id)
+            )
+        ).scalar_one_or_none()
+        if not cliente:
+            raise ValueError("Cliente no encontrado.")
+        serial = self._normalizar_sn(cliente.onu_asignada.identificador if cliente.onu_asignada else None)
+        olt = await self.db.get(OLTModel, cliente.olt_id) if cliente.olt_id else None
+        if not olt or not serial:
+            raise ValueError("Al cliente le falta la OLT o el serial de su ONU.")
+        if not olt.api_enabled:
+            raise ValueError(f"La OLT {olt.nombre} no permite reiniciar ONUs desde el sistema.")
+        auth, optical, status = await self._consultar_api(olt)
+        candidatos = [
+            onu for onu in self._unificar_onus(auth, optical, status)
+            if self._normalizar_sn(onu.get("identificador")) == serial
+        ]
+        ubicacion = self.ubicacion_onu(candidatos[0]) if candidatos else None
+        if not ubicacion:
+            raise ValueError("La OLT no tiene registrada esa ONU; revisa el serial o que esté autorizada.")
+        pon, onuid = ubicacion
+        resultado = await self.reiniciar_onu(olt.id, pon, onuid, serial)
+        # Mismo registro que el Radar: así su "causa de la caída" dice que fue un reinicio.
+        self.db.add(
+            LogActividadModel(
+                usuario_id=getattr(usuario, "id", None),
+                usuario_nombre=getattr(usuario, "usuario", None),
+                accion="Reinicio de ONU desde la ficha del cliente",
+                metodo="POST",
+                ruta=f"/api/olts/{olt.id}/onus/{pon}/{onuid}/reiniciar",
+                estado_http=200,
+                detalle=f"Cliente {cliente.id} · ONU {serial}",
+            )
+        )
+        await self.db.commit()
+        return {**resultado, "olt": olt.nombre}
+
     async def _marcar_reinicios(self, olt_id: int, onus: List[Dict[str, Any]]) -> None:
         """Si la última caída fue un reinicio hecho desde el sistema, se dice así."""
         ahora = datetime.now()

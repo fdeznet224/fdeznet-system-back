@@ -100,6 +100,8 @@ class ClientePortalResponse(BaseModel):
     longitud: Optional[float] = None
     # Chat y llamada: solo con los clientes asignados al técnico.
     es_cliente_asignado: bool = True
+    # La OLT del cliente permite reiniciar su ONU desde el sistema (API VSOL).
+    puede_reiniciar_onu: bool = False
     # Financiero: el técnico lo ve para explicar en campo por qué está suspendido.
     total_deuda: Decimal
     facturas_pendientes: int
@@ -238,6 +240,7 @@ async def obtener_datos_portal(
         "latitud": cliente.latitud,
         "longitud": cliente.longitud,
         "es_cliente_asignado": asignado,
+        "puede_reiniciar_onu": bool(cliente.olt and cliente.olt.api_enabled and cliente.onu_asignada),
         "total_deuda": total_deuda,
         "facturas_pendientes": vencidas_count,
         "fecha_corte": fecha_corte,
@@ -588,6 +591,23 @@ async def test_cortes_automaticos(
     except Exception as e:
         return {"status": "error", "detalle": str(e)}
     
+
+
+@router.post("/{cliente_id}/reiniciar-onu")
+async def reiniciar_onu_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Reinicio normal de la ONU del cliente (no borra su configuración); útil en soporte de campo."""
+    from src.application.services.vsol_api_service import VsolApiService
+
+    try:
+        return {"status": "success", "data": await VsolApiService(db).reiniciar_onu_de_cliente(cliente_id, current_user)}
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"No se pudo reiniciar la ONU: {str(error)[:200]}") from error
 
 
 @router.get("/{cliente_id}/diagnostico-fibra")
