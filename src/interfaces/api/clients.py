@@ -28,6 +28,7 @@ from src.infrastructure.whatsapp_client import whatsapp_queue
 
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.application.services.client_service import ClientService
+from src.application.services.cuenta_tecnico_service import resumen_cuenta
 from src.application.services.license_service import ensure_client_capacity
 from src.application.services.access_control_service import (
     es_cliente_del_tecnico,
@@ -97,12 +98,14 @@ class ClientePortalResponse(BaseModel):
     # Para abrir la ruta en el mapa.
     latitud: Optional[float] = None
     longitud: Optional[float] = None
-    # Financiero: el técnico solo lo ve de sus clientes.
-    estado_cuenta_visible: bool = True
-    total_deuda: Optional[Decimal] = None
-    facturas_pendientes: Optional[int] = None
+    # Chat y llamada: solo con los clientes asignados al técnico.
+    es_cliente_asignado: bool = True
+    # Financiero: el técnico lo ve para explicar en campo por qué está suspendido.
+    total_deuda: Decimal
+    facturas_pendientes: int
     fecha_corte: Optional[date] = None
-    saldo_a_favor: Optional[Decimal] = None
+    saldo_a_favor: Decimal
+    cuenta: Optional[dict] = None
 
 class EstadoUpdate(BaseModel):
     nuevo_estado: str
@@ -150,9 +153,9 @@ async def obtener_datos_portal(
     
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
-    # La ficha técnica la puede consultar cualquier técnico (soporte en campo);
-    # el estado de cuenta solo el de sus propios clientes.
-    cuenta_visible = await es_cliente_del_tecnico(db, current_user, cliente.id)
+    # La ficha la puede consultar cualquier técnico (soporte en campo); el chat
+    # y la llamada solo con sus clientes asignados.
+    asignado = await es_cliente_del_tecnico(db, current_user, cliente.id)
 
     # --- A. CÁLCULOS FINANCIEROS (Sincronizado con listado-completo) ---
     # Filtramos facturas: pendientes, vencidas o promesas (Adeudos reales)
@@ -234,11 +237,12 @@ async def obtener_datos_portal(
         "precio_plan": cliente.plan.precio if cliente.plan else 0.0,
         "latitud": cliente.latitud,
         "longitud": cliente.longitud,
-        "estado_cuenta_visible": cuenta_visible,
-        "total_deuda": total_deuda if cuenta_visible else None,
-        "facturas_pendientes": vencidas_count if cuenta_visible else None,
-        "fecha_corte": fecha_corte if cuenta_visible else None,
-        "saldo_a_favor": (cliente.saldo_a_favor or 0.0) if cuenta_visible else None,
+        "es_cliente_asignado": asignado,
+        "total_deuda": total_deuda,
+        "facturas_pendientes": vencidas_count,
+        "fecha_corte": fecha_corte,
+        "saldo_a_favor": cliente.saldo_a_favor or 0.0,
+        "cuenta": await resumen_cuenta(db, cliente),
     }
 
 
