@@ -49,6 +49,17 @@ def filtro_clientes_del_tecnico(tecnico_id: int):
     )
 
 
+async def es_cliente_del_tecnico(db: AsyncSession, usuario: UsuarioModel, cliente_id: int) -> bool:
+    """Si el cliente le toca al técnico (instalación, orden, servicio o equipo por recoger)."""
+    if usuario.rol != "tecnico":
+        return True
+    return (
+        await db.execute(
+            select(ClienteModel.id).where(ClienteModel.id == cliente_id, filtro_clientes_del_tecnico(usuario.id))
+        )
+    ).scalar_one_or_none() is not None
+
+
 async def verificar_acceso_cliente(
     db: AsyncSession,
     usuario: UsuarioModel,

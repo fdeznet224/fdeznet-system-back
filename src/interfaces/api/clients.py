@@ -30,6 +30,7 @@ from src.infrastructure.mikrotik_service import MikroTikService
 from src.application.services.client_service import ClientService
 from src.application.services.license_service import ensure_client_capacity
 from src.application.services.access_control_service import (
+    es_cliente_del_tecnico,
     filtro_clientes_del_tecnico,
     verificar_acceso_cliente,
 )
@@ -93,11 +94,12 @@ class ClientePortalResponse(BaseModel):
     velocidad_subida: int    
     precio_plan: Decimal
     
-    # Financiero
-    total_deuda: Decimal
-    facturas_pendientes: int 
+    # Financiero: el técnico solo lo ve de sus clientes.
+    estado_cuenta_visible: bool = True
+    total_deuda: Optional[Decimal] = None
+    facturas_pendientes: Optional[int] = None
     fecha_corte: Optional[date] = None
-    saldo_a_favor: Decimal
+    saldo_a_favor: Optional[Decimal] = None
 
 class EstadoUpdate(BaseModel):
     nuevo_estado: str
@@ -145,10 +147,9 @@ async def obtener_datos_portal(
     
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
-    try:
-        await verificar_acceso_cliente(db, current_user, cliente.id)
-    except PermissionError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
+    # La ficha técnica la puede consultar cualquier técnico (soporte en campo);
+    # el estado de cuenta solo el de sus propios clientes.
+    cuenta_visible = await es_cliente_del_tecnico(db, current_user, cliente.id)
 
     # --- A. CÁLCULOS FINANCIEROS (Sincronizado con listado-completo) ---
     # Filtramos facturas: pendientes, vencidas o promesas (Adeudos reales)
@@ -228,10 +229,11 @@ async def obtener_datos_portal(
         "velocidad_bajada": cliente.plan.velocidad_bajada if cliente.plan else 0,
         "velocidad_subida": cliente.plan.velocidad_subida if cliente.plan else 0,
         "precio_plan": cliente.plan.precio if cliente.plan else 0.0,
-        "total_deuda": total_deuda,
-        "facturas_pendientes": vencidas_count,
-        "fecha_corte": fecha_corte,
-        "saldo_a_favor": cliente.saldo_a_favor or 0.0
+        "estado_cuenta_visible": cuenta_visible,
+        "total_deuda": total_deuda if cuenta_visible else None,
+        "facturas_pendientes": vencidas_count if cuenta_visible else None,
+        "fecha_corte": fecha_corte if cuenta_visible else None,
+        "saldo_a_favor": (cliente.saldo_a_favor or 0.0) if cuenta_visible else None,
     }
 
 
@@ -271,10 +273,6 @@ async def buscar_clientes_global(
         .group_by(ClienteModel.id)
         .limit(8)
     )
-    if current_user.rol == "tecnico":
-        stmt = stmt.where(
-            filtro_clientes_del_tecnico(current_user.id)
-        )
 
     result = await db.execute(stmt)
     rows = result.mappings().all()
@@ -333,7 +331,11 @@ async def listar_clientes(
         query = query.where(ClienteModel.router_id == router_id)
 
     # 👇 4. LÓGICA DE FILTRADO PARA EL TÉCNICO (CORE) 👇
-    if current_user.rol == "tecnico":
+    # Al buscar, el técnico encuentra a cualquier cliente (soporte en campo);
+    # sin búsqueda, su listado es solo de lo que tiene asignado.
+    if current_user.rol == "tecnico" and search and len(search.strip()) < 3:
+        raise HTTPException(status_code=400, detail="Escribe al menos 3 caracteres para buscar")
+    if current_user.rol == "tecnico" and not search:
         query = query.where(
             filtro_clientes_del_tecnico(current_user.id)
         )
@@ -593,7 +595,7 @@ async def diagnostico_fibra_cliente(
     """
     servicio = SNMPMonitorService(db)
     try:
-        await verificar_acceso_cliente(db, current_user, cliente_id)
+        # Diagnóstico de solo lectura: cualquier técnico puede consultarlo en campo.
         resultado = await servicio.monitorear_cliente_individual(cliente_id)
         return {"status": "success", "data": resultado}
     except PermissionError as error:

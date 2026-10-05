@@ -12,9 +12,6 @@ from src.application.services.olt_service import OLTService
 from src.application.services.snmp_service import SNMPMonitorService
 from src.application.services.vsol_api_service import VsolApiService
 from src.infrastructure.auth import role_required
-from src.application.services.access_control_service import (
-    verificar_acceso_cliente,
-)
 
 router = APIRouter(prefix="/olts", tags=["OLTs"])
 
@@ -132,7 +129,7 @@ async def diagnostico_individual_cliente(
     # 🚫 NO USAMOS CACHÉ AQUÍ: Si el técnico está moviendo la fibra, necesita ver el cambio al instante.
     servicio = SNMPMonitorService(db)
     try:
-        await verificar_acceso_cliente(db, current_user, cliente_id)
+        # Diagnóstico de solo lectura: cualquier técnico puede consultarlo en campo.
         resultado = await servicio.monitorear_cliente_individual(cliente_id)
         return {"status": "success", "data": resultado}
     except PermissionError as error:
@@ -238,7 +235,7 @@ async def diagnostico_cliente_vsol_api(
     """
     servicio = VsolApiService(db)
     try:
-        await verificar_acceso_cliente(db, current_user, cliente_id)
+        # Diagnóstico de solo lectura: cualquier técnico puede consultarlo en campo.
         resultado = await servicio.monitorear_cliente_individual_api(cliente_id)
         return {"status": "success", "data": resultado}
     except PermissionError as error:

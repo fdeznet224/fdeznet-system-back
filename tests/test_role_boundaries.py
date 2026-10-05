@@ -163,3 +163,21 @@ def test_respuesta_nap_no_expone_credenciales_del_cliente():
     assert fields == {"id", "nombre", "puerto_nap", "cedula"}
     assert "user_pppoe" not in fields
     assert "pass_pppoe" not in fields
+
+
+def test_el_estado_de_cuenta_solo_se_oculta_al_tecnico_que_no_tiene_al_cliente():
+    import asyncio
+    from types import SimpleNamespace
+
+    from src.application.services.access_control_service import es_cliente_del_tecnico
+
+    class _DB:
+        def __init__(self, encontrado):
+            self.encontrado = encontrado
+
+        async def execute(self, _consulta):
+            return SimpleNamespace(scalar_one_or_none=lambda: self.encontrado)
+
+    assert asyncio.run(es_cliente_del_tecnico(_DB(None), SimpleNamespace(rol="admin", id=1), 5)) is True
+    assert asyncio.run(es_cliente_del_tecnico(_DB(5), SimpleNamespace(rol="tecnico", id=7), 5)) is True
+    assert asyncio.run(es_cliente_del_tecnico(_DB(None), SimpleNamespace(rol="tecnico", id=7), 5)) is False
