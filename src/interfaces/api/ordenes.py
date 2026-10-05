@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -299,6 +299,20 @@ async def crear_orden(
         return serializar_orden(orden)
     except (ValueError, PermissionError, RuntimeError) as error:
         manejar_error(error)
+
+
+@router.get("/agenda")
+async def agenda_tecnico(
+    fecha: date,
+    tecnico_id: Optional[int] = Query(default=None, gt=0),
+    excluir_orden_id: Optional[int] = Query(default=None, gt=0),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Bloques de visita del día según el horario de atención y lo ya agendado al técnico."""
+    from src.application.services.agenda_service import agenda_del_dia
+
+    return await agenda_del_dia(db, tecnico_id, fecha, excluir_orden_id)
 
 
 @router.get("/{orden_id}")

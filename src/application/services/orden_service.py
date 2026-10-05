@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import Optional
 
@@ -18,6 +19,8 @@ from src.infrastructure.models import (
     ZonaModel,
 )
 
+
+logger = logging.getLogger(__name__)
 
 TIPOS_ORDEN = {
     "instalacion",
@@ -290,6 +293,8 @@ class OrdenService:
             )
         elif nuevo_estado == "cancelada":
             orden.fecha_cancelacion = ahora
+        elif nuevo_estado == "en_camino":
+            await self._avisar_en_camino(orden, usuario)
 
         self._registrar_estado(
             orden,
@@ -303,6 +308,18 @@ class OrdenService:
         else:
             await self.db.flush()
         return await self.obtener(orden.id)
+
+    async def _avisar_en_camino(self, orden: OrdenServicioModel, usuario: UsuarioModel):
+        """El cliente se entera por WhatsApp de que el técnico va a su domicilio."""
+        from src.application.services.agenda_service import preparar_aviso_en_camino
+
+        try:
+            tecnico = await self.db.get(UsuarioModel, orden.tecnico_id) if orden.tecnico_id else usuario
+            async with self.db.begin_nested():
+                await preparar_aviso_en_camino(self.db, orden, tecnico)
+        except Exception:
+            # Un problema con el aviso no debe impedir que el técnico avance.
+            logger.exception("No se pudo preparar el aviso de técnico en camino (orden %s)", orden.id)
 
     async def agregar_material(
         self,
