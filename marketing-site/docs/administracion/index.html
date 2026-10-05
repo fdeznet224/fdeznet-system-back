@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Cómo administrar usuarios y roles, la marca blanca, los respaldos, el almacenamiento y las actualizaciones de FdezPay.">
+  <meta name="theme-color" content="#07110f">
+  <link rel="canonical" href="https://dev.fdezpay.com/docs/administracion/">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2218%22 fill=%22%236ee7b7%22/><path d=%22M20 16h28v9H30v8h15v9H30v16H20z%22 fill=%22%2307110f%22/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/site.css?v=20261005">
+  <title>Administración | FdezPay</title>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container nav-wrap">
+      <a class="brand" href="/"><span class="brand-mark">F</span><span>FdezNet <em>ISP</em></span></a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="main-nav"><span></span><span></span><span></span><span class="sr-only">Abrir menú</span></button>
+      <nav id="main-nav" class="main-nav"><a href="/">Inicio</a><a href="/docs/">Documentación</a><a href="#usuarios">Usuarios</a><a href="#respaldos">Respaldos</a><a href="#actualizaciones">Actualizaciones</a></nav>
+      <div class="nav-actions"><a class="text-link" href="https://fdezpay.com/login">Acceder</a><a class="button button-small" data-whatsapp href="#">Solicitar ayuda</a></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="docs-hero guide-hero">
+      <div class="container">
+        <nav class="breadcrumbs" aria-label="Ruta"><a href="/docs/">Documentación</a><span>›</span><span>Guía 08 · Administración</span></nav>
+        <p class="eyebrow">Guía 08 de 08</p>
+        <h1>Usuarios, marca, respaldos y actualizaciones</h1>
+        <p>Lo que el administrador revisa de vez en cuando: quién entra y qué puede ver, cómo se ve el sistema con tu marca, que los respaldos estén al día y que tengas la versión más reciente.</p>
+        <div class="guide-meta"><span>Roles por persona</span><span>Marca blanca</span><span>Respaldos cifrados</span></div>
+      </div>
+    </section>
+
+    <div class="container docs-layout guide-layout">
+      <aside class="docs-sidebar" aria-label="Contenido de la guía">
+        <strong>En esta guía</strong>
+        <a href="#usuarios">Usuarios y roles</a>
+        <a href="#marca">Marca blanca</a>
+        <a href="#respaldos">Respaldos</a>
+        <a href="#almacenamiento">Almacenamiento</a>
+        <a href="#actualizaciones">Actualizaciones</a>
+        <a href="#bitacora">Bitácora</a>
+      </aside>
+
+      <article class="docs-content">
+        <section class="doc-section" id="usuarios">
+<p class="kicker">Accesos</p>
+<h2>Usuarios y roles</h2>
+<p>En <strong>Configuración → Usuarios del Sistema</strong> crea una cuenta por persona. Nunca compartan el usuario <code>admin</code>.</p>
+<div class="table-wrap doc-table"><table><thead><tr><th>Rol</th><th>Qué puede hacer</th></tr></thead><tbody><tr><th>Administrador General</th><td>Todo el sistema: configuración, finanzas, red y usuarios.</td></tr><tr><th>Cobrador / Cajero</th><td>La terminal de cobro de sus zonas: cobros, promesas, historial y cierre.</td></tr><tr><th>Técnico Instalador</th><td>La app del técnico: agenda, activaciones, ficha técnica y retiros.</td></tr></tbody></table></div>
+<ul><li><strong>Routers permitidos</strong> y <strong>zonas de cobranza</strong> limitan lo que ve cada persona.</li><li>El <strong>WhatsApp del personal</strong> (con código de país) lo identifica en el bot técnico.</li><li>Puedes desactivar una cuenta sin borrarla.</li></ul>
+        </section>
+
+        <section class="doc-section" id="marca">
+<p class="kicker">Imagen</p>
+<h2>Tu marca en el sistema</h2>
+<p>En <strong>Configuración → Marca blanca</strong> cambias el nombre del ISP y del sistema, el logotipo, el favicon, los colores, el teléfono, el correo, la dirección y el pie de los recibos. La vista previa muestra el resultado antes de guardar.</p>
+<p>En <strong>Parámetros PPPoE</strong> defines cómo se generan las contraseñas PPPoE de los clientes nuevos.</p>
+        </section>
+
+        <section class="doc-section" id="respaldos">
+<p class="kicker">Recuperación</p>
+<h2>Respaldos y recuperación</h2>
+<p>En <strong>Configuración → Respaldos y recuperación</strong>:</p>
+<div class="table-wrap doc-table"><table><thead><tr><th>Opción</th><th>Uso</th></tr></thead><tbody><tr><th>Respaldar cada cuántos días</th><td>Frecuencia del respaldo automático (alrededor de las 3:20 a. m.).</td></tr><tr><th>Conservar respaldos durante (días)</th><td>Antigüedad máxima de un respaldo.</td></tr><tr><th>Guardar solo los más recientes</th><td>Cuántos respaldos se conservan; los más viejos se borran solos. 5 por defecto.</td></tr><tr><th>Qué incluir</th><td>La base de datos siempre va; además configuración, archivos, evidencias, sesión de WhatsApp y VPN.</td></tr></tbody></table></div>
+<p>Cada respaldo se cifra y se verifica. Desde la misma pantalla puedes crear uno al momento, verificarlo o restaurarlo.</p>
+<div class="doc-callout doc-warning">Guarda una copia fuera del servidor. Un respaldo que solo vive en la misma VPS no te protege si esa VPS se pierde.</div>
+        </section>
+
+        <section class="doc-section" id="almacenamiento">
+<p class="kicker">Espacio</p>
+<h2>Almacenamiento y cierres</h2>
+<p><strong>Configuración → Almacenamiento y cierres</strong> muestra cuánto ocupan comprobantes, recibos, evidencias, respaldos y la base de datos. El <strong>cierre mensual</strong> archiva los comprobantes aprobados y rechazados del periodo; la limpieza retira después las imágenes viejas sin tocar pagos, facturas ni comprobantes pendientes.</p>
+        </section>
+
+        <section class="doc-section" id="actualizaciones">
+<p class="kicker">Ciclo de vida</p>
+<h2>Actualizaciones</h2>
+<p>En <strong>Configuración → Licencias y versiones</strong> ves tu versión, tu plan y si hay una versión nueva. Al pedir la actualización, el sistema:</p>
+<ol class="flow-steps"><li><span>1</span><div><strong>Respalda</strong><small>Crea y verifica un respaldo cifrado.</small></div></li><li><span>2</span><div><strong>Instala</strong><small>Aplica la versión autorizada y sus cambios de base de datos.</small></div></li><li><span>3</span><div><strong>Comprueba</strong><small>Revisa que todo responda.</small></div></li><li><span>4</span><div><strong>Revierte si falla</strong><small>Restaura el respaldo automáticamente.</small></div></li></ol>
+<div class="doc-callout">Después de actualizar, pide a técnicos y cobradores que recarguen la app del celular.</div>
+        </section>
+
+        <section class="doc-section" id="bitacora">
+<p class="kicker">Seguimiento</p>
+<h2>Bitácora y tareas automáticas</h2>
+<p><strong>Terminal de Logs</strong> muestra lo que hicieron las tareas automáticas: facturación, cortes, reconexiones, sincronización con MikroTik, verificador de facturas y respaldos. Ahí revisas primero cuando algo no se ejecutó.</p>
+<div class="doc-callout"><strong>Fin del recorrido.</strong> Si algo de tu operación no aparece en estas guías, escríbenos y lo revisamos contigo.</div>
+        </section>
+
+        <div class="guide-pager"><a href="/docs/soporte-y-bajas/"><small>← Guía 07</small><strong>Soporte y bajas</strong></a></div>
+      </article>
+    </div>
+  </main>
+
+  <footer class="footer"><div class="container footer-grid"><div><a class="brand" href="/"><span class="brand-mark">F</span><span>FdezNet <em>ISP</em></span></a><p>Software privado para proveedores de Internet inalámbrico y fibra óptica.</p></div><div><strong>Producto</strong><a href="/#plataforma">Funciones</a><a href="/#planes">Planes</a><a href="/#comparativa">Comparativa</a></div><div><strong>Ayuda</strong><a href="/docs/">Documentación</a><a href="https://fdezpay.com/login">Acceso al sistema</a><a data-whatsapp href="#">Contacto</a></div></div><div class="container footer-bottom"><span>© <span data-year></span> FdezNet.</span><span>Guía de uso · La configuración puede variar por instalación</span></div></footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

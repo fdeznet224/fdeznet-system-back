@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Guía para registrar OLT, revisar ONUs en el Radar, dar de alta cajas NAP con sus puertos y llevar el inventario de equipos en FdezPay.">
+  <meta name="theme-color" content="#07110f">
+  <link rel="canonical" href="https://dev.fdezpay.com/docs/red-de-fibra/">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2218%22 fill=%22%236ee7b7%22/><path d=%22M20 16h28v9H30v8h15v9H30v16H20z%22 fill=%22%2307110f%22/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/site.css?v=20261005">
+  <title>Red de fibra | FdezPay</title>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container nav-wrap">
+      <a class="brand" href="/"><span class="brand-mark">F</span><span>FdezNet <em>ISP</em></span></a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="main-nav"><span></span><span></span><span></span><span class="sr-only">Abrir menú</span></button>
+      <nav id="main-nav" class="main-nav"><a href="/">Inicio</a><a href="/docs/">Documentación</a><a href="#olt">OLT</a><a href="#naps">Cajas NAP</a><a href="#inventario">Inventario</a></nav>
+      <div class="nav-actions"><a class="text-link" href="https://fdezpay.com/login">Acceder</a><a class="button button-small" data-whatsapp href="#">Solicitar ayuda</a></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="docs-hero guide-hero">
+      <div class="container">
+        <nav class="breadcrumbs" aria-label="Ruta"><a href="/docs/">Documentación</a><span>›</span><span>Guía 02 · Red de fibra</span></nav>
+        <p class="eyebrow">Guía 02 de 08</p>
+        <h1>Registra tus OLT, cajas NAP y equipos</h1>
+        <p>Con la red de fibra registrada, cada cliente queda ligado a su OLT, su caja NAP, su puerto y su ONU. Así el técnico sabe dónde conectar y el sistema puede diagnosticar la señal.</p>
+        <div class="guide-meta"><span>4 etapas</span><span>GPON y EPON</span><span>OLT por VPN</span></div>
+      </div>
+    </section>
+
+    <div class="container docs-layout guide-layout">
+      <aside class="docs-sidebar" aria-label="Contenido de la guía">
+        <strong>En esta guía</strong>
+        <a href="#resumen">Orden recomendado</a>
+        <a href="#olt">1. Registrar la OLT</a>
+        <a href="#radar">2. Radar OLT</a>
+        <a href="#naps">3. Cajas NAP</a>
+        <a href="#inventario">4. Inventario de equipos</a>
+        <a href="#comprobacion">Comprobación final</a>
+      </aside>
+
+      <article class="docs-content">
+        <section class="doc-section" id="resumen">
+<p class="kicker">Antes de comenzar</p>
+<h2>Orden recomendado</h2>
+<p>Registra la red de afuera hacia adentro: primero la OLT, luego las cajas NAP que cuelgan de cada puerto PON y al final los equipos que vas a instalar.</p>
+<ol class="flow-steps"><li><span>1</span><div><strong>OLT</strong><small>Equipo central de la red de fibra.</small></div></li><li><span>2</span><div><strong>Radar OLT</strong><small>Comprueba que el sistema lee las ONUs.</small></div></li><li><span>3</span><div><strong>Cajas NAP</strong><small>Cajas en poste con su splitter y puertos.</small></div></li><li><span>4</span><div><strong>Inventario</strong><small>ONUs en bodega, listas para instalar.</small></div></li></ol>
+<div class="doc-callout"><strong>La OLT no necesita estar en tu misma red.</strong> Si el sistema la alcanza por el túnel VPN del MikroTik (guía 01), puedes consultarla y operarla desde cualquier lugar.</div>
+        </section>
+
+        <section class="doc-section" id="olt">
+<p class="kicker">Paso 1</p>
+<h2>Registra la OLT</h2>
+<p>Abre <strong>Infraestructura → Radar OLT</strong> y pulsa <strong>+ Nueva OLT</strong>.</p>
+<div class="table-wrap doc-table"><table><thead><tr><th>Campo</th><th>Qué debes indicar</th></tr></thead><tbody><tr><th>Nombre</th><td>Cómo la reconoces, por ejemplo el nombre de la zona.</td></tr><tr><th>IP Gestión</th><td>IP de administración de la OLT (por VPN o red privada).</td></tr><tr><th>Tecnología</th><td><strong>GPON</strong> o <strong>EPON</strong>.</td></tr><tr><th>Modelo</th><td>Modelo del equipo, por ejemplo V1600GS.</td></tr><tr><th>Tipo de integración</th><td><strong>VSOL API</strong> para OLT VSOL con API web, <strong>SNMP</strong> para lectura por comunidad SNMP, o <strong>Auto</strong>.</td></tr><tr><th>API: protocolo, puerto, usuario y contraseña</th><td>Los datos de acceso web de la OLT cuando usas la API.</td></tr><tr><th>SNMP Community</th><td>Comunidad de lectura, normalmente <code>public</code>.</td></tr></tbody></table></div>
+<div class="doc-callout">Deja <strong>Verificar SSL</strong> apagado si la OLT usa un certificado propio. Usa un usuario dedicado para el sistema y no compartas la contraseña administrativa.</div>
+        </section>
+
+        <section class="doc-section" id="radar">
+<p class="kicker">Paso 2</p>
+<h2>Revisa tus ONUs en el Radar</h2>
+<p>En <strong>Radar OLT</strong> elige la OLT y pulsa <strong>Escanear</strong>. El escaneo empieza solo cuando eliges una OLT, para no cargar el equipo sin necesidad.</p>
+<div class="table-wrap doc-table"><table><thead><tr><th>Filtro</th><th>Para qué sirve</th></tr></thead><tbody><tr><th>Online / Offline-LOS</th><td>Ver qué ONUs tienen o perdieron señal.</td></tr><tr><th>Con cliente / No registradas</th><td>Encontrar ONUs conectadas que aún no están ligadas a un cliente.</td></tr><tr><th>Señal crítica / regular</th><td>Detectar potencias que necesitan revisión antes de que el cliente se quede sin servicio.</td></tr><tr><th>Buscar</th><td>Por cliente, número de contrato, teléfono, IP, serial o PON.</td></tr></tbody></table></div>
+<p>Con <strong>Ver datos</strong> abres el detalle de la ONU: distancia a la OLT, temperatura, voltaje, potencia RX y TX, firmware, tiempo encendida y la <strong>última caída con su motivo</strong> (por ejemplo, corte de luz en la casa o pérdida de señal de la fibra). Desde ahí también se puede reiniciar la ONU.</p>
+<div class="doc-callout">Un corte de luz y un corte de fibra se ven igual para el cliente (“no tengo internet”). El motivo de la caída te dice si hay que mandar técnico o solo pedir que revise la corriente.</div>
+        </section>
+
+        <section class="doc-section" id="naps">
+<p class="kicker">Paso 3</p>
+<h2>Da de alta las cajas NAP</h2>
+<p>Abre <strong>Infraestructura → Cajas NAP (Fibra)</strong> y pulsa <strong>Nueva NAP</strong>.</p>
+<div class="table-wrap doc-table"><table><thead><tr><th>Campo</th><th>Qué debes indicar</th></tr></thead><tbody><tr><th>Zona / Colonia</th><td>La zona que atiende la caja.</td></tr><tr><th>OLT y Puerto PON</th><td>De qué OLT y de qué puerto PON sale la fibra de esta caja.</td></tr><tr><th>Identificador de Caja</th><td>El nombre escrito en la caja, por ejemplo <code>P1-CN-2-A</code>.</td></tr><tr><th>Referencia Física</th><td>Cómo encontrarla: “poste frente a la escuela”.</td></tr><tr><th>Coordenadas GPS</th><td>Latitud y longitud, por ejemplo <code>16.7521, -93.1154</code>.</td></tr><tr><th>Puertos Totales</th><td>Salidas del splitter: 8, 16…</td></tr></tbody></table></div>
+<p>Con <strong>Ver Puertos</strong> ves qué puerto está libre u ocupado, a qué cliente pertenece y el serial de su ONU. Con <strong>Crear orden aquí</strong> registras una instalación directamente en esa caja.</p>
+<div class="doc-callout"><strong>¿Tienes tus cajas en Google Earth?</strong> Si tu planta externa está en un archivo KML o KMZ con el nombre y la ubicación de cada caja, pide a soporte que la cargue en bloque: se importan con coordenadas, OLT y PON sin capturarlas una por una.</div>
+<div class="doc-callout">Usa una nomenclatura fija para el identificador (PON, calle y lado de la calle, por ejemplo). Es lo que el técnico lee en el poste y lo que busca en la app.</div>
+        </section>
+
+        <section class="doc-section" id="inventario">
+<p class="kicker">Paso 4</p>
+<h2>Lleva el inventario de ONUs</h2>
+<p>En <strong>Operaciones → Inventario / Bodega</strong> pulsa <strong>Ingresar Equipo</strong>. Puedes escanear el código de barras o escribir el identificador, elegir la tecnología y el modelo y guardar el equipo en stock.</p>
+<div class="table-wrap doc-table"><table><thead><tr><th>Estado</th><th>Significa</th></tr></thead><tbody><tr><th>Bodega</th><td>Disponible para instalar.</td></tr><tr><th>Instalado</th><td>Ligado a un cliente.</td></tr><tr><th>A recoger</th><td>El cliente se dio de baja y hay que recuperar el equipo.</td></tr><tr><th>Avería</th><td>Dañado, incompleto o en revisión.</td></tr></tbody></table></div>
+<div class="doc-callout"><strong>GPON o EPON.</strong> En GPON el identificador es el serial (por ejemplo <code>HWTC…</code>); en EPON es la MAC de la ONU. Captúralo exactamente como lo reporta la OLT para que el sistema la reconozca.</div>
+<p>Puedes <strong>asignar equipos a un técnico</strong> para que los lleve en su ruta. Al activar un cliente, el técnico elige la ONU de la lista o la escanea y el inventario se actualiza solo.</p>
+        </section>
+
+        <section class="doc-section" id="comprobacion">
+<p class="kicker">Finalización</p>
+<h2>Comprueba la red de fibra</h2>
+<ul class="check-list"><li>La OLT aparece en el Radar y el escaneo muestra sus ONUs.</li><li>Las ONUs “No registradas” corresponden a clientes que todavía no ligas.</li><li>Cada caja NAP tiene zona, OLT, PON, coordenadas y número de puertos.</li><li>Las ONUs nuevas están en bodega antes de salir a instalar.</li></ul>
+<div class="doc-callout"><strong>Siguiente paso:</strong> con red y equipos listos ya puedes registrar clientes nuevos e instalarlos (guía 03).</div>
+        </section>
+
+        <div class="guide-pager"><a href="/docs/configuracion-inicial/"><small>← Guía 01</small><strong>Configuración inicial</strong></a><a class="next" href="/docs/clientes-e-instalaciones/"><small>Guía 03 →</small><strong>Clientes e instalaciones</strong></a></div>
+      </article>
+    </div>
+  </main>
+
+  <footer class="footer"><div class="container footer-grid"><div><a class="brand" href="/"><span class="brand-mark">F</span><span>FdezNet <em>ISP</em></span></a><p>Software privado para proveedores de Internet inalámbrico y fibra óptica.</p></div><div><strong>Producto</strong><a href="/#plataforma">Funciones</a><a href="/#planes">Planes</a><a href="/#comparativa">Comparativa</a></div><div><strong>Ayuda</strong><a href="/docs/">Documentación</a><a href="https://fdezpay.com/login">Acceso al sistema</a><a data-whatsapp href="#">Contacto</a></div></div><div class="container footer-bottom"><span>© <span data-year></span> FdezNet.</span><span>Guía de uso · La configuración puede variar por instalación</span></div></footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Guía de la aplicación del técnico de FdezPay: buscador, agenda, activación de clientes, ficha técnica con PPPoE y consumo en vivo, reinicio de ONU y retiros.">
+  <meta name="theme-color" content="#07110f">
+  <link rel="canonical" href="https://dev.fdezpay.com/docs/app-del-tecnico/">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2218%22 fill=%22%236ee7b7%22/><path d=%22M20 16h28v9H30v8h15v9H30v16H20z%22 fill=%22%2307110f%22/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/site.css?v=20261005">
+  <title>App del técnico | FdezPay</title>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container nav-wrap">
+      <a class="brand" href="/"><span class="brand-mark">F</span><span>FdezNet <em>ISP</em></span></a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="main-nav"><span></span><span></span><span></span><span class="sr-only">Abrir menú</span></button>
+      <nav id="main-nav" class="main-nav"><a href="/">Inicio</a><a href="/docs/">Documentación</a><a href="#agenda">Agenda</a><a href="#activacion">Activar</a><a href="#ficha">Ficha</a></nav>
+      <div class="nav-actions"><a class="text-link" href="https://fdezpay.com/login">Acceder</a><a class="button button-small" data-whatsapp href="#">Solicitar ayuda</a></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="docs-hero guide-hero">
+      <div class="container">
+        <nav class="breadcrumbs" aria-label="Ruta"><a href="/docs/">Documentación</a><span>›</span><span>Guía 04 · App del técnico</span></nav>
+        <p class="eyebrow">Guía 04 de 08</p>
+        <h1>El trabajo en campo desde el celular</h1>
+        <p>El técnico entra con su usuario al mismo sistema y lo usa como una aplicación en su celular. Ve su agenda, activa clientes, revisa la conexión de cualquier abonado y recoge equipos.</p>
+        <div class="guide-meta"><span>Funciona con poca señal</span><span>Se instala como app</span><span>Rol: Técnico Instalador</span></div>
+      </div>
+    </section>
+
+    <div class="container docs-layout guide-layout">
+      <aside class="docs-sidebar" aria-label="Contenido de la guía">
+        <strong>En esta guía</strong>
+        <a href="#acceso">Entrar e instalar</a>
+        <a href="#inicio">Inicio y buscador</a>
+        <a href="#agenda">Agenda</a>
+        <a href="#activacion">Activar un cliente</a>
+        <a href="#ficha">Ficha técnica</a>
+        <a href="#retiros">Retiros de equipo</a>
+        <a href="#bot">Bot técnico</a>
+      </aside>
+
+      <article class="docs-content">
+        <section class="doc-section" id="acceso">
+<p class="kicker">Antes de salir</p>
+<h2>Entra e instala la app</h2>
+<ol><li>El administrador crea el usuario con rol <strong>Técnico Instalador</strong> (guía 08).</li><li>El técnico abre la dirección del sistema en el navegador del celular e inicia sesión.</li><li>En el menú del navegador elige <strong>Agregar a pantalla de inicio</strong>: queda como una app.</li></ol>
+<div class="doc-callout"><strong>Sin señal también trabaja.</strong> La agenda y los contratos apartados se guardan en el celular; los avances que registra sin internet quedan pendientes y se envían solos al recuperar la conexión. Las activaciones y los retiros sí necesitan conexión.</div>
+<div class="doc-callout doc-warning">Después de una actualización del sistema, el técnico debe cerrar y volver a abrir la app (o recargarla) para ver las pantallas nuevas.</div>
+        </section>
+
+        <section class="doc-section" id="inicio">
+<p class="kicker">Pantalla de inicio</p>
+<h2>Inicio y buscador de clientes</h2>
+<p>Arriba de todo está <strong>Buscar cliente</strong>: escribe al menos 3 letras del nombre, el número de contrato, la IP o el serial de la ONU y los resultados aparecen mientras escribe. Al tocar uno se abre su ficha técnica.</p>
+<p>Debajo aparecen sus <strong>contratos apartados</strong> (con el siguiente que le toca), el botón <strong>+ Nueva instalación</strong> y el resumen de su agenda y retiros pendientes.</p>
+        </section>
+
+        <section class="doc-section" id="agenda">
+<p class="kicker">Pestaña Agenda</p>
+<h2>La agenda del día</h2>
+<p>Las órdenes se ordenan por hora de visita. Cada tarjeta tiene <strong>WhatsApp</strong> para escribirle al cliente antes de ir y <strong>Cómo llegar</strong>, que abre la ruta en Google Maps.</p>
+<h3>Instalaciones: un botón a la vez</h3>
+<ol class="flow-steps"><li><span>1</span><div><strong>Marcar en camino</strong><small>El cliente recibe un WhatsApp de que el técnico va en camino.</small></div></li><li><span>2</span><div><strong>Activar cliente</strong><small>Aparece en cuanto marca en camino; abre el formulario de activación.</small></div></li></ol>
+<h3>Reparaciones y otras órdenes</h3>
+<p>Siguen tres pasos: <strong>Marcar en camino</strong> → <strong>Iniciar trabajo</strong> → <strong>Finalizar con conexión</strong>. Para terminar se pide la solución y una evidencia (foto) o un diagnóstico guardado.</p>
+        </section>
+
+        <section class="doc-section" id="activacion">
+<p class="kicker">En la instalación</p>
+<h2>Activa al cliente</h2>
+<ol><li>Revisa titular, zona, plan y plantilla de cobro.</li><li>Elige el contrato: el <strong>siguiente apartado</strong>, que el sistema genere uno o escribir otro apartado.</li><li>Busca la ONU por serial o MAC, o pulsa <strong>Escanear</strong> y apunta al código de barras o QR del equipo.</li><li>Elige la caja NAP y el puerto donde quedó conectado.</li><li>Si la midió, anota la potencia en dBm.</li><li>Confirma la activación.</li></ol>
+<p>La pantalla final dice <strong>Servicio activo y orden cerrada</strong> y muestra el usuario y la contraseña PPPoE para configurar el router del cliente, la señal de la ONU leída en la OLT y los cambios que se anotaron para el administrador.</p>
+<div class="doc-callout">Si la OLT no responde a tiempo, la activación se completa igual y la señal se revisa después desde la ficha del cliente.</div>
+        </section>
+
+        <section class="doc-section" id="ficha">
+<p class="kicker">Soporte en campo</p>
+<h2>La ficha técnica del cliente</h2>
+<p>Desde el buscador cualquier técnico puede abrir la ficha de cualquier cliente:</p>
+<div class="table-wrap doc-table"><table><thead><tr><th>Sección</th><th>Qué muestra</th></tr></thead><tbody><tr><th>Estado</th><td><strong>Online</strong> u <strong>Offline</strong> según la sesión PPPoE en el MikroTik, o <strong>Suspendido</strong> si está cortado por adeudo.</td></tr><tr><th>Conexión PPPoE y consumo</th><td>Desde cuándo está conectado, su IP y cuánto está bajando y subiendo en este momento.</td></tr><tr><th>Ver consumo en vivo</th><td>Actualiza la bajada y la subida cada 3 segundos para revisar lentitud con el cliente.</td></tr><tr><th>Señal de la ONU</th><td>Potencia RX/TX y diagnóstico en la OLT.</td></tr><tr><th>Reiniciar ONU</th><td>Reinicio normal sin borrar su configuración; el cliente queda sin internet 1 a 2 minutos.</td></tr><tr><th>Credenciales PPPoE</th><td>Para reconfigurar el router.</td></tr><tr><th>Estado de cuenta</th><td>Lo que debe, explicado renglón por renglón, para responder dudas en la visita.</td></tr></tbody></table></div>
+<div class="doc-callout">El chat y la llamada al cliente solo aparecen en los clientes asignados al técnico. Los datos técnicos los puede consultar con cualquier cliente.</div>
+        </section>
+
+        <section class="doc-section" id="retiros">
+<p class="kicker">Pestaña Retiros</p>
+<h2>Recoger equipos</h2>
+<p>Cuando un cliente se da de baja, su ONU aparece en <strong>Retiros</strong>. El técnico solo va a recogerla, así que la tarjeta tiene:</p>
+<ul class="check-list"><li><strong>WhatsApp</strong> para confirmar con el cliente que estará en casa.</li><li><strong>Cómo llegar</strong> para la ruta.</li><li>El estado del equipo: funcional, dañado, incompleto o no recuperado.</li><li>Un solo botón: <strong>Equipo recogido</strong>.</li></ul>
+<p>Al confirmarlo, la ONU vuelve a bodega con su estado y la orden de retiro se cierra.</p>
+        </section>
+
+        <section class="doc-section" id="bot">
+<p class="kicker">Por WhatsApp</p>
+<h2>Consultas por WhatsApp</h2>
+<p>Si el administrador le habilita el <strong>Bot técnico por WhatsApp</strong>, el técnico escribe <code>tecnico</code> desde su número registrado y puede consultar por contrato la sesión PPPoE, ping, estado y potencia de la ONU, router, caja NAP y puerto. Nunca se envían contraseñas.</p>
+        </section>
+
+        <div class="guide-pager"><a href="/docs/clientes-e-instalaciones/"><small>← Guía 03</small><strong>Clientes e instalaciones</strong></a><a class="next" href="/docs/facturacion-y-cobranza/"><small>Guía 05 →</small><strong>Facturación y cobranza</strong></a></div>
+      </article>
+    </div>
+  </main>
+
+  <footer class="footer"><div class="container footer-grid"><div><a class="brand" href="/"><span class="brand-mark">F</span><span>FdezNet <em>ISP</em></span></a><p>Software privado para proveedores de Internet inalámbrico y fibra óptica.</p></div><div><strong>Producto</strong><a href="/#plataforma">Funciones</a><a href="/#planes">Planes</a><a href="/#comparativa">Comparativa</a></div><div><strong>Ayuda</strong><a href="/docs/">Documentación</a><a href="https://fdezpay.com/login">Acceso al sistema</a><a data-whatsapp href="#">Contacto</a></div></div><div class="container footer-bottom"><span>© <span data-year></span> FdezNet.</span><span>Guía de uso · La configuración puede variar por instalación</span></div></footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

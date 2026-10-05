@@ -3,4 +3,11 @@
   <url><loc>https://dev.fdezpay.com/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>
   <url><loc>https://dev.fdezpay.com/docs/</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
   <url><loc>https://dev.fdezpay.com/docs/configuracion-inicial/</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dev.fdezpay.com/docs/red-de-fibra/</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://dev.fdezpay.com/docs/clientes-e-instalaciones/</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://dev.fdezpay.com/docs/app-del-tecnico/</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://dev.fdezpay.com/docs/facturacion-y-cobranza/</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://dev.fdezpay.com/docs/whatsapp/</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://dev.fdezpay.com/docs/soporte-y-bajas/</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://dev.fdezpay.com/docs/administracion/</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
 </urlset>

@@ -240,6 +240,15 @@ td { color: #b6c9c2; }
 .doc-table table { min-width: 590px; }
 .doc-table tbody th { width: 28%; color: var(--text); }
 .guide-next { margin-top: 30px; }
+.doc-callout + .doc-callout { margin-top: 12px; }
+.guide-pager { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 34px; }
+.guide-pager a { display: block; padding: 17px 19px; border: 1px solid var(--line); border-radius: 15px; background: rgba(255,255,255,.02); transition: .2s ease; }
+.guide-pager a:hover { border-color: var(--green); transform: translateY(-2px); }
+.guide-pager a.next { text-align: right; }
+.guide-pager small { display: block; color: var(--green); font-size: .72rem; font-weight: 800; }
+.guide-pager strong { display: block; margin-top: 4px; font: 700 1rem "Space Grotesk"; color: var(--text); }
+.guide-list { display: grid; gap: 10px; margin-top: 22px; }
+.guide-list .guide-feature { margin-top: 0; }
 
 .reveal { opacity: 0; transform: translateY(18px); transition: opacity .55s ease, transform .55s ease; }
 .reveal.visible { opacity: 1; transform: none; }
@@ -291,6 +300,8 @@ td { color: #b6c9c2; }
   .figure-grid-three .doc-figure-narrow { max-width: 360px; }
   .guide-feature { grid-template-columns: auto 1fr; }
   .guide-feature-arrow { display: none; }
+  .guide-pager { grid-template-columns: 1fr; }
+  .guide-pager a.next { text-align: left; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Cómo factura FdezPay, cuándo corta y reconecta, cómo cobrar en caja y en campo, registrar promesas y revisar los cortes de cobranza.">
+  <meta name="theme-color" content="#07110f">
+  <link rel="canonical" href="https://dev.fdezpay.com/docs/facturacion-y-cobranza/">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2218%22 fill=%22%236ee7b7%22/><path d=%22M20 16h28v9H30v8h15v9H30v16H20z%22 fill=%22%2307110f%22/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/site.css?v=20261005">
+  <title>Facturación y cobranza | FdezPay</title>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container nav-wrap">
+      <a class="brand" href="/"><span class="brand-mark">F</span><span>FdezNet <em>ISP</em></span></a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="main-nav"><span></span><span></span><span></span><span class="sr-only">Abrir menú</span></button>
+      <nav id="main-nav" class="main-nav"><a href="/">Inicio</a><a href="/docs/">Documentación</a><a href="#reglas">Reglas</a><a href="#cobrar">Cobrar</a><a href="#promesas">Promesas</a></nav>
+      <div class="nav-actions"><a class="text-link" href="https://fdezpay.com/login">Acceder</a><a class="button button-small" data-whatsapp href="#">Solicitar ayuda</a></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="docs-hero guide-hero">
+      <div class="container">
+        <nav class="breadcrumbs" aria-label="Ruta"><a href="/docs/">Documentación</a><span>›</span><span>Guía 05 · Facturación y cobranza</span></nav>
+        <p class="eyebrow">Guía 05 de 08</p>
+        <h1>Cobra, corta y reconecta sin hojas de cálculo</h1>
+        <p>Las facturas se generan solas según el ciclo de cobro de cada cliente. El sistema corta a quien no pagó, reconecta en cuanto paga y te deja un historial claro de cada peso.</p>
+        <div class="guide-meta"><span>Prepago y postpago</span><span>Corte y reconexión automáticos</span><span>App del cobrador</span></div>
+      </div>
+    </section>
+
+    <div class="container docs-layout guide-layout">
+      <aside class="docs-sidebar" aria-label="Contenido de la guía">
+        <strong>En esta guía</strong>
+        <a href="#ciclo">Cómo funciona el ciclo</a>
+        <a href="#reglas">Reglas de corte</a>
+        <a href="#facturas">Facturas</a>
+        <a href="#cobrar">Cobrar</a>
+        <a href="#promesas">Promesas de pago</a>
+        <a href="#cortes">Corte de cobranza</a>
+      </aside>
+
+      <article class="docs-content">
+        <section class="doc-section" id="ciclo">
+<p class="kicker">Visión general</p>
+<h2>El ciclo de cobro</h2>
+<p>Cada cliente pertenece a una <strong>plantilla de facturación</strong> (guía 01) con su día de pago, anticipación, días de gracia y corte. Con eso el sistema:</p>
+<ol class="flow-steps"><li><span>1</span><div><strong>Genera la factura</strong><small>Los días de anticipación configurados antes del pago.</small></div></li><li><span>2</span><div><strong>Avisa por WhatsApp</strong><small>Recordatorios con el monto y el número de contrato.</small></div></li><li><span>3</span><div><strong>Recibe el pago</strong><small>En caja, con el cobrador o por comprobante en WhatsApp.</small></div></li><li><span>4</span><div><strong>Corta si no pagó</strong><small>Al vencer la gracia, sin promesa vigente.</small></div></li><li><span>5</span><div><strong>Reconecta al pagar</strong><small>En cuanto ya no debe nada vencido.</small></div></li></ol>
+        </section>
+
+        <section class="doc-section" id="reglas">
+<p class="kicker">Reglas</p>
+<h2>Cuándo corta y cuándo reconecta</h2>
+<div class="table-wrap doc-table"><table><thead><tr><th>Regla</th><th>Cómo funciona</th></tr></thead><tbody><tr><th>Corte</th><td>Una factura de internet con saldo, vencida y sin promesa vigente (o con una promesa incumplida). Los cargos extra no cortan, salvo que se indique.</td></tr><tr><th>Reconexión</th><td>Automática al pagar. Además, cada 10 minutos el sistema reconecta a quien ya no debe nada vencido, por si el MikroTik no respondió en el momento.</td></tr><tr><th>Cargo de reconexión</th><td>Si la plantilla lo tiene, se suma una sola vez a la factura del corte y se paga en el mismo cobro.</td></tr><tr><th>Días sin servicio</th><td>Cada día completo cortado se descuenta de la factura. Pagar el mismo día del corte no descuenta nada.</td></tr><tr><th>Lo consumido se cobra</th><td>Los días usados antes del corte son deuda real, empezando por la factura más antigua.</td></tr><tr><th>Baja automática</th><td>Tras los días configurados suspendido por adeudo (90 por defecto) el servicio se da de baja y se crea la orden de retiro del equipo.</td></tr></tbody></table></div>
+<div class="doc-callout"><strong>Las suspensiones manuales no se levantan solas.</strong> El sistema solo reconecta las suspensiones que él mismo hizo por falta de pago o promesa incumplida.</div>
+        </section>
+
+        <section class="doc-section" id="facturas">
+<p class="kicker">Finanzas</p>
+<h2>Consulta y administra facturas</h2>
+<p>En <strong>Finanzas → Facturas</strong> filtras por fecha de vencimiento, emisión o pago, por router y por estado (pagado, pendiente, vencido, anulado), y buscas por nombre, contrato o folio.</p>
+<ul><li><strong>Cobrar</strong> una factura desde la lista.</li><li><strong>Descargar PDF</strong> del recibo.</li><li><strong>Anular</strong> una factura sin borrar su historial.</li><li>Emitir de inmediato las facturas que ya tocan.</li></ul>
+<p>Para agregar un cargo (instalación, equipo, servicio extra) usa <strong>Cargo manual</strong> o <strong>Servicios adicionales</strong> en la ficha del cliente: se suman a su factura abierta para que pague todo junto.</p>
+        </section>
+
+        <section class="doc-section" id="cobrar">
+<p class="kicker">Caja y campo</p>
+<h2>Cobra con un solo total</h2>
+<p>Caja y cobradores ven <strong>un solo total por cliente</strong> que ya incluye mensualidad, prorrateo, servicios extra y reconexión. El pago se aplica de lo más antiguo a lo más reciente; si no alcanza queda como abono y si sobra queda como saldo a favor. El cliente recibe <strong>un solo WhatsApp con un solo recibo</strong>.</p>
+<h3>Terminal del cobrador</h3>
+<p>Los usuarios con rol <strong>Cobrador / Cajero</strong> entran a una pantalla para celular con cuatro pestañas:</p>
+<div class="table-wrap doc-table"><table><thead><tr><th>Pestaña</th><th>Uso</th></tr></thead><tbody><tr><th>Cobrar</th><td>Busca por nombre, contrato o IP; pulsa <strong>Registrar Pago</strong>, elige efectivo o transferencia, anota la referencia y confirma.</td></tr><tr><th>Promesas</th><td>Promesas activas y cuándo vencen.</td></tr><tr><th>Historial</th><td>Cobros del día, incluidos los pendientes de sincronizar.</td></tr><tr><th>Cierre</th><td>Resumen del periodo por método de pago para entregar el dinero.</td></tr></tbody></table></div>
+<div class="doc-callout">Cada cobrador ve solo las <strong>zonas de cobranza</strong> que le asignaste. Si se queda sin señal, sus cobros se guardan y se envían al reconectarse.</div>
+        </section>
+
+        <section class="doc-section" id="promesas">
+<p class="kicker">Prórrogas</p>
+<h2>Promesas de pago</h2>
+<p>Una promesa deja al cliente con servicio hasta la fecha que acordó. Se registra desde la terminal de cobro (<strong>Crear Promesa</strong>), desde el panel o la pide el propio cliente por WhatsApp.</p>
+<ul class="check-list"><li>La política de cada cliente define cuántos días máximos, cuántas promesas a la vez y cuántos incumplimientos se permiten en 90 días.</li><li>Si no paga en la fecha, el servicio se suspende al día siguiente y se aplica la penalización configurada.</li><li>El historial guarda si cada promesa se cumplió o no.</li></ul>
+<div class="doc-callout doc-warning">No hay convenios en cuotas: para reconectar se paga todo lo vencido o se registra una promesa conforme a la política.</div>
+        </section>
+
+        <section class="doc-section" id="cortes">
+<p class="kicker">Control</p>
+<h2>Revisa el corte de cobranza</h2>
+<p><strong>Finanzas → Cortes de Cobranza</strong> muestra cada pago con su cajero, zona, router, método, factura y monto. Filtra por fechas y operador para cuadrar el efectivo de cada persona.</p>
+<div class="table-wrap doc-table"><table><thead><tr><th>Acción</th><th>Cuándo usarla</th></tr></thead><tbody><tr><th>Corregir cobro</th><td>Se cobró al cliente equivocado: indicas el contrato correcto, la factura destino y el motivo.</td></tr><tr><th>Anular pago</th><td>El pago no procede. Solo se revierte el último pago aplicado y nunca uno de una caja cerrada.</td></tr></tbody></table></div>
+<p><strong>Finanzas → Estadísticas</strong> resume los ingresos por router y periodo.</p>
+        </section>
+
+        <div class="guide-pager"><a href="/docs/app-del-tecnico/"><small>← Guía 04</small><strong>App del técnico</strong></a><a class="next" href="/docs/whatsapp/"><small>Guía 06 →</small><strong>WhatsApp</strong></a></div>
+      </article>
+    </div>
+  </main>
+
+  <footer class="footer"><div class="container footer-grid"><div><a class="brand" href="/"><span class="brand-mark">F</span><span>FdezNet <em>ISP</em></span></a><p>Software privado para proveedores de Internet inalámbrico y fibra óptica.</p></div><div><strong>Producto</strong><a href="/#plataforma">Funciones</a><a href="/#planes">Planes</a><a href="/#comparativa">Comparativa</a></div><div><strong>Ayuda</strong><a href="/docs/">Documentación</a><a href="https://fdezpay.com/login">Acceso al sistema</a><a data-whatsapp href="#">Contacto</a></div></div><div class="container footer-bottom"><span>© <span data-year></span> FdezNet.</span><span>Guía de uso · La configuración puede variar por instalación</span></div></footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>
