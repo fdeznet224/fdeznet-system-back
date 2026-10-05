@@ -26,7 +26,6 @@ from src.infrastructure.models import (
 # Servicios y Herramientas
 from src.infrastructure.whatsapp_client import whatsapp_queue
 
-from src.infrastructure.mikrotik_service import MikroTikService
 from src.application.services.client_service import ClientService
 from src.application.services.cuenta_tecnico_service import resumen_cuenta
 from src.application.services.license_service import ensure_client_capacity
@@ -136,10 +135,13 @@ async def obtener_datos_portal(
         role_required(["admin", "supervisor", "tecnico"])
     ),
 ):
+    # Primero por contrato: hay contratos de solo números ("7659") que no son
+    # el id interno. Si no hay contrato así y son dígitos, se busca por id.
+    criterio = ClienteModel.cedula == dato
     if dato.isdigit():
-        criterio = ClienteModel.id == int(dato)
-    else:
-        criterio = ClienteModel.cedula == dato
+        por_contrato = (await db.execute(select(ClienteModel.id).where(ClienteModel.cedula == dato).limit(1))).scalar_one_or_none()
+        if por_contrato is None:
+            criterio = ClienteModel.id == int(dato)
 
     stmt = select(ClienteModel).options(
         selectinload(ClienteModel.plan),
@@ -148,10 +150,10 @@ async def obtener_datos_portal(
         selectinload(ClienteModel.caja_nap),
         selectinload(ClienteModel.olt),
         selectinload(ClienteModel.onu_asignada) # Relación de inventario corregida
-    ).where(criterio) 
-    
+    ).where(criterio).order_by(ClienteModel.id).limit(1)
+
     res = await db.execute(stmt)
-    cliente = res.scalar_one_or_none()
+    cliente = res.scalars().first()
     
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
@@ -174,21 +176,11 @@ async def obtener_datos_portal(
         facturas_adeudo.sort(key=lambda x: x.fecha_vencimiento)
         fecha_corte = facturas_adeudo[0].fecha_vencimiento
 
-    # --- B. DIAGNÓSTICO TÉCNICO (Ping) ---
-    online_status = False
-    if cliente.estado == 'activo' and cliente.router and cliente.ip_asignada and cliente.ip_asignada != '0.0.0.0':
-        try:
-            mk = MikroTikService(
-                ip=cliente.router.ip_vpn,
-                user=cliente.router.user_api,
-                password=cliente.router.pass_api,
-                port=cliente.router.port_api
-            )
-            ping_res = mk.ping_desde_router(cliente.ip_asignada, count=1)
-            if ping_res and ping_res.get("status") == "online":
-                 online_status = True
-        except Exception:
-            online_status = False
+    # --- B. CONEXIÓN ---
+    # Estado de la sesión PPPoE que sincroniza el job de servicios. El ping en
+    # vivo bloqueaba la ficha hasta 10 s y marcaba "Offline" a clientes PPPoE
+    # conectados; la ficha del técnico consulta la sesión en vivo aparte.
+    online_status = bool(cliente.estado == 'activo' and cliente.is_online)
 
     # --- D. DATOS EXTRA ---
     nap_nombre = cliente.caja_nap.nombre if cliente.caja_nap else "No Asignada"

@@ -699,7 +699,7 @@ async def verificar_conexion_cliente(
 ):
     service = NetworkService(db)
     try:
-        await verificar_acceso_cliente(db, current_user, cliente_id)
+        # Lectura en vivo (PPPoE y consumo): cualquier técnico la consulta en campo.
         return await service.verificar_conexion(cliente_id)
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
@@ -716,7 +716,7 @@ async def verificar_trafico_cliente(
 ):
     service = NetworkService(db)
     try:
-        await verificar_acceso_cliente(db, current_user, cliente_id)
+        # Lectura en vivo (PPPoE y consumo): cualquier técnico la consulta en campo.
         return await service.verificar_trafico(cliente_id)
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
