@@ -9,7 +9,13 @@ from src.application.services.activacion_service import (
     ActivacionTecnicoRequest,
     usuario_pppoe_de,
 )
-from src.infrastructure.models import ClienteModel, OrdenServicioModel, PlanModel, ZonaModel
+from src.infrastructure.models import (
+    ClienteModel,
+    OrdenServicioModel,
+    PlanModel,
+    PlantillaFacturacionModel,
+    ZonaModel,
+)
 
 
 class _Resultado:
@@ -65,6 +71,7 @@ def _escenario(monkeypatch, plan_solicitado=11, tecnico_orden=7):
         (OrdenServicioModel, 40): orden,
         (PlanModel, 11): planes[0],
         (PlanModel, 12): planes[1],
+        (PlantillaFacturacionModel, 2): SimpleNamespace(id=2, nombre="Día 15", meses_gratis_instalacion=1),
     })
     llamadas = {}
 
@@ -129,7 +136,19 @@ def test_el_tecnico_activa_la_solicitud_con_la_infraestructura_de_la_zona(monkey
     assert resultado["password_pppoe"] == "secreta"
     assert resultado["senal"]["potencia"] == "-19.5 dBm"
     assert resultado["cambios"] == []
-    assert orden.solucion == "Instalado y activado por el técnico"
+    assert activacion.meses_gratis == 1
+    assert orden.solucion == "Instalado y activado por el técnico (instalación nueva, 1 mes gratis)"
+
+
+def test_un_cambio_de_compania_no_lleva_mes_gratis(monkeypatch):
+    db, orden, llamadas = _escenario(monkeypatch)
+
+    resultado = asyncio.run(ActivacionService(db).activar(40, _datos(tipo_alta="portabilidad"), TECNICO))
+
+    _, activacion, _ = llamadas["activacion"]
+    assert activacion.meses_gratis == 0
+    assert resultado["meses_gratis"] == 0
+    assert orden.solucion == "Instalado y activado por el técnico (cambio de compañía, sin meses gratis)"
 
 
 def test_los_cambios_del_tecnico_quedan_anotados(monkeypatch):

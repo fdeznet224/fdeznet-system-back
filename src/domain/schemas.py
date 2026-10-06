@@ -530,6 +530,7 @@ class BillingTemplateRequest(BaseModel):
     recordatorio_whatsapp: bool = True
     aviso_factura: str = "whatsapp"
     ciclo_facturacion: CicloFacturacionEnum = CicloFacturacionEnum.calendario
+    meses_gratis_instalacion: int = Field(default=0, ge=0, le=12)
 
 class PlantillaResponse(BillingTemplateRequest):
     model_config = ConfigDict(from_attributes=True)
