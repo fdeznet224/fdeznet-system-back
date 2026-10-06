@@ -5,6 +5,7 @@ from sqlalchemy.orm import selectinload
 
 from src.infrastructure.models import OLTModel, ClienteModel
 from src.infrastructure.snmp_oids import MAPA_OIDS, procesar_potencia
+from src.application.services.cache_olt import lectura_compartida
 
 class SNMPMonitorService:
     def __init__(self, db: AsyncSession):
@@ -68,6 +69,12 @@ class SNMPMonitorService:
         return "N/A"
 
     async def _escanear_olt_fisica(self, ip: str, comunidad: str, modelo_key: str):
+        # Varias pantallas pueden pedir la misma OLT a la vez: una sola lectura.
+        return await lectura_compartida(
+            f"snmp:{ip}", lambda: self._escanear_olt_fisica_directo(ip, comunidad, modelo_key)
+        )
+
+    async def _escanear_olt_fisica_directo(self, ip: str, comunidad: str, modelo_key: str):
         conf = MAPA_OIDS.get(modelo_key)
         
         if not conf:

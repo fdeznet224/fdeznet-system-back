@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.infrastructure.models import OLTModel, ClienteModel, LogActividadModel
+from src.application.services.cache_olt import lectura_compartida
 
 # Causa de la última caída que reporta la OLT -> qué pasó, en palabras del ISP.
 CAUSAS_CAIDA = {
@@ -642,7 +643,8 @@ class VsolApiService:
         olt = await self.db.get(OLTModel, olt_id)
         if not olt:
             raise ValueError("OLT no encontrada.")
-        auth, optical, status = await self._consultar_api(olt)
+        # Varias pantallas pueden pedir la misma OLT a la vez: una sola lectura.
+        auth, optical, status = await lectura_compartida(f"vsol:{olt.id}", lambda: self._consultar_api(olt))
         onus = self._deduplicar_onus_por_serial(
             self._unificar_onus(auth, optical, status)
         )
