@@ -81,8 +81,14 @@ install_deployment_files() {
     add_header X-Frame-Options "SAMEORIGIN" always;\
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;\
     add_header Permissions-Policy "camera=(self), microphone=(self), geolocation=(self)" always;\
-    add_header Content-Security-Policy "default-src '\''self'\''; script-src '\''self'\''; style-src '\''self'\'' '\''unsafe-inline'\''; img-src '\''self'\'' data: blob: https:; font-src '\''self'\'' data:; media-src '\''self'\'' blob:; connect-src '\''self'\'' ws: wss:; frame-ancestors '\''self'\''; base-uri '\''self'\''; form-action '\''self'\''" always;
+    add_header Content-Security-Policy "default-src '\''self'\''; script-src '\''self'\'' '\''wasm-unsafe-eval'\''; style-src '\''self'\'' '\''unsafe-inline'\''; img-src '\''self'\'' data: blob: https:; font-src '\''self'\'' data:; media-src '\''self'\'' blob:; connect-src '\''self'\'' ws: wss:; frame-ancestors '\''self'\''; base-uri '\''self'\''; form-action '\''self'\''" always;
 ' "$nginx_site"
+  fi
+  if [[ -f "$nginx_site" ]] && grep -q 'Content-Security-Policy' "$nginx_site" \
+      && ! grep -q 'wasm-unsafe-eval' "$nginx_site"; then
+    # El lector de códigos de barras (zxing) es WebAssembly: sin esto la
+    # cámara ve el código pero nunca lo decodifica.
+    sed -i "s/script-src 'self';/script-src 'self' 'wasm-unsafe-eval';/" "$nginx_site"
   fi
   if [[ -f "$nginx_site" ]] && ! sed -n \
       '/^[[:space:]]*location \/api\/ {/,/^[[:space:]]*}/p' "$nginx_site" \
