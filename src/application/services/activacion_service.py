@@ -10,7 +10,7 @@ Lo que el técnico cambie respecto a la solicitud queda anotado en la orden.
 import asyncio
 import re
 import unicodedata
-from typing import Literal, Optional
+from typing import Optional
 
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, Field
@@ -53,9 +53,9 @@ class ActivacionTecnicoRequest(BaseModel):
     longitud: float = Field(ge=-180, le=180)
     mac_address: Optional[str] = Field(default=None, max_length=30)
     potencia_optica_dbm: Optional[float] = Field(default=None, ge=-50, le=10)
-    # nueva = lleva los meses gratis de la plantilla; portabilidad (viene de
-    # otra compañía) solo paga la mensualidad.
-    tipo_alta: Literal["nueva", "portabilidad"] = "nueva"
+    # Igual que en el alta del panel: 1 = instalación nueva con mes gratis,
+    # 0 = cambio de compañía, cobra desde la activación.
+    meses_gratis: int = Field(default=0, ge=0, le=12)
 
 
 def usuario_pppoe_de(nombre: str) -> str:
@@ -163,15 +163,7 @@ class ActivacionService:
                 }
                 if infra else None
             ),
-            "plantillas": [
-                {
-                    "id": p.id,
-                    "nombre": p.nombre,
-                    "dia_pago": p.dia_pago,
-                    "meses_gratis_instalacion": p.meses_gratis_instalacion or 0,
-                }
-                for p in plantillas
-            ],
+            "plantillas": [{"id": p.id, "nombre": p.nombre, "dia_pago": p.dia_pago} for p in plantillas],
             "onus": [
                 {"id": o.id, "identificador": o.identificador, "modelo": o.modelo, "tecnologia": o.tecnologia}
                 for o in onus
@@ -230,14 +222,9 @@ class ActivacionService:
         if orden.plan_id and orden.plan_id != plan.id:
             anterior = await self.db.get(PlanModel, orden.plan_id)
             cambios.append(f"plan {anterior.nombre if anterior else orden.plan_id} → {plan.nombre}")
-        plantilla = await self.db.get(PlantillaFacturacionModel, plantilla_id) if plantilla_id else None
         if plantilla_id != zona.plantilla_id:
-            cambios.append(f"plantilla de cobro distinta a la de la zona: {plantilla.nombre if plantilla else 'sin plantilla'}")
-        meses_gratis = (
-            (plantilla.meses_gratis_instalacion or 0)
-            if plantilla and datos.tipo_alta == "nueva"
-            else 0
-        )
+            elegida = await self.db.get(PlantillaFacturacionModel, plantilla_id) if plantilla_id else None
+            cambios.append(f"plantilla de cobro distinta a la de la zona: {elegida.nombre if elegida else 'sin plantilla'}")
 
         servicio_clientes = ClientService(self.db)
         cliente_id = orden.cliente_id
@@ -302,19 +289,16 @@ class ActivacionService:
                 pass_pppoe=cliente.pass_pppoe,
                 mac_address=datos.mac_address if modo == "dhcp" else None,
                 potencia_optica_dbm=datos.potencia_optica_dbm,
-                meses_gratis=meses_gratis,
+                meses_gratis=datos.meses_gratis,
             ),
             usuario_operador=usuario,
             orden_id=orden.id,
         )
 
         orden = await self.db.get(OrdenServicioModel, orden.id)
-        alta = (
-            "cambio de compañía, sin meses gratis"
-            if datos.tipo_alta == "portabilidad"
-            else f"instalación nueva, {meses_gratis} mes{'es' if meses_gratis != 1 else ''} gratis"
-        )
-        orden.solucion = f"Instalado y activado por el técnico ({alta})" + (
+        meses = datos.meses_gratis
+        gratis = f"{meses} mes{'es' if meses != 1 else ''} gratis" if meses else "sin mes gratis"
+        orden.solucion = f"Instalado y activado por el técnico ({gratis})" + (
             f". Cambios respecto a la solicitud: {'; '.join(cambios)}" if cambios else ""
         )
         if cambios:
@@ -341,8 +325,7 @@ class ActivacionService:
             "onu": activado.onu_asignada.identificador if activado.onu_asignada else None,
             "senal": await self._senal(activado.id) if activado.olt_id and activado.onu_id else None,
             "cambios": cambios,
-            "tipo_alta": datos.tipo_alta,
-            "meses_gratis": meses_gratis,
+            "meses_gratis": datos.meses_gratis,
         }
 
     async def _senal(self, cliente_id: int) -> Optional[dict]:
