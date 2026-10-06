@@ -19,11 +19,13 @@ from sqlalchemy import func, or_, select
 from src.application.services.client_service import ClientService
 from src.application.services.inventario_service import InventarioService
 from src.application.services.orden_service import ESTADOS_TERMINALES, OrdenService
+from src.application.services.resumen_cobro import Prorrateo, resumen_cobro
 from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.utils.mikrotik import normalizar_mac
 from src.infrastructure.models import (
     CajaNapModel,
     ClienteModel,
+    FacturaModel,
     HistorialEstadoOrdenModel,
     InventarioONUModel,
     OLTModel,
@@ -32,6 +34,7 @@ from src.infrastructure.models import (
     PlantillaFacturacionModel,
     RedModel,
     RouterModel,
+    ServicioModel,
     UsuarioModel,
     ZonaModel,
 )
@@ -338,7 +341,48 @@ class ActivacionService:
             "senal": await self._senal(activado.id) if activado.olt_id and activado.onu_id else None,
             "cambios": cambios,
             "meses_gratis": datos.meses_gratis,
+            "cobro": await self._cobro(orden.servicio_id),
         }
+
+    async def _cobro(self, servicio_id: Optional[int]) -> Optional[dict]:
+        """Mes gratis, prorrateo y mensualidad para explicárselos al cliente."""
+        servicio = await self.db.get(ServicioModel, servicio_id) if servicio_id else None
+        if not servicio or not servicio.proxima_facturacion or not servicio.fecha_activacion:
+            return None
+        plan = await self.db.get(PlanModel, servicio.plan_id) if servicio.plan_id else None
+        if not plan:
+            return None
+        plantilla = (
+            await self.db.get(PlantillaFacturacionModel, servicio.plantilla_id)
+            if servicio.plantilla_id else None
+        )
+        factura = (
+            await self.db.execute(
+                select(FacturaModel)
+                .where(
+                    FacturaModel.servicio_id == servicio.id,
+                    FacturaModel.tipo_factura == "prorrateo",
+                    FacturaModel.estado != "anulada",
+                )
+                .order_by(FacturaModel.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        tipo = getattr(servicio.tipo_facturacion, "value", servicio.tipo_facturacion)
+        return resumen_cobro(
+            activacion=servicio.fecha_activacion,
+            meses_gratis=servicio.meses_gratis or 0,
+            gratis_hasta=servicio.fecha_fin_periodo_gratis,
+            proxima_mensualidad=servicio.proxima_facturacion,
+            tipo_facturacion=str(tipo or "prepago"),
+            precio_mensual=plan.precio or 0,
+            impuesto_porcentaje=(plantilla.impuesto if plantilla else 0) or 0,
+            dias_tolerancia=servicio.dias_tolerancia or 0,
+            prorrateo=(
+                Prorrateo(factura.total, factura.periodo_desde, factura.periodo_hasta, factura.dias_facturados or 0)
+                if factura and factura.periodo_desde and factura.periodo_hasta else None
+            ),
+        )
 
     async def _onu_nueva(self, identificador: str, olt: OLTModel, usuario: UsuarioModel) -> int:
         """ONU que el técnico trae en mano y nadie registró en Inventario."""

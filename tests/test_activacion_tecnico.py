@@ -48,7 +48,7 @@ def _escenario(monkeypatch, plan_solicitado=11, tecnico_orden=7):
     orden = SimpleNamespace(
         id=40, tipo="instalacion", estado="asignada", version=3, cliente_id=None,
         tecnico_id=tecnico_orden, prospecto_nombre="Ana Lopez", prospecto_telefono="5550001111",
-        prospecto_direccion="Calle 1", zona_id=2, plan_id=plan_solicitado, solucion=None,
+        prospecto_direccion="Calle 1", zona_id=2, plan_id=plan_solicitado, solucion=None, servicio_id=None,
     )
     zona = SimpleNamespace(id=2, nombre="Paraiso", router_id=3, olt_id=2, plantilla_id=2)
     planes = [SimpleNamespace(id=11, nombre="Plan 300", precio=300), SimpleNamespace(id=12, nombre="Plan 400", precio=400)]
