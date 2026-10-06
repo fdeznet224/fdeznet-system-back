@@ -78,7 +78,7 @@ class _OCR:
 
 def _leer(previa):
     db = _DB(previa)
-    servicio = ComprobanteService(db, ocr=_OCR(), correo=SimpleNamespace())
+    servicio = ComprobanteService(db, ocr=_OCR())
     resultado = asyncio.run(servicio.leer("whatsapp-media://nueva.jpg", "111@lid", 248, 5))
     return resultado, db
 
@@ -148,7 +148,7 @@ class _OCRConFolio:
 
 def _leer_con_folio(previa, media_url="whatsapp-media://ticket.jpg", telefono="111@lid"):
     db = _DB(previa)
-    servicio = ComprobanteService(db, ocr=_OCRConFolio(), correo=SimpleNamespace())
+    servicio = ComprobanteService(db, ocr=_OCRConFolio())
     return asyncio.run(servicio.leer(media_url, telefono, 199, 6)), db
 
 

@@ -1,4 +1,4 @@
-"""Modo "solo captura": el pago se confirma con los datos de la captura."""
+"""El pago se confirma con los datos de la captura (ya no hay correo del banco)."""
 
 import asyncio
 from datetime import date, datetime, timedelta
@@ -97,7 +97,7 @@ def _aplicar(monkeypatch, revision=None, factura=None, clave_usada=False, idempo
     async def avisar(numero, texto):
         alertas.append(texto)
 
-    servicio = ComprobanteService(db, correo=SimpleNamespace(), avisar_admin=avisar)
+    servicio = ComprobanteService(db, avisar_admin=avisar)
 
     async def config_alertas(*_a):
         return SimpleNamespace(telefonos_alerta="9611111111")
@@ -170,15 +170,8 @@ def test_el_pago_del_mes_siguiente_espera_al_dia_1(monkeypatch):
     assert revision.motivo_revision == "pago_adelantado" and revision.cliente_id == 248
 
 
-def test_en_modo_captura_no_se_concilia_con_el_correo(monkeypatch):
+def test_la_tarea_de_adelantados_solo_aplica_capturas(monkeypatch):
     llamadas = []
-
-    class _Banco:
-        async def get_config(self, _db):
-            return CONFIG
-
-        async def sync(self, _db):
-            llamadas.append("sync")
 
     class _Comprobantes:
         def __init__(self, _db):
@@ -194,12 +187,10 @@ def test_en_modo_captura_no_se_concilia_con_el_correo(monkeypatch):
         async def __aexit__(self, *_a):
             return None
 
-    monkeypatch.setattr(jobs, "BankEmailService", _Banco)
     monkeypatch.setattr(jobs, "ComprobanteService", _Comprobantes)
     monkeypatch.setattr(jobs, "SessionLocal", _Sesion)
-    asyncio.run(jobs.tarea_conciliar_correos_bancarios())
+    asyncio.run(jobs.tarea_aplicar_pagos_adelantados())
     assert llamadas == ["adelantados"]
-
 
 
 # ------------------------------------------------------------- límites
@@ -223,12 +214,11 @@ def test_muchas_capturas_del_mismo_chat_en_un_dia(monkeypatch):
     assert resultado["estado"] == "muchas_capturas_hoy" and not cobros
 
 
-def test_queda_pendiente_de_auditar_y_con_prioridad_si_reconecta(monkeypatch):
-    _, revision, *_ = _aplicar(monkeypatch)
-    assert revision.auditoria_banco == "pendiente"
-    cortado = SimpleNamespace(**{**vars(CLIENTE), "estado": "suspendido"})
-    _, revision, *_ = _aplicar(monkeypatch, cliente=cortado)
-    assert revision.auditoria_banco == "prioridad"
+def test_lo_que_no_se_valida_solo_pide_un_asesor(monkeypatch):
+    resultado, revision, _, cobros, _ = _aplicar(monkeypatch, revision=_revision(monto_detectado=Decimal("900.00")))
+    assert resultado["requiere_asesor"] is True and not cobros and revision.estado == "pendiente"
+    resultado, *_ = _aplicar(monkeypatch)
+    assert resultado["aplicado"] is True and "requiere_asesor" not in resultado
 
 
 def test_avisa_si_el_concepto_no_traia_el_contrato(monkeypatch):
@@ -238,133 +228,67 @@ def test_avisa_si_el_concepto_no_traia_el_contrato(monkeypatch):
     assert resultado["concepto_traia_contrato"] is True
 
 
-# ------------------------------------------- auditoría con el correo del banco
-from src.application.services.bank_email_service import BankEmailService  # noqa: E402
+# ------------------------------------------- lo que no valida, a un asesor
+def test_el_agente_pasa_a_un_asesor_el_pago_que_no_valida_solo(monkeypatch):
+    from src.application.services.agente_ia_service import _Contexto
 
-
-class _DBAuditoria:
-    def __init__(self, revisiones):
-        self.revisiones = revisiones
-
-    async def execute(self, _consulta):
-        revisiones = self.revisiones
-
-        class _R:
-            def scalars(self):
-                return self
-
-            def all(self):
-                return revisiones
-
-        return _R()
-
-    async def get(self, *_a):
-        return CLIENTE
-
-    async def commit(self):
-        return None
-
-
-def _auditar(monkeypatch, revisiones, encontrado=None, candidatos=()):
-    servicio = BankEmailService()
-    monkeypatch.setattr(servicio, "get_config", lambda _db: asyncio.sleep(0, CONFIG))
-    monkeypatch.setattr(servicio, "find_match", lambda _db, _r: asyncio.sleep(0, (encontrado, "x")))
-    monkeypatch.setattr(servicio, "_candidatos_sin_referencia", lambda *_a: asyncio.sleep(0, list(candidatos)))
-    return asyncio.run(servicio.auditar_pagos_por_captura(_DBAuditoria(revisiones)))
-
-
-def _aprobada(**cambios):
-    return _revision(**{"estado": "aprobado", "pago_id": 700, "auditoria_banco": "pendiente",
-                        "fecha_revision": datetime.now() - timedelta(hours=1), "cliente_id": 248, **cambios})
-
-
-def test_si_llega_el_deposito_se_liga_y_queda_confirmado(monkeypatch):
-    deposito = SimpleNamespace(id=82, estado="disponible", pago_id=None, conciliada_en=None)
-    revision = _aprobada(folio_detectado="2026093040014BMOVP020422198180")
-    assert _auditar(monkeypatch, [revision], encontrado=deposito) == []
-    assert revision.auditoria_banco == "confirmado" and revision.transaccion_correo_id == 82
-    assert deposito.estado == "conciliada" and deposito.pago_id == 700
-
-
-def test_sin_folio_basta_un_unico_deposito_del_mismo_monto_y_hora(monkeypatch):
-    deposito = SimpleNamespace(id=90, estado="disponible", pago_id=None, conciliada_en=None)
-    revision = _aprobada()
-    _auditar(monkeypatch, [revision], candidatos=[deposito])
-    assert revision.auditoria_banco == "confirmado"
-
-
-def test_sin_deposito_en_24_horas_se_avisa(monkeypatch):
-    reciente = _aprobada(id=1)
-    vieja = _aprobada(id=2, fecha_revision=datetime.now() - timedelta(hours=25))
-    reconexion = _aprobada(id=3, auditoria_banco="prioridad", fecha_revision=datetime.now() - timedelta(hours=3))
-    avisos = _auditar(monkeypatch, [reciente, vieja, reconexion])
-    assert [a["id"] for a in avisos] == [2, 3] and avisos[1]["reconexion"] is True
-    assert reciente.auditoria_banco == "pendiente" and vieja.auditoria_banco == "sin_deposito"
-
-
-def test_en_modo_captura_con_correo_se_audita(monkeypatch):
-    llamadas = []
-    config = SimpleNamespace(**{**vars(CONFIG), "activo": True})
-
-    class _Banco:
-        async def get_config(self, _db):
-            return config
-
-        async def sync(self, _db):
-            llamadas.append("sync")
-
-        async def auditar_pagos_por_captura(self, _db):
-            llamadas.append("auditar")
-            return [{"id": 2, "cliente": "X", "monto": 300, "folio": "SC-1", "reconexion": False}]
+    pasados = []
 
     class _Comprobantes:
-        def __init__(self, _db):
+        def __init__(self, *_a, **_k):
             pass
 
-        async def aplicar_adelantados_por_captura(self):
-            llamadas.append("adelantados")
+        async def conciliar(self, _revision_id, _cliente_id):
+            return {"aplicado": False, "estado": "segundo_pago_del_mes",
+                    "detalle": "Ya tiene un pago por captura este mes", "requiere_asesor": True}
 
-    class _Sesion:
-        async def __aenter__(self):
-            return None
+    class _DBAgente:
+        async def get(self, _modelo, _llave):
+            return _revision(monto_detectado=Decimal("300.00"))
 
-        async def __aexit__(self, *_a):
-            return None
+    import src.application.services.agente_ia_service as agente_mod
+    monkeypatch.setattr(agente_mod, "ComprobanteService", _Comprobantes)
+    contexto = _Contexto(SimpleNamespace(db=_DBAgente()), SimpleNamespace(mensaje_chat_id=5),
+                         "automatico", "1@lid", None, None)
+    contexto.cliente = CLIENTE
 
-    async def alerta(mensaje, _db, tipo_evento="alerta_router"):
-        llamadas.append("alerta")
+    async def pasar(motivo):
+        pasados.append(motivo)
+        return {"pasado_a_asesor": True}
 
-    monkeypatch.setattr(jobs, "BankEmailService", _Banco)
-    monkeypatch.setattr(jobs, "ComprobanteService", _Comprobantes)
-    monkeypatch.setattr(jobs, "SessionLocal", _Sesion)
-    monkeypatch.setattr(jobs, "enviar_alertas_whatsapp", alerta)
-    asyncio.run(jobs.tarea_conciliar_correos_bancarios())
-    # Sin depósito queda solo como nota en el panel: no se avisa por WhatsApp.
-    assert llamadas == ["adelantados", "sync", "auditar"]
-
-
-CAPTURA_AZTECA = (
-    "Enviaste a una cuenta $140.00 02/Oct/2026 13:37:33 (CST) Cuenta origen Guardadito ***6745 "
-    "Cuenta destino ARISEL F******** Banco Azteca ***265 Folio: MX100000001"
-)
+    monkeypatch.setattr(contexto, "_pasar_a_humano", pasar)
+    resultado = asyncio.run(contexto._aplicar_comprobante(13))
+    assert len(pasados) == 1 and "$300.00" in pasados[0] and "Terminal de Cobro" in pasados[0]
+    assert "asesor" in resultado["que_decir"]
 
 
-def test_la_captura_de_la_app_azteca_trae_folio_y_hora():
-    datos = OCRService.extraer_datos(CAPTURA_AZTECA)
-    assert datos["folio"] == "MX100000001"
-    assert datos["monto"] == 140.0
-    assert datos["fecha_pago"] == datetime(2026, 10, 2, 13, 37, 33)
+def test_el_agente_no_molesta_al_asesor_si_el_pago_se_aplico(monkeypatch):
+    from src.application.services.agente_ia_service import _Contexto
+    import src.application.services.agente_ia_service as agente_mod
+
+    class _Comprobantes:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def conciliar(self, _revision_id, _cliente_id):
+            return {"aplicado": True, "estado": "pago_confirmado_por_captura", "concepto_traia_contrato": True}
+
+    monkeypatch.setattr(agente_mod, "ComprobanteService", _Comprobantes)
+    contexto = _Contexto(SimpleNamespace(db=None), SimpleNamespace(mensaje_chat_id=5),
+                         "automatico", "1@lid", None, None)
+    contexto.cliente = CLIENTE
+
+    async def pasar(_motivo):
+        raise AssertionError("no debía pasar a un asesor")
+
+    monkeypatch.setattr(contexto, "_pasar_a_humano", pasar)
+    assert asyncio.run(contexto._aplicar_comprobante(13))["aplicado"] is True
 
 
-def test_azteca_a_azteca_no_se_audita_con_el_correo(monkeypatch):
-    # Transferencia interna: el banco no manda correo y no debe alertar "sin depósito".
-    revision = _revision(folio_detectado="MX100000001", huella_captura=None)
-    resultado, revision, *_ = _aplicar(monkeypatch, revision=revision)
-    assert resultado["aplicado"] is True
-    assert revision.auditoria_banco == "interna_azteca"
+def test_las_cuentas_destino_solo_aceptan_terminaciones():
+    from pydantic import ValidationError
+    from src.interfaces.api.configuracion import PagosCapturaRequest
 
-
-def test_un_spei_de_otro_banco_se_sigue_auditando(monkeypatch):
-    revision = _revision(folio_detectado="12345P05202610020000000001", huella_captura=None)
-    _, revision, *_ = _aplicar(monkeypatch, revision=revision)
-    assert revision.auditoria_banco == "pendiente"
+    assert PagosCapturaRequest(cuentas_destino_permitidas=" 6342, 5265,6342 ").cuentas_destino_permitidas == "6342,5265"
+    with pytest.raises(ValidationError):
+        PagosCapturaRequest(cuentas_destino_permitidas="63421")

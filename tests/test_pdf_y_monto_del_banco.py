@@ -1,15 +1,13 @@
-"""Comprobantes en PDF, monto del banco con el mismo folio y espera del agente."""
+"""Comprobantes en PDF, CEP de Banxico y espera del agente."""
 
 import asyncio
 from datetime import datetime
-from decimal import Decimal
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from src.application.services import comprobante_service as comprobante_mod
 from src.application.services import ocr_service
-from src.application.services.bank_email_service import BankEmailService
 from src.application.services.ocr_service import OCRService, leer_pdf
 from src.interfaces.api import whatsapp
 
@@ -65,90 +63,6 @@ def test_un_comprobante_en_pdf_por_whatsapp_se_interpreta_sin_ocr(tmp_path, monk
     assert datos["monto"] == 300.0
     assert datos["folio"] == "2026093040014BMOVP020422198180"
     assert datos["fecha_pago"] == datetime(2026, 9, 30, 6, 8, 22)
-
-
-def test_la_bandeja_tambien_muestra_el_pdf():
-    uploads = Path(whatsapp.__file__).resolve().parents[3] / "bot_whatsapp" / "uploads"
-    uploads.mkdir(parents=True, exist_ok=True)
-    archivo = uploads / "document_prueba_bandeja.pdf"
-    archivo.write_bytes(COMPROBANTE_PDF)
-
-    class _DB:
-        async def get(self, *_a):
-            return SimpleNamespace(media_url="whatsapp-media://document_prueba_bandeja.pdf")
-
-    try:
-        respuesta = asyncio.run(whatsapp.ver_archivo_comprobante(15, db=_DB(), current_user=None))
-        assert Path(respuesta.path) == archivo.resolve()
-    finally:
-        archivo.unlink()
-
-
-# --------------------------------------------------- monto del banco
-CONFIG = SimpleNamespace(activo=True, cuentas_destino_permitidas="6342,5265", tolerancia_monto=Decimal("0"), ventana_dias=3)
-
-
-def _revision(**cambios):
-    datos = dict(
-        folio_detectado="2026093040014BMOVPO20422198180",  # el OCR leyó una O por el cero
-        monto_detectado=Decimal("30.00"),  # y $30 por $300
-        fecha_recepcion=datetime(2026, 9, 30, 16, 1, 37), fecha_pago_detectada=None,
-        transaccion_correo_id=None,
-    )
-    datos.update(cambios)
-    return SimpleNamespace(**datos)
-
-
-def _deposito(**cambios):
-    datos = dict(
-        id=82, autenticado=True, estado="disponible", tipo_movimiento="entrante",
-        cuenta_destino_terminacion="6342", monto=Decimal("300.00"), pago_id=None,
-        referencia="2026093040014BMOVP020422198180", fecha_correo=datetime(2026, 9, 30, 12, 8, 22),
-    )
-    datos.update(cambios)
-    return SimpleNamespace(**datos)
-
-
-def test_con_el_mismo_folio_vale_el_monto_del_banco():
-    assert BankEmailService.transaction_match_reason(CONFIG, _revision(), _deposito()) == "coincidencia_exacta"
-    assert BankEmailService.motivo_deposito_elegido(CONFIG, _revision(), _deposito()) == "deposito_elegido"
-
-
-def test_sin_folio_el_monto_leido_debe_cuadrar():
-    sin_folio = _revision(folio_detectado=None)
-    assert BankEmailService.transaction_match_reason(
-        CONFIG, sin_folio, _deposito(), exigir_referencia=False
-    ) == "monto_bancario_no_coincide"
-
-
-def test_con_folio_distinto_no_vale_aunque_el_monto_cuadre():
-    otro = _revision(folio_detectado="OTRO12345678", monto_detectado=Decimal("300.00"))
-    assert BankEmailService.transaction_match_reason(CONFIG, otro, _deposito()) == "referencia_bancaria_no_coincide"
-
-
-class _DB:
-    def __init__(self, depositos):
-        self.depositos = depositos
-
-    async def execute(self, _consulta):
-        depositos = self.depositos
-
-        class _R:
-            def scalars(self):
-                return self
-
-            def all(self):
-                return depositos
-
-        return _R()
-
-
-def test_la_busqueda_por_folio_no_depende_del_monto_leido(monkeypatch):
-    servicio = BankEmailService()
-    monkeypatch.setattr(servicio, "get_config", lambda _db: asyncio.sleep(0, CONFIG))
-    deposito = _deposito()
-    otro = _deposito(id=70, referencia="000001971")
-    assert asyncio.run(servicio.find_match(_DB([otro, deposito]), _revision())) == (deposito, "coincidencia_exacta")
 
 
 def test_el_agente_espera_8_segundos_para_juntar_mensajes():
@@ -241,21 +155,25 @@ class _DBComprobantes:
         return _R()
 
 
-def _leer_cep(beneficiario):
+# Cuentas del ISP que reciben pagos (terminaciones de tarjeta y CLABE).
+CONFIG = SimpleNamespace(cuentas_destino_permitidas="6342,5265")
+
+
+def _leer_cep(beneficiario, monkeypatch):
     class _OCR:
         async def procesar_ticket(self, _url):
             return {**OCRService.extraer_datos(CEP), "cuenta_beneficiaria": beneficiario}
 
-    correo = SimpleNamespace(get_config=lambda _db: asyncio.sleep(0, CONFIG))
+    monkeypatch.setattr(comprobante_mod, "config_pagos", lambda _db: asyncio.sleep(0, CONFIG))
     db = _DBComprobantes()
-    resultado = asyncio.run(ComprobanteService(db, ocr=_OCR(), correo=correo).leer(
+    resultado = asyncio.run(ComprobanteService(db, ocr=_OCR()).leer(
         "whatsapp-media://document_x.pdf", "1@lid", 191, 9
     ))
     return resultado, db.agregados
 
 
-def test_un_cep_a_otra_cuenta_no_sirve_como_comprobante():
-    resultado, agregados = _leer_cep("014100605514950199")  # Santander del propio cliente
+def test_un_cep_a_otra_cuenta_no_sirve_como_comprobante(monkeypatch):
+    resultado, agregados = _leer_cep("014100605514950199", monkeypatch)  # Santander del propio cliente
     assert resultado["estado"] == "otra_cuenta"
     assert resultado["cuenta_del_comprobante"] == "0199"
     assert agregados[0].estado == "rechazado"
@@ -263,7 +181,7 @@ def test_un_cep_a_otra_cuenta_no_sirve_como_comprobante():
 
 
 @pytest.mark.parametrize("beneficiario", ["4027665833605265", "127180000000063429"])
-def test_un_cep_a_la_tarjeta_o_a_la_clabe_del_isp_si_sirve(beneficiario):
-    resultado, agregados = _leer_cep(beneficiario)
+def test_un_cep_a_la_tarjeta_o_a_la_clabe_del_isp_si_sirve(beneficiario, monkeypatch):
+    resultado, agregados = _leer_cep(beneficiario, monkeypatch)
     assert resultado["estado"] == "leido"
     assert agregados[0].motivo_revision == "esperando_confirmacion"

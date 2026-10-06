@@ -27,7 +27,6 @@ from src.application.services.router_monitor_service import (
     evaluar_estado_router,
 )
 from src.application.services.vpn_service import leer_handshakes_wireguard
-from src.application.services.bank_email_service import BankEmailError, BankEmailService
 from src.application.services.comprobante_service import ComprobanteService
 from src.application.services.storage_service import cleanup_storage, close_period, previous_period
 
@@ -37,57 +36,10 @@ async def tarea_verificar_licencia():
         await verify_license(db)
 
 
-# Comprobantes ya avisados por falta del correo del banco (uno por comprobante).
-_avisados_sin_correo: set[int] = set()
-
-
-async def tarea_conciliar_correos_bancarios():
-    """Importa avisos bancarios y concilia comprobantes aún pendientes."""
+async def tarea_aplicar_pagos_adelantados():
+    """Aplica las capturas válidas de pagos adelantados al llegar su mes."""
     async with SessionLocal() as db:
-        service = BankEmailService()
-        config = await service.get_config(db)
-        if (config.validar_pagos_con or "correo") == "captura":
-            # Solo con la captura: no se espera el correo del banco; el día 1
-            # se aplican las capturas de pagos adelantados. Si el correo está
-            # configurado, se usa por detrás para auditar esos pagos.
-            await ComprobanteService(db).aplicar_adelantados_por_captura()
-            if config.activo:
-                try:
-                    await service.sync(db)
-                except BankEmailError:
-                    return
-                # Solo queda como nota en el panel ("sin_deposito"): los pagos
-                # fuera de horario o de Azteca a Azteca no traen correo y el
-                # dueño confía en las capturas; no se avisa por WhatsApp.
-                await service.auditar_pagos_por_captura(db)
-            return
-        try:
-            sync_result = await service.sync(db)
-            if sync_result.get("status") == "disabled":
-                return
-            await service.reconcile_pending(db)
-        except BankEmailError:
-            # El detalle ya queda guardado en configuracion_correo_banco.
-            return
-        await avisar_comprobantes_sin_correo(db)
-
-
-async def avisar_comprobantes_sin_correo(db) -> int:
-    """Avisa al personal de comprobantes cuyo correo del banco no llega."""
-    pendientes = await BankEmailService.comprobantes_sin_correo(db, _avisados_sin_correo)
-    for item in pendientes:
-        _avisados_sin_correo.add(item["id"])
-        await enviar_alertas_whatsapp(
-            "⏰ *Comprobante sin aviso del banco*\n"
-            f"{item['cliente']} · ${item['monto']}"
-            + (f" · folio {item['folio']}" if item["folio"] else "")
-            + f"\nComprobante #{item['id']}: lleva 2 horas y no llega el correo del banco. "
-            "Revísalo en la app del banco y, si llegó, apruébalo en Comprobantes por revisar "
-            "con «Lo verifiqué en la app del banco».",
-            db,
-            tipo_evento="alerta_comprobante",
-        )
-    return len(pendientes)
+        await ComprobanteService(db).aplicar_adelantados_por_captura()
 
 
 async def tarea_mantenimiento_almacenamiento():

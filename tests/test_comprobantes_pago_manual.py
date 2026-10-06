@@ -106,7 +106,7 @@ class _OCRFotoModem:
 
 def test_una_foto_que_no_es_comprobante_no_queda_pendiente():
     db = _DB([])
-    servicio = ComprobanteService(db, ocr=_OCRFotoModem(), correo=SimpleNamespace())
+    servicio = ComprobanteService(db, ocr=_OCRFotoModem())
     resultado = asyncio.run(servicio.leer("whatsapp-media://modem.jpg", "111@lid", None, 5))
     revision = db.agregados[0]
     assert resultado["estado"] == "ilegible"

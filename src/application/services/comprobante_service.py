@@ -1,10 +1,10 @@
 """Comprobantes de pago recibidos por WhatsApp.
 
-Misma lógica que el flujo "Reportar pago" del bot de menú, separada de los
-mensajes para que el agente de IA la use: la captura se lee con OCR, se
-bloquean folios repetidos y el pago SOLO se aplica si el correo bancario
-confirma que el dinero llegó a la cuenta del ISP con la misma referencia,
-monto y fecha que la captura (BankEmailService.transaction_match_reason).
+La captura se lee con OCR y el pago se aplica solo si es válida: folio que
+no se haya usado, fecha reciente, monto que cubre la deuda y transferencia a
+una cuenta del ISP. Lo que no se puede validar solo no queda en una bandeja:
+el agente pasa el chat a un asesor, que registra el pago a mano en la
+Terminal de Cobro (y la captura se cierra sola con ese pago).
 """
 
 import logging
@@ -15,15 +15,15 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.application.services.bank_email_service import (
+from src.application.services.pagos_captura import (
     PALABRAS_GENERICAS,
-    BankEmailError,
-    BankEmailService,
     aplicar_pago_desde,
+    config_pagos,
     contrato_en_concepto,
-    palabras,
+    cuentas_destino_permitidas,
     normalize_reference,
     normalize_reference_for_match,
+    palabras,
 )
 from src.application.services.billing_service import BillingService
 from src.application.services.finance_service import FinanceService
@@ -50,16 +50,6 @@ DIAS_COMPROBANTE_PAGO_MANUAL = 7
 # Capturas leídas a las que todavía no se les intentó aplicar el pago: si el
 # mismo chat la vuelve a mandar (o el agente la relee), se retoma.
 SIN_INTENTO_DE_APLICAR = {"esperando_confirmacion", "sin_referencia"}
-
-
-# Folio de la app de Banco Azteca ("Folio: MX204707619"). Las cuentas del ISP
-# son de Azteca, así que es una transferencia interna: no pasa por SPEI y el
-# banco no manda correo para auditarla.
-RE_FOLIO_AZTECA = re.compile(r"MX\d{8,}")
-
-
-def es_interna_azteca(folio: str | None) -> bool:
-    return bool(RE_FOLIO_AZTECA.fullmatch(normalize_reference(folio) or ""))
 
 
 def normalizar_contrato(contrato: str | None) -> str:
@@ -145,10 +135,9 @@ def referencia_canonica_sql(columna):
 
 
 class ComprobanteService:
-    def __init__(self, db: AsyncSession, ocr=None, correo=None, avisar_admin=None):
+    def __init__(self, db: AsyncSession, ocr=None, avisar_admin=None):
         self.db = db
         self.ocr = ocr or _ocr
-        self.correo = correo or BankEmailService()
         # avisar_admin(numero, texto): se inyecta para no depender de WhatsApp.
         self.avisar_admin = avisar_admin
 
@@ -169,9 +158,7 @@ class ComprobanteService:
         # propias cuentas) y no sirve como comprobante.
         beneficiario = resultado.get("cuenta_beneficiaria")
         if beneficiario:
-            permitidas = BankEmailService.allowed_destination_accounts(
-                await self.correo.get_config(self.db)
-            )
+            permitidas = cuentas_destino_permitidas(await config_pagos(self.db))
             if permitidas and not terminaciones_de_cuenta(beneficiario) & permitidas:
                 revision = ComprobantePagoRevisionModel(
                     cliente_id=cliente_id,
@@ -258,8 +245,8 @@ class ComprobanteService:
                 }
 
         if not resultado.get("exito") and monto > 0:
-            # Pantallas de "transferencia exitosa" que no muestran referencia:
-            # se puede empatar por monto y hora con el correo del banco.
+            # Pantallas de "transferencia exitosa" sin referencia: se intenta
+            # con la fecha y hora de la captura; si no alcanza, va a un asesor.
             return {
                 **sugerencia,
                 "estado": "sin_referencia",
@@ -269,8 +256,8 @@ class ComprobanteService:
                 "hora_en_captura": resultado.get("fecha_pago"),
                 "detalle": (
                     "Se leyó el monto pero la captura no muestra clave de rastreo ni referencia. "
-                    "Intenta aplicar_comprobante (se empata por monto y hora); si no se confirma, "
-                    "pide el comprobante completo (botón Compartir o Ver detalle) con la clave de rastreo."
+                    "Intenta aplicar_comprobante; si no se confirma, pide el comprobante completo "
+                    "(botón Compartir o Ver detalle) con la clave de rastreo."
                 ),
             }
         if not resultado.get("exito"):
@@ -298,7 +285,7 @@ class ComprobanteService:
         }
 
     async def conciliar(self, revision_id: int, cliente_id: int) -> dict:
-        """Aplica el pago solo si el correo bancario coincide con la captura."""
+        """Valida la captura y, si cumple, aplica el pago a la cuenta del cliente."""
         revision = await self.db.get(ComprobantePagoRevisionModel, revision_id)
         if not revision:
             return {"aplicado": False, "estado": "comprobante_no_encontrado"}
@@ -306,69 +293,13 @@ class ComprobanteService:
         factura = await self._factura_cobrable(cliente_id)
         if not factura:
             return {"aplicado": False, "estado": "sin_deuda_pendiente"}
-        config = await self.correo.get_config(self.db)
-        if (getattr(config, "validar_pagos_con", None) or "correo") == "captura":
-            return await self.aplicar_por_captura(revision, cliente, factura, config)
-
-        monto = FinanceService.dinero(revision.monto_detectado or 0)
-        deuda = Decimal(factura.saldo_pendiente or 0)
-        # Con folio, el monto lo confirma el banco (el OCR puede leer $30 por
-        # $300); sin folio, el monto leído es lo que se compara.
-        if not normalize_reference(revision.folio_detectado) and monto < deuda:
-            revision.motivo_revision = "monto_no_coincide"
-            revision.notas_revision = f"OCR ${monto}; deuda ${deuda}"
-            await self.db.commit()
-            return {"aplicado": False, "estado": "monto_menor_a_la_deuda", "monto": str(monto), "deuda": str(deuda)}
-
-        try:
-            revision.cliente_id = cliente_id
-            revision.factura_id = factura.id
-            await self.db.commit()
-            try:
-                await self.correo.sync(self.db)
-            except BankEmailError as exc:
-                revision = await self.db.get(ComprobantePagoRevisionModel, revision_id)
-                revision.motivo_revision = "error_sincronizacion_correo"
-                revision.notas_revision = str(exc)[:1000]
-                await self.db.commit()
-            revision = await self.db.get(ComprobantePagoRevisionModel, revision_id)
-            resultado = await self.correo.reconcile_revision(self.db, revision)
-        except Exception as exc:
-            logger.exception("Error conciliando comprobante %s", revision_id)
-            await self.db.rollback()
-            revision = await self.db.get(ComprobantePagoRevisionModel, revision_id)
-            if revision:
-                revision.estado = "pendiente"
-                revision.motivo_revision = "error_conciliacion_correo"
-                revision.notas_revision = str(exc)[:1000]
-                await self.db.commit()
-            return {"aplicado": False, "estado": "error_conciliacion"}
-
-        if resultado.get("approved"):
-            revision = await self.db.get(ComprobantePagoRevisionModel, revision_id)
-            return {
-                "aplicado": True,
-                "estado": "pago_confirmado_por_banco",
-                "monto": str(FinanceService.dinero(revision.monto_detectado or monto)),
-                "reactivado": bool(resultado.get("reactivado")),
-                "sigue_suspendido": cliente.estado == "suspendido" and not resultado.get("reactivado"),
-            }
-        if resultado.get("status") == "pago_adelantado":
-            return {
-                "aplicado": False,
-                "estado": "pago_adelantado",
-                "monto": str(monto),
-                "detalle": "El banco confirmó el pago; es del mes siguiente y se aplica solo ese día.",
-                "aplicar_el": resultado.get("aplicar_el"),
-            }
-        return {"aplicado": False, "estado": resultado.get("status") or "sin_confirmacion_bancaria"}
+        return await self.aplicar_por_captura(revision, cliente, factura, await config_pagos(self.db))
 
     async def aplicar_por_captura(self, revision, cliente, factura, config) -> dict:
-        """Modo "solo captura": se aplica con los datos de la captura.
+        """Se aplica con los datos de la captura.
 
-        Sin correo del banco, la protección es que el código único de la
-        transferencia no se pueda usar dos veces, que la fecha sea reciente y
-        que el monto cubra la deuda.
+        La protección es que el código único de la transferencia no se pueda
+        usar dos veces, que la fecha sea reciente y que el monto cubra la deuda.
         """
         clave = clave_de_transferencia(revision)
         if not clave:
@@ -457,12 +388,6 @@ class ComprobanteService:
         revision.pago_id = resultado.get("pago_id")
         revision.motivo_revision = "aprobado_por_captura"
         revision.fecha_revision = datetime.now()
-        # Reconectar con una captura es lo más tentador de falsear: su
-        # depósito se busca primero y se avisa antes si no aparece.
-        if es_interna_azteca(revision.folio_detectado):
-            revision.auditoria_banco = "interna_azteca"
-        else:
-            revision.auditoria_banco = "prioridad" if cliente.estado == "suspendido" else "pendiente"
         self.db.add(PagoAutovalidadoModel(
             cliente_id=cliente.id,
             monto=monto,
@@ -511,12 +436,17 @@ class ComprobanteService:
         return None
 
     async def _a_revision(self, revision, motivo: str, nota: str | None, extra: dict | None = None) -> dict:
+        """No se pudo validar sola: la registra un asesor a mano.
+
+        Queda "pendiente" solo para que el pago manual la cierre y bloquee su
+        folio (resolver_por_pago_manual); ya no hay bandeja de revisión.
+        """
         revision.estado = "pendiente"
         revision.motivo_revision = motivo
         if nota:
             revision.notas_revision = nota
         await self.db.commit()
-        return {"aplicado": False, "estado": motivo, "detalle": nota, **(extra or {})}
+        return {"aplicado": False, "estado": motivo, "detalle": nota, "requiere_asesor": True, **(extra or {})}
 
     async def _clave_ya_usada(self, clave: str, revision_id: int) -> bool:
         usado = await self.db.scalar(
@@ -538,9 +468,7 @@ class ComprobanteService:
 
     async def aplicar_adelantados_por_captura(self) -> int:
         """Día 1: aplica las capturas válidas que esperaban al mes que cubren."""
-        config = await self.correo.get_config(self.db)
-        if (getattr(config, "validar_pagos_con", None) or "correo") != "captura":
-            return 0
+        config = await config_pagos(self.db)
         revisiones = (
             await self.db.execute(
                 select(ComprobantePagoRevisionModel).where(

@@ -11,7 +11,7 @@ from fastapi_cache.backends.inmemory import InMemoryBackend
 # Scheduler para Cronjobs
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from src.jobs import (
-    tarea_conciliar_correos_bancarios,
+    tarea_aplicar_pagos_adelantados,
     tarea_conciliar_mikrotik,
     tarea_retomar_chats_pausados,
     tarea_cron_unificada,
@@ -43,7 +43,6 @@ from src.interfaces.api import (
     agente_ia,
     auditoria,
     auth,
-    bank_email,
     bajas,
     clients,
     configuracion,
@@ -225,10 +224,10 @@ async def lifespan(app: FastAPI):
         next_run_time=datetime.now(),
     )
     scheduler.add_job(
-        tarea_conciliar_correos_bancarios,
+        tarea_aplicar_pagos_adelantados,
         "interval",
-        minutes=1,
-        id="bank_email_reconciler",
+        minutes=10,
+        id="pagos_adelantados",
         coalesce=True,
         max_instances=1,
     )
@@ -304,10 +303,6 @@ licensed_audit = [
 ]
 
 app.include_router(configuracion.license_router, dependencies=authenticated)
-app.include_router(
-    bank_email.router,
-    dependencies=[Depends(require_valid_license)],
-)
 
 app.include_router(dashboard.router, dependencies=licensed)
 app.include_router(clients.router, dependencies=licensed)

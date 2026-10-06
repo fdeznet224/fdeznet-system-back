@@ -2,10 +2,12 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 from typing import List
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field, field_validator
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, desc
@@ -47,6 +49,7 @@ from src.domain.schemas import (
     BotVisualFlowUpdate,
 )
 from src.application.services.license_service import local_status, verify_license
+from src.application.services.pagos_captura import config_pagos
 from src.application.services.branding_service import get_or_create_system_config
 from src.infrastructure.auth import get_current_active_user
 from src.application.services.storage_service import (
@@ -717,3 +720,43 @@ async def limpiar_historial_logs(db: AsyncSession = Depends(get_db)):
     await db.execute(delete(LogCronjobModel))
     await db.commit()
     return {"status": "success", "mensaje": "Historial depurado correctamente"}
+
+
+# ==========================================
+# PAGOS POR CAPTURA
+# ==========================================
+class PagosCapturaRequest(BaseModel):
+    # Terminaciones (4 dígitos) de las cuentas del ISP, separadas por coma.
+    cuentas_destino_permitidas: str = Field(default="", max_length=255)
+    # Días hacia atrás que se acepta la fecha de una transferencia.
+    ventana_dias: int = Field(default=3, ge=1, le=30)
+
+    @field_validator("cuentas_destino_permitidas")
+    @classmethod
+    def _solo_terminaciones(cls, valor: str) -> str:
+        partes = [p.strip() for p in (valor or "").split(",") if p.strip()]
+        if any(not re.fullmatch(r"[0-9]{4}", p) for p in partes):
+            raise ValueError("Escribe terminaciones de 4 dígitos separadas por coma, por ejemplo 6342,5265")
+        return ",".join(dict.fromkeys(partes))
+
+
+@router.get("/pagos-captura")
+async def obtener_pagos_captura(db: AsyncSession = Depends(get_db)):
+    config = await config_pagos(db)
+    await db.commit()
+    return {
+        "cuentas_destino_permitidas": config.cuentas_destino_permitidas or "",
+        "ventana_dias": config.ventana_dias or 3,
+    }
+
+
+@router.put("/pagos-captura")
+async def guardar_pagos_captura(datos: PagosCapturaRequest, db: AsyncSession = Depends(get_db)):
+    config = await config_pagos(db)
+    config.cuentas_destino_permitidas = datos.cuentas_destino_permitidas or None
+    config.ventana_dias = datos.ventana_dias
+    await db.commit()
+    return {
+        "cuentas_destino_permitidas": config.cuentas_destino_permitidas or "",
+        "ventana_dias": config.ventana_dias,
+    }

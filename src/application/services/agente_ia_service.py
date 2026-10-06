@@ -788,6 +788,23 @@ class _Contexto:
         return {"orden_creada": True, "orden_id": orden.id}
 
     async def _aplicar_comprobante(self, revision_id: int, confirmar_cliente_sugerido: bool = False) -> dict:
+        resultado = await self._validar_comprobante(revision_id)
+        if resultado.get("requiere_asesor"):
+            # No hay bandeja de revisión: lo que no se valida solo lo registra
+            # un asesor a mano, así que se le pasa el chat con el motivo.
+            revision = await self.db.get(ComprobantePagoRevisionModel, int(revision_id))
+            monto = f"${revision.monto_detectado}" if revision and revision.monto_detectado else "monto sin leer"
+            await self._pasar_a_humano(
+                f"Pago por captura para registrar a mano ({monto}): "
+                f"{resultado.get('detalle') or resultado.get('estado')}. Regístralo en la Terminal de Cobro."
+            )
+            resultado["que_decir"] = (
+                "Dile que recibiste su comprobante y que un asesor lo revisa y registra su pago en breve. "
+                "No digas que el pago ya se aplicó."
+            )
+        return resultado
+
+    async def _validar_comprobante(self, revision_id: int) -> dict:
         if self.cliente:
             resultado = await ComprobanteService(self.db).conciliar(int(revision_id), self.cliente.id)
             if resultado.get("aplicado") and not resultado.get("concepto_traia_contrato"):
