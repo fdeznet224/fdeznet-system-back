@@ -16,6 +16,7 @@ from src.jobs import (
     tarea_retomar_chats_pausados,
     tarea_cron_unificada,
     tarea_mantenimiento_almacenamiento,
+    tarea_limpiar_bitacora,
     tarea_baja_automatica,
     tarea_monitoreo_routers,
     tarea_reactivar_servicios_pagados,
@@ -228,6 +229,15 @@ async def lifespan(app: FastAPI):
         "interval",
         minutes=10,
         id="pagos_adelantados",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        tarea_limpiar_bitacora,
+        "cron",
+        hour=3,
+        minute=15,
+        id="limpiar_bitacora",
         coalesce=True,
         max_instances=1,
     )

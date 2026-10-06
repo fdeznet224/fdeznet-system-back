@@ -94,6 +94,12 @@ class MikrotikReconciliationService:
             f"{acceso}"
         )
 
+    @staticmethod
+    def _servicios_ejemplo(servicios, maximo: int = 3) -> str:
+        ids = [str(servicio.id) for servicio in servicios[:maximo]]
+        resto = len(servicios) - len(ids)
+        return "servicios " + ", ".join(ids) + (f" y {resto} más" if resto > 0 else "")
+
     def _registrar_log(self, nivel: str, mensaje: str):
         self.db.add(
             LogCronjobModel(
@@ -421,15 +427,17 @@ class MikrotikReconciliationService:
             router = servicios_router[0].router
             reporte["routers"] += 1
             if not router or not router.is_active:
-                for servicio in servicios_router:
-                    reporte["errores"] += 1
-                    self._registrar_log(
-                        "ERROR",
-                        (
-                            f"No conciliado {self._descripcion(servicio)}: "
-                            "router inexistente o inactivo"
-                        ),
-                    )
+                # Una línea por router: con una por cliente, un router caído
+                # llenaba la bitácora (105 líneas cada 5 minutos).
+                reporte["errores"] += len(servicios_router)
+                self._registrar_log(
+                    "ERROR",
+                    (
+                        f"No conciliados {len(servicios_router)} servicios "
+                        f"({self._servicios_ejemplo(servicios_router)}): "
+                        "router inexistente o inactivo"
+                    ),
+                )
                 continue
 
             mk = self.mikrotik_factory(
@@ -474,17 +482,16 @@ class MikrotikReconciliationService:
                     )
                 }
             except Exception as exc:
-                for servicio in servicios_router:
-                    reporte["errores"] += 1
-                    self._registrar_log(
-                        "ERROR",
-                        (
-                            f"Falló verificación en router "
-                            f"'{router.nombre}' para "
-                            f"{self._descripcion(servicio)}; "
-                            f"se reintentará: {exc}"
-                        ),
-                    )
+                reporte["errores"] += len(servicios_router)
+                self._registrar_log(
+                    "ERROR",
+                    (
+                        f"Falló verificación en router '{router.nombre}': "
+                        f"{len(servicios_router)} servicios sin verificar "
+                        f"({self._servicios_ejemplo(servicios_router)}); "
+                        f"se reintentará: {exc}"
+                    ),
+                )
                 continue
 
             for servicio in servicios_router:

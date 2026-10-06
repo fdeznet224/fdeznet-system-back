@@ -33,7 +33,12 @@ class BaseDatosFalsa:
         return next(self._resultados)
 
 
-def test_home_distingue_historico_de_contratos_activos():
+def test_home_distingue_historico_de_contratos_activos(monkeypatch):
+    stock = {"disponibles": 2, "minimo": 5, "bajo": True}
+    monkeypatch.setattr(
+        "src.application.services.dashboard_service.InventarioService.resumen_stock",
+        AsyncMock(return_value=stock),
+    )
     resumen = SimpleNamespace(
         total=219,
         total_directorio=216,
@@ -83,6 +88,7 @@ def test_home_distingue_historico_de_contratos_activos():
     servicio._obtener_ultimos_pagos = AsyncMock(return_value=[])
 
     respuesta = asyncio.run(servicio.obtener_home_data())
+    assert respuesta["inventario"] == stock
     clientes = respuesta["resumen_clientes"]
 
     assert clientes["total_registrados"] == 216

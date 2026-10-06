@@ -1780,6 +1780,8 @@ class ConfiguracionSistema(Base):
     dias_retencion_recibos_pdf = Column(Integer, nullable=False, default=180, server_default="180")
     dias_retencion_archivos_whatsapp = Column(Integer, nullable=False, default=90, server_default="90")
     dias_retencion_respaldos = Column(Integer, nullable=False, default=14, server_default="14")
+    # Aviso en el inicio y en Inventario cuando quedan menos ONU en bodega.
+    stock_minimo_onus = Column(Integer, nullable=False, default=5, server_default="5")
     cierre_mensual_automatico = Column(Boolean, nullable=False, default=True, server_default="1")
     dia_cierre_almacenamiento = Column(Integer, nullable=False, default=1, server_default="1")
     ultima_limpieza_almacenamiento = Column(DateTime, nullable=True)

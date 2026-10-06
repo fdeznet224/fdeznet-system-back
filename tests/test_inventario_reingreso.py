@@ -71,3 +71,23 @@ def test_la_lista_completa_no_muestra_las_dadas_de_baja():
     asyncio.run(InventarioService(db).obtener_equipos())
 
     assert "inventario_onus.estado !=" in str(db.consultas[0])
+
+
+class _DBStock(_DB):
+    def __init__(self, minimo):
+        super().__init__()
+        self.config = SimpleNamespace(stock_minimo_onus=minimo)
+
+    async def get(self, _modelo, _llave):
+        return self.config
+
+
+@pytest.mark.parametrize("disponibles, minimo, bajo", [(2, 5, True), (5, 5, False), (0, 0, False)])
+def test_avisa_cuando_quedan_menos_onu_que_el_minimo(monkeypatch, disponibles, minimo, bajo):
+    async def equipos(self, estado=None):
+        assert estado == "DISPONIBLE"
+        return [object()] * disponibles
+
+    monkeypatch.setattr(InventarioService, "obtener_equipos", equipos)
+    resumen = asyncio.run(InventarioService(_DBStock(minimo)).resumen_stock())
+    assert resumen == {"disponibles": disponibles, "minimo": minimo, "bajo": bajo}

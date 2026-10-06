@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.domain.schemas import ONURetorno
 from src.infrastructure.database import get_db
@@ -61,6 +61,32 @@ async def eliminar_onu(
 # ==========================================
 # CATÁLOGO DE INVENTARIO
 # ==========================================
+class StockMinimoRequest(BaseModel):
+    # 0 apaga el aviso.
+    minimo: int = Field(ge=0, le=1000)
+
+
+@router.get("/stock")
+async def resumen_stock(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    """ONU en bodega contra el mínimo configurado."""
+    return await InventarioService(db).resumen_stock()
+
+
+@router.put("/stock")
+async def cambiar_stock_minimo(
+    datos: StockMinimoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    try:
+        return await InventarioService(db).cambiar_stock_minimo(datos.minimo)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/", response_model=List[ONURetorno])
 async def obtener_inventario(
     estado: str = None,

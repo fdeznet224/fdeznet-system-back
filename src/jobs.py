@@ -3,7 +3,7 @@ import requests
 import os
 import time
 from datetime import datetime, timedelta
-from sqlalchemy import select, func
+from sqlalchemy import delete, select, func
 from sqlalchemy.orm import selectinload
 from src.infrastructure.database import SessionLocal
 from src.infrastructure.models import (
@@ -34,6 +34,43 @@ from src.application.services.storage_service import cleanup_storage, close_peri
 async def tarea_verificar_licencia():
     async with SessionLocal() as db:
         await verify_license(db)
+
+
+# La bitácora de procesos crece unos 7 mil registros al día (monitoreo cada
+# minuto, conciliación cada 5). Se guarda lo de los últimos 90 días.
+DIAS_BITACORA = 90
+LOTE_BITACORA = 5000
+
+
+async def limpiar_bitacora(db, ahora: datetime | None = None) -> int:
+    """Borra por lotes la bitácora de procesos más vieja que DIAS_BITACORA."""
+    limite = (ahora or datetime.now()) - timedelta(days=DIAS_BITACORA)
+    borrados = 0
+    while True:
+        ids = (
+            await db.execute(
+                select(LogCronjobModel.id)
+                .where(LogCronjobModel.fecha < limite)
+                .limit(LOTE_BITACORA)
+            )
+        ).scalars().all()
+        if not ids:
+            return borrados
+        await db.execute(delete(LogCronjobModel).where(LogCronjobModel.id.in_(ids)))
+        await db.commit()
+        borrados += len(ids)
+
+
+async def tarea_limpiar_bitacora():
+    async with SessionLocal() as db:
+        borrados = await limpiar_bitacora(db)
+        if borrados:
+            db.add(LogCronjobModel(
+                nivel="INFO",
+                origen="Mantenimiento",
+                mensaje=f"Bitácora: se borraron {borrados} registros de más de {DIAS_BITACORA} días.",
+            ))
+            await db.commit()
 
 
 async def tarea_aplicar_pagos_adelantados():

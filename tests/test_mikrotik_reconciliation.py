@@ -484,3 +484,29 @@ def test_conciliador_modo_whatsapp_desbloquea_lease_dhcp():
     assert mk.cambios_estado == [("AA:BB:CC:DD:EE:03", False)]
     assert mk.leases["AA:BB:CC:DD:EE:03"]["block-access"] == "false"
     assert "10.0.0.3" in mk.ips_cortadas
+
+
+def test_un_router_caido_deja_una_sola_linea_en_la_bitacora():
+    router = SimpleNamespace(
+        id=3, nombre="Vicente Guerrero", ip_vpn="10.8.0.3", user_api="api",
+        pass_api="clave", port_api=80, is_active=True,
+    )
+    servicios = [_servicio(i, "activo", router, f"cliente{i}", f"10.0.0.{i}") for i in range(1, 6)]
+    db = _DB(servicios)
+
+    class _Caido:
+        def inicializar_firewall_corte(self, *_a, **_k):
+            raise ConnectionError("HTTPConnectionPool(host='10.8.0.3'): Max retries exceeded")
+
+    reporte = asyncio.run(
+        MikrotikReconciliationService(
+            db,
+            mikrotik_factory=lambda *_args: _Caido(),
+            blocking_runner=_run_direct,
+        ).ejecutar()
+    )
+
+    assert reporte["errores"] == 5
+    fallas = [log for log in db.logs if log.mensaje.startswith("Falló verificación")]
+    assert len(fallas) == 1
+    assert "5 servicios sin verificar (servicios 1, 2, 3 y 2 más)" in fallas[0].mensaje

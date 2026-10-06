@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, case, and_
 from sqlalchemy.orm import joinedload
+from src.application.services.inventario_service import InventarioService
 from datetime import datetime, timedelta
 import pytz
 import psutil
@@ -317,7 +318,11 @@ class DashboardService:
             else 0.0
         )
 
+        stock = await InventarioService(self.db).resumen_stock()
+
         return {
+            # Aviso de bodega baja: con pocas ONU no se puede instalar.
+            "inventario": stock,
             "resumen_clientes": {
                 # El directorio omite instalaciones pendientes. Se usa la misma
                 # definición que /clientes/listado-completo-unificado para que

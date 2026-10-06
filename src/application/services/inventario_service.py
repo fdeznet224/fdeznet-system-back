@@ -3,6 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload # 👈 Nueva importación necesaria
 from src.infrastructure.models import (
     ClienteModel,
+    ConfiguracionSistema,
     InventarioONUModel,
     ServicioModel,
 )
@@ -179,3 +180,18 @@ class InventarioService:
         )
         await self.db.commit()
         return "Equipo dado de baja; su historial fue conservado."
+
+    async def resumen_stock(self) -> dict:
+        """ONU listas para instalar contra el mínimo que quiere tener el ISP."""
+        disponibles = len(await self.obtener_equipos("DISPONIBLE"))
+        config = await self.db.get(ConfiguracionSistema, 1)
+        minimo = int(getattr(config, "stock_minimo_onus", None) or 0)
+        return {"disponibles": disponibles, "minimo": minimo, "bajo": minimo > 0 and disponibles < minimo}
+
+    async def cambiar_stock_minimo(self, minimo: int) -> dict:
+        config = await self.db.get(ConfiguracionSistema, 1)
+        if not config:
+            raise ValueError("Falta la configuración del sistema")
+        config.stock_minimo_onus = minimo
+        await self.db.commit()
+        return await self.resumen_stock()
