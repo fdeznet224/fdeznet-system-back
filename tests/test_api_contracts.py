@@ -16,12 +16,19 @@ def test_rutas_compatibles_de_bajas_estan_deprecadas():
     legacy_paths = (
         "/clientes/{cliente_id}/dar-de-baja",
         "/clientes/{cliente_id}/reactivar",
-        "/clientes/inventario/{inventario_id}/confirmar-retiro-onu",
-        "/clientes/inventario/{inventario_id}/asignar-retiro/{tecnico_id}",
     )
 
     for path in legacy_paths:
         assert paths[path]["post"]["deprecated"] is True
+
+
+def test_atajos_viejos_de_retiro_ya_no_existen():
+    # El retiro se gestiona solo por /bajas (pestaña Retiros del inventario),
+    # que obliga a indicar cómo llegó el equipo.
+    paths = app.openapi()["paths"]
+
+    assert "/clientes/inventario/{inventario_id}/confirmar-retiro-onu" not in paths
+    assert "/clientes/inventario/{inventario_id}/asignar-retiro/{tecnico_id}" not in paths
 
 
 def test_rutas_canonicas_de_bajas_siguen_activas():

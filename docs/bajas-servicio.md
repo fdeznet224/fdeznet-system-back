@@ -39,9 +39,13 @@ anteriores, pero aparecen como `deprecated` en OpenAPI:
 
 - `POST /clientes/{cliente_id}/dar-de-baja`
 - `POST /clientes/{cliente_id}/reactivar`
-- `POST /clientes/inventario/{inventario_id}/confirmar-retiro-onu`
-- `POST /clientes/inventario/{inventario_id}/asignar-retiro/{tecnico_id}`
 
 Antes de retirarlas se debe comprobar en los registros del proxy o de la API que
 ya no reciben tráfico durante una ventana completa de operación.
+
+Retiradas en la 2.69.0 (sin tráfico en los registros de nginx del 21/09 al
+05/10/2026): `POST /clientes/inventario/{inventario_id}/confirmar-retiro-onu` y
+`POST /clientes/inventario/{inventario_id}/asignar-retiro/{tecnico_id}`. El
+retiro se gestiona con `/bajas/{baja_id}/asignar` y
+`/bajas/{baja_id}/confirmar-retiro`, que exige indicar cómo llegó el equipo.
 
