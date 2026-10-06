@@ -236,8 +236,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(
         tarea_leer_senal_optica,
         "cron",
-        hour=2,
-        minute=0,
+        minute=5,
         id="senal_optica",
         coalesce=True,
         max_instances=1,

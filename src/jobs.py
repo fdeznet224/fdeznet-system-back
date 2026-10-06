@@ -10,6 +10,7 @@ from src.infrastructure.models import (
     ConfiguracionSistema,
     RouterModel,
     ClienteModel,
+    LecturaOpticaModel,
     LogCronjobModel,
     MensajeChatModel,
     ServicioModel,
@@ -40,6 +41,8 @@ async def tarea_verificar_licencia():
 # La bitácora de procesos crece unos 7 mil registros al día (monitoreo cada
 # minuto, conciliación cada 5). Se guarda lo de los últimos 90 días.
 DIAS_BITACORA = 90
+# Lecturas automáticas de señal (una por ONU cada hora).
+DIAS_LECTURAS_AUTOMATICAS = 60
 LOTE_BITACORA = 5000
 
 
@@ -62,8 +65,22 @@ async def limpiar_bitacora(db, ahora: datetime | None = None) -> int:
         borrados += len(ids)
 
 
+async def limpiar_lecturas_automaticas(db, ahora: datetime | None = None) -> int:
+    """Las lecturas automáticas viejas; las de técnicos e instalaciones se guardan."""
+    limite = (ahora or datetime.now()) - timedelta(days=DIAS_LECTURAS_AUTOMATICAS)
+    resultado = await db.execute(
+        delete(LecturaOpticaModel).where(
+            LecturaOpticaModel.origen == "automatica",
+            LecturaOpticaModel.fecha < limite,
+        )
+    )
+    await db.commit()
+    return resultado.rowcount or 0
+
+
 async def tarea_limpiar_bitacora():
     async with SessionLocal() as db:
+        await limpiar_lecturas_automaticas(db)
         borrados = await limpiar_bitacora(db)
         if borrados:
             db.add(LogCronjobModel(
@@ -74,10 +91,10 @@ async def tarea_limpiar_bitacora():
             await db.commit()
 
 
-async def leer_senal_optica(db) -> dict:
-    """Lee todas las ONU, guarda las lecturas y avisa de las que empeoraron."""
-    reporte = await SenalOpticaService(db).tomar_lecturas()
-    texto = mensaje_alerta(reporte)
+async def leer_senal_optica(db, avisar: bool = False) -> dict:
+    """Lee todas las ONU y guarda las lecturas; con avisar, manda las que empeoraron."""
+    reporte = await SenalOpticaService(db).tomar_lecturas(evaluar_alertas=avisar)
+    texto = mensaje_alerta(reporte) if avisar else None
     if texto:
         await enviar_alertas_whatsapp(texto, db, tipo_evento="alerta_senal")
     resumen = (
@@ -92,9 +109,13 @@ async def leer_senal_optica(db) -> dict:
     return reporte
 
 
+# Hora del aviso diario de señal que empeoró (las lecturas son cada hora).
+HORA_AVISO_SENAL = 2
+
+
 async def tarea_leer_senal_optica():
     async with SessionLocal() as db:
-        await leer_senal_optica(db)
+        await leer_senal_optica(db, avisar=datetime.now().hour == HORA_AVISO_SENAL)
 
 
 async def tarea_aplicar_pagos_adelantados():

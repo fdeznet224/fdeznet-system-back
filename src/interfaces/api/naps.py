@@ -1,12 +1,11 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from src.infrastructure.database import get_db
 from src.domain.schemas import CajaNapCreate, CajaNapResponse
 from src.application.services.nap_service import NapService
-from src.application.services.aviso_averia_service import MENSAJE_SUGERIDO, encolar_aviso
 from src.infrastructure.auth import role_required
 
 router = APIRouter(prefix="/infraestructura", tags=["Cajas NAP y Fibra"])
@@ -73,86 +72,6 @@ async def sugerir_cajas_nap(
         olt_id=olt_id,
         limite=limite,
     )
-
-
-@router.get("/naps/sin-asignar")
-async def servicios_sin_nap(
-    zona_id: Optional[int] = Query(default=None, ge=1),
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(role_required(["admin", "supervisor"])),
-):
-    """Servicios vigentes sin caja NAP, con las cajas más cercanas por GPS."""
-    return await NapService(db).servicios_sin_nap(zona_id=zona_id)
-
-
-class AsignarNapRequest(BaseModel):
-    servicio_id: int = Field(gt=0)
-    caja_nap_id: int = Field(gt=0)
-    puerto_nap: Optional[int] = Field(default=None, ge=1, le=128)
-
-
-@router.post("/naps/asignar")
-async def asignar_nap(
-    datos: AsignarNapRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(role_required(["admin", "supervisor"])),
-):
-    try:
-        return await NapService(db).asignar_nap_servicio(
-            datos.servicio_id, datos.caja_nap_id, current_user.id, datos.puerto_nap
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-# ==========================================
-# AVISOS DE AVERÍA
-# ==========================================
-class AvisoAveriaRequest(BaseModel):
-    caja_nap_id: Optional[int] = Field(default=None, gt=0)
-    olt_id: Optional[int] = Field(default=None, gt=0)
-    puerto_olt: Optional[int] = Field(default=None, ge=0, le=128)
-    zona_id: Optional[int] = Field(default=None, gt=0)
-    mensaje: str = Field(default=MENSAJE_SUGERIDO, min_length=10, max_length=1000)
-
-
-async def _afectados(db: AsyncSession, datos: AvisoAveriaRequest):
-    try:
-        return await NapService(db).afectados_por_averia(
-            caja_nap_id=datos.caja_nap_id,
-            olt_id=datos.olt_id,
-            puerto_olt=datos.puerto_olt,
-            zona_id=datos.zona_id,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/avisos-averia/vista-previa")
-async def vista_previa_aviso(
-    datos: AvisoAveriaRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(role_required(["admin", "supervisor"])),
-):
-    """A quién le llegaría el aviso, antes de mandarlo."""
-    afectados = await _afectados(db, datos)
-    return {
-        "total": len(afectados),
-        "clientes": [a["nombre"] for a in afectados[:50]],
-        "mensaje_sugerido": MENSAJE_SUGERIDO,
-    }
-
-
-@router.post("/avisos-averia")
-async def enviar_aviso_averia(
-    datos: AvisoAveriaRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(role_required(["admin", "supervisor"])),
-):
-    afectados = await _afectados(db, datos)
-    if not afectados:
-        raise HTTPException(status_code=404, detail="No hay clientes con teléfono afectados por esa falla")
-    return await encolar_aviso(db, afectados, datos.mensaje, current_user.id)
 
 
 # ==========================================

@@ -48,3 +48,20 @@ def test_sin_registros_viejos_no_borra_nada():
     db = _DB([])
     assert asyncio.run(jobs.limpiar_bitacora(db)) == 0
     assert db.borrados == []
+
+
+def test_solo_borra_lecturas_automaticas_viejas():
+    class _DBLecturas:
+        def __init__(self):
+            self.consulta = None
+
+        async def execute(self, consulta):
+            self.consulta = str(consulta)
+            return type("R", (), {"rowcount": 3})()
+
+        async def commit(self):
+            return None
+
+    db = _DBLecturas()
+    assert asyncio.run(jobs.limpiar_lecturas_automaticas(db, ahora=datetime(2026, 10, 6))) == 3
+    assert "DELETE FROM lecturas_opticas" in db.consulta and "lecturas_opticas.origen =" in db.consulta

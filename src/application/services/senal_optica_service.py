@@ -1,13 +1,15 @@
 """Lectura automática de la señal óptica de todas las ONU.
 
-Cada noche se lee la potencia RX de las ONU de cada OLT (API de VSOL o SNMP,
-según la OLT), se guarda en lecturas_opticas y se avisa por WhatsApp de las
-que empeoraron: las que bajaron del umbral o cayeron varios dB desde la
-lectura anterior. Así se atiende una fibra dañada antes de que el cliente
+Cada hora se lee la potencia RX de las ONU de cada OLT (API de VSOL o SNMP,
+según la OLT) y se guarda en lecturas_opticas: de ahí salen los contadores de
+potencia de la lista de clientes. Una vez al día se avisa por WhatsApp de las
+que empeoraron contra la lectura del día anterior (bajaron del umbral o
+cayeron varios dB). Así se atiende una fibra dañada antes de que el cliente
 llame.
 """
 
 import logging
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import func, select
@@ -25,6 +27,8 @@ UMBRAL_DEBIL_DBM = Decimal("-27")
 # Caída que delata una fibra doblada, un conector sucio o un empalme flojo.
 CAIDA_ALERTA_DB = Decimal("3")
 ORIGEN = "automatica"
+# El aviso diario compara contra la lectura de hace al menos este tiempo.
+COMPARAR_CONTRA = timedelta(hours=20)
 
 
 def compacto(valor) -> str:
@@ -80,18 +84,22 @@ class SenalOpticaService:
         ).scalars().all()
         return {compacto(s.onu.identificador): s for s in servicios if s.onu and s.onu.identificador}
 
-    async def _ultima_lectura(self, servicio_id: int) -> Decimal | None:
+    async def _lectura_anterior(self, servicio_id: int, antes_de: datetime) -> Decimal | None:
         return (
             await self.db.execute(
                 select(LecturaOpticaModel.potencia_rx_dbm)
-                .where(LecturaOpticaModel.servicio_id == servicio_id)
+                .where(
+                    LecturaOpticaModel.servicio_id == servicio_id,
+                    LecturaOpticaModel.fecha <= antes_de,
+                )
                 .order_by(LecturaOpticaModel.fecha.desc(), LecturaOpticaModel.id.desc())
                 .limit(1)
             )
         ).scalar_one_or_none()
 
-    async def tomar_lecturas(self) -> dict:
-        """Lee todas las OLT; devuelve conteos y las ONU que empeoraron."""
+    async def tomar_lecturas(self, evaluar_alertas: bool = False) -> dict:
+        """Lee todas las OLT; con evaluar_alertas, también las que empeoraron."""
+        antes_de = datetime.now() - COMPARAR_CONTRA
         servicios = await self._servicios_por_onu()
         olts = (await self.db.execute(select(OLTModel).order_by(OLTModel.id))).scalars().all()
         reporte = {"leidas": 0, "sin_senal": 0, "olts_con_error": [], "alertas": []}
@@ -110,7 +118,6 @@ class SenalOpticaService:
                 if rx is None:
                     reporte["sin_senal"] += 1
                     continue
-                anterior = await self._ultima_lectura(servicio.id)
                 self.db.add(LecturaOpticaModel(
                     cliente_id=servicio.cliente_id,
                     servicio_id=servicio.id,
@@ -120,6 +127,9 @@ class SenalOpticaService:
                     origen=ORIGEN,
                 ))
                 reporte["leidas"] += 1
+                if not evaluar_alertas:
+                    continue
+                anterior = await self._lectura_anterior(servicio.id, antes_de)
                 motivo = evaluar(rx, anterior)
                 if motivo:
                     reporte["alertas"].append({
@@ -134,53 +144,33 @@ class SenalOpticaService:
         await self.db.commit()
         return reporte
 
-    async def senal_debil(self, umbral: Decimal = Decimal("-25")) -> list[dict]:
-        """Última lectura de cada servicio, solo las que están por debajo del umbral."""
+    async def potencias_por_cliente(self) -> dict[int, dict]:
+        """Última potencia leída de cada cliente, para los contadores de Clientes.
+
+        "alta" es la potencia que ya pasó del umbral (señal débil); con varios
+        domicilios cuenta el peor.
+        """
         ultima = (
-            select(
-                LecturaOpticaModel.servicio_id,
-                func.max(LecturaOpticaModel.id).label("id"),
-            )
+            select(func.max(LecturaOpticaModel.id).label("id"))
             .where(LecturaOpticaModel.servicio_id.isnot(None))
             .group_by(LecturaOpticaModel.servicio_id)
             .subquery()
         )
-        lecturas = (
+        filas = (
             await self.db.execute(
-                select(LecturaOpticaModel)
+                select(LecturaOpticaModel.cliente_id, LecturaOpticaModel.potencia_rx_dbm, LecturaOpticaModel.fecha)
                 .join(ultima, LecturaOpticaModel.id == ultima.c.id)
-                .where(LecturaOpticaModel.potencia_rx_dbm < umbral)
-                .order_by(LecturaOpticaModel.potencia_rx_dbm)
             )
-        ).scalars().all()
-        if not lecturas:
-            return []
-        servicios = {
-            s.id: s
-            for s in (
-                await self.db.execute(
-                    select(ServicioModel)
-                    .options(selectinload(ServicioModel.cliente), selectinload(ServicioModel.caja_nap))
-                    .where(ServicioModel.id.in_([l.servicio_id for l in lecturas]))
-                )
-            ).scalars().all()
-        }
-        resultado = []
-        for lectura in lecturas:
-            servicio = servicios.get(lectura.servicio_id)
-            if not servicio or servicio.estado == "cancelado":
-                continue
-            cliente = servicio.cliente
-            resultado.append({
-                "servicio_id": servicio.id,
-                "cliente_id": servicio.cliente_id,
-                "nombre": cliente.nombre if cliente else None,
-                "contrato": cliente.cedula if cliente else None,
-                "caja_nap": servicio.caja_nap.nombre if servicio.caja_nap else None,
-                "rx": float(lectura.potencia_rx_dbm),
-                "critica": lectura.potencia_rx_dbm < UMBRAL_DEBIL_DBM,
-                "fecha": lectura.fecha.isoformat() if lectura.fecha else None,
-            })
+        ).all()
+        resultado: dict[int, dict] = {}
+        for cliente_id, rx, fecha in filas:
+            actual = resultado.get(cliente_id)
+            if actual is None or rx < Decimal(str(actual["rx"])):
+                resultado[cliente_id] = {
+                    "rx": float(rx),
+                    "nivel": "alta" if rx < UMBRAL_DEBIL_DBM else "normal",
+                    "fecha": fecha.isoformat() if fecha else None,
+                }
         return resultado
 
 
@@ -198,6 +188,6 @@ def mensaje_alerta(reporte: dict, maximo: int = 10) -> str | None:
         contrato = f" ({a['contrato']})" if a.get("contrato") else ""
         lineas.append(f"• {a['cliente']}{contrato} · {a['olt']}: {detalle}")
     if len(alertas) > maximo:
-        lineas.append(f"…y {len(alertas) - maximo} más en Averías → Señal débil.")
+        lineas.append(f"…y {len(alertas) - maximo} más (filtro «Potencia alta» en Clientes).")
     return "\n".join(lineas)
 

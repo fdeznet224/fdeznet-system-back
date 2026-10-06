@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.application.services.ftth_service import FTTHService
-from src.application.services.senal_optica_service import SenalOpticaService
-from src.jobs import leer_senal_optica
+from src.application.services.senal_optica_service import UMBRAL_DEBIL_DBM, SenalOpticaService
+from src.application.services.support_service import SupportService
 from src.infrastructure.auth import role_required
 from src.infrastructure.database import get_db
 from src.infrastructure.models import (
@@ -290,27 +290,41 @@ async def historial_onu(
 
 
 # ==========================================
-# SEÑAL ÓPTICA AUTOMÁTICA
+# POTENCIA ÓPTICA
 # ==========================================
-@router.get("/senal-debil")
-async def senal_debil(
+@router.get("/potencias")
+async def potencias_por_cliente(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(role_required(["admin", "supervisor"])),
 ):
-    """Clientes cuya última lectura está por debajo de -25 dBm (crítica bajo -27)."""
-    return await SenalOpticaService(db).senal_debil()
+    """Última potencia leída de cada cliente (se lee cada hora)."""
+    return await SenalOpticaService(db).potencias_por_cliente()
 
 
-@router.post("/senal/leer")
-async def leer_senal_ahora(
+@router.get("/clientes/{cliente_id}/potencia-actual")
+async def potencia_actual(
+    cliente_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(role_required(["admin"])),
+    current_user=Depends(role_required(["admin", "supervisor"])),
 ):
-    """Lee ahora todas las ONU (normalmente corre sola a las 2:00)."""
-    reporte = await leer_senal_optica(db)
+    """Potencia leída de la OLT en este momento (API de VSOL o SNMP)."""
+    cliente = (
+        await db.execute(
+            select(ClienteModel)
+            .options(selectinload(ClienteModel.olt), selectinload(ClienteModel.onu_asignada))
+            .where(ClienteModel.id == cliente_id)
+        )
+    ).scalar_one_or_none()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    datos = await SupportService(db)._diagnosticar_olt(cliente)
+    rx = datos.get("potencia_rx_dbm")
+    tx = datos.get("potencia_tx_dbm")
     return {
-        "leidas": reporte["leidas"],
-        "sin_senal": reporte["sin_senal"],
-        "empeoraron": len(reporte["alertas"]),
-        "olts_con_error": reporte["olts_con_error"],
+        "disponible": bool(datos.get("disponible")),
+        "onu_online": datos.get("onu_online"),
+        "rx": float(rx) if rx is not None else None,
+        "tx": float(tx) if tx is not None else None,
+        "nivel": None if rx is None else ("alta" if Decimal(str(rx)) < UMBRAL_DEBIL_DBM else "normal"),
+        "error": datos.get("error"),
     }

@@ -90,7 +90,7 @@ def test_guarda_lecturas_cruza_por_serial_y_sigue_si_una_olt_falla():
             return [{"identificador": "a0b1c2d3e4f5", "rx": "LOS", "tx": None}]
         raise TimeoutError("sin respuesta")
 
-    reporte = asyncio.run(SenalOpticaService(db, lector=lector).tomar_lecturas())
+    reporte = asyncio.run(SenalOpticaService(db, lector=lector).tomar_lecturas(evaluar_alertas=True))
 
     assert reporte["leidas"] == 1 and reporte["sin_senal"] == 1
     assert reporte["olts_con_error"] == ["Caída"]
@@ -105,5 +105,39 @@ def test_el_aviso_resume_y_corta_la_lista():
                 "motivo": "debil"} for i in range(12)]
     texto = mensaje_alerta({"alertas": alertas}, maximo=10)
     assert texto.startswith("📉 *Señal óptica: 12 clientes empeoraron*")
-    assert "…y 2 más en Averías → Señal débil." in texto
+    assert "…y 2 más (filtro «Potencia alta» en Clientes)." in texto
     assert mensaje_alerta({"alertas": []}) is None
+
+
+def test_cada_hora_solo_guarda_y_no_evalua_avisos():
+    db = _DB([_servicio(1, "HWTC05450CB6", "Ana")], [SimpleNamespace(id=1, nombre="Villa")], {1: Decimal("-21.00")})
+
+    async def lector(_olt):
+        return [{"identificador": "HWTC05450CB6", "rx": "-28.10"}]
+
+    reporte = asyncio.run(SenalOpticaService(db, lector=lector).tomar_lecturas())
+    assert reporte["leidas"] == 1 and reporte["alertas"] == []
+
+
+class _DBPotencias:
+    def __init__(self, filas):
+        self.filas = filas
+
+    async def execute(self, _consulta):
+        filas = self.filas
+
+        class _R:
+            def all(self):
+                return filas
+
+        return _R()
+
+
+def test_la_potencia_del_cliente_es_la_peor_de_sus_domicilios():
+    from datetime import datetime
+
+    fecha = datetime(2026, 10, 6, 10, 5)
+    db = _DBPotencias([(5, Decimal("-21.00"), fecha), (5, Decimal("-28.40"), fecha), (6, Decimal("-19.5"), fecha)])
+    potencias = asyncio.run(SenalOpticaService(db).potencias_por_cliente())
+    assert potencias[5] == {"rx": -28.4, "nivel": "alta", "fecha": "2026-10-06T10:05:00"}
+    assert potencias[6]["nivel"] == "normal"
