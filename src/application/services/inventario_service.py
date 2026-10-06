@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload # 👈 Nueva importación necesaria
 from src.infrastructure.models import (
     ClienteModel,
@@ -7,6 +7,19 @@ from src.infrastructure.models import (
     ServicioModel,
 )
 from src.application.services.ftth_service import FTTHService
+
+ESTADOS_LEGIBLES = {
+    "DISPONIBLE": "en bodega",
+    "INSTALADO": "instalada en un cliente",
+    "POR_RECOGER": "pendiente de recoger",
+    "CON_FALLA": "en averiados",
+    "RESERVADO": "reservada para una instalación",
+}
+
+
+def identificador_compacto(valor: str) -> str:
+    """"AA:BB:CC..." y "aabbcc..." son la misma ONU."""
+    return "".join(c for c in (valor or "").upper() if c.isalnum())
 
 class InventarioService:
     def __init__(self, db: AsyncSession):
@@ -19,13 +32,44 @@ class InventarioService:
         modelo: str = "Genérico",
         usuario_id: int = None,
     ):
-        """Registra un nuevo equipo validando que no exista."""
-        stmt = select(InventarioONUModel).where(InventarioONUModel.identificador == identificador)
-        existe = (await self.db.execute(stmt)).scalar_one_or_none()
-        
+        """Registra un equipo nuevo, o reactiva uno que se había dado de baja.
+
+        Dar de baja no borra la ONU (se conserva su historial), así que al
+        volver a ingresarla se reutiliza el mismo registro.
+        """
+        existe = (
+            await self.db.execute(
+                select(InventarioONUModel).where(
+                    func.upper(
+                        func.replace(func.replace(InventarioONUModel.identificador, ":", ""), "-", "")
+                    ) == identificador_compacto(identificador)
+                )
+            )
+        ).scalars().first()
+
+        if existe and existe.estado == "BAJA":
+            existe.estado = "DISPONIBLE"
+            existe.tecnologia = tecnologia.upper()
+            existe.modelo = modelo
+            existe.tecnico_id = None
+            FTTHService(self.db).registrar_movimiento(
+                onu=existe,
+                tecnico_id=usuario_id,
+                tipo_movimiento="alta_inventario",
+                estado_anterior="BAJA",
+                estado_nuevo="DISPONIBLE",
+                condicion="REINGRESO",
+                motivo="Reingreso de un equipo dado de baja",
+            )
+            await self.db.commit()
+            await self.db.refresh(existe)
+            return existe
         if existe:
-            raise ValueError("Esta MAC o Serial ya está registrada en el inventario.")
-        
+            raise ValueError(
+                f"La ONU {existe.identificador} ya está en el inventario "
+                f"({ESTADOS_LEGIBLES.get(existe.estado, existe.estado.lower())})."
+            )
+
         nueva_onu = InventarioONUModel(
             identificador=identificador,
             tecnologia=tecnologia.upper(),
@@ -57,6 +101,10 @@ class InventarioService:
             selectinload(InventarioONUModel.cliente).selectinload(ClienteModel.zona)
         )
         
+        if not estado:
+            # Las dadas de baja se conservan por su historial, pero ya no
+            # forman parte del inventario.
+            stmt = stmt.where(InventarioONUModel.estado != "BAJA")
         if estado:
             stmt = stmt.where(InventarioONUModel.estado == estado.upper())
             if estado.strip().upper() == "DISPONIBLE":

@@ -396,6 +396,15 @@ class ActivacionService:
                 )
             )
         ).scalars().first()
+        if existente and existente.estado == "BAJA":
+            # Se había dado de baja y el técnico la trae en mano: se reactiva.
+            reactivada = await InventarioService(self.db).registrar_equipo(
+                identificador=existente.identificador,
+                tecnologia=(olt.tecnologia or existente.tecnologia or "GPON").upper(),
+                modelo=existente.modelo or "Registrada por el técnico",
+                usuario_id=usuario.id,
+            )
+            return reactivada.id
         if existente:
             if existente.estado != "DISPONIBLE":
                 raise ValueError(

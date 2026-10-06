@@ -252,3 +252,18 @@ def test_onu_nueva_se_registra_con_la_tecnologia_de_la_olt(monkeypatch):
     assert registradas == [("A0:B1:C2:D3:E4:F5", "EPON", 7), ("HWTC1A2B3C4D", "GPON", 7)]
     with pytest.raises(ValueError, match="incompleto"):
         asyncio.run(servicio._onu_nueva("abc", SimpleNamespace(tecnologia="GPON"), TECNICO))
+
+
+def test_onu_nueva_reactiva_una_dada_de_baja(monkeypatch):
+    registradas = []
+
+    async def registrar(self, identificador, tecnologia, modelo, usuario_id):
+        registradas.append((identificador, tecnologia))
+        return SimpleNamespace(id=160)
+
+    monkeypatch.setattr(modulo.InventarioService, "registrar_equipo", registrar)
+    baja = SimpleNamespace(id=160, identificador="HWTC05450CB6", estado="BAJA", tecnologia="GPON", modelo="HG8145")
+    olt = SimpleNamespace(id=2, tecnologia="GPON")
+
+    assert asyncio.run(ActivacionService(_DBInventario(baja))._onu_nueva("HWTC05450CB6", olt, TECNICO)) == 160
+    assert registradas == [("HWTC05450CB6", "GPON")]
