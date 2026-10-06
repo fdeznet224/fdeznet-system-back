@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.application.services.ftth_service import FTTHService
+from src.application.services.senal_optica_service import SenalOpticaService
+from src.jobs import leer_senal_optica
 from src.infrastructure.auth import role_required
 from src.infrastructure.database import get_db
 from src.infrastructure.models import (
@@ -284,4 +286,31 @@ async def historial_onu(
             }
             for item in resultado.scalars().all()
         ],
+    }
+
+
+# ==========================================
+# SEÑAL ÓPTICA AUTOMÁTICA
+# ==========================================
+@router.get("/senal-debil")
+async def senal_debil(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Clientes cuya última lectura está por debajo de -25 dBm (crítica bajo -27)."""
+    return await SenalOpticaService(db).senal_debil()
+
+
+@router.post("/senal/leer")
+async def leer_senal_ahora(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    """Lee ahora todas las ONU (normalmente corre sola a las 2:00)."""
+    reporte = await leer_senal_optica(db)
+    return {
+        "leidas": reporte["leidas"],
+        "sin_senal": reporte["sin_senal"],
+        "empeoraron": len(reporte["alertas"]),
+        "olts_con_error": reporte["olts_con_error"],
     }

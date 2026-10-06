@@ -28,6 +28,7 @@ from src.application.services.router_monitor_service import (
 )
 from src.application.services.vpn_service import leer_handshakes_wireguard
 from src.application.services.comprobante_service import ComprobanteService
+from src.application.services.senal_optica_service import SenalOpticaService, mensaje_alerta
 from src.application.services.storage_service import cleanup_storage, close_period, previous_period
 
 
@@ -71,6 +72,29 @@ async def tarea_limpiar_bitacora():
                 mensaje=f"Bitácora: se borraron {borrados} registros de más de {DIAS_BITACORA} días.",
             ))
             await db.commit()
+
+
+async def leer_senal_optica(db) -> dict:
+    """Lee todas las ONU, guarda las lecturas y avisa de las que empeoraron."""
+    reporte = await SenalOpticaService(db).tomar_lecturas()
+    texto = mensaje_alerta(reporte)
+    if texto:
+        await enviar_alertas_whatsapp(texto, db, tipo_evento="alerta_senal")
+    resumen = (
+        f"Señal óptica: {reporte['leidas']} lecturas, {reporte['sin_senal']} sin señal, "
+        f"{len(reporte['alertas'])} empeoraron"
+        + (f"; no respondió: {', '.join(reporte['olts_con_error'])}" if reporte["olts_con_error"] else "")
+    )
+    db.add(LogCronjobModel(
+        nivel="WARN" if reporte["olts_con_error"] else "INFO", origen="SenalOptica", mensaje=resumen
+    ))
+    await db.commit()
+    return reporte
+
+
+async def tarea_leer_senal_optica():
+    async with SessionLocal() as db:
+        await leer_senal_optica(db)
 
 
 async def tarea_aplicar_pagos_adelantados():

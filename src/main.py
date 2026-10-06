@@ -17,6 +17,7 @@ from src.jobs import (
     tarea_cron_unificada,
     tarea_mantenimiento_almacenamiento,
     tarea_limpiar_bitacora,
+    tarea_leer_senal_optica,
     tarea_baja_automatica,
     tarea_monitoreo_routers,
     tarea_reactivar_servicios_pagados,
@@ -229,6 +230,15 @@ async def lifespan(app: FastAPI):
         "interval",
         minutes=10,
         id="pagos_adelantados",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        tarea_leer_senal_optica,
+        "cron",
+        hour=2,
+        minute=0,
+        id="senal_optica",
         coalesce=True,
         max_instances=1,
     )
