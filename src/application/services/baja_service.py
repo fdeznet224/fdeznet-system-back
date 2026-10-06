@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.application.services.aviso_tecnico_service import avisar_asignacion
 from src.application.services.ftth_service import FTTHService
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.infrastructure.models import (
@@ -229,6 +230,8 @@ class BajaService:
         await self.db.commit()
 
         await self.sincronizar_mikrotik(baja.id)
+        if orden and tecnico:
+            await avisar_asignacion(self.db, orden.id, usuario.id)
         return await self.obtener(baja.id, usuario)
 
     async def listar(
@@ -312,6 +315,8 @@ class BajaService:
                     )
                 )
         await self.db.commit()
+        if baja.orden_retiro_id:
+            await avisar_asignacion(self.db, baja.orden_retiro_id, usuario.id)
         return await self.obtener(baja.id, usuario)
 
     async def confirmar_retiro(

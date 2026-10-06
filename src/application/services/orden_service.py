@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.application.services.aviso_tecnico_service import avisar_asignacion
 from src.infrastructure.models import (
     ClienteModel,
     DiagnosticoSoporteModel,
@@ -127,6 +128,8 @@ class OrdenService:
         )
         if commit:
             await self.db.commit()
+            if tecnico:
+                await avisar_asignacion(self.db, orden.id, usuario.id)
         return await self.obtener(orden.id)
 
     async def listar(
@@ -193,8 +196,11 @@ class OrdenService:
             if prioridad not in PRIORIDADES:
                 raise ValueError("Prioridad inválida")
             orden.prioridad = prioridad
+        tecnico_nuevo = None
         if "tecnico_id" in cambios:
             tecnico = await self._validar_tecnico(cambios["tecnico_id"])
+            if tecnico and tecnico.id != orden.tecnico_id:
+                tecnico_nuevo = tecnico
             orden.tecnico_id = tecnico.id if tecnico else None
             destino = "asignada" if tecnico else "pendiente"
             if destino != orden.estado:
@@ -220,6 +226,8 @@ class OrdenService:
                 setattr(orden, campo, cambios[campo])
         orden.version += 1
         await self.db.commit()
+        if tecnico_nuevo:
+            await avisar_asignacion(self.db, orden.id, usuario.id)
         return await self.obtener(orden.id)
 
     async def _actualizar_solicitud(self, orden: OrdenServicioModel, cambios: dict):
