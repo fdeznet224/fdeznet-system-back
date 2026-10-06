@@ -30,6 +30,11 @@ PLANTILLAS_OBLIGATORIAS = {
     "reconexion": (
         "✅ Hola {nombre}, tu servicio de internet fue reconectado."
     ),
+    "recordatorio_promesa": (
+        "⏰ Hola {nombre}, hoy vence tu promesa de pago. Tu saldo es "
+        "{monto_promesa}. Paga hoy para que tu servicio siga activo; "
+        "si ya pagaste, ignora este mensaje."
+    ),
     "promesa_pago": (
         "✅ Hola {nombre}, registramos tu promesa de pago por "
         "{monto_promesa} con fecha límite {fecha_limite_promesa}. "

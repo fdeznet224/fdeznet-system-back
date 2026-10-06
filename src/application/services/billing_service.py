@@ -805,6 +805,48 @@ class BillingService:
         await self.db.commit()
         return reporte
 
+    async def enviar_recordatorios_promesa(self, hoy: date | None = None) -> dict:
+        """Recordatorio el día en que vence una promesa de pago.
+
+        Más de la mitad de las promesas se incumplían sin ningún aviso: el
+        cliente se enteraba hasta que le cortaban.
+        """
+        hoy = hoy or date.today()
+        notificador = NotificationService(self.db)
+        facturas = (
+            await self.db.execute(
+                select(FacturaModel)
+                .options(joinedload(FacturaModel.cliente))
+                .where(
+                    FacturaModel.es_promesa_activa == True,  # noqa: E712
+                    FacturaModel.fecha_promesa_pago == hoy,
+                    FacturaModel.saldo_pendiente > 0,
+                    FacturaModel.estado.notin_(("pagada", "anulada", "consolidada")),
+                )
+            )
+        ).scalars().unique().all()
+        enviados = 0
+        for factura in facturas:
+            cliente = factura.cliente
+            if not cliente or not cliente.telefono:
+                continue
+            try:
+                estado_cuenta = await self.estado_cuenta_cliente(cliente.id)
+                variables = self._variables_total_a_pagar(estado_cuenta)
+                variables["monto_promesa"] = variables.get("total_a_pagar") or f"${factura.saldo_pendiente:,.2f}"
+                variables["fecha_limite_promesa"] = hoy.strftime("%d/%m/%Y")
+                await notificador.notificar(
+                    tipo_evento="recordatorio_promesa",
+                    cliente_id=cliente.id,
+                    variables_extra=variables,
+                    clave_dedupe=f"factura:{factura.id}:promesa:{hoy.isoformat()}",
+                )
+                enviados += 1
+            except Exception as e:
+                logger.warning("No se pudo recordar la promesa a %s: %s", cliente.nombre, e)
+        await self.db.commit()
+        return {"recordatorios_promesa": enviados}
+
     # ==========================================
     # 2. MOTOR DE CORTES AUTOMÁTICOS (CORREGIDO)
     # ==========================================

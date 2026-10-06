@@ -28,6 +28,7 @@ from src.infrastructure.models import (
 
 # Servicios
 from src.application.services.billing_service import BillingService
+from src.application.services.ruta_cobranza_service import ruta_cobranza
 from src.application.helpers.pdf_generator import generar_factura_pdf
 from src.application.services.comprobante_service import (
     ComprobanteService,
@@ -1364,3 +1365,13 @@ async def resumen_operativo(
         "cartera_vencida_y_pendiente": deuda,
         "deuda_recuperada": recuperado,
     }
+
+
+@router.get("/ruta-cobranza")
+async def obtener_ruta_cobranza(
+    latitud: Optional[float] = Query(default=None, ge=-90, le=90),
+    longitud: Optional[float] = Query(default=None, ge=-180, le=180),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clientes con pagos vencidos; con la ubicación del cobrador, del más cercano al más lejano."""
+    return await ruta_cobranza(db, latitud, longitud)

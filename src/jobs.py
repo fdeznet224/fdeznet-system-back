@@ -537,6 +537,14 @@ async def tarea_cron_unificada():
                             origen="Recordatorios", 
                             mensaje=f"Recordatorios Enviados ({dias_urgente} días antes): {resultado_rec}"
                         ))
+                    # El día en que vence una promesa de pago.
+                    resultado_promesas = await billing_service.enviar_recordatorios_promesa()
+                    if resultado_promesas["recordatorios_promesa"]:
+                        db.add(LogCronjobModel(
+                            nivel="INFO",
+                            origen="Recordatorios",
+                            mensaje=f"Promesas que vencen hoy: {resultado_promesas}",
+                        ))
 
             # ------------------------------------------------------
             # C. MOTOR DE CORTES AUTOMÁTICOS (Fecha límite superada)
