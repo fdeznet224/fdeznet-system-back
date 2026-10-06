@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.infrastructure.models import OLTModel, ClienteModel, LogActividadModel
-from src.application.services.cache_olt import lectura_compartida
+from src.application.services.cache_olt import lectura_compartida, olvidar
 
 # Causa de la última caída que reporta la OLT -> qué pasó, en palabras del ISP.
 CAUSAS_CAIDA = {
@@ -551,7 +551,10 @@ class VsolApiService:
             raise ValueError("OLT no encontrada.")
         if not (1 <= int(onuid) <= 128) or int(pon) < 1:
             raise ValueError("PON u ONU inválidos.")
-        return await asyncio.to_thread(self._reiniciar_onu_sync, olt, int(pon), int(onuid), serial)
+        resultado = await asyncio.to_thread(self._reiniciar_onu_sync, olt, int(pon), int(onuid), serial)
+        # Lo siguiente que se lea de esta OLT debe mostrar el reinicio.
+        olvidar(f"vsol:{olt.id}")
+        return resultado
 
     @staticmethod
     def ubicacion_onu(onu: Dict[str, Any]) -> Optional[Tuple[int, int]]:
@@ -817,6 +820,7 @@ class VsolApiService:
                 "last_register_time": onu.get("last_register_time"),
                 "last_deregister_time": onu.get("last_deregister_time"),
                 "last_deregister_reason": onu.get("last_deregister_reason"),
+                "causa_ultima_caida": onu.get("causa_ultima_caida"),
                 "tecnologia": api_data.get("tecnologia"),
                 "origen": "vsol_api",
                 "coincidencias_serial": len(candidatos),

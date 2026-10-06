@@ -12,7 +12,6 @@ from src.application.services.olt_service import OLTService
 from src.application.services.snmp_service import SNMPMonitorService
 from src.application.services.vsol_api_service import VsolApiService
 from src.infrastructure.auth import role_required
-from src.application.services.cache_olt import olvidar
 
 router = APIRouter(prefix="/olts", tags=["OLTs"])
 
@@ -197,10 +196,7 @@ async def reiniciar_onu_vsol_api(
 ):
     """Reinicia (reboot, no reset de fábrica) una ONU por la API de la OLT."""
     try:
-        resultado = await VsolApiService(db).reiniciar_onu(olt_id, pon, onuid, datos.serial)
-        # Lo siguiente que se lea de esta OLT debe mostrar el reinicio.
-        olvidar(f"vsol:{olt_id}")
-        return {"status": "success", "data": resultado}
+        return {"status": "success", "data": await VsolApiService(db).reiniciar_onu(olt_id, pon, onuid, datos.serial)}
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:

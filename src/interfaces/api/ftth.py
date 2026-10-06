@@ -1,3 +1,4 @@
+import asyncio
 from decimal import Decimal
 from typing import Optional
 
@@ -9,7 +10,9 @@ from sqlalchemy.orm import selectinload
 
 from src.application.services.ftth_service import FTTHService
 from src.application.services.senal_optica_service import UMBRAL_DEBIL_DBM, SenalOpticaService
+from src.application.services.snmp_service import SNMPMonitorService
 from src.application.services.support_service import SupportService
+from src.application.services.vsol_api_service import VsolApiService, interpretar_causa_caida, segundos_encendida
 from src.infrastructure.auth import role_required
 from src.infrastructure.database import get_db
 from src.infrastructure.models import (
@@ -327,4 +330,65 @@ async def potencia_actual(
         "tx": float(tx) if tx is not None else None,
         "nivel": None if rx is None else ("alta" if Decimal(str(rx)) < UMBRAL_DEBIL_DBM else "normal"),
         "error": datos.get("error"),
+    }
+
+
+def _texto_encendida(alive_time) -> str | None:
+    """"1 01:05:35" -> "1 día 1 h 5 min"."""
+    segundos = segundos_encendida(alive_time)
+    if segundos is None:
+        return None
+    dias, resto = divmod(segundos, 86400)
+    horas, resto = divmod(resto, 3600)
+    minutos = resto // 60
+    partes = []
+    if dias:
+        partes.append(f"{dias} día{'s' if dias != 1 else ''}")
+    if horas:
+        partes.append(f"{horas} h")
+    partes.append(f"{minutos} min")
+    return " ".join(partes)
+
+
+@router.get("/clientes/{cliente_id}/estado-onu")
+async def estado_onu(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Estado de la ONU en la OLT: en línea, tiempo encendida y última caída."""
+    cliente = (
+        await db.execute(
+            select(ClienteModel)
+            .options(selectinload(ClienteModel.olt), selectinload(ClienteModel.onu_asignada))
+            .where(ClienteModel.id == cliente_id)
+        )
+    ).scalar_one_or_none()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    olt = cliente.olt
+    if not olt or not cliente.onu_asignada:
+        raise HTTPException(status_code=409, detail="El cliente no tiene OLT u ONU asignada")
+    por_api = olt.api_enabled or (olt.tipo_integracion or "snmp").strip().lower() in {"vsol_api", "auto"}
+    try:
+        servicio = VsolApiService(db) if por_api else SNMPMonitorService(db)
+        datos = await asyncio.wait_for(servicio.monitorear_objetivo(cliente), timeout=35)
+    except Exception as exc:
+        return {"disponible": False, "error": f"La OLT {olt.nombre} no respondió: {str(exc)[:150]}"}
+    rx = SupportService.parsear_decimal(datos.get("rx_power") or datos.get("potencia"))
+    tx = SupportService.parsear_decimal(datos.get("tx_power"))
+    causa = datos.get("causa_ultima_caida") or interpretar_causa_caida(datos.get("last_deregister_reason"))
+    return {
+        "disponible": True,
+        "olt": olt.nombre,
+        "serial": cliente.onu_asignada.identificador,
+        "modelo": datos.get("modelo"),
+        "online": str(datos.get("estado_fisico") or "").lower() in {"online", "working", "up"},
+        "rx": float(rx) if rx is not None else None,
+        "tx": float(tx) if tx is not None else None,
+        "encendida": _texto_encendida(datos.get("alive_time")),
+        "ultima_caida": datos.get("last_deregister_time") or None,
+        "causa_ultima_caida": causa.get("detalle") if causa else None,
+        "recomendacion": datos.get("recomendacion"),
+        "puede_reiniciar": bool(olt.api_enabled),
     }
