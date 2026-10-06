@@ -15,6 +15,9 @@ from src.domain.schemas import CajaNapCreate
 from sqlalchemy.orm import joinedload, selectinload
 from src.application.services.ftth_service import FTTHService
 
+# Servicios que siguen conectados a una caja (un suspendido sigue con fibra).
+ESTADOS_SERVICIO_VIGENTE = ("activo", "suspendido")
+
 RE_COORDENADAS = re.compile(r"(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)")
 RADIO_TIERRA_M = 6_371_000
 
@@ -149,10 +152,21 @@ class NapService:
         olt_id: int | None = None,
         limite: int = 3,
     ):
-        """Cajas NAP más cercanas a un domicilio.
+        """Cajas NAP más cercanas a un domicilio."""
+        candidatas = await self.candidatas(zona_id=zona_id, olt_id=olt_id)
+        return self.mas_cercanas((latitud, longitud), candidatas, limite)
+
+    @staticmethod
+    def mas_cercanas(origen, candidatas, limite: int = 3):
+        ordenadas = ordenar_por_cercania(origen, candidatas)[:limite]
+        return [{k: v for k, v in caja.items() if k != "posicion"} for caja in ordenadas]
+
+    async def candidatas(self, zona_id: int | None = None, olt_id: int | None = None):
+        """Cajas con su posición y puertos libres, para ordenarlas por cercanía.
 
         Usa las coordenadas registradas de la caja; si no tiene, estima su
-        posición con el promedio de los domicilios ya conectados a ella.
+        posición con el promedio de los domicilios ya conectados a ella. Se
+        calcula una vez y sirve para sugerir a muchos domicilios.
         """
         stmt = select(CajaNapModel).options(
             selectinload(CajaNapModel.zona),
@@ -252,10 +266,131 @@ class NapService:
                 }
             )
 
-        ordenadas = ordenar_por_cercania((latitud, longitud), candidatas)[:limite]
-        for caja in ordenadas:
-            caja.pop("posicion")
-        return ordenadas
+        return candidatas
+
+    # ------------------------------------------------ NAP de clientes viejos
+    async def servicios_sin_nap(self, zona_id: int | None = None, limite_sugerencias: int = 3):
+        """Servicios vigentes sin caja NAP, con las cajas más cercanas.
+
+        Casi todos los clientes importados no tienen caja. Sin ella no se
+        puede avisar a los afectados por una avería en su caja o su puerto.
+        """
+        stmt = (
+            select(ServicioModel)
+            .options(selectinload(ServicioModel.cliente), selectinload(ServicioModel.zona))
+            .where(
+                ServicioModel.caja_nap_id.is_(None),
+                ServicioModel.estado.in_(ESTADOS_SERVICIO_VIGENTE),
+            )
+            .order_by(ServicioModel.zona_id, ServicioModel.id)
+        )
+        if zona_id is not None:
+            stmt = stmt.where(ServicioModel.zona_id == zona_id)
+        servicios = (await self.db.execute(stmt)).scalars().all()
+
+        candidatas_por_zona: dict = {}
+        resultado = []
+        for servicio in servicios:
+            gps = parsear_coordenadas(
+                f"{servicio.latitud},{servicio.longitud}"
+                if servicio.latitud is not None and servicio.longitud is not None
+                else None
+            )
+            sugeridas = []
+            if gps:
+                if servicio.zona_id not in candidatas_por_zona:
+                    candidatas_por_zona[servicio.zona_id] = await self.candidatas(zona_id=servicio.zona_id)
+                sugeridas = self.mas_cercanas(gps, candidatas_por_zona[servicio.zona_id], limite_sugerencias)
+            cliente = servicio.cliente
+            resultado.append({
+                "servicio_id": servicio.id,
+                "cliente_id": servicio.cliente_id,
+                "nombre": cliente.nombre if cliente else None,
+                "contrato": cliente.cedula if cliente else None,
+                "alias": servicio.alias,
+                "direccion": servicio.direccion or (cliente.direccion if cliente else None),
+                "zona_id": servicio.zona_id,
+                "zona_nombre": servicio.zona.nombre if servicio.zona else None,
+                "tiene_gps": bool(gps),
+                "sugeridas": sugeridas,
+            })
+        await self.db.commit()
+        return resultado
+
+    async def asignar_nap_servicio(
+        self, servicio_id: int, caja_nap_id: int, usuario_id: int, puerto_nap: int | None = None
+    ):
+        """Liga un servicio existente a su caja; el puerto es opcional.
+
+        De los clientes viejos casi nunca se sabe el puerto: con la caja basta
+        para avisarles de una avería. Si se da el puerto, se ocupa como en una
+        instalación.
+        """
+        servicio = await self.db.get(ServicioModel, servicio_id)
+        if not servicio or servicio.estado not in ESTADOS_SERVICIO_VIGENTE:
+            raise ValueError("El servicio no existe o ya no está vigente")
+        caja = await self.db.get(CajaNapModel, caja_nap_id)
+        if not caja:
+            raise ValueError("La caja NAP no existe")
+        if puerto_nap:
+            if not 1 <= puerto_nap <= (caja.capacidad or 0):
+                raise ValueError(f"La caja {caja.nombre} tiene {caja.capacidad} puertos")
+            await FTTHService(self.db).asignar_puerto_servicio(servicio, caja.id, puerto_nap, usuario_id)
+        else:
+            servicio.caja_nap_id = caja.id
+            servicio.puerto_nap = None
+        # El cliente guarda la caja de su servicio principal (datos heredados).
+        cliente = await self.db.get(ClienteModel, servicio.cliente_id)
+        if cliente and not cliente.caja_nap_id:
+            cliente.caja_nap_id = caja.id
+            cliente.puerto_nap = puerto_nap or None
+        await self.db.commit()
+        return {"servicio_id": servicio.id, "caja_nap_id": caja.id, "caja_nombre": caja.nombre,
+                "puerto_nap": servicio.puerto_nap}
+
+    # ------------------------------------------------ avisos de avería
+    async def afectados_por_averia(
+        self,
+        caja_nap_id: int | None = None,
+        olt_id: int | None = None,
+        puerto_olt: int | None = None,
+        zona_id: int | None = None,
+    ):
+        """Clientes con servicio vigente afectados por una falla.
+
+        Por caja NAP, por puerto PON de una OLT (todas las cajas de ese puerto)
+        o por zona. Uno por teléfono, aunque tenga varios servicios.
+        """
+        filtros = [ServicioModel.estado.in_(ESTADOS_SERVICIO_VIGENTE)]
+        if caja_nap_id is not None:
+            filtros.append(ServicioModel.caja_nap_id == caja_nap_id)
+        elif olt_id is not None and puerto_olt is not None:
+            cajas = select(CajaNapModel.id).where(
+                CajaNapModel.olt_id == olt_id, CajaNapModel.puerto_olt == puerto_olt
+            )
+            filtros.append(ServicioModel.caja_nap_id.in_(cajas))
+        elif zona_id is not None:
+            filtros.append(ServicioModel.zona_id == zona_id)
+        else:
+            raise ValueError("Elige una caja NAP, un puerto de OLT o una zona")
+        servicios = (
+            await self.db.execute(
+                select(ServicioModel)
+                .options(selectinload(ServicioModel.cliente))
+                .where(*filtros)
+                .order_by(ServicioModel.id)
+            )
+        ).scalars().all()
+        vistos = set()
+        afectados = []
+        for servicio in servicios:
+            cliente = servicio.cliente
+            telefono = re.sub(r"\D", "", (cliente.telefono or "") if cliente else "")
+            if not cliente or len(telefono) < 10 or telefono[-10:] in vistos:
+                continue
+            vistos.add(telefono[-10:])
+            afectados.append({"cliente_id": cliente.id, "nombre": cliente.nombre, "telefono": cliente.telefono})
+        return afectados
 
     async def crear_nap(self, datos: CajaNapCreate):
         """Registra una nueva caja en la base de datos."""
