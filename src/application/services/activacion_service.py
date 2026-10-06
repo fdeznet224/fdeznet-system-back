@@ -14,11 +14,13 @@ from typing import Optional
 
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from src.application.services.client_service import ClientService
+from src.application.services.inventario_service import InventarioService
 from src.application.services.orden_service import ESTADOS_TERMINALES, OrdenService
 from src.domain.schemas import ClienteCreate, InstalacionRequest
+from src.utils.mikrotik import normalizar_mac
 from src.infrastructure.models import (
     CajaNapModel,
     ClienteModel,
@@ -47,6 +49,9 @@ class ActivacionTecnicoRequest(BaseModel):
     plantilla_id: Optional[int] = Field(default=None, gt=0)
     contrato_apartado: Optional[str] = Field(default=None, max_length=20)
     onu_id: Optional[int] = Field(default=None, gt=0)
+    # Serial/MAC escrito o escaneado que no está en el inventario: se registra
+    # al activar para no mandar al técnico a Inventario.
+    onu_identificador: Optional[str] = Field(default=None, max_length=100)
     caja_nap_id: Optional[int] = Field(default=None, gt=0)
     puerto_nap: Optional[int] = Field(default=None, ge=1, le=128)
     latitud: float = Field(ge=-90, le=90)
@@ -64,6 +69,11 @@ def usuario_pppoe_de(nombre: str) -> str:
     sin_acentos = "".join(c for c in sin_acentos if unicodedata.category(c) != "Mn")
     limpio = re.sub(r"[^a-zA-Z0-9 ]", "", sin_acentos)
     return "_".join(limpio.split())[:60]
+
+
+def _compacto(valor: str) -> str:
+    """"AA:BB:CC..." y "aabbcc..." son la misma ONU."""
+    return re.sub(r"[^0-9A-Z]", "", (valor or "").upper())
 
 
 def _modo(router: Optional[RouterModel]) -> str:
@@ -208,6 +218,8 @@ class ActivacionService:
         modo = _modo(router)
         if modo == "dhcp" and not (datos.mac_address or "").strip():
             raise ValueError("Falta la MAC WAN/CPE que ve el MikroTik")
+        if infra["olt"] and not datos.onu_id and datos.onu_identificador and not orden.cliente_id:
+            datos.onu_id = await self._onu_nueva(datos.onu_identificador, infra["olt"], usuario)
         if infra["olt"] and not datos.onu_id and not orden.cliente_id:
             raise ValueError("Elige la ONU que instalaste")
 
@@ -327,6 +339,40 @@ class ActivacionService:
             "cambios": cambios,
             "meses_gratis": datos.meses_gratis,
         }
+
+    async def _onu_nueva(self, identificador: str, olt: OLTModel, usuario: UsuarioModel) -> int:
+        """ONU que el técnico trae en mano y nadie registró en Inventario."""
+        compacto = _compacto(identificador)
+        existente = (
+            await self.db.execute(
+                select(InventarioONUModel).where(
+                    func.upper(
+                        func.replace(func.replace(InventarioONUModel.identificador, ":", ""), "-", "")
+                    ) == compacto
+                )
+            )
+        ).scalars().first()
+        if existente:
+            if existente.estado != "DISPONIBLE":
+                raise ValueError(
+                    f"La ONU {existente.identificador} ya está registrada como {existente.estado.lower()}"
+                )
+            return existente.id
+
+        tecnologia = (olt.tecnologia or "GPON").upper()
+        if tecnologia == "EPON" and re.fullmatch(r"[0-9A-F]{12}", compacto):
+            identificador = normalizar_mac(compacto)
+        elif len(compacto) < 8:
+            raise ValueError("El serial o MAC de la ONU está incompleto")
+        else:
+            identificador = compacto
+        nueva = await InventarioService(self.db).registrar_equipo(
+            identificador=identificador,
+            tecnologia=tecnologia,
+            modelo="Registrada por el técnico",
+            usuario_id=usuario.id,
+        )
+        return nueva.id
 
     async def _senal(self, cliente_id: int) -> Optional[dict]:
         """Lectura de la ONU recién instalada; si la OLT no responde, no frena el alta."""

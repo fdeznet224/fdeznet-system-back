@@ -190,3 +190,65 @@ def test_reintento_reutiliza_el_cliente_ya_creado(monkeypatch):
 
     assert "registro" not in llamadas
     assert llamadas["activacion"][0] == 90
+
+
+def test_una_onu_que_no_esta_en_inventario_se_registra_al_activar(monkeypatch):
+    db, _, llamadas = _escenario(monkeypatch)
+    registradas = []
+
+    async def onu_nueva(self, identificador, olt, usuario):
+        registradas.append((identificador, olt.id, usuario.id))
+        return 77
+
+    monkeypatch.setattr(ActivacionService, "_onu_nueva", onu_nueva)
+    asyncio.run(ActivacionService(db).activar(40, _datos(onu_id=None, onu_identificador="zteg12345678"), TECNICO))
+
+    assert registradas == [("zteg12345678", 2, 7)]
+    datos, _ = llamadas["registro"]
+    _, activacion, _ = llamadas["activacion"]
+    assert datos.onu_id == 77 and activacion.onu_id == 77
+
+
+class _Filas:
+    def __init__(self, fila):
+        self.fila = fila
+
+    def scalars(self):
+        return self
+
+    def first(self):
+        return self.fila
+
+
+class _DBInventario:
+    def __init__(self, existente=None):
+        self.existente = existente
+
+    async def execute(self, _consulta):
+        return _Filas(self.existente)
+
+
+def test_onu_nueva_reusa_la_disponible_y_rechaza_la_instalada(monkeypatch):
+    olt = SimpleNamespace(id=2, tecnologia="GPON")
+    disponible = SimpleNamespace(id=5, identificador="ZTEG12345678", estado="DISPONIBLE")
+    assert asyncio.run(ActivacionService(_DBInventario(disponible))._onu_nueva("zteg-1234-5678", olt, TECNICO)) == 5
+
+    instalada = SimpleNamespace(id=6, identificador="ZTEG12345678", estado="INSTALADO")
+    with pytest.raises(ValueError, match="instalado"):
+        asyncio.run(ActivacionService(_DBInventario(instalada))._onu_nueva("ZTEG12345678", olt, TECNICO))
+
+
+def test_onu_nueva_se_registra_con_la_tecnologia_de_la_olt(monkeypatch):
+    registradas = []
+
+    async def registrar(self, identificador, tecnologia, modelo, usuario_id):
+        registradas.append((identificador, tecnologia, usuario_id))
+        return SimpleNamespace(id=9)
+
+    monkeypatch.setattr(modulo.InventarioService, "registrar_equipo", registrar)
+    servicio = ActivacionService(_DBInventario())
+    assert asyncio.run(servicio._onu_nueva("a0b1c2d3e4f5", SimpleNamespace(tecnologia="EPON"), TECNICO)) == 9
+    assert asyncio.run(servicio._onu_nueva(" hwtc 1a2b3c4d ", SimpleNamespace(tecnologia="GPON"), TECNICO)) == 9
+    assert registradas == [("A0:B1:C2:D3:E4:F5", "EPON", 7), ("HWTC1A2B3C4D", "GPON", 7)]
+    with pytest.raises(ValueError, match="incompleto"):
+        asyncio.run(servicio._onu_nueva("abc", SimpleNamespace(tecnologia="GPON"), TECNICO))
