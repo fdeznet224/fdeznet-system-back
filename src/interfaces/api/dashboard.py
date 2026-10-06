@@ -30,6 +30,15 @@ async def get_dashboard_home(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error cargando dashboard: {str(e)}")
 
+@router.get("/embudo")
+async def get_embudo(
+    meses: int = 6,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    """De quien escribe por WhatsApp a quien queda instalado, por mes."""
+    return await DashboardService(db).obtener_embudo(max(1, min(meses, 12)))
+
 @router.get("/clientes-online-detalle")
 async def get_online_detalle(
     db: AsyncSession = Depends(get_db),

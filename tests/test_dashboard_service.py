@@ -222,3 +222,30 @@ def test_moroso_offline_no_se_pierde_en_la_conciliacion():
     assert metricas["morosos_offline"] == 1
     assert metricas["clientes_activos_sin_sesion"] == 1
     assert respuesta["conciliacion"]["cuadra_contratos"] is True
+
+
+def test_embudo_cuenta_solicitudes_por_mes_y_como_terminaron(monkeypatch):
+    from datetime import datetime as dt
+
+    hoy = dt.now()
+    este_mes = hoy.strftime("%Y-%m")
+    inicio = hoy.replace(day=1, hour=9, minute=0, second=0, microsecond=0)
+    ordenes = [
+        SimpleNamespace(created_at=inicio, estado="terminada", descripcion="[Agente WhatsApp] Quiere internet",
+                        fecha_finalizacion=inicio.replace(hour=21)),
+        SimpleNamespace(created_at=inicio, estado="cancelada", descripcion=None, fecha_finalizacion=None),
+        SimpleNamespace(created_at=inicio, estado="asignada", descripcion=None, fecha_finalizacion=None),
+    ]
+    respuestas = [
+        ResultadoFalso(rows=[(este_mes, 7)]),
+        ResultadoFalso(scalars=ordenes),
+    ]
+    db = SimpleNamespace(execute=AsyncMock(side_effect=respuestas))
+
+    embudo = asyncio.run(DashboardService(db).obtener_embudo(3))
+
+    assert len(embudo) == 3 and embudo[-1]["mes"] == este_mes
+    assert embudo[-1] == {
+        "mes": este_mes, "contactos_nuevos": 7, "solicitudes": 3, "por_agente": 1, "instaladas": 1,
+        "canceladas": 1, "abiertas": 1, "dias_a_instalar": 0.5,
+    }

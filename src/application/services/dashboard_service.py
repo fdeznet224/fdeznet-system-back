@@ -9,6 +9,8 @@ import psutil
 # Modelos y Servicios (Ya no importamos MikroTikService aquí para el home)
 from src.infrastructure.models import (
     ClienteModel,
+    MensajeChatModel,
+    OrdenServicioModel,
     PagoModel,
     RouterModel,
     FacturaModel,
@@ -20,6 +22,77 @@ class DashboardService:
         self.db = db
         # Definimos la zona horaria para mostrar datos correctamente al usuario
         self.tz_mexico = pytz.timezone('America/Mexico_City')
+
+    # ==========================================
+    # EMBUDO DE VENTAS
+    # ==========================================
+    async def obtener_embudo(self, meses: int = 6):
+        """De quien escribe por WhatsApp a quien queda instalado, por mes.
+
+        - contactos_nuevos: números que escribieron por primera vez ese mes.
+        - solicitudes: órdenes de instalación creadas (y cuántas por el agente).
+        - instaladas / canceladas / abiertas: cómo terminaron esas solicitudes.
+        - dias_a_instalar: promedio de la solicitud a la instalación.
+        """
+        hoy = datetime.now(self.tz_mexico).date().replace(day=1)
+        anio, mes = hoy.year, hoy.month - (meses - 1)
+        while mes < 1:
+            mes += 12
+            anio -= 1
+        desde = datetime(anio, mes, 1)
+        etiquetas = []
+        a, m = anio, mes
+        for _ in range(meses):
+            etiquetas.append(f"{a}-{m:02d}")
+            m += 1
+            if m > 12:
+                m, a = 1, a + 1
+        filas = {e: {"mes": e, "contactos_nuevos": 0, "solicitudes": 0, "por_agente": 0, "instaladas": 0,
+                     "canceladas": 0, "abiertas": 0, "dias_a_instalar": None} for e in etiquetas}
+
+        primeros = (
+            select(MensajeChatModel.telefono, func.min(MensajeChatModel.fecha).label("primero"))
+            .where(MensajeChatModel.direccion == "entrada")
+            .group_by(MensajeChatModel.telefono)
+            .subquery()
+        )
+        mes_contacto = func.date_format(primeros.c.primero, "%Y-%m")
+        for etiqueta, total in (
+            await self.db.execute(
+                select(mes_contacto, func.count()).where(primeros.c.primero >= desde).group_by(mes_contacto)
+            )
+        ).all():
+            if etiqueta in filas:
+                filas[etiqueta]["contactos_nuevos"] = int(total)
+
+        ordenes = (
+            await self.db.execute(
+                select(OrdenServicioModel).where(
+                    OrdenServicioModel.tipo == "instalacion",
+                    OrdenServicioModel.created_at >= desde,
+                )
+            )
+        ).scalars().all()
+        horas: dict[str, list[float]] = {e: [] for e in etiquetas}
+        for orden in ordenes:
+            fila = filas.get(orden.created_at.strftime("%Y-%m")) if orden.created_at else None
+            if not fila:
+                continue
+            fila["solicitudes"] += 1
+            if (orden.descripcion or "").startswith("[Agente WhatsApp]"):
+                fila["por_agente"] += 1
+            if orden.estado == "terminada":
+                fila["instaladas"] += 1
+                if orden.fecha_finalizacion:
+                    horas[fila["mes"]].append((orden.fecha_finalizacion - orden.created_at).total_seconds() / 3600)
+            elif orden.estado == "cancelada":
+                fila["canceladas"] += 1
+            else:
+                fila["abiertas"] += 1
+        for etiqueta, lista in horas.items():
+            if lista:
+                filas[etiqueta]["dias_a_instalar"] = round(sum(lista) / len(lista) / 24, 1)
+        return list(filas.values())
 
     # ==========================================
     # 1. DATOS PARA /home (KPIs Principales)
