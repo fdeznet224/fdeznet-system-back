@@ -18,6 +18,16 @@ MESES_CORTOS = {
     "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8,
     "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dic": 12,
 }
+MESES_LARGOS = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6, "julio": 7,
+    "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+}
+# Lo que solo trae la pantalla o el ticket de un pago. Sin nada de esto la foto
+# no es un comprobante aunque tenga precios (promoción, módem, recibo...).
+RE_SENAL_DE_PAGO = re.compile(
+    r"transfer|spei|rastreo|dep[oó]sit|enviaste|pagaste|operaci[oó]n|autorizaci[oó]n"
+    r"|comprobante|beneficiari|abono|cuenta destino|referencia|movimiento|pago exitoso"
+)
 # Datos fijos de una persona o cuenta que salen en la captura y se repiten
 # cada mes: RFC, CURP, tarjeta o CLABE. No identifican la transferencia.
 RE_NO_ES_FOLIO = re.compile(
@@ -118,6 +128,7 @@ def datos_cep(texto_crudo: str) -> dict | None:
         "concepto": concepto.group(1).strip() if concepto else None,
         "huella": huella_captura(monto, fecha_pago, cuentas),
         "cuenta_beneficiaria": beneficiario,
+        "parece_comprobante": True,
         "exito": monto > 0,
     }
 
@@ -204,12 +215,14 @@ class OCRService:
                 folio = max(candidatos, key=len)
 
         monto = 0.0
-        numero = r"(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)"
+        # Pegado a ":" o "/" es una hora o una fecha ("a las 10:15", "7/10"), no un monto.
+        numero = r"(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)(?![\d:/])"
         patrones_monto = [
             # El monto pegado a su etiqueta ("Monto: $300.00"); si hay otras
             # palabras en medio, puede ser la fecha ("Monto ... 30 de septiembre").
             rf"(?:importe|monto|enviaste|transferiste|total)[^\d\w]{{0,6}}{numero}",
-            rf"[\$sS]\s*{numero}",
+            # El "$" que el OCR lee como "S" va suelto, no al final de una palabra.
+            rf"(?:\$|(?<![a-z])s)\s*{numero}",
             rf"{numero}\s*(?:mxn|m\.?n\.?|pesos)",
         ]
         for patron in patrones_monto:
@@ -253,11 +266,26 @@ class OCRService:
                 fecha_pago = None
         if fecha_pago is None:
             # App de Banco Azteca: "02/Oct/2026 13:37:33 (CST)".
+            # El OCR a veces lee la "O" del mes como cero: "07/0ct/2026".
             match = re.search(
-                r"(\d{1,2})[/ -]([a-z]{3,4})\.?[/ -](\d{4})\D{0,20}?(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?",
+                r"(\d{1,2})[/ -]([a-z0]{3,4})\.?[/ -](\d{4})\D{0,20}?(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?",
                 texto,
             )
-            mes = MESES_CORTOS.get(match.group(2)) if match else None
+            mes = MESES_CORTOS.get(match.group(2).replace("0", "o")) if match else None
+            if mes:
+                dia, _, anio, hora, minuto, segundo = match.groups()
+                try:
+                    fecha_pago = datetime(int(anio), mes, int(dia), int(hora), int(minuto), int(segundo or 0))
+                except ValueError:
+                    fecha_pago = None
+
+        if fecha_pago is None:
+            # Mercado Pago y otros: "7 de octubre de 2026, 10:15 hs".
+            match = re.search(
+                r"(\d{1,2}) de ([a-z]+) (?:de |del )?(\d{4})\D{0,20}?(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?",
+                texto,
+            )
+            mes = MESES_LARGOS.get(match.group(2)) if match else None
             if mes:
                 dia, _, anio, hora, minuto, segundo = match.groups()
                 try:
@@ -287,6 +315,7 @@ class OCRService:
             "cuentas": sorted(set(cuentas)),
             "concepto": concepto,
             "huella": huella_captura(monto, fecha_pago, cuentas),
+            "parece_comprobante": bool(RE_SENAL_DE_PAGO.search(texto)),
             "exito": folio is not None and monto > 0,
         }
 
@@ -355,7 +384,8 @@ class OCRService:
 
         except Exception as e:
             logger.error(f"Error procesando OCR: {e}")
-            return {"folio": None, "monto": 0.0, "cedula_detectada": None, "exito": False}
+            # Falló la lectura, no la imagen: el agente no debe pedir otra foto.
+            return {"folio": None, "monto": 0.0, "cedula_detectada": None, "exito": False, "fallo_lectura": True}
             
         finally:
             if temp_path and os.path.exists(temp_path):

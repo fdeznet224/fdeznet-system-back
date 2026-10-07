@@ -108,6 +108,40 @@ def test_una_foto_que_no_es_comprobante_no_queda_pendiente():
     db = _DB([])
     servicio = ComprobanteService(db, ocr=_OCRFotoModem())
     resultado = asyncio.run(servicio.leer("whatsapp-media://modem.jpg", "111@lid", None, 5))
-    revision = db.agregados[0]
+    # No es un pago: el agente atiende lo que quiere el cliente y no se registra nada.
+    assert resultado["estado"] == "no_es_comprobante"
+    assert db.agregados == []
+
+
+class _OCRPromocion:
+    async def procesar_ticket(self, _url):
+        return OCRService.extraer_datos("Planes de internet 50 Megas $350 100 Megas $500")
+
+
+class _OCRComprobanteSinMonto:
+    async def procesar_ticket(self, _url):
+        return OCRService.extraer_datos("Transferencia exitosa Clave de rastreo MBAN01002610070012345678")
+
+
+class _OCRFalla:
+    async def procesar_ticket(self, _url):
+        return {"folio": None, "monto": 0.0, "cedula_detectada": None, "exito": False, "fallo_lectura": True}
+
+
+def test_una_promocion_con_precios_no_se_toma_como_pago():
+    db = _DB([])
+    resultado = asyncio.run(ComprobanteService(db, ocr=_OCRPromocion()).leer("whatsapp-media://p.jpg", "111@lid", None, 5))
+    assert resultado["estado"] == "no_es_comprobante" and db.agregados == []
+
+
+def test_un_comprobante_sin_monto_legible_pide_otra_captura():
+    db = _DB([])
+    resultado = asyncio.run(ComprobanteService(db, ocr=_OCRComprobanteSinMonto()).leer("whatsapp-media://c.jpg", "111@lid", None, 5))
     assert resultado["estado"] == "ilegible"
-    assert revision.estado == "rechazado" and revision.motivo_revision == "no_es_comprobante"
+    assert db.agregados[0].estado == "rechazado"
+
+
+def test_si_falla_la_lectura_no_se_culpa_a_la_foto():
+    db = _DB([])
+    resultado = asyncio.run(ComprobanteService(db, ocr=_OCRFalla()).leer("whatsapp-media://c.jpg", "111@lid", None, 5))
+    assert resultado["estado"] == "fallo_lectura" and "pasar_a_humano" in resultado["detalle"]

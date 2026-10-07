@@ -1,3 +1,4 @@
+from datetime import datetime
 import asyncio
 import json
 from datetime import date, datetime
@@ -33,6 +34,7 @@ def test_ocr_extrae_folio_monto_y_cedula_de_transferencia():
         "cuentas": [],
         "concepto": "329b",
         "huella": None,
+        "parece_comprobante": True,
         "exito": True,
     }
 
@@ -145,3 +147,34 @@ def test_plantillas_usan_numero_de_contrato_sin_romper_variable_anterior():
     )
 
     assert mensaje == "Contrato: 329B; compatibilidad: 329B"
+
+
+def test_ocr_lee_las_fechas_de_azteca_con_cero_y_de_mercado_pago():
+    azteca = OCRService.extraer_datos("Monto $ 500.00 Fecha 07/0ct/2026 13.37.33 (CST) Folio 123456789012")
+    assert azteca["fecha_pago"] == datetime(2026, 10, 7, 13, 37, 33)
+    mp = OCRService.extraer_datos("Le transferiste $ 350 Número de operación 128475639201 7 de octubre de 2026, 10:15 hs")
+    assert mp["fecha_pago"] == datetime(2026, 10, 7, 10, 15)
+
+
+def test_una_promocion_con_precios_no_parece_comprobante():
+    promo = OCRService.extraer_datos("Planes de internet 50 Megas $350 100 Megas $500 Instalación gratis")
+    assert promo["parece_comprobante"] is False
+    # "megas 350": la "s" al final de una palabra no es un "$" mal leído.
+    assert OCRService.extraer_datos("Plan 50 megas 350")["monto"] == 0.0
+    oxxo = OCRService.extraer_datos("OXXO DEPOSITO A TARJETA IMPORTE 400.00 AUTORIZACION 845123 07/10/2026 09:41")
+    assert oxxo["parece_comprobante"] is True and oxxo["monto"] == 400.0
+
+
+def test_mercado_pago_no_toma_el_monto_de_la_fecha_ni_de_la_hora():
+    # Producción leía $7 ("Martes 7") y $21 ("las 21:04"): la "s" parecía un "$".
+    martes = OCRService.extraer_datos(
+        "Comprobante de transferencia Martes 7 de octubre de 2026 a las 10:15 hs $ 350 "
+        "Número de operación 128475639201"
+    )
+    assert (martes["monto"], martes["fecha_pago"]) == (350.0, datetime(2026, 10, 7, 10, 15))
+    noche = OCRService.extraer_datos(
+        "Comprobante de transferencia Miércoles, 8 de octubre de 2026 a las 21:04 hs S 500 "
+        "Número de operación 12847563920"
+    )
+    assert noche["monto"] == 500.0
+    assert OCRService.extraer_datos("Transferencia $ 10:15 hs")["monto"] == 0.0

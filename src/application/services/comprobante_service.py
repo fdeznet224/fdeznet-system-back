@@ -150,6 +150,26 @@ class ComprobanteService:
     ) -> dict:
         """Lee la captura y la deja registrada para conciliación o revisión."""
         resultado = await self.ocr.procesar_ticket(media_url)
+        if resultado.get("fallo_lectura"):
+            return {
+                "estado": "fallo_lectura",
+                "detalle": (
+                    "No se pudo procesar la imagen por un problema del sistema, no de la foto. "
+                    "No le pidas otra foto: usa pasar_a_humano para que un asesor revise su comprobante."
+                ),
+            }
+        if not resultado.get("parece_comprobante", True):
+            # Foto del módem, una promoción, un recibo... no un pago. No se
+            # registra: no hay nada que conciliar.
+            return {
+                "estado": "no_es_comprobante",
+                "detalle": (
+                    "La imagen no es un comprobante de pago: no trae datos de una transferencia ni "
+                    "de un depósito. No hables de pagos por esta imagen; atiende lo que el cliente "
+                    "quiere con ella. Solo si él dice que es su pago, pídele la captura completa "
+                    "donde se vean el monto y la clave de rastreo o folio."
+                ),
+            }
         monto = Decimal(str(resultado.get("monto") or 0))
         folio = normalize_reference(resultado.get("folio"))
 
