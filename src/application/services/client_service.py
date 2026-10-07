@@ -1193,7 +1193,22 @@ class ClientService:
                     .values(estado='DISPONIBLE', tecnico_id=None)
                 )
             update_data["onu_id"] = None
-    
+
+        # Con un solo servicio, la ONU de la ficha es la del contrato: sin esto
+        # la lectura horaria de potencia sigue buscando la anterior.
+        if "onu_id" in update_data and len(servicios_activos) == 1:
+            servicio = servicios_activos[0]
+            ocupada = update_data["onu_id"] and (
+                await self.db.execute(
+                    select(ServicioModel.id).where(
+                        ServicioModel.onu_id == update_data["onu_id"],
+                        ServicioModel.id != servicio.id,
+                    )
+                )
+            ).first()
+            if not ocupada:
+                servicio.onu_id = update_data["onu_id"]
+
         # 5. APLICAR CAMBIOS AL MODELO
         for var, value in update_data.items():
             setattr(cliente_db, var, value)

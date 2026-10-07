@@ -70,10 +70,10 @@ class _DB:
         self.commits += 1
 
 
-def _servicio(id, serial, nombre):
-    return SimpleNamespace(id=id, cliente_id=100 + id, onu_id=200 + id, estado="activo",
-                           onu=SimpleNamespace(identificador=serial),
-                           cliente=SimpleNamespace(nombre=nombre, cedula=f"C{id}"))
+def _servicio(id, serial, nombre, onu_ficha=None):
+    return SimpleNamespace(id=id, cliente_id=100 + id, onu_id=200 + id if serial else None, estado="activo",
+                           onu=SimpleNamespace(id=200 + id, identificador=serial) if serial else None,
+                           cliente=SimpleNamespace(nombre=nombre, cedula=f"C{id}", onu_asignada=onu_ficha))
 
 
 def test_guarda_lecturas_cruza_por_serial_y_sigue_si_una_olt_falla():
@@ -117,6 +117,26 @@ def test_cada_hora_solo_guarda_y_no_evalua_avisos():
 
     reporte = asyncio.run(SenalOpticaService(db, lector=lector).tomar_lecturas())
     assert reporte["leidas"] == 1 and reporte["alertas"] == []
+
+
+def test_usa_la_onu_de_la_ficha_si_el_servicio_no_la_tiene_o_quedo_vieja():
+    # Victor: la ONU se puso editando la ficha y el servicio se quedó sin ella.
+    # Rosa: se cambió la ONU en la ficha y el servicio sigue con la anterior.
+    servicios = [
+        _servicio(1, None, "Victor", onu_ficha=SimpleNamespace(id=301, identificador="ZTEG25520C10")),
+        _servicio(2, "HWTCVIEJA001", "Rosa", onu_ficha=SimpleNamespace(id=302, identificador="E0:0C:E5:27:75:E2")),
+    ]
+    db = _DB(servicios, [SimpleNamespace(id=1, nombre="Villa")], {})
+
+    async def lector(_olt):
+        return [{"identificador": "ZTEG25520C10", "rx": "-22.40"},
+                {"identificador": "e00ce52775e2", "rx": "-19.10"},
+                {"identificador": "HWTCVIEJA001", "rx": "-30.00"}]
+
+    reporte = asyncio.run(SenalOpticaService(db, lector=lector).tomar_lecturas())
+    assert reporte["leidas"] == 2
+    assert [(l.servicio_id, l.onu_id, l.potencia_rx_dbm) for l in db.agregados] == [
+        (1, 301, Decimal("-22.40")), (2, 302, Decimal("-19.10"))]
 
 
 class _DBPotencias:

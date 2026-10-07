@@ -9,6 +9,7 @@ llame.
 """
 
 import logging
+from collections import Counter
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -18,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from src.application.services.snmp_service import SNMPMonitorService
 from src.application.services.vsol_api_service import VsolApiService
-from src.infrastructure.models import LecturaOpticaModel, OLTModel, ServicioModel
+from src.infrastructure.models import ClienteModel, LecturaOpticaModel, OLTModel, ServicioModel
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +76,31 @@ class SenalOpticaService:
         return [{"identificador": o.get("identificador"), "rx": o.get("potencia"), "tx": None} for o in onus]
 
     async def _servicios_por_onu(self) -> dict:
+        """Identificador de ONU → (servicio, onu).
+
+        Con un solo servicio manda la ONU de la ficha del cliente: es la que se
+        edita en Clientes y la que usa el chequeo de ONU, y el servicio pudo
+        quedarse sin ella o con la anterior.
+        """
         servicios = (
             await self.db.execute(
                 select(ServicioModel)
-                .options(selectinload(ServicioModel.onu), selectinload(ServicioModel.cliente))
-                .where(ServicioModel.onu_id.isnot(None), ServicioModel.estado != "cancelado")
+                .options(
+                    selectinload(ServicioModel.onu),
+                    selectinload(ServicioModel.cliente).selectinload(ClienteModel.onu_asignada),
+                )
+                .where(ServicioModel.estado != "cancelado")
             )
         ).scalars().all()
-        return {compacto(s.onu.identificador): s for s in servicios if s.onu and s.onu.identificador}
+        por_cliente = Counter(s.cliente_id for s in servicios)
+        resultado = {}
+        for s in servicios:
+            onu = s.onu
+            if por_cliente[s.cliente_id] == 1 and s.cliente and s.cliente.onu_asignada:
+                onu = s.cliente.onu_asignada
+            if onu and onu.identificador:
+                resultado.setdefault(compacto(onu.identificador), (s, onu))
+        return resultado
 
     async def _lectura_anterior(self, servicio_id: int, antes_de: datetime) -> Decimal | None:
         return (
@@ -111,9 +129,10 @@ class SenalOpticaService:
                 reporte["olts_con_error"].append(olt.nombre)
                 continue
             for onu in onus:
-                servicio = servicios.get(compacto(onu.get("identificador")))
-                if not servicio:
+                encontrado = servicios.get(compacto(onu.get("identificador")))
+                if not encontrado:
                     continue
+                servicio, onu_inventario = encontrado
                 rx = a_dbm(onu.get("rx"))
                 if rx is None:
                     reporte["sin_senal"] += 1
@@ -121,7 +140,7 @@ class SenalOpticaService:
                 self.db.add(LecturaOpticaModel(
                     cliente_id=servicio.cliente_id,
                     servicio_id=servicio.id,
-                    onu_id=servicio.onu_id,
+                    onu_id=onu_inventario.id,
                     potencia_rx_dbm=rx,
                     potencia_tx_dbm=a_dbm(onu.get("tx")),
                     origen=ORIGEN,
