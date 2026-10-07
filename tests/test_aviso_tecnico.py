@@ -83,3 +83,25 @@ def test_si_falla_el_envio_no_rompe_la_asignacion(monkeypatch):
 
     monkeypatch.setattr(aviso_mod, "whatsapp_queue", _Rota())
     assert asyncio.run(avisar_asignacion(_DB(_orden(), TECNICO, CLIENTE), 41, asignado_por_id=1)) is False
+
+
+def test_la_reparacion_lleva_falla_caja_y_ruta_por_coordenadas():
+    orden = _orden(tipo="reparacion", categoria_soporte="cable_roto", prioridad="urgente",
+                   descripcion="Revisar la fibra desde la caja")
+    cliente = SimpleNamespace(nombre="Victor", cedula="7659", direccion="Calle 2 #10",
+                              latitud=None, longitud=None, puerto_nap=None)
+    servicio = SimpleNamespace(direccion="Ranchería El Paraíso", latitud=16.7531, longitud=-93.1156, puerto_nap=4)
+    texto = texto_asignacion(orden, cliente, None, servicio, SimpleNamespace(nombre="NAP-12"))
+    assert texto.startswith("*🔧 Reparación asignada* #41")
+    assert "👤 Victor (contrato 7659)" in texto and "🔧 Falla: Fibra o cable roto" in texto
+    assert "📍 Ranchería El Paraíso" in texto and "📦 Caja NAP-12, puerto 4" in texto
+    assert "destination=16.7531%2C-93.1156" in texto and "Prioridad URGENTE" in texto
+
+
+def test_la_ruta_usa_la_ubicacion_que_mando_el_cliente_y_nunca_el_texto():
+    con_enlace = SimpleNamespace(nombre="Ana", direccion="Col. Centro · https://maps.google.com/?q=16.75,-93.11",
+                                 latitud=None, longitud=None)
+    texto = texto_asignacion(_orden(), con_enlace, None)
+    assert "destination=16.75%2C-93.11" in texto and "📍 Col. Centro\n" in texto
+    sin_ubicacion = SimpleNamespace(nombre="Beto", direccion="Col. Centro", latitud=None, longitud=None)
+    assert "Cómo llegar" not in texto_asignacion(_orden(), sin_ubicacion, None)

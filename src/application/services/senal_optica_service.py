@@ -153,6 +153,7 @@ class SenalOpticaService:
                 if motivo:
                     reporte["alertas"].append({
                         "servicio_id": servicio.id,
+                        "cliente_id": servicio.cliente_id,
                         "cliente": servicio.cliente.nombre if servicio.cliente else f"Servicio {servicio.id}",
                         "contrato": servicio.cliente.cedula if servicio.cliente else None,
                         "olt": olt.nombre,
@@ -193,7 +194,12 @@ class SenalOpticaService:
         return resultado
 
 
-def mensaje_alerta(reporte: dict, maximo: int = 10) -> str | None:
+def mensaje_alerta(reporte: dict, maximo: int = 10, base_url: str | None = None) -> str | None:
+    """Aviso diario; con base_url lleva el enlace a la lista de esos clientes.
+
+    El enlace los muestra todos, también los que cayeron 3 dB pero siguen
+    arriba del umbral (esos no salen en el filtro «Potencia alta»).
+    """
     alertas = reporte.get("alertas") or []
     if not alertas:
         return None
@@ -208,5 +214,11 @@ def mensaje_alerta(reporte: dict, maximo: int = 10) -> str | None:
         lineas.append(f"• {a['cliente']}{contrato} · {a['olt']}: {detalle}")
     if len(alertas) > maximo:
         lineas.append(f"…y {len(alertas) - maximo} más (filtro «Potencia alta» en Clientes).")
+    ids = sorted({a["cliente_id"] for a in alertas if a.get("cliente_id")})
+    if base_url and ids:
+        enlace = f"{base_url.rstrip('/')}/admin/clientes?revisar={','.join(map(str, ids))}"
+        lineas.append(f"\nVer la lista y mandar técnico: {enlace}")
+    else:
+        lineas.append("\nPara mandar a un técnico: Clientes › Herramientas › Reportar falla.")
     return "\n".join(lineas)
 

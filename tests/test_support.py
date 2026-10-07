@@ -186,3 +186,31 @@ def test_support_models_keep_operational_fields():
         "potencia_rx_dbm",
         "codigo_sugerencia",
     }.issubset(DiagnosticoSoporteModel.__table__.c.keys())
+
+
+def test_la_potencia_habitual_es_la_mediana_del_mes():
+    import asyncio as _asyncio
+    from decimal import Decimal as _D
+
+    from src.application.services.support_service import SupportService as _S
+
+    class _R:
+        def __init__(self, v):
+            self.v = v
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.v
+
+    class _DB:
+        def __init__(self, v):
+            self.v = v
+
+        async def execute(self, _q):
+            return _R(self.v)
+
+    lecturas = [_D("-21.5"), _D("-31.2"), _D("-21.3"), _D("-21.9"), _D("-21.4")]
+    assert _asyncio.run(_S(_DB(lecturas)).potencia_habitual(5)) == -21.5
+    assert _asyncio.run(_S(_DB([])).potencia_habitual(5)) is None

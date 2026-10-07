@@ -151,6 +151,30 @@ async def bandeja_soporte(
         manejar_error(exc)
 
 
+@router.get("/abiertas")
+async def reportes_abiertos_por_cliente(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Cliente → su reporte de falla abierto (para marcarlo en Clientes)."""
+    return await SupportService(db).abiertas_por_cliente()
+
+
+@router.get("/clientes/{cliente_id}/contexto")
+async def contexto_para_reportar(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Lo que el formulario de "Reportar falla" necesita antes de llenarse."""
+    service = SupportService(db)
+    abiertas = await service.abiertas_por_cliente()
+    return {
+        "abierta": abiertas.get(cliente_id),
+        "potencia_habitual": await service.potencia_habitual(cliente_id),
+    }
+
+
 @router.get("/metricas")
 async def metricas_soporte(
     desde: date,

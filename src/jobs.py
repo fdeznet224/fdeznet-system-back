@@ -94,7 +94,7 @@ async def tarea_limpiar_bitacora():
 async def leer_senal_optica(db, avisar: bool = False) -> dict:
     """Lee todas las ONU y guarda las lecturas; con avisar, manda las que empeoraron."""
     reporte = await SenalOpticaService(db).tomar_lecturas(evaluar_alertas=avisar)
-    texto = mensaje_alerta(reporte) if avisar else None
+    texto = mensaje_alerta(reporte, base_url=os.getenv("PUBLIC_URL", "").strip() or None) if avisar else None
     if texto:
         await enviar_alertas_whatsapp(texto, db, tipo_evento="alerta_senal")
     resumen = (

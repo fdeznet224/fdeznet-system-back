@@ -109,6 +109,15 @@ def test_el_aviso_resume_y_corta_la_lista():
     assert mensaje_alerta({"alertas": []}) is None
 
 
+def test_el_aviso_enlaza_a_la_lista_de_esos_clientes():
+    alertas = [{"cliente_id": 12, "cliente": "Ana", "contrato": None, "olt": "Villa", "rx": -22.0,
+                "anterior": -18.0, "motivo": "caida"},
+               {"cliente_id": 5, "cliente": "Beto", "contrato": None, "olt": "Villa", "rx": -28.0,
+                "anterior": -24.0, "motivo": "debil"}]
+    texto = mensaje_alerta({"alertas": alertas}, base_url="https://fdezpay.com/")
+    assert texto.endswith("Ver la lista y mandar técnico: https://fdezpay.com/admin/clientes?revisar=5,12")
+
+
 def test_cada_hora_solo_guarda_y_no_evalua_avisos():
     db = _DB([_servicio(1, "HWTC05450CB6", "Ana")], [SimpleNamespace(id=1, nombre="Villa")], {1: Decimal("-21.00")})
 

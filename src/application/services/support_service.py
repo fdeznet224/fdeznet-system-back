@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import json
 from types import SimpleNamespace
@@ -210,6 +210,47 @@ class SupportService:
         else:
             await self.db.flush()
         return await orden_service.obtener(orden.id, usuario)
+
+    async def abiertas_por_cliente(self) -> dict[int, dict]:
+        """Reporte de falla abierto de cada cliente, para marcarlo en Clientes."""
+        filas = (
+            await self.db.execute(
+                select(OrdenServicioModel)
+                .options(selectinload(OrdenServicioModel.tecnico))
+                .where(
+                    OrdenServicioModel.categoria_soporte.isnot(None),
+                    OrdenServicioModel.cliente_id.isnot(None),
+                    OrdenServicioModel.estado.in_(ESTADOS_ABIERTOS),
+                )
+                .order_by(OrdenServicioModel.id)
+            )
+        ).scalars().all()
+        return {
+            orden.cliente_id: {
+                "id": orden.id,
+                "estado": orden.estado,
+                "categoria": orden.categoria_soporte,
+                "tecnico": orden.tecnico.nombre_completo or orden.tecnico.usuario if orden.tecnico else None,
+            }
+            for orden in filas
+        }
+
+    async def potencia_habitual(self, cliente_id: int, dias: int = 30) -> Optional[float]:
+        """Mediana de las lecturas automáticas del último mes: su valor normal."""
+        desde = datetime.now() - timedelta(days=dias)
+        valores = sorted(
+            (
+                await self.db.execute(
+                    select(LecturaOpticaModel.potencia_rx_dbm).where(
+                        LecturaOpticaModel.cliente_id == cliente_id,
+                        LecturaOpticaModel.fecha >= desde,
+                    )
+                )
+            ).scalars().all()
+        )
+        if not valores:
+            return None
+        return float(valores[len(valores) // 2])
 
     async def bandeja(
         self,
