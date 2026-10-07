@@ -10,6 +10,7 @@ from src.infrastructure.database import get_db
 from src.domain import schemas 
 from src.application.services.olt_service import OLTService
 from src.application.services.snmp_service import SNMPMonitorService
+from src.application.services.vinculacion_onu_service import VinculacionOnuService
 from src.application.services.vsol_api_service import VsolApiService
 from src.infrastructure.auth import role_required
 
@@ -220,6 +221,51 @@ async def listar_onus_vsol_api(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error consultando VSOL API: {str(e)}")
+
+
+class VinculoOnu(BaseModel):
+    identificador: str
+    cliente_id: int
+
+
+class VincularOnus(BaseModel):
+    vinculos: List[VinculoOnu]
+
+
+@router.get("/{olt_id}/vinculacion")
+async def propuesta_de_vinculacion(
+    olt_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """ONU sin cliente en el sistema y el cliente que sugiere su descripción."""
+    try:
+        return await VinculacionOnuService(db).propuesta(olt_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo leer la OLT: {str(e)[:200]}")
+
+
+@router.post("/{olt_id}/vincular-onus")
+async def vincular_onus(
+    olt_id: int,
+    datos: VincularOnus,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Guarda el serial en cada cliente elegido (y en su servicio)."""
+    if not datos.vinculos:
+        raise HTTPException(status_code=400, detail="No hay ONU por vincular")
+    try:
+        resultados = await VinculacionOnuService(db).vincular(
+            olt_id, [v.model_dump() for v in datos.vinculos], current_user
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo leer la OLT: {str(e)[:200]}")
+    return {"resultados": resultados, "vinculadas": sum(1 for r in resultados if r["ok"])}
 
 
 @router.get("/diagnostico-cliente-api/{cliente_id}")
