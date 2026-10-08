@@ -9,11 +9,24 @@ from test_vsol_onu_acciones import _OLTFalsa
 OLT = SimpleNamespace(id=7, nombre="Villa", tipo_integracion="vsol_api", api_enabled=True)
 
 
-def test_texto_sin_acentos_con_contrato_y_maximo_64():
+def test_texto_sin_acentos_con_contrato_y_maximo_32():
     assert texto_descripcion("José Ñandú Pérez", "7659") == "Jose Nandu Perez 7659"
     assert texto_descripcion("Ana  (la de la tienda)", None) == "Ana la de la tienda"
-    largo = texto_descripcion("Maria " * 20, "VG-0123")
-    assert len(largo) <= 64 and largo.endswith(" VG-0123")
+    # La OLT guarda 32: el contrato no se corta, el nombre sí.
+    largo = texto_descripcion("Gloria Guadalupe Mazariego Gomez", "C512")
+    assert largo == "Gloria Guadalupe Mazariego C512" and len(largo) <= 32
+
+
+def test_escribe_por_tandas_con_sesion_nueva_y_guarda_una_vez():
+    olt = _OLTConLista(descripcion="GPON0/2:3")
+    sesiones = []
+    original = olt._abrir_sesion_sync
+    olt._abrir_sesion_sync = lambda o: sesiones.append(1) or original(o)
+    cambios = [(2, 3, "HWTC0000AAAA", f"Cliente {i}") for i in range(23)]
+    resultado = olt._escribir_descripciones_sync(OLT, cambios)
+    assert resultado["escritas"] == 23 and resultado["guardada"] is True
+    assert len(sesiones) == 4   # 3 tandas (10, 10, 3) + la de guardar
+    assert [a for a, _ in _escrituras(olt)].count("configsave") == 1
 
 
 def test_solo_olt_con_api_vsol():

@@ -20,12 +20,13 @@ from src.infrastructure.models import ClienteModel, OLTModel, ServicioModel
 
 logger = logging.getLogger(__name__)
 
-# Límite del panel VSOL (onu_description_max_length).
-LARGO_MAXIMO = 64
+# El panel VSOL dice 64 (onu_description_max_length), pero la OLT guarda 32
+# y corta el resto: con más, cada pasada vería un nombre distinto.
+LARGO_MAXIMO = 32
 
 
 def texto_descripcion(nombre, contrato=None) -> str:
-    """"José Ñandú Pérez", "7659" → "Jose Nandu Perez 7659" (sin acentos, máx. 64)."""
+    """"José Ñandú Pérez", "7659" → "Jose Nandu Perez 7659" (sin acentos, máx. 32)."""
     def limpio(texto):
         sin_acentos = unicodedata.normalize("NFKD", str(texto or "")).encode("ascii", "ignore").decode()
         return " ".join(re.sub(r"[^A-Za-z0-9 ._-]", " ", sin_acentos).split())

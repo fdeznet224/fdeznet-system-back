@@ -589,8 +589,24 @@ class VsolApiService:
         return {"submit": "Submit", "who": 0, "slotid": 0, "ponid": int(pon), "onuid": int(onuid),
                 "onu_description": texto}
 
+    # Tras varias escrituras seguidas la OLT deja de contestar a esa sesión:
+    # se escribe por tandas, cada una con su sesión.
+    DESCRIPCIONES_POR_SESION = 10
+
     def _escribir_descripciones_sync(self, olt: OLTModel, cambios: List[Tuple[int, int, str, str]]) -> Dict[str, Any]:
         """cambios = [(pon, onuid, serial, texto)]. Solo escribe si el serial sigue en ese lugar."""
+        escritas, errores = 0, []
+        for inicio in range(0, len(cambios), self.DESCRIPCIONES_POR_SESION):
+            hechas, fallas = self._escribir_tanda_sync(olt, cambios[inicio:inicio + self.DESCRIPCIONES_POR_SESION])
+            escritas += hechas
+            errores += fallas
+        guardada = None
+        if escritas:
+            with self._sesion(olt) as (opener, base_url, verify_ssl):
+                guardada = self._guardar_configuracion_sync(opener, base_url, verify_ssl)
+        return {"escritas": escritas, "errores": errores, "guardada": guardada}
+
+    def _escribir_tanda_sync(self, olt: OLTModel, cambios: List[Tuple[int, int, str, str]]) -> Tuple[int, List[str]]:
         escritas, errores = 0, []
         with self._sesion(olt) as (opener, base_url, verify_ssl):
             en_olt: Dict[Tuple[int, int], str] = {}
@@ -613,8 +629,7 @@ class VsolApiService:
                     escritas += 1
                 else:
                     errores.append(f"{serial}: la OLT no aceptó la descripción ({respuesta})"[:200])
-            guardada = self._guardar_configuracion_sync(opener, base_url, verify_ssl) if escritas else None
-        return {"escritas": escritas, "errores": errores, "guardada": guardada}
+        return escritas, errores
 
     async def eliminar_onu(self, olt_id: int, pon: int, onuid: int, serial: str, con_dueno: set) -> Dict[str, Any]:
         """Quita de la OLT una ONU apagada que nadie tiene en el sistema.
