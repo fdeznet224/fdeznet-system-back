@@ -45,6 +45,26 @@ def test_prueba_las_credenciales_hasta_leer_el_sn(monkeypatch):
     assert entradas == ["telecomadmin", "root"]
 
 
+def test_sigue_a_la_pagina_https_del_hg8145v5(monkeypatch):
+    monkeypatch.delenv("ONU_WEB_CREDENCIALES", raising=False)
+    visitadas = []
+
+    def onu(request: httpx.Request):
+        visitadas.append(f"{request.url.scheme}:{request.url.port}{request.url.path}")
+        if request.url.scheme == "http":
+            return httpx.Response(200, text="<script>var SSLPort ='80'; location.href='https://'+host;</script>")
+        if request.url.path.endswith("deviceinfo.asp"):
+            return httpx.Response(200, text='"485754431A2B3C4D"')
+        return httpx.Response(200, text="token")
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(huawei.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(onu), **kw))
+    resultado = asyncio.run(huawei.leer_serial("10.10.9.2"))
+    assert resultado["seriales"] == ["HWTC1A2B3C4D"]
+    assert visitadas[0] == "http:None/"
+    assert all(v.startswith("https:80") for v in visitadas[1:])
+
+
 def test_si_la_ip_no_responde_lo_dice():
     def caida(_request):
         raise httpx.ConnectTimeout("sin respuesta")

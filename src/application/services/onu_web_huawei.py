@@ -23,6 +23,7 @@ PAGINAS_DE_INFORMACION = (
 # Un SN GPON va como "HWTC1A2B3C4D" o en hexadecimal "485754431A2B3C4D".
 RE_SN_TEXTO = re.compile(r"\b([A-Z]{4}[0-9A-F]{8})\b")
 RE_SN_HEX = re.compile(r"\b([0-9A-Fa-f]{16})\b")
+RE_SSL_PORT = re.compile(r"var SSLPort\s*=\s*'(\d+)'")
 
 
 def credenciales() -> list[tuple[str, str]]:
@@ -74,12 +75,23 @@ async def _entrar(http: httpx.AsyncClient, usuario: str, clave: str) -> None:
     })
 
 
+async def _direccion_web(ip: str, timeout: float) -> str:
+    """El HG8145V5 contesta en HTTP solo para mandar a su página HTTPS (SSLPort)."""
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as http:
+        inicio = await http.get(f"http://{ip}/")
+    puerto = RE_SSL_PORT.search(inicio.text or "")
+    return f"https://{ip}:{puerto.group(1)}" if puerto else f"http://{ip}"
+
+
 async def leer_serial(ip: str, timeout: float = 6.0) -> dict:
     """{"seriales": [...], "error": None} o el motivo por el que no se pudo leer."""
     if not ip:
         return {"seriales": [], "error": "sin IP"}
     try:
-        async with httpx.AsyncClient(base_url=f"http://{ip}", timeout=timeout, follow_redirects=False) as http:
+        base = await _direccion_web(ip, timeout)
+        # La ONU firma su propio certificado: no hay CA que lo valide. Se acepta
+        # solo aquí, para leer el SN de equipos propios en la red del ISP.
+        async with httpx.AsyncClient(base_url=base, timeout=timeout, follow_redirects=False, verify=False) as http:
             await http.get("/")
             for usuario, clave in credenciales():
                 await _entrar(http, usuario, clave)
