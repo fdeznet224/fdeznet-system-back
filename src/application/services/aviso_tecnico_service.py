@@ -2,13 +2,13 @@
 
 Llega al número de WhatsApp de su usuario. Si falla el envío no se deshace la
 asignación: solo queda en el registro. Lleva lo necesario para salir sin abrir
-el sistema: a dónde ir (con la ruta en Maps), la caja NAP y qué debe hacer.
+el sistema: a dónde ir, la caja NAP y qué debe hacer. La ubicación no va en el
+mensaje: el técnico la abre con el botón de su app.
 """
 
 import logging
 import os
 import re
-from urllib.parse import quote
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 # La ubicación que manda el cliente queda en la dirección como "lat,lng".
 RE_ENLACE = re.compile(r"\s*·?\s*https?://\S+")
-RE_COORDENADAS = re.compile(r"(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)")
 
 TIPOS = {
     "instalacion": "🛠️ Nueva instalación",
@@ -47,26 +46,6 @@ CATEGORIAS = {
 }
 
 
-def ruta_en_maps(latitud, longitud, direccion: str | None = None) -> str | None:
-    """Ruta en Google Maps hasta el domicilio, solo por coordenadas.
-
-    Sin GPS se usan las coordenadas que vengan en la dirección (la ubicación
-    que mandó el cliente); el texto de la dirección no se usa porque Maps lo
-    ubica mal en colonias y rancherías.
-    """
-    try:
-        lat, lng = float(latitud), float(longitud)
-    except (TypeError, ValueError):
-        lat = lng = 0.0
-    if lat == 0 and lng == 0:
-        encontradas = RE_COORDENADAS.search(direccion or "")
-        if not encontradas:
-            return None
-        lat, lng = float(encontradas.group(1)), float(encontradas.group(2))
-    destino = quote(f"{lat},{lng}")
-    return f"https://www.google.com/maps/dir/?api=1&destination={destino}&travelmode=driving"
-
-
 def texto_asignacion(orden, cliente, base_url: str | None, servicio=None, caja=None) -> str:
     titulo = TIPOS.get(orden.tipo, "📋 Nueva orden")
     nombre = (cliente.nombre if cliente else None) or orden.prospecto_nombre or "Cliente"
@@ -80,14 +59,10 @@ def texto_asignacion(orden, cliente, base_url: str | None, servicio=None, caja=N
     categoria = CATEGORIAS.get(getattr(orden, "categoria_soporte", None) or "")
     if categoria:
         lineas.append(f"🔧 Falla: {categoria}")
-    # El enlace de ubicación que mandó el cliente no se repite: va en la ruta.
+    # Sin enlaces de ubicación: el técnico la abre con el botón de su app.
     direccion_texto = RE_ENLACE.sub("", direccion or "").strip()
     if direccion_texto:
         lineas.append(f"📍 {direccion_texto}")
-    ubicacion = servicio if servicio and getattr(servicio, "latitud", None) is not None else cliente
-    ruta = ruta_en_maps(getattr(ubicacion, "latitud", None), getattr(ubicacion, "longitud", None), direccion)
-    if ruta:
-        lineas.append(f"🗺️ Cómo llegar: {ruta}")
     if caja:
         puerto = getattr(servicio or cliente, "puerto_nap", None)
         lineas.append(f"📦 Caja {caja.nombre}" + (f", puerto {puerto}" if puerto else ""))
