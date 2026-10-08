@@ -102,8 +102,9 @@ class OrdenService:
             tipo=tipo,
             cliente_id=datos.cliente_id,
             servicio_id=servicio.id if servicio else None,
-            caja_nap_sugerida_id=datos.caja_nap_sugerida_id,
-            puerto_nap_sugerido=datos.puerto_nap_sugerido,
+            # Solo las instalaciones traen caja/puerto sugeridos; un reporte de falla no.
+            caja_nap_sugerida_id=getattr(datos, "caja_nap_sugerida_id", None),
+            puerto_nap_sugerido=getattr(datos, "puerto_nap_sugerido", None),
             prospecto_nombre=datos.prospecto_nombre,
             prospecto_telefono=datos.prospecto_telefono,
             prospecto_direccion=datos.prospecto_direccion,
