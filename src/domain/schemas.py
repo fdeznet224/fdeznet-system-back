@@ -678,7 +678,7 @@ class ONURetorno(BaseModel):
     id: int
     identificador: str
     tecnologia: str
-    modelo: str
+    modelo: Optional[str] = None  # la OLT EPON por SNMP no informa el modelo
     estado: str
     tecnico_id: Optional[int] = None
     cliente_id: Optional[int] = None

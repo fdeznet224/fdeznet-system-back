@@ -50,3 +50,11 @@ def test_el_reporte_de_falla_crea_su_orden_sin_caja_sugerida():
     orden = next(o for o in db.agregados if isinstance(o, OrdenServicioModel))
     assert (orden.tipo, orden.servicio_id, orden.estado) == ("reparacion", 199, "pendiente")
     assert orden.caja_nap_sugerida_id is None and orden.puerto_nap_sugerido is None
+
+
+def test_el_inventario_acepta_onu_sin_modelo():
+    # Las ONU EPON vinculadas por MAC desde la OLT por SNMP no traen modelo.
+    from src.domain.schemas import ONURetorno
+
+    onu = ONURetorno(id=1, identificador="4C:8D:53:E3:7D:10", tecnologia="EPON", modelo=None, estado="INSTALADO")
+    assert onu.modelo is None
