@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
+from src.application.services.aviso_tecnico_service import avisar_asignacion
 from src.application.services.orden_service import OrdenService
 from src.application.services.snmp_service import SNMPMonitorService
 from src.application.services.vsol_api_service import VsolApiService
@@ -207,6 +208,10 @@ class SupportService:
         orden.canal_reporte = canal
         if commit:
             await self.db.commit()
+            # La orden se crea sin commit (y sin aviso) para guardar la
+            # categoría junto; el aviso al técnico va ya guardada.
+            if orden.tecnico_id:
+                await avisar_asignacion(self.db, orden.id, usuario.id)
         else:
             await self.db.flush()
         return await orden_service.obtener(orden.id, usuario)

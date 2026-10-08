@@ -58,3 +58,62 @@ def test_el_inventario_acepta_onu_sin_modelo():
 
     onu = ONURetorno(id=1, identificador="4C:8D:53:E3:7D:10", tecnologia="EPON", modelo=None, estado="INSTALADO")
     assert onu.modelo is None
+
+
+class _Res:
+    def __init__(self, valor):
+        self.valor = valor
+
+    def scalar_one_or_none(self):
+        return self.valor
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.valor
+
+
+class _DBIncidencia:
+    def __init__(self):
+        # cliente, sus servicios, ¿incidencia duplicada?
+        self.respuestas = [SimpleNamespace(id=244, estado="activo"), [SimpleNamespace(id=199)], None]
+        self.commits = 0
+
+    async def execute(self, _consulta):
+        return _Res(self.respuestas.pop(0))
+
+    async def commit(self):
+        self.commits += 1
+
+
+def _crear_incidencia(monkeypatch, tecnico_id):
+    import src.application.services.support_service as soporte
+
+    avisos = []
+
+    async def crear(self, datos, usuario, commit=True):
+        assert commit is False
+        return SimpleNamespace(id=42, tecnico_id=datos.tecnico_id)
+
+    async def avisar(db, orden_id, asignado_por_id):
+        assert db.commits == 1   # ya guardada
+        avisos.append((orden_id, asignado_por_id))
+        return True
+
+    monkeypatch.setattr(soporte.OrdenService, "crear", crear)
+    monkeypatch.setattr(soporte.OrdenService, "obtener", lambda self, orden_id, usuario=None: asyncio.sleep(0, orden_id))
+    monkeypatch.setattr(soporte, "avisar_asignacion", avisar)
+    asyncio.run(soporte.SupportService(_DBIncidencia()).crear_incidencia(
+        cliente_id=244, categoria="potencia_baja", descripcion="Subió la potencia de su fibra",
+        usuario=SimpleNamespace(id=1), tecnico_id=tecnico_id,
+    ))
+    return avisos
+
+
+def test_el_reporte_con_tecnico_le_avisa_por_whatsapp(monkeypatch):
+    assert _crear_incidencia(monkeypatch, tecnico_id=2) == [(42, 1)]
+
+
+def test_el_reporte_sin_tecnico_no_avisa(monkeypatch):
+    assert _crear_incidencia(monkeypatch, tecnico_id=None) == []
