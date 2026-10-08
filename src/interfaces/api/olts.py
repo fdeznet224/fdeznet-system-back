@@ -204,6 +204,28 @@ async def reiniciar_onu_vsol_api(
         raise HTTPException(status_code=502, detail=f"No se pudo reiniciar la ONU: {str(e)[:200]}")
 
 
+@router.post("/{olt_id}/onus/{pon}/{onuid}/eliminar")
+async def eliminar_onu_vsol_api(
+    olt_id: int,
+    pon: int,
+    onuid: int,
+    datos: ReiniciarOnuRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    """Borra de la OLT una ONU apagada sin cliente, para que cuadre con el sistema."""
+    try:
+        con_dueno = await VinculacionOnuService(db)._seriales_con_dueno()
+        return {
+            "status": "success",
+            "data": await VsolApiService(db).eliminar_onu(olt_id, pon, onuid, datos.serial, con_dueno),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo borrar la ONU: {str(e)[:200]}")
+
+
 @router.get("/{olt_id}/onus-api")
 async def listar_onus_vsol_api(
     olt_id: int,

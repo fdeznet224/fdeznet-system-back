@@ -83,6 +83,49 @@ def test_no_reinicia_si_en_ese_lugar_ya_hay_otra_onu():
     assert olt.posts[-1] == ("loginout", {"who": "1"})
 
 
+class _OLTParaBorrar(_OLTFalsa):
+    def __init__(self, estado="offline", **kw):
+        super().__init__(**kw)
+        self.estado = estado
+
+    async def listar_onus_unificadas(self, olt_id):
+        return {"onus": [{"onu_id": "GPON0/2:3", "pon_id": "2", "identificador": self.serial_en_olt,
+                          "estado_fisico": self.estado}]}
+
+
+def _escrituras(olt):
+    return [(a, d) for a, d in olt.posts if a != "loginout" and "who" in d]
+
+
+def test_borra_la_onu_apagada_sin_cliente_con_who_0():
+    olt = _OLTParaBorrar()
+    resultado = asyncio.run(olt.eliminar_onu(7, 2, 3, "hwtc0000aaaa", con_dueno=set()))
+    assert resultado["eliminada"] is True
+    assert _escrituras(olt) == [("gpononuauthinfo", {"who": "0", "slotid": "0", "portid": "2", "onuid": "3"})]
+    assert olt.posts[-1] == ("loginout", {"who": "1"})
+
+
+def test_no_borra_una_onu_en_linea():
+    olt = _OLTParaBorrar(estado="online")
+    with pytest.raises(ValueError, match="en línea"):
+        asyncio.run(olt.eliminar_onu(7, 2, 3, "HWTC0000AAAA", con_dueno=set()))
+    assert _escrituras(olt) == []
+
+
+def test_no_borra_la_onu_de_un_cliente():
+    olt = _OLTParaBorrar()
+    with pytest.raises(ValueError, match="es de un cliente"):
+        asyncio.run(olt.eliminar_onu(7, 2, 3, "HWTC0000AAAA", con_dueno={"HWTC0000AAAA"}))
+    assert _escrituras(olt) == []
+
+
+def test_no_borra_si_en_ese_lugar_ya_hay_otra_onu():
+    olt = _OLTParaBorrar(serial_en_olt="HWTC0000BBBB")
+    with pytest.raises(ValueError, match="ya no tiene esa ONU"):
+        asyncio.run(olt.eliminar_onu(7, 2, 3, "HWTC0000AAAA", con_dueno=set()))
+    assert _escrituras(olt) == []
+
+
 def test_no_acepta_numeros_de_onu_invalidos():
     with pytest.raises(ValueError):
         asyncio.run(_OLTFalsa().reiniciar_onu(7, 2, 0, "HWTC0000AAAA"))

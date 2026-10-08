@@ -557,6 +557,57 @@ class VsolApiService:
         return resultado
 
     @staticmethod
+    def payload_borrado_onu(pon: int, onuid: int) -> Dict[str, Any]:
+        """Borra la ONU de la OLT: who=0 en gpononuauthinfo (who=1 es reiniciar)."""
+        return {"who": 0, "slotid": 0, "portid": int(pon), "onuid": int(onuid)}
+
+    def _eliminar_onu_sync(self, olt: OLTModel, pon: int, onuid: int, serial: str) -> Dict[str, Any]:
+        with self._sesion(olt) as (opener, base_url, verify_ssl):
+            actual = self._onu_en_pon_sync(opener, base_url, verify_ssl, pon, onuid)
+            serial_actual = self._normalizar_sn((actual or {}).get("info") or (actual or {}).get("Info"))
+            if not actual or serial_actual != self._normalizar_sn(serial):
+                raise ValueError(
+                    "La ONU de ese PON y número ya no es la misma (cambió el serial). Vuelve a escanear la OLT."
+                )
+            respuesta = self._post_form(
+                self, opener, base_url, "gpononuauthinfo", self.payload_borrado_onu(pon, onuid), verify_ssl
+            )
+            if str(respuesta.get("retcode")) != "0":
+                datos = respuesta.get("data") or {}
+                raise ValueError(f"La OLT no aceptó el borrado: {datos.get('msg') or datos.get('result') or respuesta}")
+            return {"eliminada": True, "pon": pon, "onuid": onuid, "serial": serial_actual}
+
+    async def eliminar_onu(self, olt_id: int, pon: int, onuid: int, serial: str, con_dueno: set) -> Dict[str, Any]:
+        """Quita de la OLT una ONU apagada que nadie tiene en el sistema.
+
+        Con autorización automática en la OLT, si vuelve a conectarse se da de
+        alta sola; aun así no se borra una ONU en línea ni la de un cliente.
+        """
+        olt = await self.db.get(OLTModel, olt_id)
+        if not olt:
+            raise ValueError("OLT no encontrada.")
+        if not (1 <= int(onuid) <= 128) or int(pon) < 1:
+            raise ValueError("PON u ONU inválidos.")
+        serial = self._normalizar_sn(serial)
+        if serial in con_dueno:
+            raise ValueError("Esa ONU es de un cliente en el sistema: desvincúlala antes de borrarla.")
+        # Estado al momento, no el del último escaneo.
+        olvidar(f"vsol:{olt.id}")
+        onus = (await self.listar_onus_unificadas(olt.id))["onus"]
+        actual = next(
+            (o for o in onus if self.ubicacion_onu(o) == (int(pon), int(onuid))
+             and self._normalizar_sn(o.get("identificador")) == serial),
+            None,
+        )
+        if not actual:
+            raise ValueError("La OLT ya no tiene esa ONU en ese PON y número. Vuelve a escanear la OLT.")
+        if str(actual.get("estado_fisico")) == "online":
+            raise ValueError("La ONU está en línea: solo se borran las apagadas.")
+        resultado = await asyncio.to_thread(self._eliminar_onu_sync, olt, int(pon), int(onuid), serial)
+        olvidar(f"vsol:{olt.id}")
+        return resultado
+
+    @staticmethod
     def ubicacion_onu(onu: Dict[str, Any]) -> Optional[Tuple[int, int]]:
         """(PON, número) de la ONU: "GPON0/3:12" -> (3, 12)."""
         texto = str(onu.get("onu_id") or "")
