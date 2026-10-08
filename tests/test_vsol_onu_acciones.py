@@ -32,6 +32,10 @@ class _OLTFalsa(VsolApiService):
             self.posts.append((accion, datos))
         if accion == "loginout":
             return {"retcode": "0"}
+        if accion == "configsave":
+            return {"retcode": "0", "data": {"result": "SUCCESS"}}
+        if accion == "gpononudetail" and datos.get("submit"):
+            return {"retcode": "0", "data": {}}
         if accion == "gpononuauthinfo" and "who" not in datos:
             return {"retcode": "0", "data": {"onuAuth_list": [
                 {"pon_id": datos["portid"], "onu_id": f"GPON0/{datos['portid']}:3", "info": self.serial_en_olt},
@@ -101,7 +105,10 @@ def test_borra_la_onu_apagada_sin_cliente_con_who_0():
     olt = _OLTParaBorrar()
     resultado = asyncio.run(olt.eliminar_onu(7, 2, 3, "hwtc0000aaaa", con_dueno=set()))
     assert resultado["eliminada"] is True
-    assert _escrituras(olt) == [("gpononuauthinfo", {"who": "0", "slotid": "0", "portid": "2", "onuid": "3"})]
+    assert _escrituras(olt) == [
+        ("gpononuauthinfo", {"who": "0", "slotid": "0", "portid": "2", "onuid": "3"}),
+        ("configsave", {"who": "1"}),   # sin guardar, un reinicio de la OLT la regresa
+    ]
     assert olt.posts[-1] == ("loginout", {"who": "1"})
 
 

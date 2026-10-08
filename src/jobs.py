@@ -29,6 +29,7 @@ from src.application.services.router_monitor_service import (
 )
 from src.application.services.vpn_service import leer_handshakes_wireguard
 from src.application.services.comprobante_service import ComprobanteService
+from src.application.services.descripcion_onu_service import DescripcionOnuService
 from src.application.services.senal_optica_service import SenalOpticaService, mensaje_alerta
 from src.application.services.storage_service import cleanup_storage, close_period, previous_period
 
@@ -116,6 +117,26 @@ HORA_AVISO_SENAL = 2
 async def tarea_leer_senal_optica():
     async with SessionLocal() as db:
         await leer_senal_optica(db, avisar=datetime.now().hour == HORA_AVISO_SENAL)
+
+
+async def tarea_descripcion_onus():
+    """Pone el nombre del cliente en la descripción de su ONU en la OLT.
+
+    Solo con ONU_DESCRIPCION_AUTOMATICA=1: cada ISP decide si el sistema
+    escribe en sus OLT.
+    """
+    if os.getenv("ONU_DESCRIPCION_AUTOMATICA", "").strip() != "1":
+        return
+    async with SessionLocal() as db:
+        reporte = await DescripcionOnuService(db).sincronizar()
+        if reporte["escritas"] or reporte["errores"]:
+            db.add(LogCronjobModel(
+                nivel="WARN" if reporte["errores"] else "INFO",
+                origen="DescripcionONU",
+                mensaje=(f"Nombre del cliente en {reporte['escritas']} ONU"
+                         + (f"; errores: {'; '.join(reporte['errores'][:5])}" if reporte["errores"] else ""))[:1000],
+            ))
+            await db.commit()
 
 
 async def tarea_aplicar_pagos_adelantados():

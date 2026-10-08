@@ -575,7 +575,46 @@ class VsolApiService:
             if str(respuesta.get("retcode")) != "0":
                 datos = respuesta.get("data") or {}
                 raise ValueError(f"La OLT no aceptó el borrado: {datos.get('msg') or datos.get('result') or respuesta}")
+            self._guardar_configuracion_sync(opener, base_url, verify_ssl)
             return {"eliminada": True, "pon": pon, "onuid": onuid, "serial": serial_actual}
+
+    def _guardar_configuracion_sync(self, opener, base_url: str, verify_ssl: bool) -> bool:
+        """Guarda en la memoria de la OLT (botón "Save" del panel); sin esto un reinicio deshace el cambio."""
+        respuesta = self._post_form(self, opener, base_url, "configsave", {"who": "1"}, verify_ssl)
+        return str((respuesta.get("data") or {}).get("result") or "").upper() == "SUCCESS"
+
+    @staticmethod
+    def payload_descripcion_onu(pon: int, onuid: int, texto: str) -> Dict[str, Any]:
+        """Descripción de la ONU (gpononudetail, who=0 con submit; who=100 solo la lee)."""
+        return {"submit": "Submit", "who": 0, "slotid": 0, "ponid": int(pon), "onuid": int(onuid),
+                "onu_description": texto}
+
+    def _escribir_descripciones_sync(self, olt: OLTModel, cambios: List[Tuple[int, int, str, str]]) -> Dict[str, Any]:
+        """cambios = [(pon, onuid, serial, texto)]. Solo escribe si el serial sigue en ese lugar."""
+        escritas, errores = 0, []
+        with self._sesion(olt) as (opener, base_url, verify_ssl):
+            en_olt: Dict[Tuple[int, int], str] = {}
+            for payload in self._descubrir_payloads_pon_sync(opener, base_url, verify_ssl):
+                auth = self._request_json_sync(
+                    opener, f"{base_url}/action/gpononuauthinfo", method="POST", data=payload, verify_ssl=verify_ssl
+                )
+                for item in (auth.get("data") or {}).get("onuAuth_list") or []:
+                    ubicacion = self.ubicacion_onu(item)
+                    if ubicacion:
+                        en_olt[ubicacion] = self._normalizar_sn(item.get("info") or item.get("Info"))
+            for pon, onuid, serial, texto in cambios:
+                if en_olt.get((int(pon), int(onuid))) != self._normalizar_sn(serial):
+                    errores.append(f"{serial}: ya no está en GPON0/{pon}:{onuid}")
+                    continue
+                respuesta = self._post_form(
+                    self, opener, base_url, "gpononudetail", self.payload_descripcion_onu(pon, onuid, texto), verify_ssl
+                )
+                if str(respuesta.get("retcode")) == "0":
+                    escritas += 1
+                else:
+                    errores.append(f"{serial}: la OLT no aceptó la descripción ({respuesta})"[:200])
+            guardada = self._guardar_configuracion_sync(opener, base_url, verify_ssl) if escritas else None
+        return {"escritas": escritas, "errores": errores, "guardada": guardada}
 
     async def eliminar_onu(self, olt_id: int, pon: int, onuid: int, serial: str, con_dueno: set) -> Dict[str, Any]:
         """Quita de la OLT una ONU apagada que nadie tiene en el sistema.
