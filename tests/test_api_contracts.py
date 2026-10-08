@@ -13,13 +13,12 @@ def test_rutas_de_salud_forman_parte_del_contrato():
 
 def test_rutas_compatibles_de_bajas_estan_deprecadas():
     paths = app.openapi()["paths"]
-    legacy_paths = (
-        "/clientes/{cliente_id}/dar-de-baja",
-        "/clientes/{cliente_id}/reactivar",
-    )
+    legacy_paths = ("/clientes/{cliente_id}/dar-de-baja",)
 
     for path in legacy_paths:
         assert paths[path]["post"]["deprecated"] is True
+    # Reactivar es el botón "Activar" de la ficha de un cliente cancelado.
+    assert not paths["/clientes/{cliente_id}/reactivar"]["post"].get("deprecated")
 
 
 def test_atajos_viejos_de_retiro_ya_no_existen():

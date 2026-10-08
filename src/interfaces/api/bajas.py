@@ -282,30 +282,6 @@ async def reintentar_mikrotik(
         manejar_error(exc)
 
 
-class ReactivarConOnu(BaseModel):
-    identificador_onu: str
-
-
-@router.post("/{baja_id}/reactivar")
-async def reactivar_con_onu(
-    baja_id: int,
-    datos: ReactivarConOnu,
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(role_required(["admin", "supervisor"])),
-):
-    """El cliente regresa con su mismo contrato; la ONU ya se había recogido."""
-    try:
-        baja = await BajaService(db).reactivar_con_onu(
-            baja_id,
-            current_user,
-            datos.identificador_onu,
-        )
-        return serializar_baja(baja)
-    except (ValueError, PermissionError, RuntimeError) as exc:
-        await db.rollback()
-        manejar_error(exc)
-
-
 @router.post("/{baja_id}/cancelar-reactivar")
 async def cancelar_y_reactivar(
     baja_id: int,

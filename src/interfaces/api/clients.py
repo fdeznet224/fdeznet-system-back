@@ -15,7 +15,6 @@ from src.domain.schemas import InstalacionRequest
 from src.infrastructure.database import get_db
 from src.infrastructure.auth import get_current_user, role_required
 from src.infrastructure.models import (
-    BajaServicioModel,
     ClienteModel,
     ConfiguracionModel,
     FacturaModel,
@@ -34,10 +33,7 @@ from src.application.services.access_control_service import (
     filtro_clientes_del_tecnico,
     verificar_acceso_cliente,
 )
-from src.application.services.baja_service import (
-    BajaService,
-    ESTADOS_BAJA_ABIERTA,
-)
+from src.application.services.baja_service import BajaService
 from src.infrastructure.repositories import ClienteRepository
 from src.infrastructure import RefPPP 
 
@@ -652,43 +648,32 @@ async def dar_de_baja_cliente(
         raise HTTPException(status_code=400, detail=str(e))
     
 
-@router.post("/{cliente_id}/reactivar", deprecated=True)
+class ReactivarCliente(BaseModel):
+    # ONU de inventario que se le instala; sin ella se usa la suya si sigue en su casa.
+    onu_id: Optional[int] = None
+
+
+@router.post("/{cliente_id}/reactivar")
 async def reactivar_cliente_cancelado(
     cliente_id: int,
+    datos: ReactivarCliente = Body(default_factory=ReactivarCliente),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(role_required(["admin", "supervisor"])),
 ):
-    """Reconecta a un cliente cancelado y lo vuelve a activar en MikroTik."""
+    """Activa de nuevo a un cliente cancelado con su mismo contrato, plan, PPPoE e IP."""
     try:
-        baja = (
-            await db.execute(
-                select(BajaServicioModel)
-                .where(
-                    BajaServicioModel.cliente_id == cliente_id,
-                    BajaServicioModel.estado.in_(ESTADOS_BAJA_ABIERTA),
-                )
-                .order_by(BajaServicioModel.id.desc())
-            )
-        ).scalars().first()
-        if not baja:
-            raise ValueError(
-                "No existe una baja reversible; crea una nueva instalación"
-            )
-        baja = await BajaService(db).cancelar_y_reactivar(
-            baja.id,
-            current_user,
-        )
+        baja = await BajaService(db).reactivar_cliente(cliente_id, current_user, datos.onu_id)
         return {
             "status": "success",
             "baja_id": baja.id,
-            "message": "Baja cancelada y servicio reactivado",
+            "mikrotik_estado": baja.mikrotik_estado,
+            "message": "Cliente activado",
         }
     except (ValueError, PermissionError) as e:
+        await db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
 
-
-# 🔥 NUEVO ENDPOINT PARA EL CAMBIO POR FALLA 🔥
 @router.post("/{cliente_id}/cambiar-onu")
 async def cambiar_onu_cliente(
     cliente_id: int,
