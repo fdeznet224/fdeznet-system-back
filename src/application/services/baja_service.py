@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.application.services.aviso_tecnico_service import avisar_asignacion
+from src.application.services.billing_calendar_service import BillingCalendarService
 from src.application.services.ftth_service import FTTHService
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.infrastructure.models import (
@@ -13,6 +14,7 @@ from src.infrastructure.models import (
     ClienteModel,
     HistorialEstadoOrdenModel,
     InventarioONUModel,
+    OLTModel,
     OrdenServicioModel,
     PlanModel,
     RouterModel,
@@ -23,6 +25,8 @@ from src.utils.mikrotik import formatear_rate_limit_dhcp, normalizar_mac
 
 
 ESTADOS_BAJA_ABIERTA = {"pendiente_retiro", "sin_equipo"}
+# El cliente ya no tiene ONU en su casa: regresa con otra (o la suya, si está en bodega).
+ESTADOS_BAJA_CERRADA = {"recuperada", "cerrada_no_recuperada", "sin_equipo"}
 CONDICIONES_EQUIPO = {"funcional", "danada", "incompleta", "perdida"}
 ESTADO_INVENTARIO_POR_CONDICION = {
     "funcional": "DISPONIBLE",
@@ -481,12 +485,134 @@ class BajaService:
         await self.sincronizar_mikrotik(baja.id)
         return await self.obtener(baja.id, usuario)
 
+    async def reactivar_con_onu(
+        self,
+        baja_id: int,
+        usuario: UsuarioModel,
+        identificador_onu: str,
+    ):
+        """El cliente regresa después de recoger su ONU: mismo contrato, otra ONU.
+
+        Conserva ficha, plan, PPPoE e IP; se le asigna la ONU que se le
+        instala (la suya si volvió a bodega, u otra disponible) y el cobro
+        vuelve a empezar desde hoy.
+        """
+        baja = await self._obtener_bloqueada(baja_id)
+        if baja.estado not in ESTADOS_BAJA_CERRADA:
+            raise ValueError(
+                "Esa baja no está cerrada; si la ONU sigue en su casa, revierte la baja"
+            )
+        identificador = str(identificador_onu or "").strip().upper()
+        if not identificador:
+            raise ValueError("Indica el SN o la MAC de la ONU que se le instala")
+        cliente = await self.db.get(ClienteModel, baja.cliente_id)
+        servicio = (
+            await self.db.get(ServicioModel, baja.servicio_id)
+            if baja.servicio_id
+            else None
+        )
+        if not cliente or not servicio:
+            raise ValueError("No existe el servicio original para reactivar")
+        if servicio.estado != "cancelado":
+            raise ValueError("El servicio ya no está cancelado")
+
+        ip = baja.ip_snapshot or servicio.ip_asignada
+        for campo, valor, texto in (
+            (ServicioModel.ip_asignada, ip, f"La IP {ip}"),
+            (ServicioModel.user_pppoe, servicio.user_pppoe, f"El usuario PPPoE {servicio.user_pppoe}"),
+        ):
+            if valor and (
+                await self.db.execute(
+                    select(ServicioModel.id).where(
+                        campo == valor,
+                        ServicioModel.id != servicio.id,
+                        ServicioModel.estado != "cancelado",
+                    )
+                )
+            ).first():
+                raise ValueError(f"{texto} ya la usa otro servicio; cámbiala antes de reactivar")
+
+        onu = (
+            await self.db.execute(
+                select(InventarioONUModel).where(
+                    InventarioONUModel.identificador == identificador
+                )
+            )
+        ).scalar_one_or_none()
+        if onu is None:
+            olt = await self.db.get(OLTModel, servicio.olt_id or cliente.olt_id) if (servicio.olt_id or cliente.olt_id) else None
+            onu = InventarioONUModel(
+                identificador=identificador,
+                tecnologia=((olt.tecnologia if olt else None) or "GPON").upper(),
+                estado="DISPONIBLE",
+            )
+            self.db.add(onu)
+            await self.db.flush()
+        otro = (
+            await self.db.execute(
+                select(ClienteModel.nombre).where(
+                    ClienteModel.onu_id == onu.id,
+                    ClienteModel.id != cliente.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if otro:
+            raise ValueError(f"La ONU {identificador} ya es de {otro}")
+        ftth = FTTHService(self.db)
+        await ftth.asignar_onu_servicio(
+            servicio,
+            onu.id,
+            usuario.id,
+            motivo="Reactivación del cliente",
+        )
+
+        # Su puerto anterior, si sigue libre; si no, se asigna después.
+        if baja.caja_nap_id_snapshot and baja.puerto_nap_snapshot:
+            try:
+                async with self.db.begin_nested():
+                    await ftth.asignar_puerto_servicio(
+                        servicio=servicio,
+                        caja_nap_id=baja.caja_nap_id_snapshot,
+                        numero=baja.puerto_nap_snapshot,
+                        usuario_id=usuario.id,
+                    )
+            except ValueError:
+                pass
+
+        hoy = date.today()
+        fechas = BillingCalendarService.calcular_fechas_servicio(
+            fecha_instalacion=min(servicio.fecha_instalacion or hoy, hoy),
+            fecha_activacion=hoy,
+            ciclo_facturacion=BillingCalendarService.valor_ciclo(servicio.ciclo_facturacion),
+        )
+        servicio.fecha_activacion = fechas.fecha_activacion
+        servicio.fecha_inicio_servicio = fechas.fecha_inicio_servicio
+        servicio.fecha_fin_periodo_gratis = None
+        servicio.fecha_inicio_cobro = fechas.fecha_inicio_cobro
+        servicio.proxima_facturacion = fechas.proxima_facturacion
+        servicio.meses_gratis = 0
+        servicio.estado = "activo"
+        servicio.ip_asignada = ip
+        if not servicio.olt_id and cliente.olt_id:
+            servicio.olt_id = cliente.olt_id
+
+        baja.estado = "reactivada"
+        baja.cancelada_en = datetime.now()
+        nota = f"Reactivado el {hoy:%d/%m/%Y} con la ONU {identificador}"
+        baja.observaciones = f"{baja.observaciones}\n{nota}" if baja.observaciones else nota
+        await self._sincronizar_estado_cliente(cliente)
+        await self._sincronizar_legacy_si_principal(servicio, cliente)
+        await self.db.commit()
+
+        await self.sincronizar_mikrotik(baja.id)
+        return await self.obtener(baja.id, usuario)
+
     async def sincronizar_mikrotik(self, baja_id: int):
         baja = await self.obtener(baja_id)
         cliente = baja.cliente
         servicio = baja.servicio
         objetivo = servicio or cliente
-        activar = baja.estado == "cancelada"
+        activar = baja.estado in {"cancelada", "reactivada"}
         router = (
             await self.db.get(RouterModel, objetivo.router_id)
             if objetivo.router_id
