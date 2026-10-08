@@ -3,17 +3,24 @@ import contextlib
 import json
 import re
 import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 import http.cookiejar
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.infrastructure.models import OLTModel, ClienteModel, LogActividadModel
+from src.infrastructure.models import (
+    ClienteModel,
+    InventarioONUModel,
+    LogActividadModel,
+    OLTModel,
+    ServicioModel,
+)
 from src.application.services.cache_olt import lectura_compartida, olvidar
 
 # Causa de la última caída que reporta la OLT -> qué pasó, en palabras del ISP.
@@ -483,11 +490,15 @@ class VsolApiService:
                 (self._post_form(self, opener, base_url, "gpononuoptical", ubicacion, verify_ssl)
                  .get("data") or {}).get("onu_optical_info")
             )
-            historial = self._request_json_sync(
-                opener,
-                f"{base_url}/action/gpononutimetampdetail?ponid={int(pon)}&onuid={int(onuid)}&select=3",
-                verify_ssl=verify_ssl,
-            )
+            try:
+                historial = self._request_json_sync(
+                    opener,
+                    f"{base_url}/action/gpononutimetampdetail?ponid={int(pon)}&onuid={int(onuid)}&select=3",
+                    verify_ssl=verify_ssl,
+                )
+            except urllib.error.HTTPError:
+                # La V1600GS (Villa) no tiene historial de caídas: el resto del detalle sí.
+                historial = {}
             caidas = []
             for item in (historial.get("data") or {}).get("offOnuReasonDtail_list") or []:
                 causa = interpretar_causa_caida(item.get("reason"))
@@ -630,6 +641,21 @@ class VsolApiService:
                 else:
                     errores.append(f"{serial}: la OLT no aceptó la descripción ({respuesta})"[:200])
         return escritas, errores
+
+    async def seriales_con_dueno(self) -> set:
+        """Seriales de ONU que tiene un cliente o un servicio vigente en el sistema."""
+        filas = (
+            await self.db.execute(
+                select(InventarioONUModel.identificador)
+                .outerjoin(ClienteModel, ClienteModel.onu_id == InventarioONUModel.id)
+                .outerjoin(
+                    ServicioModel,
+                    (ServicioModel.onu_id == InventarioONUModel.id) & (ServicioModel.estado != "cancelado"),
+                )
+                .where(or_(ClienteModel.id.isnot(None), ServicioModel.id.isnot(None)))
+            )
+        ).scalars().all()
+        return {self._normalizar_sn(s) for s in filas}
 
     async def eliminar_onu(self, olt_id: int, pon: int, onuid: int, serial: str, con_dueno: set) -> Dict[str, Any]:
         """Quita de la OLT una ONU apagada que nadie tiene en el sistema.

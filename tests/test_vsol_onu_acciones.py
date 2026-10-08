@@ -149,6 +149,21 @@ def test_detalle_trae_distancia_temperatura_voltaje_y_caidas():
     assert [c["tipo"] for c in detalle["historial_caidas"]] == ["corte_luz", "fibra"]
 
 
+class _OLTSinHistorial(_OLTFalsa):
+    """Como la V1600GS de Villa: no tiene gpononutimetampdetail."""
+
+    def _request_json_sync(self, opener, url, method="GET", data=None, verify_ssl=False):
+        if "gpononutimetampdetail" in url:
+            import urllib.error
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        return super()._request_json_sync(opener, url, method, data, verify_ssl)
+
+
+def test_si_la_olt_no_tiene_historial_el_detalle_sale_igual():
+    detalle = asyncio.run(_OLTSinHistorial().detalle_onu(7, 1, 2))
+    assert detalle["distancia_m"] == 1440 and detalle["historial_caidas"] == []
+
+
 @pytest.mark.parametrize("razon, tipo", [
     ("Power Off", "corte_luz"), ("ONU Signal LOS", "fibra"), ("ONU PLOAM LOS", "fibra"), ("Algo nuevo", "otra"),
 ])
