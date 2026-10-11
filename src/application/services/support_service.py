@@ -686,6 +686,21 @@ class SupportService:
                     "Validar compatibilidad, serial y lectura directa en la OLT."
                 ),
             }
+        if mk_ok and pppoe is False and olt_ok and onu:
+            # Caso visto tras apagones: la ONU registra y da buena potencia,
+            # pero su PPPoE no llega al MikroTik porque la OLT conserva un
+            # registro dañado. Al reautorizarla vuelve sin cambiar el equipo.
+            return {
+                "resultado": "critico",
+                "codigo": "pppoe_sin_sesion",
+                "sugerencia": (
+                    "La OLT ve la ONU en línea con buena potencia, pero no hay "
+                    "sesión PPPoE en el MikroTik. Antes de cambiar el equipo, "
+                    "bórrala de la OLT (Radar) para que se vuelva a autorizar "
+                    "y reiníciala. Si aun así no conecta, revisa usuario y "
+                    "contraseña PPPoE."
+                ),
+            }
         if mk_ok and pppoe is False:
             return {
                 "resultado": "critico",

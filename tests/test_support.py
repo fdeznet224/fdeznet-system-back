@@ -30,6 +30,18 @@ def test_online_onu_without_pppoe_suggests_authentication():
         },
     )
     assert result["codigo"] == "pppoe_sin_sesion"
+    assert "bórrala de la OLT" in result["sugerencia"]
+
+
+def test_without_olt_data_pppoe_hint_stays_on_credentials():
+    result = SupportService.clasificar(
+        categoria="sin_internet",
+        estado_cliente="activo",
+        mikrotik={"disponible": True, "pppoe_online": False},
+        olt={"disponible": False},
+    )
+    assert result["codigo"] == "pppoe_sin_sesion"
+    assert "credenciales" in result["sugerencia"]
 
 
 def test_critical_optical_power_has_priority_over_traffic():
