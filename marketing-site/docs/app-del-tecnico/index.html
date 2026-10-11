@@ -40,6 +40,8 @@
         <a href="#acceso">Entrar e instalar</a>
         <a href="#inicio">Inicio y buscador</a>
         <a href="#agenda">Agenda</a>
+        <a href="#reparaciones">Reparaciones</a>
+        <a href="#ruta">Ruta</a>
         <a href="#activacion">Activar un cliente</a>
         <a href="#ficha">Ficha técnica</a>
         <a href="#retiros">Retiros de equipo</a>
@@ -70,8 +72,43 @@
 <div class="figure-grid figure-grid-phones"><figure class="doc-figure doc-figure-phone"><a href="/assets/docs/app-del-tecnico/03-agenda.webp" target="_blank" rel="noopener"><img src="/assets/docs/app-del-tecnico/03-agenda.webp" alt="Agenda del técnico" loading="lazy"></a><figcaption>Una instalación asignada, otra en camino y una reparación.</figcaption></figure></div>
 <h3>Instalaciones: un botón a la vez</h3>
 <ol class="flow-steps"><li><span>1</span><div><strong>Marcar en camino</strong><small>El cliente recibe un WhatsApp de que el técnico va en camino.</small></div></li><li><span>2</span><div><strong>Activar cliente</strong><small>Aparece en cuanto marca en camino; abre el formulario de activación.</small></div></li></ol>
-<h3>Reparaciones y otras órdenes</h3>
-<p>Siguen tres pasos: <strong>Marcar en camino</strong> → <strong>Iniciar trabajo</strong> → <strong>Finalizar con conexión</strong>. Para terminar se pide la solución y una evidencia (foto) o un diagnóstico guardado.</p>
+<h3>Reparaciones</h3>
+<p>Siguen tres pasos: <strong>Marcar en camino</strong> → <strong>Iniciar trabajo</strong> → <strong>Terminar reparación</strong>. Al marcar en camino aparece la revisión de la falla y los datos del cliente (ver <a href="#reparaciones">Reparaciones</a>).</p>
+<div class="doc-callout">Lo que el técnico responde por WhatsApp le llega al cliente firmado: <strong>“Respondió Técnico Juan”</strong> y abajo el mensaje. Así se distingue de lo que responde la oficina.</div>
+        </section>
+
+        <section class="doc-section" id="reparaciones">
+<p class="kicker">En la casa del cliente</p>
+<h2>Reparaciones</h2>
+<p>Después de <strong>Marcar en camino</strong>, la tarjeta de la reparación muestra lo necesario para resolverla sin pedir datos a la oficina.</p>
+<h3>Datos del cliente</h3>
+<ul class="check-list"><li>Usuario y contraseña PPPoE para copiar.</li><li>ONU, potencia en color y conexión PPPoE con su consumo.</li><li><strong>Teléfono</strong>: si falta o está mal, se corrige ahí mismo.</li><li><strong>Guardar ubicación</strong>: toma el GPS del celular estando en el domicilio.</li><li><strong>Cambiar ONU</strong>: se escanea, se elige del inventario o se escribe el serial/MAC de una ONU nueva (se registra sola). Se indica si la retirada tiene falla o funciona (vuelve a bodega).</li></ul>
+<h3>Revisión según la falla</h3>
+<p>El botón <strong>Revisar ahora</strong> lee en vivo la OLT y el MikroTik. Lo que muestra depende de la falla reportada:</p>
+<div class="table-wrap doc-table"><table><thead><tr><th>Falla</th><th>Qué revisa</th></tr></thead><tbody>
+<tr><th>Potencia alta / señal débil</th><td>Potencia <strong>antes del reporte</strong> contra la de <strong>ahora</strong>, cuánto mejoró y un veredicto: “sigue alta”, “al límite” o “quedó bien” (debe quedar arriba de -25 dBm). También la potencia de los vecinos de su caja NAP: si la mayoría está mal, el problema es la caja o la fibra que llega a ella.</td></tr>
+<tr><th>Fibra o cable roto</th><td>Lo mismo, y si la ONU no tiene luz lo dice claro (LOS).</td></tr>
+<tr><th>Sin internet</th><td>Paso a paso: suspensión por pago → ONU en línea → potencia → sesión PPPoE, con la conclusión. Si la fibra está bien pero no hay PPPoE, la ONU no autentica: revisar credenciales, reiniciar y, si sigue, cambiarla.</td></tr>
+<tr><th>Lentitud</th><td>Consumo contra la velocidad de su plan (si va al tope no es falla), pérdida de paquetes y señal débil.</td></tr>
+<tr><th>Router o WiFi</th><td>Entrar a la ONU, cambiarla o anotar un <strong>extensor de rango</strong>.</td></tr>
+<tr><th>Otro</th><td>Estado de cuenta (adeudo, último pago, promesa) y la revisión paso a paso.</td></tr>
+</tbody></table></div>
+<h3>Entrar a la ONU</h3>
+<p>En lentitud y router/WiFi aparece <strong>Abrir ONU</strong> con la dirección y las cuentas de su marca (Huawei o ZTE). El técnico se conecta al WiFi del cliente y entra para ver los equipos conectados o cambiar la contraseña del WiFi. Si no entra, usa la contraseña de la etiqueta de atrás de la ONU. El administrador configura la dirección y las cuentas en <strong>Configuración → Perfiles PPPoE → Acceso a la ONU del cliente</strong>.</p>
+<h3>Identificar al cliente en la caja NAP</h3>
+<ol class="flow-steps"><li><span>1</span><div><strong>Conecta el láser</strong><small>En el conector del cliente.</small></div></li><li><span>2</span><div><strong>Mira la caja</strong><small>Qué puerto se ilumina. La app muestra quién está registrado en cada puerto.</small></div></li><li><span>3</span><div><strong>Elige caja y puerto</strong><small>Su caja sale primero; debajo, las cercanas.</small></div></li><li><span>4</span><div><strong>Etiqueta el conector</strong><small>Con su número de contrato y marca la casilla.</small></div></li></ol>
+<p>Si el puerto estaba registrado a otro cliente, la app lo avisa; lo que marca el láser manda y, al confirmar, a ese otro cliente se le quita el puerto para corregirlo en su visita. El avance (“Red identificada: 34 de 221”) sube con cada visita.</p>
+<h3>Terminar</h3>
+<p>La misma revisión sirve como verificación de la señal. Si la potencia sigue alta, la app pide explicar por qué se deja así. Se escribe qué se encontró y qué se hizo y se pulsa <strong>Terminar reparación</strong>.</p>
+<div class="doc-callout">El cliente recibe un WhatsApp cuando se registra su reporte y cuando se le asigna técnico (plantillas editables en <strong>Configuración → Plantillas</strong>). Si el reporte lo levantó el bot, no se repite el primero.</div>
+        </section>
+
+        <section class="doc-section" id="ruta">
+<p class="kicker">Pestaña Ruta</p>
+<h2>Clientes con potencia alta cerca</h2>
+<p>Si el técnico anda en una colonia y le sobra tiempo, <strong>Usar mi ubicación</strong> lista a los clientes con la potencia alta (lectura de las últimas 72 horas peor que -25 dBm), del más cercano al más lejano, con su caja NAP y puerto.</p>
+<ul class="check-list"><li><strong>Cómo llegar</strong> y <strong>Ver ficha</strong>.</li><li><strong>Ir a revisar</strong>: le crea un reporte de potencia alta a su nombre, que aparece en su agenda con la revisión completa.</li><li>Si el cliente ya tiene un reporte abierto, se muestra con el técnico asignado para no ir dos veces.</li></ul>
+<div class="doc-callout">La potencia de todas las ONU se lee cada hora. El aviso diario de las que empeoraron llega a los teléfonos de alerta a la hora elegida en <strong>Configuración → Sistema → Monitoreo de Fibra</strong> (o se desactiva).</div>
         </section>
 
         <section class="doc-section" id="activacion">
