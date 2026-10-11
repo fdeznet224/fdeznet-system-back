@@ -329,6 +329,9 @@ class ClienteModel(Base):
     # 👇👇👇 CAMPOS FTTH 👇👇👇
     caja_nap_id = Column(Integer, ForeignKey("cajas_nap.id"), nullable=True)
     puerto_nap = Column(Integer, nullable=True)
+    # El técnico confirmó con el láser su puerto en la caja y etiquetó el conector.
+    nap_identificado_en = Column(DateTime(timezone=True), nullable=True)
+    conector_etiquetado = Column(Boolean, nullable=False, default=False, server_default="0")
     tecnico_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
     onu_id = Column(Integer, ForeignKey('inventario_onus.id'), nullable=True)
     onu_asignada = relationship("InventarioONUModel", back_populates="cliente")
@@ -1736,6 +1739,8 @@ class ConfiguracionSistema(Base):
     # --- FACTURACIÓN ---
     generar_facturas_automaticamente = Column(Boolean, default=True)
     hora_generacion_facturas = Column(String(10), default="06:00") # 👈 NUEVA
+    # Aviso diario a los teléfonos de alerta con las ONU cuya señal empeoró; "" = no se manda.
+    hora_aviso_senal = Column(String(10), nullable=False, default="08:00", server_default="08:00")
     dia_generacion_factura = Column(Integer, default=1)
     
     # --- EXTRA ---

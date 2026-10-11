@@ -229,6 +229,10 @@ class OrdenService:
         await self.db.commit()
         if tecnico_nuevo:
             await avisar_asignacion(self.db, orden.id, usuario.id)
+            if orden.categoria_soporte:
+                from src.application.services.aviso_cliente_reporte_service import avisar_cliente_tecnico
+
+                await avisar_cliente_tecnico(self.db, orden, usuario.id)
         return await self.obtener(orden.id)
 
     async def _actualizar_solicitud(self, orden: OrdenServicioModel, cambios: dict):

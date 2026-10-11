@@ -96,6 +96,11 @@ def _crear_incidencia(monkeypatch, tecnico_id):
         assert commit is False
         return SimpleNamespace(id=42, tecnico_id=datos.tecnico_id)
 
+    async def avisar_cliente(db, orden, usuario_id):
+        # Al cliente se le avisa siempre, ya con la categoría y el canal guardados.
+        avisos.append(("cliente", orden.categoria_soporte, orden.canal_reporte))
+        return True
+
     async def avisar(db, orden_id, asignado_por_id):
         assert db.commits == 1   # ya guardada
         avisos.append((orden_id, asignado_por_id))
@@ -104,6 +109,7 @@ def _crear_incidencia(monkeypatch, tecnico_id):
     monkeypatch.setattr(soporte.OrdenService, "crear", crear)
     monkeypatch.setattr(soporte.OrdenService, "obtener", lambda self, orden_id, usuario=None: asyncio.sleep(0, orden_id))
     monkeypatch.setattr(soporte, "avisar_asignacion", avisar)
+    monkeypatch.setattr(soporte, "avisar_cliente_reporte", avisar_cliente)
     asyncio.run(soporte.SupportService(_DBIncidencia()).crear_incidencia(
         cliente_id=244, categoria="potencia_baja", descripcion="Subió la potencia de su fibra",
         usuario=SimpleNamespace(id=1), tecnico_id=tecnico_id,
@@ -112,8 +118,8 @@ def _crear_incidencia(monkeypatch, tecnico_id):
 
 
 def test_el_reporte_con_tecnico_le_avisa_por_whatsapp(monkeypatch):
-    assert _crear_incidencia(monkeypatch, tecnico_id=2) == [(42, 1)]
+    assert _crear_incidencia(monkeypatch, tecnico_id=2) == [(42, 1), ("cliente", "potencia_baja", "panel")]
 
 
 def test_el_reporte_sin_tecnico_no_avisa(monkeypatch):
-    assert _crear_incidencia(monkeypatch, tecnico_id=None) == []
+    assert _crear_incidencia(monkeypatch, tecnico_id=None) == [("cliente", "potencia_baja", "panel")]

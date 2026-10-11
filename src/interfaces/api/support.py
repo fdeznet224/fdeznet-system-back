@@ -175,6 +175,19 @@ async def contexto_para_reportar(
     }
 
 
+@router.get("/ruta-reparacion")
+async def ruta_de_reparacion(
+    latitud: Optional[float] = Query(default=None, ge=-90, le=90),
+    longitud: Optional[float] = Query(default=None, ge=-180, le=180),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Clientes con la potencia alta; con la ubicación del técnico, del más cercano al más lejano."""
+    from src.application.services.ruta_reparacion_service import ruta_reparacion
+
+    return await ruta_reparacion(db, latitud, longitud)
+
+
 @router.get("/metricas")
 async def metricas_soporte(
     desde: date,

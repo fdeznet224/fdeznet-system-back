@@ -52,6 +52,8 @@ class SystemConfigUpdate(BaseModel):
     corte_solo_whatsapp: bool = False
     corte_whatsapp_kbps: int = Field(default=128, ge=32, le=2048)
     baja_automatica_dias: int = Field(default=90, ge=0, le=365)
+    # Hora en punto ("08:00") o "" para no mandar. Sin el campo se conserva la guardada.
+    hora_aviso_senal: Optional[str] = Field(default=None, pattern=r"^((?:[01]\d|2[0-3]):00)?$")
     # telefonos_alerta se guarda aparte (Integraciones) para que este
     # formulario no lo sobrescriba con un valor viejo.
 

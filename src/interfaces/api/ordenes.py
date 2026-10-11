@@ -158,6 +158,7 @@ def serializar_orden(orden):
         "cliente": (
             {
                 "id": orden.cliente.id,
+                "contrato": orden.cliente.cedula,
                 "nombre": orden.cliente.nombre,
                 "telefono": orden.cliente.telefono,
                 "direccion": orden.cliente.direccion,
@@ -576,6 +577,131 @@ async def activar_solicitud(
         await db.rollback()
         manejar_error(error)
 
+
+class ContactoCliente(BaseModel):
+    telefono: Optional[str] = Field(default=None, max_length=20)
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+
+
+class CambioOnuReparacion(BaseModel):
+    estado_vieja_onu: str = Field(min_length=1, max_length=20)
+    onu_id: Optional[int] = Field(default=None, gt=0)
+    onu_identificador: Optional[str] = Field(default=None, max_length=40)
+
+
+@router.patch("/{orden_id}/cliente-contacto")
+async def corregir_contacto_cliente(
+    orden_id: int,
+    datos: ContactoCliente,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """En una reparación, el técnico completa el teléfono o la ubicación del cliente."""
+    from src.application.services.reparacion_campo_service import ReparacionCampoService
+
+    try:
+        return await ReparacionCampoService(db).actualizar_contacto(
+            orden_id, current_user, datos.telefono, datos.latitud, datos.longitud,
+        )
+    except (ValueError, PermissionError, RuntimeError) as error:
+        await db.rollback()
+        manejar_error(error)
+
+
+@router.get("/{orden_id}/onus-disponibles")
+async def onus_para_reparacion(
+    orden_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    from src.application.services.reparacion_campo_service import ReparacionCampoService
+
+    try:
+        return await ReparacionCampoService(db).onus_disponibles(orden_id, current_user)
+    except (ValueError, PermissionError, RuntimeError) as error:
+        manejar_error(error)
+
+
+@router.post("/{orden_id}/cambiar-onu")
+async def cambiar_onu_en_reparacion(
+    orden_id: int,
+    datos: CambioOnuReparacion,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """El técnico cambia la ONU del cliente: una del inventario o la que trae en mano."""
+    from src.application.services.reparacion_campo_service import ReparacionCampoService
+
+    try:
+        return await ReparacionCampoService(db).cambiar_onu(
+            orden_id, current_user, datos.estado_vieja_onu, datos.onu_id, datos.onu_identificador,
+        )
+    except (ValueError, PermissionError, RuntimeError) as error:
+        await db.rollback()
+        manejar_error(error)
+
+
+
+class ExtensorRango(BaseModel):
+    detalle: str = Field(min_length=3, max_length=200)
+
+
+@router.get("/{orden_id}/revision")
+async def revision_de_reparacion(
+    orden_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Potencia de antes del reporte, vecinos de la caja NAP, plan y acceso a la ONU."""
+    from src.application.services.reparacion_campo_service import ReparacionCampoService
+
+    try:
+        return await ReparacionCampoService(db).revision(orden_id, current_user)
+    except (ValueError, PermissionError, RuntimeError) as error:
+        manejar_error(error)
+
+
+@router.post("/{orden_id}/extensor")
+async def anotar_extensor(
+    orden_id: int,
+    datos: ExtensorRango,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    from src.application.services.reparacion_campo_service import ReparacionCampoService
+
+    try:
+        return await ReparacionCampoService(db).anotar_extensor(orden_id, current_user, datos.detalle)
+    except (ValueError, PermissionError, RuntimeError) as error:
+        await db.rollback()
+        manejar_error(error)
+
+
+class IdentificacionNap(BaseModel):
+    caja_nap_id: int = Field(gt=0)
+    puerto: int = Field(gt=0, le=128)
+    etiquetado: bool = False
+    quitar_a_otro: bool = False
+
+
+@router.post("/{orden_id}/identificar-nap")
+async def identificar_en_caja_nap(
+    orden_id: int,
+    datos: IdentificacionNap,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """El técnico confirma con el láser la caja y el puerto del cliente y etiqueta su conector."""
+    from src.application.services.reparacion_campo_service import ReparacionCampoService
+
+    try:
+        return await ReparacionCampoService(db).identificar_nap(
+            orden_id, current_user, datos.caja_nap_id, datos.puerto, datos.etiquetado, datos.quitar_a_otro,
+        )
+    except (ValueError, PermissionError, RuntimeError) as error:
+        await db.rollback()
+        manejar_error(error)
 
 class MensajeOrden(BaseModel):
     mensaje: str = Field(min_length=1, max_length=4000)

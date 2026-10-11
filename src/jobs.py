@@ -110,13 +110,19 @@ async def leer_senal_optica(db, avisar: bool = False) -> dict:
     return reporte
 
 
-# Hora del aviso diario de señal que empeoró (las lecturas son cada hora).
-HORA_AVISO_SENAL = 2
+def toca_aviso_senal(hora_configurada: str | None, ahora: datetime) -> bool:
+    """El aviso diario sale con la lectura de la hora elegida en Configuración ("" = nunca)."""
+    try:
+        return bool(hora_configurada) and ahora.hour == int(hora_configurada[:2])
+    except ValueError:
+        return False
 
 
 async def tarea_leer_senal_optica():
     async with SessionLocal() as db:
-        await leer_senal_optica(db, avisar=datetime.now().hour == HORA_AVISO_SENAL)
+        config = await db.get(ConfiguracionSistema, 1)
+        hora = getattr(config, "hora_aviso_senal", None) if config else "08:00"
+        await leer_senal_optica(db, avisar=toca_aviso_senal(hora, datetime.now()))
 
 
 async def tarea_descripcion_onus():

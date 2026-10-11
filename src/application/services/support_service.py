@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
+from src.application.services.aviso_cliente_reporte_service import avisar_cliente_reporte
 from src.application.services.aviso_tecnico_service import avisar_asignacion
 from src.application.services.orden_service import OrdenService
 from src.application.services.snmp_service import SNMPMonitorService
@@ -212,6 +213,8 @@ class SupportService:
             # categoría junto; el aviso al técnico va ya guardada.
             if orden.tecnico_id:
                 await avisar_asignacion(self.db, orden.id, usuario.id)
+            # Al cliente: que su reporte quedó registrado o quién lo atenderá.
+            await avisar_cliente_reporte(self.db, orden, usuario.id)
         else:
             await self.db.flush()
         return await orden_service.obtener(orden.id, usuario)

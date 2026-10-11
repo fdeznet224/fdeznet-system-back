@@ -2199,6 +2199,10 @@ def telefono_whatsapp(telefono: str) -> str:
 
 async def encolar_mensaje_manual(db, telefono_limpio: str, cliente_id, mensaje: str, current_user):
     """Mensaje escrito desde el panel: pausa el bot en ese chat y lo encola."""
+    if getattr(current_user, "rol", None) == "tecnico":
+        # Así se distingue lo que responde un técnico de lo que responde la oficina.
+        nombre = (current_user.nombre_completo or current_user.usuario or "").strip()
+        mensaje = f"*Respondió Técnico {nombre}*\n{mensaje}"
     nuevo_mensaje = MensajeChatModel(
         cliente_id=cliente_id,
         telefono=telefono_limpio,

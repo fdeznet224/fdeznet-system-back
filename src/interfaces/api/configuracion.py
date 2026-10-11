@@ -662,7 +662,10 @@ async def guardar_configuracion_sistema(
     db: AsyncSession = Depends(get_db),
 ):
     modo_anterior = await obtener_modo_corte(db)
-    stmt = update(ConfiguracionSistema).where(ConfiguracionSistema.id == 1).values(**datos.model_dump())
+    valores = datos.model_dump()
+    if valores.get("hora_aviso_senal") is None:
+        valores.pop("hora_aviso_senal", None)
+    stmt = update(ConfiguracionSistema).where(ConfiguracionSistema.id == 1).values(**valores)
     await db.execute(stmt)
     await db.commit()
     await FastAPICache.clear()
@@ -700,6 +703,34 @@ async def cambiar_password_default(
     resultado = await guardar_config_pppoe(db, data)
     await FastAPICache.clear()
     return {"status": "ok", **resultado}
+
+
+class AccesoOnuMarca(BaseModel):
+    url: str = ""
+    cuentas: str = ""
+
+
+class AccesoOnuConfig(BaseModel):
+    huawei: AccesoOnuMarca = AccesoOnuMarca()
+    zte: AccesoOnuMarca = AccesoOnuMarca()
+
+
+@router.get("/acceso-onu")
+async def obtener_acceso_onu_config(db: AsyncSession = Depends(get_db)):
+    """Dirección y cuentas de la ONU que ve el técnico en una reparación."""
+    from src.application.services.acceso_onu_config import obtener_acceso_onu
+
+    return await obtener_acceso_onu(db)
+
+
+@router.post("/acceso-onu")
+async def guardar_acceso_onu_config(data: AccesoOnuConfig, db: AsyncSession = Depends(get_db)):
+    from src.application.services.acceso_onu_config import guardar_acceso_onu
+
+    try:
+        return await guardar_acceso_onu(db, data.model_dump())
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 # =========================================================
