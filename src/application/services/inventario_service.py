@@ -122,7 +122,8 @@ class InventarioService:
                 servicio_ocupante = (
                     select(ServicioModel.id)
                     .where(
-                        ServicioModel.onu_id == InventarioONUModel.id
+                        ServicioModel.onu_id == InventarioONUModel.id,
+                        ServicioModel.estado != "cancelado",
                     )
                     .exists()
                 )

@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infrastructure.models import (
@@ -353,6 +353,19 @@ class FTTHService:
                     condicion=condicion_onu_anterior,
                     motivo="Reemplazada durante asignación",
                 )
+
+        # El contrato debe seguir a la ONU nueva: si se queda con la retirada,
+        # al reingresarla al inventario se esconde como si estuviera ocupada.
+        if cliente.onu_id and cliente.onu_id != onu_nueva.id:
+            await self.db.execute(
+                update(ServicioModel)
+                .where(
+                    ServicioModel.cliente_id == cliente.id,
+                    ServicioModel.onu_id == cliente.onu_id,
+                    ServicioModel.estado != "cancelado",
+                )
+                .values(onu_id=onu_nueva.id)
+            )
 
         estado_anterior = onu_nueva.estado
         onu_nueva.estado = "INSTALADO"
