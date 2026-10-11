@@ -311,6 +311,7 @@ class NotificationService:
             "ruta": ruta_pdf,
             "intervalo": 0,
             "mensaje_chat_id": registro.id,
+            "tipo_evento": tipo_evento,
         }
         
         await whatsapp_queue.agregar_tarea(tarea)

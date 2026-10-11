@@ -320,3 +320,33 @@ def test_un_reintento_exitoso_quita_el_ack_de_error(monkeypatch):
     monkeypatch.setattr("src.infrastructure.database.SessionLocal", lambda: _Sesion())
     asyncio.run(WhatsAppQueue()._actualizar_registro(13002, ENVIADO))
     assert registro.ack == 1 and registro.estado_envio == "enviado" and registro.ultimo_error is None
+
+
+# ------------------------------------------------- prioridad de la cola
+def test_confirmacion_de_pago_sale_antes_que_los_avisos_de_corte(monkeypatch):
+    cola = WhatsAppQueue()
+    enviados = []
+
+    async def reclamar(mensaje_id):
+        return {"numero": "5215512345678", "mensaje": str(mensaje_id), "ruta": None}
+
+    async def enviar(**kwargs):
+        enviados.append(kwargs["mensaje_chat_id"])
+        return {"ok": True, "wa_id": "wa", "error": None, "reintentable": False, "incierto": False}
+
+    cola._reclamar_registro = reclamar
+    cola.service.enviar_mensaje_detallado = enviar
+    cola._actualizar_registro = AsyncMock(return_value=True)
+    monkeypatch.setattr("src.infrastructure.whatsapp_client.asyncio.sleep", AsyncMock())
+
+    async def ejecutar():
+        for mensaje_id in (1, 2, 3):
+            await cola.queue.put({"mensaje_chat_id": mensaje_id, "tipo_evento": "aviso_corte"})
+        await cola.queue.put({"mensaje_chat_id": 4})
+        await cola.queue.put({"mensaje_chat_id": 5, "tipo_evento": "pago_recibido"})
+        await cola.queue.put({"mensaje_chat_id": 6, "tipo_evento": "reconexion"})
+        await cola.procesar_cola()
+
+    asyncio.run(ejecutar())
+
+    assert enviados == [5, 6, 4, 1, 2, 3]

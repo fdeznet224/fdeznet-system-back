@@ -534,6 +534,7 @@ async def enviar_mensaje_directo(
             {
                 "mensaje_chat_id": registro.id,
                 "intervalo": 2,
+                "tipo_evento": "mensaje_manual",
             }
         )
 

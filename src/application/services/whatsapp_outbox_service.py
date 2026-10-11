@@ -184,9 +184,11 @@ class WhatsAppOutboxService:
 
         self._preparar_reintento(registro, usuario.id)
         await self.db.commit()
-        await whatsapp_queue.agregar_tarea(
-            {"mensaje_chat_id": registro.id, "intervalo": 0}
-        )
+        await whatsapp_queue.agregar_tarea({
+            "mensaje_chat_id": registro.id,
+            "intervalo": 0,
+            "tipo_evento": registro.tipo_evento,
+        })
         return await self.obtener(registro.id)
 
     async def eliminar(self, mensaje_id: int):
@@ -238,9 +240,11 @@ class WhatsAppOutboxService:
             self._preparar_reintento(registro, usuario.id)
         await self.db.commit()
         for registro in registros:
-            await whatsapp_queue.agregar_tarea(
-                {"mensaje_chat_id": registro.id, "intervalo": 0}
-            )
+            await whatsapp_queue.agregar_tarea({
+                "mensaje_chat_id": registro.id,
+                "intervalo": 0,
+                "tipo_evento": registro.tipo_evento,
+            })
         return [registro.id for registro in registros]
 
     @staticmethod

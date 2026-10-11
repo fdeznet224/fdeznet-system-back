@@ -1020,6 +1020,7 @@ async def enviar_campana(
             {
                 "mensaje_chat_id": registro.id,
                 "intervalo": intervalo_final,
+                "tipo_evento": "campana",
             }
         )
     return {
@@ -2225,6 +2226,7 @@ async def encolar_mensaje_manual(db, telefono_limpio: str, cliente_id, mensaje: 
         {
             "mensaje_chat_id": nuevo_mensaje.id,
             "intervalo": 0,
+            "tipo_evento": "chat_manual",
         }
     )
     return {

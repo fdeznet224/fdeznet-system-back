@@ -4,6 +4,7 @@ import httpx
 import logging
 import os
 import asyncio
+import itertools
 import re
 from datetime import datetime, timedelta
 
@@ -249,9 +250,52 @@ class WhatsAppService:
                 "incierto": False,
             }
 
+# Lo que el cliente espera en el momento (confirmar su pago, reconectarlo,
+# contestarle) sale antes que los envíos masivos, que a un mensaje por minuto
+# pueden tardar una hora (p. ej. los avisos de corte del día).
+PRIORIDAD_ALTA = 0
+PRIORIDAD_NORMAL = 1
+PRIORIDAD_MASIVA = 2
+PRIORIDAD_POR_EVENTO = {
+    "pago_recibido": PRIORIDAD_ALTA,
+    "abono_recibido": PRIORIDAD_ALTA,
+    "reconexion": PRIORIDAD_ALTA,
+    "promesa_pago": PRIORIDAD_ALTA,
+    "comprobante_rechazado": PRIORIDAD_ALTA,
+    "chat_manual": PRIORIDAD_ALTA,
+    "mensaje_manual": PRIORIDAD_ALTA,
+    "aviso_corte": PRIORIDAD_MASIVA,
+    "corte_ejecutado": PRIORIDAD_MASIVA,
+    "recordatorio_pago": PRIORIDAD_MASIVA,
+    "nueva_factura": PRIORIDAD_MASIVA,
+    "campana": PRIORIDAD_MASIVA,
+}
+
+
+def prioridad_de_tarea(tarea: dict) -> int:
+    prioridad = tarea.get("prioridad")
+    if isinstance(prioridad, int):
+        return prioridad
+    return PRIORIDAD_POR_EVENTO.get(tarea.get("tipo_evento"), PRIORIDAD_NORMAL)
+
+
+class ColaPorPrioridad(asyncio.PriorityQueue):
+    """Cola de tareas que sale por prioridad y, dentro de ella, por llegada."""
+
+    def _init(self, maxsize):
+        super()._init(maxsize)
+        self._secuencia = itertools.count()
+
+    def _put(self, tarea):
+        super()._put((prioridad_de_tarea(tarea), next(self._secuencia), tarea))
+
+    def _get(self):
+        return super()._get()[2]
+
+
 class WhatsAppQueue:
     def __init__(self):
-        self.queue = asyncio.Queue()
+        self.queue = ColaPorPrioridad()
         self.is_running = False
         self._processor_lock = asyncio.Lock()
         self._queued_ids: set[int] = set()
@@ -300,7 +344,7 @@ class WhatsAppQueue:
                     )
             registros = (
                 await db.execute(
-                    select(MensajeChatModel.id)
+                    select(MensajeChatModel.id, MensajeChatModel.tipo_evento)
                     .where(
                         MensajeChatModel.direccion == "salida",
                         MensajeChatModel.estado_envio != "eliminado",
@@ -326,13 +370,14 @@ class WhatsAppQueue:
                     .order_by(MensajeChatModel.id.asc())
                     .limit(limite)
                 )
-            ).scalars().all()
+            ).all()
 
         encolados = 0
-        for mensaje_id in registros:
+        for mensaje_id, tipo_evento in registros:
             agregado = await self.agregar_tarea({
                 "intervalo": 0,
                 "mensaje_chat_id": mensaje_id,
+                "tipo_evento": tipo_evento,
             })
             encolados += int(bool(agregado))
         return encolados
