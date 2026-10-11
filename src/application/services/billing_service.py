@@ -1404,7 +1404,7 @@ class BillingService:
                 f for f in facturas
                 if f.afecta_corte
                 and f.fecha_limite_corte
-                and f.fecha_limite_corte < hoy
+                and f.fecha_limite_corte <= hoy
             ),
             None,
         )
@@ -2118,9 +2118,10 @@ class BillingService:
             FacturaModel.tipo_factura != "prorrateo",
             or_(
                 and_(
-                    # La fecha límite es el último día completo para pagar;
-                    # el corte procede a partir del día siguiente.
-                    FacturaModel.fecha_limite_corte < hoy,
+                    # La fecha límite es el día de corte (pago + tolerancia):
+                    # se paga hasta el día anterior y el corte corre en la
+                    # madrugada de esa fecha.
+                    FacturaModel.fecha_limite_corte <= hoy,
                     FacturaModel.es_promesa_activa.is_(False),
                 ),
                 and_(

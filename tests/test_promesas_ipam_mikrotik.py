@@ -110,8 +110,9 @@ def test_promesa_se_corta_desde_el_dia_siguiente():
             == "fecha_limite_corte"
         )
     ]
+    # La fecha límite ya es el día de corte: se corta esa misma madrugada.
     assert any(
-        comparacion.operator is operators.lt
+        comparacion.operator is operators.le
         and comparacion.right.value == date.today()
         for comparacion in limites_corte
     )

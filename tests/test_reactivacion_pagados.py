@@ -53,7 +53,7 @@ def test_reactivacion_solo_cuenta_deuda_ya_vencida():
 
     assert tiene_deuda is False
     assert any(
-        c.operator is operators.lt and c.right.value == date.today()
+        c.operator is operators.le and c.right.value == date.today()
         for c in _comparaciones(db.statement, "fecha_limite_corte")
     )
     assert any(
