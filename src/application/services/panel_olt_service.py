@@ -339,7 +339,9 @@ class PanelOltDetalle(PanelOltService):
                 ).get("data") or {}).get("service_port_list") or []
                 return datos
             if seccion == "puerto":
-                return {"puertos": [post("gpononuPortBasic", {"selectonuport": i, "who": 300}) for i in range(1, puertos() + 1)]}
+                return {"puertos": [post("gpononuPortBasic", {"selectonuport": i, "who": 300}) for i in range(1, puertos() + 1)],
+                        # Estado real de cada puerto (enlace, velocidad): lo que la ONU reporta.
+                        "estado": post("gpononuPortBasic", {"selectonuport": 1, "who": 200}).get("port_status_table") or []}
             if seccion == "mac":
                 return {"general": post("gpononuMiscCfg", {"who": 300}), "puertos_eth": puertos()}
             if seccion == "igmp":
@@ -439,4 +441,116 @@ class PanelOltDetalle(PanelOltService):
         olvidar(f"vsol:{olt.id}")
         await self._bitacora(usuario, "Modificar ONU", f"/api/olts/{olt.id}/panel/onus/{pon}/{onuid}/modificar",
                              f"{olt.nombre} GPON0/{pon}:{onuid} · {serial} · " + "; ".join(cambios))
+        return {"ok": True}
+
+
+# ------------------------------------------------------------------ edición de pestañas
+# operación → (acción /action/, who, campos que se aceptan del formulario, nombre para la bitácora).
+# Son los mismos formularios del panel VSOL; cualquier otro campo se descarta.
+OPERACIONES: Dict[str, Any] = {
+    "puerto_basico": ("gpononuPortBasic", 0, ("selectonuport", "en_port", "loop_detect", "selectPortSpeed", "mac_limit"), "Puerto: datos básicos"),
+    "puerto_subida": ("gpononuPortBasic", 3, ("selectonuport", "us_cir", "us_pir"), "Puerto: límite de subida"),
+    "puerto_bajada": ("gpononuPortBasic", 4, ("selectonuport", "ds_cir", "ds_pir"), "Puerto: límite de bajada"),
+    "igmp_maximo": ("gpononuIgmp", 0, ("portnum", "porttype", "max"), "IGMP: máximo de grupos"),
+    "igmp_ancho": ("gpononuIgmp", 1, ("portnum1", "porttype1", "bandwidth", "enforce"), "IGMP: ancho de banda"),
+    "igmp_perfil": ("gpononuIgmp", 2, ("portnum2", "porttype2", "pname"), "IGMP: asignar perfil"),
+    "igmp_perfil_quitar": ("gpononuIgmp", 3, ("portnum2", "porttype2", "pname"), "IGMP: quitar perfil"),
+    "iphost_agregar": ("gpononuIphostCfg", 0, ("selectonuport", "iphost_desc", "selectipmode", "ipAddr", "mask", "gateway", "dns1", "dns2"), "Host IP: agregar"),
+    "iphost_borrar": ("gpononuIphostCfg", 1, ("selectonuport", "iphostNum"), "Host IP: borrar"),
+    "iphost_vlan": ("gpononuIphostCfg", 2, ("selectonuport", "vlan", "priority"), "Host IP: VLAN"),
+    "tr069_gestion": ("gpononuTr069", 0, ("tr069_mng_en", "acsServerAddress", "acsServerUsername", "acsServerPassword", "inform",
+                                          "informIntervalTime", "reverse_username", "reverse_password", "tr069_id", "certificate"), "TR069: gestión"),
+    "tr069_stun": ("gpononuTr069", 1, ("tr069_stun_en", "stunServerAddress", "stunServerPort", "stunUsername", "stunPassword"), "TR069: STUN"),
+    "mac_general": ("gpononuMiscCfg", 8, ("macAging", "ponMLimit", "lanMLimit"), "MAC: límites"),
+    "mac_limpiar": ("gpononuMiscCfg", 9, (), "MAC: limpiar tabla"),
+    "tcont_agregar": ("gpononuTcont", 0, ("tcontid", "tcontname", "dbaprofile"), "Línea: agregar T-CONT"),
+    "tcont_borrar": ("gpononuTcont", 1, ("tcontid", "tcontname", "dbaprofile"), "Línea: borrar T-CONT"),
+    "gemport_agregar": ("gpononuGemport", 0, ("gemid", "gemname", "tcontid", "us_cir", "us_pir", "ds_cir", "ds_pir", "dstraffic",
+                                              "gemcos", "gemUpQueueMapId", "gemDownQueueMapId", "gemstate"), "Línea: agregar GEM port"),
+    "gemport_borrar": ("gpononuGemport", 1, ("gemid", "gemname", "tcontid"), "Línea: borrar GEM port"),
+    "servicio_agregar": ("gpononuService", 0, ("servicename", "gemid", "vlanmode", "vlanlist", "coslist", "portMode", "portNum"), "Línea: agregar servicio"),
+    "servicio_borrar": ("gpononuService", 1, ("servicename", "gemid", "vlanmode", "vlanlist"), "Línea: borrar servicio"),
+    "service_port_agregar": ("gpononuServicePort", 0, ("servicemode", "srvid", "gemid", "description", "bvid", "evid", "tvid", "tsvid",
+                                                       "tcos", "tscos", "upri"), "Línea: agregar service port"),
+    "vlan_puerto_agregar": ("gpononuPortVlan", 0, ("porttype", "portnum", "vlantype", "vlanid", "vlanpri", "defvlan", "defpri",
+                                                   "cvlanid", "cvlanpri", "svlanid", "svlanpri"), "Línea: agregar VLAN de puerto"),
+    "vlan_puerto_borrar": ("gpononuPortVlan", 1, ("name", "vlantype", "porttype"), "Línea: borrar VLAN de puerto"),
+}
+# Borrar un service port es un GET con who=1 en el panel.
+OPERACION_BORRAR_SERVICE_PORT = "service_port_borrar"
+# Campos que el panel manda con "N/A" si quedan vacíos.
+VACIOS_NA = ("gemcos", "gemUpQueueMapId", "gemDownQueueMapId", "tsvid", "tcos", "tscos", "upri", "description")
+
+
+def payload_operacion(operacion: str, pon: int, onuid: int, datos: Dict[str, Any]) -> Dict[str, Any]:
+    if operacion not in OPERACIONES:
+        raise ValueError("Operación no válida.")
+    accion, who, campos, _nombre = OPERACIONES[operacion]
+    payload: Dict[str, Any] = {}
+    for campo in campos:
+        valor = _texto((datos or {}).get(campo))
+        if valor == "" and campo in VACIOS_NA:
+            valor = "N/A"
+        if valor != "":
+            payload[campo] = valor
+    payload.update({"slotid": 0, "ponid": int(pon), "onuid": int(onuid), "who": who})
+    if accion == "gpononuServicePort":
+        payload["Commit"] = "Commit"
+    return payload
+
+
+class PanelOltEdicion(PanelOltDetalle):
+    def _opciones_sync(self, opener, base_url, verify_ssl, accion: str) -> List[str]:
+        """Nombres de perfiles (DBA, IGMP) para los selectores."""
+        try:
+            datos = self.vsol._request_json_sync(opener, f"{base_url}/action/{accion}", method="GET", verify_ssl=verify_ssl).get("data") or {}
+        except Exception:
+            return []
+        nombres = []
+        for lista in datos.values():
+            for item in lista if isinstance(lista, list) else []:
+                nombre = next((_texto(v) for k, v in item.items() if "name" in k.lower() and _texto(v)), "") if isinstance(item, dict) else ""
+                if nombre and nombre not in nombres:
+                    nombres.append(nombre)
+        return nombres
+
+    def _seccion_sync(self, olt, pon, onuid, seccion):
+        datos = super()._seccion_sync(olt, pon, onuid, seccion)
+        if seccion in ("linea", "igmp"):
+            with self.vsol._sesion(olt) as (opener, base_url, verify_ssl):
+                if seccion == "linea":
+                    datos["perfiles_dba"] = self._opciones_sync(opener, base_url, verify_ssl, "gpondbaprofileinfo")
+                else:
+                    datos["perfiles_igmp"] = self._opciones_sync(opener, base_url, verify_ssl, "gponigmpProfile")
+        return datos
+
+    def _configurar_sync(self, olt, pon, onuid, serial, operacion, datos):
+        with self.vsol._sesion(olt) as (opener, base_url, verify_ssl):
+            self._confirmar_serial(opener, base_url, verify_ssl, pon, onuid, serial)
+            if operacion == OPERACION_BORRAR_SERVICE_PORT:
+                puerto = int(_texto(datos.get("srvid")) or 0)
+                if puerto <= 0:
+                    raise ValueError("Falta el service port a borrar.")
+                consulta = urllib.parse.urlencode({"who": 1, "slotid": 0, "ponid": pon, "onuid": onuid, "sport": puerto})
+                respuesta = self.vsol._request_json_sync(opener, f"{base_url}/action/gpononuServicePort?{consulta}",
+                                                         method="GET", verify_ssl=verify_ssl)
+            else:
+                accion = OPERACIONES[operacion][0]
+                respuesta = VsolApiService._post_form(self.vsol, opener, base_url, accion,
+                                                      payload_operacion(operacion, pon, onuid, datos), verify_ssl)
+            _respuesta_ok(respuesta)
+            self._guardar_si_toca(opener, base_url, verify_ssl, operacion)
+
+    async def configurar(self, olt_id: int, pon: int, onuid: int, serial: str, operacion: str,
+                         datos: Dict[str, Any], usuario=None) -> Dict[str, Any]:
+        if operacion != OPERACION_BORRAR_SERVICE_PORT:
+            payload_operacion(operacion, pon, onuid, datos)  # valida antes de entrar a la OLT
+        olt = await self._olt(olt_id)
+        await asyncio.to_thread(self._configurar_sync, olt, int(pon), int(onuid), serial, operacion, datos or {})
+        olvidar(f"vsol:{olt.id}")
+        nombre = "Línea: borrar service port" if operacion == OPERACION_BORRAR_SERVICE_PORT else OPERACIONES[operacion][3]
+        ocultos = ("Password", "password", "pw")
+        detalle = ", ".join(f"{k}={'***' if any(o in k for o in ocultos) else v}" for k, v in (datos or {}).items() if _texto(v))
+        await self._bitacora(usuario, nombre, f"/api/olts/{olt.id}/panel/onus/{pon}/{onuid}/config/{operacion}",
+                             f"{olt.nombre} GPON0/{pon}:{onuid} · {serial} · {detalle}")
         return {"ok": True}

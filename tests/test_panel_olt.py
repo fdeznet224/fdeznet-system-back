@@ -180,3 +180,67 @@ def test_modificar_confirma_el_serial_y_no_guarda():
     otra.db = db
     with pytest.raises(ValueError, match="ya no está"):
         asyncio.run(PanelOltDetalle(db, otra).modificar(7, 2, 3, "HWTC0000AAAA", {"valor": "X"}))
+
+
+from src.application.services.panel_olt_service import OPERACIONES, PanelOltEdicion, payload_operacion  # noqa: E402
+
+
+def test_cada_operacion_manda_solo_sus_campos_y_su_who():
+    datos = payload_operacion("puerto_subida", 4, 2, {"selectonuport": "1", "us_cir": "0", "us_pir": "20000", "en_port": "1"})
+    assert datos == {"selectonuport": "1", "us_cir": "0", "us_pir": "20000", "slotid": 0, "ponid": 4, "onuid": 2, "who": 3}
+    assert payload_operacion("tr069_stun", 4, 2, {"tr069_stun_en": "0"})["who"] == 1
+    assert payload_operacion("mac_limpiar", 4, 2, {"macAging": "5"}) == {"slotid": 0, "ponid": 4, "onuid": 2, "who": 9}
+
+
+def test_gemport_y_service_port_llenan_n_a_como_el_panel():
+    gem = payload_operacion("gemport_agregar", 4, 2, {"gemid": "2", "gemname": "gem_2", "tcontid": "1"})
+    assert (gem["gemcos"], gem["gemUpQueueMapId"], gem["gemDownQueueMapId"]) == ("N/A", "N/A", "N/A")
+    sp = payload_operacion("service_port_agregar", 4, 2, {"servicemode": "0", "srvid": "3", "gemid": "1", "bvid": "10", "tvid": "10"})
+    assert sp["Commit"] == "Commit" and sp["tsvid"] == "N/A" and sp["who"] == 0
+
+
+def test_operacion_desconocida_no_llega_a_la_olt():
+    with pytest.raises(ValueError, match="no válida"):
+        payload_operacion("reset_fabrica", 4, 2, {})
+    assert all(len(v) == 4 for v in OPERACIONES.values())
+
+
+class _OLTConfig(_OLTFalsa):
+    def _request_json_sync(self, opener, url, method="GET", data=None, verify_ssl=False):
+        import urllib.parse as up
+        accion = url.split("/action/")[1].split("?")[0]
+        if accion in {v[0] for v in OPERACIONES.values()} and (data or "who=" in url):
+            datos = dict(up.parse_qsl(data.decode())) if data else dict(up.parse_qsl(url.split("?", 1)[1]))
+            self.posts.append((accion, datos))
+            return {"retcode": "0", "data": {}}
+        return super()._request_json_sync(opener, url, method, data, verify_ssl)
+
+
+def _edicion(serial="HWTC0000AAAA"):
+    db = _DB()
+    olt = _OLTConfig(serial_en_olt=serial)
+    olt.db = db
+    return PanelOltEdicion(db, olt), olt, db
+
+
+def test_configura_confirmando_serial_sin_guardar_y_oculta_claves():
+    panel, olt, db = _edicion()
+    asyncio.run(panel.configurar(7, 2, 3, "HWTC0000AAAA", "tr069_gestion",
+                                 {"tr069_mng_en": "1", "acsServerAddress": "http://acs", "acsServerPassword": "secreta"}))
+    assert ("gpononuTr069", {"tr069_mng_en": "1", "acsServerAddress": "http://acs", "acsServerPassword": "secreta",
+                             "slotid": "0", "ponid": "2", "onuid": "3", "who": "0"}) in olt.posts
+    assert not any(a == "configsave" for a, _ in olt.posts)
+    assert "secreta" not in db.agregados[0].detalle and "acsServerPassword=***" in db.agregados[0].detalle
+
+
+def test_borrar_service_port_es_un_get_como_el_panel():
+    panel, olt, _ = _edicion()
+    asyncio.run(panel.configurar(7, 2, 3, "HWTC0000AAAA", "service_port_borrar", {"srvid": "2"}))
+    assert ("gpononuServicePort", {"who": "1", "slotid": "0", "ponid": "2", "onuid": "3", "sport": "2"}) in olt.posts
+
+
+def test_no_configura_si_la_onu_cambio_de_lugar():
+    panel, olt, _ = _edicion(serial="HWTC0000BBBB")
+    with pytest.raises(ValueError, match="ya no está"):
+        asyncio.run(panel.configurar(7, 2, 3, "HWTC0000AAAA", "puerto_basico", {"selectonuport": "1", "en_port": "0"}))
+    assert not any(a == "gpononuPortBasic" for a, _ in olt.posts)

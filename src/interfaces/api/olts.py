@@ -270,9 +270,9 @@ async def diagnostico_cliente_vsol_api(
 # PANEL DE LA OLT (copia del panel web VSOL)
 # ==========================================
 def _panel(db):
-    from src.application.services.panel_olt_service import PanelOltDetalle
+    from src.application.services.panel_olt_service import PanelOltEdicion
 
-    return PanelOltDetalle(db)
+    return PanelOltEdicion(db)
 
 
 async def _panel_llamar(coro, accion: str):
@@ -418,3 +418,17 @@ async def panel_modificar(olt_id: int, pon: int, onuid: int, datos: PanelModific
                           db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
     return await _panel_llamar(
         _panel(db).modificar(olt_id, pon, onuid, datos.serial, datos.model_dump(), current_user), "modificar la ONU")
+
+
+class PanelConfigRequest(BaseModel):
+    serial: str
+    operacion: str
+    datos: dict[str, str | int | None] = {}
+
+
+@router.post("/{olt_id}/panel/onus/{pon}/{onuid}/config")
+async def panel_config(olt_id: int, pon: int, onuid: int, datos: PanelConfigRequest,
+                       db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
+    return await _panel_llamar(
+        _panel(db).configurar(olt_id, pon, onuid, datos.serial, datos.operacion, datos.datos, current_user),
+        "aplicar la configuración")
