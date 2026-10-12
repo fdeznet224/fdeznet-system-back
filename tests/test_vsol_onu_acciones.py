@@ -101,15 +101,22 @@ def _escrituras(olt):
     return [(a, d) for a, d in olt.posts if a != "loginout" and "who" in d]
 
 
-def test_borra_la_onu_apagada_sin_cliente_con_who_0():
+def test_borra_la_onu_apagada_sin_cliente_con_who_0_sin_guardar():
     olt = _OLTParaBorrar()
     resultado = asyncio.run(olt.eliminar_onu(7, 2, 3, "hwtc0000aaaa", con_dueno=set()))
     assert resultado["eliminada"] is True
+    # Sin "Save": tras un apagón las ONU se autorizan desde cero.
     assert _escrituras(olt) == [
         ("gpononuauthinfo", {"who": "0", "slotid": "0", "portid": "2", "onuid": "3"}),
-        ("configsave", {"who": "1"}),   # sin guardar, un reinicio de la OLT la regresa
     ]
     assert olt.posts[-1] == ("loginout", {"who": "1"})
+
+
+def test_el_isp_que_quiere_guardar_lo_activa(monkeypatch):
+    monkeypatch.setenv("OLT_GUARDAR_CONFIGURACION", "1")
+    olt = _OLTParaBorrar()
+    asyncio.run(olt.eliminar_onu(7, 2, 3, "HWTC0000AAAA", con_dueno=set()))
+    assert _escrituras(olt)[-1] == ("configsave", {"who": "1"})
 
 
 def test_no_borra_una_onu_en_linea():

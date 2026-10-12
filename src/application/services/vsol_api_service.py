@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import os
 import re
 import ssl
 import urllib.error
@@ -45,6 +46,17 @@ def interpretar_causa_caida(razon: Any) -> Optional[Dict[str, str]]:
 
 # Margen entre el reinicio y el nuevo registro de la ONU en la OLT.
 MARGEN_REINICIO = timedelta(minutes=10)
+
+
+def guardar_en_olt() -> bool:
+    """¿Se le da "Save" a la OLT tras escribir en ella? Solo con OLT_GUARDAR_CONFIGURACION=1.
+
+    Sin guardar, un apagón deja la OLT como estaba y las ONU se autorizan
+    desde cero; los nombres los vuelve a escribir la tarea de cada 30 min.
+    Desde que se guardaba, algunas ONU volvían del apagón en línea pero sin
+    PPPoE hasta borrarlas de la OLT.
+    """
+    return os.getenv("OLT_GUARDAR_CONFIGURACION", "").strip() == "1"
 RE_RUTA_REINICIO = re.compile(r"/olts/(\d+)/onus/(\d+)/(\d+)/reiniciar$")
 
 
@@ -586,7 +598,8 @@ class VsolApiService:
             if str(respuesta.get("retcode")) != "0":
                 datos = respuesta.get("data") or {}
                 raise ValueError(f"La OLT no aceptó el borrado: {datos.get('msg') or datos.get('result') or respuesta}")
-            self._guardar_configuracion_sync(opener, base_url, verify_ssl)
+            if guardar_en_olt():
+                self._guardar_configuracion_sync(opener, base_url, verify_ssl)
             return {"eliminada": True, "pon": pon, "onuid": onuid, "serial": serial_actual}
 
     def _guardar_configuracion_sync(self, opener, base_url: str, verify_ssl: bool) -> bool:
@@ -612,7 +625,7 @@ class VsolApiService:
             escritas += hechas
             errores += fallas
         guardada = None
-        if escritas:
+        if escritas and guardar_en_olt():
             with self._sesion(olt) as (opener, base_url, verify_ssl):
                 guardada = self._guardar_configuracion_sync(opener, base_url, verify_ssl)
         return {"escritas": escritas, "errores": errores, "guardada": guardada}

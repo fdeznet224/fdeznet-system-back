@@ -30,6 +30,11 @@ from src.application.services.router_monitor_service import (
 from src.application.services.vpn_service import leer_handshakes_wireguard
 from src.application.services.comprobante_service import ComprobanteService
 from src.application.services.descripcion_onu_service import DescripcionOnuService
+from src.application.services.onu_sin_pppoe_service import (
+    OnuSinPppoeService,
+    mensaje_aviso,
+    pendientes_de_aviso,
+)
 from src.application.services.senal_optica_service import SenalOpticaService, mensaje_alerta
 from src.application.services.storage_service import cleanup_storage, close_period, previous_period
 
@@ -141,6 +146,31 @@ async def tarea_descripcion_onus():
                 origen="DescripcionONU",
                 mensaje=(f"Nombre del cliente en {reporte['escritas']} ONU"
                          + (f"; errores: {'; '.join(reporte['errores'][:5])}" if reporte["errores"] else ""))[:1000],
+            ))
+            await db.commit()
+
+
+# ONU en línea sin PPPoE: cuándo se vio por primera vez y a quién ya se avisó.
+# Se reinicia con el proceso, lo cual solo retrasa un aviso.
+_sin_pppoe_vistos: dict = {}
+_sin_pppoe_avisados: set = set()
+
+
+async def tarea_onus_sin_pppoe():
+    """Avisa por WhatsApp de clientes activos con ONU en línea y sin PPPoE (típico tras un apagón)."""
+    async with SessionLocal() as db:
+        try:
+            detectados = await OnuSinPppoeService(db).detectar()
+        except Exception as exc:
+            db.add(LogCronjobModel(nivel="ERROR", origen="OnuSinPPPoE", mensaje=f"No se pudo revisar: {str(exc)[:300]}"))
+            await db.commit()
+            return
+        nuevos = pendientes_de_aviso(detectados, _sin_pppoe_vistos, _sin_pppoe_avisados, datetime.now())
+        if nuevos:
+            await enviar_alertas_whatsapp(mensaje_aviso(nuevos), db, tipo_evento="alerta_onu_sin_pppoe")
+            db.add(LogCronjobModel(
+                nivel="WARN", origen="OnuSinPPPoE",
+                mensaje=("ONU en línea sin PPPoE: " + ", ".join(f"{c['nombre']} ({c['ubicacion']})" for c in nuevos))[:1000],
             ))
             await db.commit()
 

@@ -17,7 +17,8 @@ def test_texto_sin_acentos_con_contrato_y_maximo_32():
     assert largo == "Gloria Guadalupe Mazariego C512" and len(largo) <= 32
 
 
-def test_escribe_por_tandas_con_sesion_nueva_y_guarda_una_vez():
+def test_escribe_por_tandas_con_sesion_nueva_y_guarda_una_vez(monkeypatch):
+    monkeypatch.setenv("OLT_GUARDAR_CONFIGURACION", "1")
     olt = _OLTConLista(descripcion="GPON0/2:3")
     sesiones = []
     original = olt._abrir_sesion_sync
@@ -70,16 +71,16 @@ def _sincronizar(olt, clientes):
 VICTOR = SimpleNamespace(nombre="Víctor Constantino Martínez", cedula="7659")
 
 
-def test_escribe_el_nombre_en_la_onu_del_cliente_y_guarda():
+def test_escribe_el_nombre_en_la_onu_del_cliente_sin_guardar():
     olt = _OLTConLista(descripcion="GPON0/2:3")
     cambios, resultado = _sincronizar(olt, {"HWTC0000AAAA": VICTOR})
     # La ONU sin cliente no se toca.
     assert cambios == [(2, 3, "HWTC0000AAAA", "Victor Constantino Martinez 7659")]
-    assert resultado == {"escritas": 1, "errores": [], "guardada": True}
+    # Sin "Save": si la OLT se reinicia, la tarea vuelve a poner el nombre.
+    assert resultado == {"escritas": 1, "errores": [], "guardada": None}
     assert _escrituras(olt) == [
         ("gpononudetail", {"submit": "Submit", "who": "0", "slotid": "0", "ponid": "2", "onuid": "3",
                            "onu_description": "Victor Constantino Martinez 7659"}),
-        ("configsave", {"who": "1"}),
     ]
 
 

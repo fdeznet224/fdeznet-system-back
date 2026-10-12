@@ -30,7 +30,7 @@ def test_online_onu_without_pppoe_suggests_authentication():
         },
     )
     assert result["codigo"] == "pppoe_sin_sesion"
-    assert "bórrala de la OLT" in result["sugerencia"]
+    assert "Reautorizar en la OLT" in result["sugerencia"]
 
 
 def test_without_olt_data_pppoe_hint_stays_on_credentials():
