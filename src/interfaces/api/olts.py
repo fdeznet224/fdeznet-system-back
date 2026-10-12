@@ -264,3 +264,98 @@ async def diagnostico_cliente_vsol_api(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en diagnóstico VSOL API: {str(e)}")
+
+
+# ==========================================
+# PANEL DE LA OLT (copia del panel web VSOL)
+# ==========================================
+def _panel(db):
+    from src.application.services.panel_olt_service import PanelOltService
+
+    return PanelOltService(db)
+
+
+async def _panel_llamar(coro, accion: str):
+    try:
+        return {"status": "success", "data": await coro}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo {accion}: {str(e)[:200]}")
+
+
+@router.get("/{olt_id}/panel/pons")
+async def panel_pons(olt_id: int, db: AsyncSession = Depends(get_db),
+                     current_user=Depends(role_required(["admin", "supervisor"]))):
+    return await _panel_llamar(_panel(db).pons(olt_id), "leer los PON")
+
+
+@router.get("/{olt_id}/panel/onus")
+async def panel_onus(olt_id: int, pon: int | None = None, buscar: str | None = None,
+                     db: AsyncSession = Depends(get_db),
+                     current_user=Depends(role_required(["admin", "supervisor"]))):
+    return await _panel_llamar(_panel(db).lista(olt_id, pon, buscar), "leer la lista de ONU")
+
+
+@router.get("/{olt_id}/panel/onus/{pon}/{onuid}")
+async def panel_detalle(olt_id: int, pon: int, onuid: int, db: AsyncSession = Depends(get_db),
+                        current_user=Depends(role_required(["admin", "supervisor"]))):
+    return await _panel_llamar(_panel(db).detalle(olt_id, pon, onuid), "leer la ONU")
+
+
+class PanelAccionRequest(BaseModel):
+    accion: str
+    serial: str
+
+
+@router.post("/{olt_id}/panel/onus/{pon}/{onuid}/accion")
+async def panel_accion(olt_id: int, pon: int, onuid: int, datos: PanelAccionRequest,
+                       db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
+    return await _panel_llamar(
+        _panel(db).accion(olt_id, pon, onuid, datos.accion, datos.serial, current_user), "aplicar el cambio")
+
+
+class PanelDescripcionRequest(BaseModel):
+    serial: str
+    descripcion: str
+
+
+@router.post("/{olt_id}/panel/onus/{pon}/{onuid}/descripcion")
+async def panel_descripcion(olt_id: int, pon: int, onuid: int, datos: PanelDescripcionRequest,
+                            db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
+    return await _panel_llamar(
+        _panel(db).descripcion(olt_id, pon, onuid, datos.serial, datos.descripcion, current_user),
+        "cambiar la descripción")
+
+
+class PanelOnuSeleccionada(BaseModel):
+    pon: int
+    onuid: int
+    serial: str
+
+
+class PanelEliminarVariasRequest(BaseModel):
+    onus: List[PanelOnuSeleccionada]
+
+
+@router.post("/{olt_id}/panel/eliminar-varias")
+async def panel_eliminar_varias(olt_id: int, datos: PanelEliminarVariasRequest,
+                                db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
+    return await _panel_llamar(
+        _panel(db).eliminar_varias(olt_id, [o.model_dump() for o in datos.onus], current_user), "eliminar las ONU")
+
+
+class PanelEliminarPonRequest(BaseModel):
+    # Se escribe el nombre del PON para confirmar, como red de seguridad.
+    confirmacion: str
+
+
+@router.post("/{olt_id}/panel/pon/{pon}/{modo}")
+async def panel_eliminar_pon(olt_id: int, pon: int, modo: str, datos: PanelEliminarPonRequest,
+                             db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
+    if modo not in ("eliminar-offline", "eliminar-todo"):
+        raise HTTPException(status_code=404, detail="Acción no encontrada.")
+    if datos.confirmacion.strip().upper() != f"PON 0/{pon}":
+        raise HTTPException(status_code=409, detail=f"Escribe PON 0/{pon} para confirmar.")
+    return await _panel_llamar(
+        _panel(db).eliminar_pon(olt_id, pon, modo == "eliminar-offline", current_user), "eliminar las ONU del PON")
