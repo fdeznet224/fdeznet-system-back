@@ -120,3 +120,63 @@ def test_el_isp_que_quiere_guardar_lo_activa(monkeypatch):
     asyncio.run(panel.accion(7, 2, 3, "desactivar", "HWTC0000AAAA"))
     asyncio.run(panel.accion(7, 2, 3, "reiniciar", "HWTC0000AAAA"))
     assert [a for a, _ in _escrituras(olt)].count("configsave") == 1  # reiniciar no guarda
+
+
+from src.application.services.panel_olt_service import (  # noqa: E402
+    PanelOltDetalle,
+    payload_alta_manual,
+    payload_modificar,
+    payload_perfil,
+)
+
+
+def test_alta_manual_por_sn_como_el_panel():
+    datos = payload_alta_manual(4, 1, {"modo": "0", "sn": "hwtc0b46d3af", "perfil_onu": "default",
+                                       "perfil_linea": "line_INTERNET", "perfil_servicio": "srv_INTERNET",
+                                       "perfil_alarma": "alarm_INTERNET"})
+    assert datos == {"slot_select": 0, "port_select": 4, "slotid": 0, "portid": 4, "onuid": 1, "authmode": "0",
+                     "gponsn": "HWTC0B46D3AF", "onutype": "default", "s_linePro": "line_INTERNET",
+                     "s_srvPro": "srv_INTERNET", "s_alarmPro": "alarm_INTERNET", "s_fmtPro": "N/A", "who": 0}
+
+
+@pytest.mark.parametrize("datos, error", [
+    ({"modo": "9"}, "modo"),
+    ({"modo": "0"}, "Falta"),
+    ({"modo": "2", "loid": "abc"}, "Falta"),
+])
+def test_alta_manual_pide_lo_necesario(datos, error):
+    with pytest.raises(ValueError, match=error):
+        payload_alta_manual(4, 1, datos)
+
+
+def test_modificar_sn_loid_y_perfil_como_el_panel():
+    assert payload_modificar(4, 2, "0", "hwtc0b46d3af") == {
+        "authmode": "0", "who": 0, "slotid": 0, "ponid": 4, "onuid": 2, "gponsn": "HWTC0B46D3AF"}
+    assert payload_modificar(4, 2, "1", "abc")["loid"] == "abc"
+    assert payload_perfil(4, 2, "default") == {"who": 1, "slotid": 0, "ponid": 4, "onuid": 2, "onuptype": "default"}
+    with pytest.raises(ValueError):
+        payload_modificar(4, 2, "0", "")
+
+
+class _OLTModifica(_OLTFalsa):
+    def _request_json_sync(self, opener, url, method="GET", data=None, verify_ssl=False):
+        if "/action/gpononumodify" in url:
+            import urllib.parse as up
+            self.posts.append(("gpononumodify", dict(up.parse_qsl(data.decode()))))
+            return {"retcode": "0", "data": {}}
+        return super()._request_json_sync(opener, url, method, data, verify_ssl)
+
+
+def test_modificar_confirma_el_serial_y_no_guarda():
+    db = _DB()
+    olt = _OLTModifica()
+    olt.db = db
+    asyncio.run(PanelOltDetalle(db, olt).modificar(7, 2, 3, "HWTC0000AAAA", {"modo": "0", "valor": "HWTC0000CCCC", "perfil": "default"}))
+    escrituras = [a for a, _ in olt.posts if a in ("gpononumodify", "configsave")]
+    assert escrituras == ["gpononumodify", "gpononumodify"]
+    assert db.agregados[0].accion == "Panel OLT: Modificar ONU"
+
+    otra = _OLTModifica(serial_en_olt="HWTC0000BBBB")
+    otra.db = db
+    with pytest.raises(ValueError, match="ya no está"):
+        asyncio.run(PanelOltDetalle(db, otra).modificar(7, 2, 3, "HWTC0000AAAA", {"valor": "X"}))

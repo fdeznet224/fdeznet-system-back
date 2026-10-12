@@ -256,3 +256,187 @@ class PanelOltService:
         await self._bitacora(usuario, f"{que} del PON", f"/api/olts/{olt.id}/panel/pon/{pon}/{'eliminar-offline' if solo_offline else 'eliminar-todo'}",
                              f"{olt.nombre} PON 0/{pon}")
         return {"ok": True}
+
+
+# ------------------------------------------------------------------ detalle por pestañas
+# Lecturas que hace el panel VSOL en cada pestaña de la ONU (sus mismos who de lectura).
+LECTURAS_LINEA = (
+    ("tcont", "gpononuTcont", {}, "tcont_list"),
+    ("gemport", "gpononuGemport", {}, "gemport_list"),
+    ("servicio", "gpononuService", {}, "service_list"),
+    ("vlan_puerto", "gpononuPortVlan", {}, "portvlan_info"),
+)
+SECCIONES = ("linea", "puerto", "mac", "igmp", "host_ip", "tr069")
+
+# Modos de autenticación del panel ("Añadir Manualmente" y el lápiz de la fila).
+MODOS_AUTH = {"0": "SN", "1": "LOID", "2": "LOID + contraseña", "3": "Contraseña", "4": "SN + contraseña"}
+
+
+def payload_alta_manual(pon: int, onuid: int, datos: Dict[str, Any]) -> Dict[str, Any]:
+    """Lo que manda "Añadir Manualmente" del panel (gpononumanualadd, who=0)."""
+    modo = _texto(datos.get("modo"))
+    if modo not in MODOS_AUTH:
+        raise ValueError("Elige el modo de autenticación.")
+    payload: Dict[str, Any] = {"slot_select": 0, "port_select": int(pon), "slotid": 0, "portid": int(pon),
+                               "onuid": int(onuid or 0), "authmode": modo}
+    sn, loid, clave = _texto(datos.get("sn")).upper(), _texto(datos.get("loid")), _texto(datos.get("clave"))
+    requeridos = {"0": [("gponsn", sn)], "1": [("loid", loid)], "2": [("loid", loid), ("pw", clave)],
+                  "3": [("pw", clave)], "4": [("sn", sn), ("pw", clave)]}[modo]
+    for campo, valor in requeridos:
+        if not valor:
+            raise ValueError("Falta el SN, LOID o contraseña de la ONU.")
+        payload[campo] = valor
+    payload.update({
+        "onutype": _texto(datos.get("perfil_onu")) or "default",
+        "s_linePro": _texto(datos.get("perfil_linea")) or "N/A",
+        "s_srvPro": _texto(datos.get("perfil_servicio")) or "N/A",
+        "s_alarmPro": _texto(datos.get("perfil_alarma")) or "N/A",
+        "s_fmtPro": _texto(datos.get("perfil_formato")) or "N/A",
+    })
+    if _texto(datos.get("perfil_privado")) not in ("", "N/A"):
+        payload["s_priPro"] = _texto(datos.get("perfil_privado"))
+    payload["who"] = 0
+    return payload
+
+
+def payload_modificar(pon: int, onuid: int, modo: str, valor: str) -> Dict[str, Any]:
+    """El lápiz de la fila: cambia el SN o LOID con el que se autoriza (gpononumodify, who=0)."""
+    modo, valor = _texto(modo), _texto(valor)
+    if modo not in ("0", "1") or not valor:
+        raise ValueError("Escribe el SN o LOID nuevo.")
+    datos: Dict[str, Any] = {"authmode": modo, "who": 0, "slotid": 0, "ponid": int(pon), "onuid": int(onuid)}
+    datos["gponsn" if modo == "0" else "loid"] = valor.upper() if modo == "0" else valor
+    return datos
+
+
+def payload_perfil(pon: int, onuid: int, perfil: str) -> Dict[str, Any]:
+    if not _texto(perfil):
+        raise ValueError("Elige el perfil de ONU.")
+    return {"who": 1, "slotid": 0, "ponid": int(pon), "onuid": int(onuid), "onuptype": _texto(perfil)}
+
+
+class PanelOltDetalle(PanelOltService):
+    """Pestañas del detalle de la ONU, versión, alta manual y modificar."""
+
+    def _seccion_sync(self, olt, pon: int, onuid: int, seccion: str) -> Dict[str, Any]:
+        onu = {"slotid": 0, "ponid": pon, "onuid": onuid}
+        with self.vsol._sesion(olt) as (opener, base_url, verify_ssl):
+            def post(accion, extra=None):
+                return VsolApiService._post_form(self.vsol, opener, base_url, accion, {**onu, **(extra or {})},
+                                                 verify_ssl).get("data") or {}
+
+            def puertos() -> int:
+                try:
+                    return max(1, min(8, int(post("gpononuMacLimit", {"who": 400}).get("eth_port_num") or 1)))
+                except (TypeError, ValueError):
+                    return 1
+
+            if seccion == "linea":
+                datos = {clave: post(accion, extra).get(lista) or [] for clave, accion, extra, lista in LECTURAS_LINEA}
+                consulta = urllib.parse.urlencode(onu)
+                datos["service_port"] = (self.vsol._request_json_sync(
+                    opener, f"{base_url}/action/gpononuServicePort?{consulta}", method="GET", verify_ssl=verify_ssl,
+                ).get("data") or {}).get("service_port_list") or []
+                return datos
+            if seccion == "puerto":
+                return {"puertos": [post("gpononuPortBasic", {"selectonuport": i, "who": 300}) for i in range(1, puertos() + 1)]}
+            if seccion == "mac":
+                return {"general": post("gpononuMiscCfg", {"who": 300}), "puertos_eth": puertos()}
+            if seccion == "igmp":
+                return {"puertos": [post("gpononuIgmp", {"port": i, "interface": 1}) for i in range(1, puertos() + 1)]}
+            if seccion == "host_ip":
+                return {"cantidad": post("gpononuIphostCfg", {"who": 300}).get("iphostNum"),
+                        "tabla": post("gpononuIphostCfg", {"who": 200}).get("iphost_table") or []}
+            if seccion == "tr069":
+                return {**post("gpononuTr069", {"who": 200}), **post("gpononuTr069", {"who": 300})}
+        raise ValueError("Sección no válida.")
+
+    async def seccion(self, olt_id: int, pon: int, onuid: int, seccion: str) -> Dict[str, Any]:
+        if seccion not in SECCIONES:
+            raise ValueError("Sección no válida.")
+        olt = await self._olt(olt_id)
+        return await asyncio.to_thread(self._seccion_sync, olt, int(pon), int(onuid), seccion)
+
+    def _versiones_sync(self, olt, pon: int) -> List[Dict[str, Any]]:
+        with self.vsol._sesion(olt) as (opener, base_url, verify_ssl):
+            datos = next((dict(urllib.parse.parse_qsl(p.decode("utf-8")))
+                          for p in self.vsol._descubrir_payloads_pon_sync(opener, base_url, verify_ssl)
+                          if dict(urllib.parse.parse_qsl(p.decode("utf-8"))).get("portid") == str(pon)), None)
+            if not datos:
+                raise ValueError("PON no encontrado.")
+            filas, inicio = [], 1
+            # El panel las pide de 32 en 32.
+            while inicio <= 128:
+                pagina = (VsolApiService._post_form(
+                    self.vsol, opener, base_url, "gpononuversioninfo",
+                    {"slotid": 0, "portid": pon, "port_id": datos.get("port_id", ""), "start": inicio, "end": inicio + 31},
+                    verify_ssl).get("data") or {}).get("onuVersionInfo_list") or []
+                filas += pagina
+                if len(pagina) < 32:
+                    break
+                inicio += 32
+            return [{"onu_id": _texto(f.get("onu_id")), "descripcion": _texto(f.get("description")),
+                     "version_principal": _texto(f.get("main_software_version")),
+                     "version_standby": _texto(f.get("standby_software_version")),
+                     "version_hw": _texto(f.get("version"))} for f in filas]
+
+    async def versiones(self, olt_id: int, pon: int) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self._versiones_sync, await self._olt(olt_id), int(pon))
+
+    def _perfiles_sync(self, olt, pon: int) -> Dict[str, Any]:
+        with self.vsol._sesion(olt) as (opener, base_url, verify_ssl):
+            datos = self.vsol._request_json_sync(opener, f"{base_url}/action/gpononumanualadd?portid={int(pon)}",
+                                                 method="GET", verify_ssl=verify_ssl).get("data") or {}
+            listas = list(datos.get("gponallprofile_list") or []) + [[]] * 7
+            nombres = lambda i: [_texto(p.get("name")) for p in listas[i] if _texto(p.get("name"))]
+            onu = self.vsol._request_json_sync(opener, f"{base_url}/action/gpononuprofileinfo",
+                                               method="GET", verify_ssl=verify_ssl).get("data") or {}
+            return {
+                "onu_id_sugerido": _texto(datos.get("manual_add_onuid")),
+                "perfil_linea": nombres(0), "perfil_servicio": nombres(1), "perfil_alarma": nombres(2),
+                "perfil_onu": [_texto(p.get("onuprofile_name")) for p in onu.get("gpon_onu_profile_list") or []] or nombres(3),
+                "perfil_privado": nombres(4), "perfil_formato": nombres(5),
+                "modos": MODOS_AUTH,
+            }
+
+    async def perfiles(self, olt_id: int, pon: int) -> Dict[str, Any]:
+        return await asyncio.to_thread(self._perfiles_sync, await self._olt(olt_id), int(pon))
+
+    def _alta_sync(self, olt, payload):
+        with self.vsol._sesion(olt) as (opener, base_url, verify_ssl):
+            _respuesta_ok(VsolApiService._post_form(self.vsol, opener, base_url, "gpononumanualadd", payload, verify_ssl))
+            self._guardar_si_toca(opener, base_url, verify_ssl, "alta")
+
+    async def alta_manual(self, olt_id: int, pon: int, datos: Dict[str, Any], usuario=None) -> Dict[str, Any]:
+        olt = await self._olt(olt_id)
+        payload = payload_alta_manual(pon, int(datos.get("onuid") or 0), datos)
+        await asyncio.to_thread(self._alta_sync, olt, payload)
+        olvidar(f"vsol:{olt.id}")
+        ident = payload.get("gponsn") or payload.get("sn") or payload.get("loid") or "(contraseña)"
+        await self._bitacora(usuario, "Añadir ONU manualmente", f"/api/olts/{olt.id}/panel/pon/{pon}/alta",
+                             f"{olt.nombre} PON 0/{pon} · ONU {payload['onuid'] or 'automática'} · {ident} · perfil {payload['onutype']}")
+        return {"ok": True}
+
+    def _modificar_sync(self, olt, pon, onuid, serial, payloads):
+        with self.vsol._sesion(olt) as (opener, base_url, verify_ssl):
+            self._confirmar_serial(opener, base_url, verify_ssl, pon, onuid, serial)
+            for payload in payloads:
+                _respuesta_ok(VsolApiService._post_form(self.vsol, opener, base_url, "gpononumodify", payload, verify_ssl))
+            self._guardar_si_toca(opener, base_url, verify_ssl, "modificar")
+
+    async def modificar(self, olt_id: int, pon: int, onuid: int, serial: str, datos: Dict[str, Any], usuario=None) -> Dict[str, Any]:
+        olt = await self._olt(olt_id)
+        payloads, cambios = [], []
+        if _texto(datos.get("valor")):
+            payloads.append(payload_modificar(pon, onuid, _texto(datos.get("modo")) or "0", datos.get("valor")))
+            cambios.append(f"{'SN' if payloads[-1].get('gponsn') else 'LOID'} → {payloads[-1].get('gponsn') or payloads[-1].get('loid')}")
+        if _texto(datos.get("perfil")):
+            payloads.append(payload_perfil(pon, onuid, datos.get("perfil")))
+            cambios.append(f"perfil → {_texto(datos.get('perfil'))}")
+        if not payloads:
+            raise ValueError("No hay cambios que aplicar.")
+        await asyncio.to_thread(self._modificar_sync, olt, int(pon), int(onuid), serial, payloads)
+        olvidar(f"vsol:{olt.id}")
+        await self._bitacora(usuario, "Modificar ONU", f"/api/olts/{olt.id}/panel/onus/{pon}/{onuid}/modificar",
+                             f"{olt.nombre} GPON0/{pon}:{onuid} · {serial} · " + "; ".join(cambios))
+        return {"ok": True}

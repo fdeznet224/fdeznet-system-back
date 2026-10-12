@@ -270,9 +270,9 @@ async def diagnostico_cliente_vsol_api(
 # PANEL DE LA OLT (copia del panel web VSOL)
 # ==========================================
 def _panel(db):
-    from src.application.services.panel_olt_service import PanelOltService
+    from src.application.services.panel_olt_service import PanelOltDetalle
 
-    return PanelOltService(db)
+    return PanelOltDetalle(db)
 
 
 async def _panel_llamar(coro, accion: str):
@@ -350,12 +350,71 @@ class PanelEliminarPonRequest(BaseModel):
     confirmacion: str
 
 
-@router.post("/{olt_id}/panel/pon/{pon}/{modo}")
-async def panel_eliminar_pon(olt_id: int, pon: int, modo: str, datos: PanelEliminarPonRequest,
-                             db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
-    if modo not in ("eliminar-offline", "eliminar-todo"):
-        raise HTTPException(status_code=404, detail="Acción no encontrada.")
+async def _eliminar_pon(db, olt_id: int, pon: int, solo_offline: bool, datos: PanelEliminarPonRequest, usuario):
     if datos.confirmacion.strip().upper() != f"PON 0/{pon}":
         raise HTTPException(status_code=409, detail=f"Escribe PON 0/{pon} para confirmar.")
+    return await _panel_llamar(_panel(db).eliminar_pon(olt_id, pon, solo_offline, usuario), "eliminar las ONU del PON")
+
+
+@router.post("/{olt_id}/panel/pon/{pon}/eliminar-offline")
+async def panel_eliminar_offline(olt_id: int, pon: int, datos: PanelEliminarPonRequest,
+                                 db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
+    return await _eliminar_pon(db, olt_id, pon, True, datos, current_user)
+
+
+@router.post("/{olt_id}/panel/pon/{pon}/eliminar-todo")
+async def panel_eliminar_todo(olt_id: int, pon: int, datos: PanelEliminarPonRequest,
+                              db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
+    return await _eliminar_pon(db, olt_id, pon, False, datos, current_user)
+
+
+@router.get("/{olt_id}/panel/onus/{pon}/{onuid}/seccion/{seccion}")
+async def panel_seccion(olt_id: int, pon: int, onuid: int, seccion: str, db: AsyncSession = Depends(get_db),
+                        current_user=Depends(role_required(["admin", "supervisor"]))):
+    return await _panel_llamar(_panel(db).seccion(olt_id, pon, onuid, seccion), "leer la configuración de la ONU")
+
+
+@router.get("/{olt_id}/panel/pon/{pon}/versiones")
+async def panel_versiones(olt_id: int, pon: int, db: AsyncSession = Depends(get_db),
+                          current_user=Depends(role_required(["admin", "supervisor"]))):
+    return await _panel_llamar(_panel(db).versiones(olt_id, pon), "leer las versiones")
+
+
+@router.get("/{olt_id}/panel/pon/{pon}/perfiles")
+async def panel_perfiles(olt_id: int, pon: int, db: AsyncSession = Depends(get_db),
+                         current_user=Depends(role_required(["admin"]))):
+    return await _panel_llamar(_panel(db).perfiles(olt_id, pon), "leer los perfiles")
+
+
+class PanelAltaRequest(BaseModel):
+    onuid: int | None = None
+    modo: str
+    sn: str | None = None
+    loid: str | None = None
+    clave: str | None = None
+    perfil_onu: str | None = None
+    perfil_linea: str | None = None
+    perfil_servicio: str | None = None
+    perfil_alarma: str | None = None
+    perfil_privado: str | None = None
+    perfil_formato: str | None = None
+
+
+@router.post("/{olt_id}/panel/pon/{pon}/alta")
+async def panel_alta(olt_id: int, pon: int, datos: PanelAltaRequest, db: AsyncSession = Depends(get_db),
+                     current_user=Depends(role_required(["admin"]))):
+    return await _panel_llamar(_panel(db).alta_manual(olt_id, pon, datos.model_dump(), current_user), "añadir la ONU")
+
+
+class PanelModificarRequest(BaseModel):
+    serial: str
+    modo: str | None = "0"
+    valor: str | None = None
+    perfil: str | None = None
+
+
+@router.post("/{olt_id}/panel/onus/{pon}/{onuid}/modificar")
+async def panel_modificar(olt_id: int, pon: int, onuid: int, datos: PanelModificarRequest,
+                          db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
     return await _panel_llamar(
-        _panel(db).eliminar_pon(olt_id, pon, modo == "eliminar-offline", current_user), "eliminar las ONU del PON")
+        _panel(db).modificar(olt_id, pon, onuid, datos.serial, datos.model_dump(), current_user), "modificar la ONU")
