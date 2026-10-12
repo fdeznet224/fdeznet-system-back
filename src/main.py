@@ -19,6 +19,7 @@ from src.jobs import (
     tarea_limpiar_bitacora,
     tarea_leer_senal_optica,
     tarea_descripcion_onus,
+    tarea_revisar_antenas,
     tarea_baja_automatica,
     tarea_monitoreo_routers,
     tarea_reactivar_servicios_pagados,
@@ -247,6 +248,14 @@ async def lifespan(app: FastAPI):
         "cron",
         minute="20,50",
         id="descripcion_onus",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        tarea_revisar_antenas,
+        "interval",
+        minutes=10,
+        id="revisar_antenas",
         coalesce=True,
         max_instances=1,
     )

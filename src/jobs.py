@@ -30,6 +30,7 @@ from src.application.services.router_monitor_service import (
 from src.application.services.vpn_service import leer_handshakes_wireguard
 from src.application.services.comprobante_service import ComprobanteService
 from src.application.services.descripcion_onu_service import DescripcionOnuService
+from src.application.services.antena_service import AntenaService
 from src.application.services.senal_optica_service import SenalOpticaService, mensaje_alerta
 from src.application.services.storage_service import cleanup_storage, close_period, previous_period
 
@@ -141,6 +142,19 @@ async def tarea_descripcion_onus():
                 origen="DescripcionONU",
                 mensaje=(f"Nombre del cliente en {reporte['escritas']} ONU"
                          + (f"; errores: {'; '.join(reporte['errores'][:5])}" if reporte["errores"] else ""))[:1000],
+            ))
+            await db.commit()
+
+
+async def tarea_revisar_antenas():
+    """Ping a la antena de cada cliente por radioenlace (como "ONU en línea" para la fibra)."""
+    async with SessionLocal() as db:
+        conteo = await AntenaService(db).revisar_todas()
+        if conteo["errores"]:
+            db.add(LogCronjobModel(
+                nivel="WARN", origen="Antenas",
+                mensaje=f"Antenas: {conteo['revisadas']} revisadas, {conteo['responden']} responden, "
+                        f"{conteo['errores']} sin poder revisar (MikroTik sin respuesta)",
             ))
             await db.commit()
 

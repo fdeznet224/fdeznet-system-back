@@ -1,3 +1,4 @@
+import ipaddress
 import re
 from pydantic import (
     BaseModel,
@@ -804,6 +805,20 @@ class ClienteBase(BaseModel):
     pass_pppoe: Optional[str] = None
     mac_address: Optional[str] = None
     estado: str = "pendiente_instalacion"
+    # None = no se toca (al editar) o se decide por la zona (al crear).
+    tipo_conexion: Optional[Literal["fibra", "radio"]] = None
+    ip_antena: Optional[str] = None
+
+    @field_validator("ip_antena")
+    @classmethod
+    def validar_ip_antena(cls, value):
+        texto = (value or "").strip()
+        if not texto:
+            return None
+        try:
+            return str(ipaddress.IPv4Address(texto))
+        except ValueError as exc:
+            raise ValueError("La IP de la antena no es válida (ej. 192.168.1.20)") from exc
 
 class ClienteCreate(ClienteBase):
     # Contrato apartado por quien da de alta (el que se escribió en el conector).
@@ -1081,6 +1096,8 @@ class ClienteFullResponse(BaseModel):
     caja_nap_id: Optional[int] = None
     puerto_nap: Optional[int] = None
     zona: Optional[str] = "Sin Zona"
+    tipo_conexion: str = "fibra"
+    antena: Optional[dict] = None
     servicio: ServicioTecnico
     finanzas: FacturacionResumen
 

@@ -389,6 +389,15 @@ class ClienteModel(Base):
     is_online = Column(Boolean, default=False)
     ultimo_cambio_estado = Column(DateTime, default=func.now(), onupdate=func.now())
 
+    # Fibra (ONU en una OLT) o radio (antena Ubiquiti). La antena se revisa
+    # con un ping desde el MikroTik del cliente y se guarda el último resultado.
+    tipo_conexion = Column(String(20), nullable=False, default="fibra", server_default="fibra")
+    ip_antena = Column(String(45), nullable=True)
+    antena_responde = Column(Boolean, nullable=True)
+    antena_latencia_ms = Column(Float, nullable=True)
+    antena_perdida = Column(Integer, nullable=True)
+    antena_revisada_en = Column(DateTime, nullable=True)
+
 
 # ==========================================
 # 3.1 ÓRDENES TÉCNICAS Y CONTROL FTTH

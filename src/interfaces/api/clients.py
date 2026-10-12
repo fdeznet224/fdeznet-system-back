@@ -582,6 +582,23 @@ async def test_cortes_automaticos(
     
 
 
+@router.post("/{cliente_id}/verificar-antena")
+async def verificar_antena_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Ping a la antena del cliente por radioenlace desde su MikroTik."""
+    from src.application.services.antena_service import AntenaService
+
+    try:
+        return {"status": "success", "data": await AntenaService(db).verificar(cliente_id)}
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"No se pudo revisar la antena: {str(error)[:200]}") from error
+
+
 @router.post("/{cliente_id}/reiniciar-onu")
 async def reiniciar_onu_cliente(
     cliente_id: int,

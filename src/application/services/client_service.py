@@ -25,6 +25,7 @@ from src.infrastructure.models import (
     FacturaModel,
     CajaNapModel,
     InventarioONUModel,
+    ZonaModel,
     OLTModel,
     PlanModel,
     PlantillaFacturacionModel,
@@ -365,6 +366,12 @@ class ClientService:
         datos_dict.pop("identificador_onu", None)
         datos_dict.pop("mac_address", None)
         contrato_apartado = (datos_dict.pop("contrato_apartado", None) or "").strip().upper()
+
+        # Sin tipo de conexión: por radio si ni él ni su zona tienen OLT.
+        if not datos_dict.get("tipo_conexion"):
+            zona = await self.db.get(ZonaModel, datos_dict["zona_id"]) if datos_dict.get("zona_id") else None
+            sin_olt = not datos_dict.get("olt_id") and zona is not None and not zona.olt_id
+            datos_dict["tipo_conexion"] = "radio" if sin_olt else "fibra"
 
         # 🚀 Ahora sí, la base de datos lo aceptará sin quejarse
         nuevo_cliente = ClienteModel(**datos_dict)
@@ -1004,6 +1011,9 @@ class ClientService:
     
         # 2. Convertir esquema Pydantic a diccionario
         update_data = datos.model_dump(exclude_unset=True)
+        # Sin tipo de conexión en el formulario, se queda el que tiene.
+        if update_data.get("tipo_conexion") is None:
+            update_data.pop("tipo_conexion", None)
 
         # La MAC solo se valida si cambió: muchas fichas traen el serial de la
         # ONU en ese campo y el formulario lo reenvía tal cual al guardar.
@@ -1520,7 +1530,9 @@ class ClientService:
                    COALESCE(sum(f.saldo_pendiente), 0) as total_deuda,
                    c.saldo_a_favor,
                    inv.identificador as onu_identificador, -- 👇 Agregamos el identificador de la ONU
-                   inv.modelo as onu_modelo -- 👇 Agregamos el modelo de la ONU
+                   inv.modelo as onu_modelo, -- 👇 Agregamos el modelo de la ONU
+                   c.tipo_conexion, c.ip_antena, c.antena_responde, c.antena_latencia_ms,
+                   c.antena_perdida, c.antena_revisada_en
             FROM clientes c
             LEFT JOIN planes p ON c.plan_id = p.id
             LEFT JOIN routers r ON c.router_id = r.id
@@ -1549,6 +1561,14 @@ class ClientService:
                 "longitud": row.longitud, 
                 "zona": row.zona_nombre or "Sin Zona",
                 "identificador_onu": hardware_info, # 👇 Esto lo leerá el frontend (la tarjeta)
+                "tipo_conexion": row.tipo_conexion or "fibra",
+                "antena": {
+                    "ip": row.ip_antena,
+                    "responde": None if row.antena_responde is None else bool(row.antena_responde),
+                    "latencia_ms": row.antena_latencia_ms,
+                    "perdida": row.antena_perdida,
+                    "fecha": row.antena_revisada_en.isoformat() if row.antena_revisada_en else None,
+                } if row.tipo_conexion == "radio" else None,
                 "servicio": {
                     "plan_nombre": row.plan_nombre or "Sin Plan",
                     "precio_plan": row.precio_plan or 0,
