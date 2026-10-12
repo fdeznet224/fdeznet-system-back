@@ -696,9 +696,9 @@ class SupportService:
                 "sugerencia": (
                     "La OLT ve la ONU en línea con buena potencia, pero no hay "
                     "sesión PPPoE en el MikroTik. Antes de cambiar el equipo, "
-                    "usa Herramientas → Reautorizar en la OLT para que se "
-                    "autorice desde cero. Si aun así no conecta, revisa usuario "
-                    "y contraseña PPPoE."
+                    "bórrala en la OLT para que se autorice desde cero y "
+                    "revisa en Herramientas si levanta el PPPoE. Si aun así no "
+                    "conecta, revisa usuario y contraseña PPPoE."
                 ),
             }
         if mk_ok and pppoe is False:

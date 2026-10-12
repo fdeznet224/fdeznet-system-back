@@ -19,7 +19,6 @@ from src.jobs import (
     tarea_limpiar_bitacora,
     tarea_leer_senal_optica,
     tarea_descripcion_onus,
-    tarea_onus_sin_pppoe,
     tarea_baja_automatica,
     tarea_monitoreo_routers,
     tarea_reactivar_servicios_pagados,
@@ -248,14 +247,6 @@ async def lifespan(app: FastAPI):
         "cron",
         minute="20,50",
         id="descripcion_onus",
-        coalesce=True,
-        max_instances=1,
-    )
-    scheduler.add_job(
-        tarea_onus_sin_pppoe,
-        "cron",
-        minute="10,25,40,55",
-        id="onus_sin_pppoe",
         coalesce=True,
         max_instances=1,
     )

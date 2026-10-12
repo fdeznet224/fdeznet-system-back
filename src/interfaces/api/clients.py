@@ -582,23 +582,6 @@ async def test_cortes_automaticos(
     
 
 
-@router.post("/{cliente_id}/reautorizar-onu")
-async def reautorizar_onu_cliente(
-    cliente_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(role_required(["admin", "supervisor"])),
-):
-    """Borra la ONU de la OLT para que se autorice desde cero: para la ONU en línea sin PPPoE."""
-    from src.application.services.onu_sin_pppoe_service import OnuSinPppoeService
-
-    try:
-        return {"status": "success", "data": await OnuSinPppoeService(db).reautorizar(cliente_id, current_user)}
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except Exception as error:
-        raise HTTPException(status_code=502, detail=f"No se pudo reautorizar la ONU: {str(error)[:200]}") from error
-
-
 @router.post("/{cliente_id}/reiniciar-onu")
 async def reiniciar_onu_cliente(
     cliente_id: int,
