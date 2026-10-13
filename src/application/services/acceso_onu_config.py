@@ -18,6 +18,10 @@ PREDETERMINADO = {
 }
 # configuracion.valor es de 100 caracteres.
 LARGO_MAXIMO = 100
+# Puerto web del router de los clientes por radio (Mercusys con administración
+# remota en la WAN). Vacío: el clic en la IP abre el puerto 80.
+CLAVE_PUERTO_RADIO = "router_radio_puerto"
+PUERTO_RADIO_PREDETERMINADO = "8080"
 
 
 def _clave(marca: str, campo: str) -> str:
@@ -46,7 +50,7 @@ def cuentas_de(texto: str) -> list[dict]:
 
 
 async def obtener_acceso_onu(db: AsyncSession) -> dict:
-    claves = [_clave(m, c) for m in MARCAS for c in ("url", "cuentas")]
+    claves = [_clave(m, c) for m in MARCAS for c in ("url", "cuentas")] + [CLAVE_PUERTO_RADIO]
     guardado = {
         r.clave: r.valor
         for r in (
@@ -54,11 +58,14 @@ async def obtener_acceso_onu(db: AsyncSession) -> dict:
         ).scalars().all()
     }
     return {
-        marca: {
-            campo: guardado.get(_clave(marca, campo)) if _clave(marca, campo) in guardado else PREDETERMINADO[marca][campo]
-            for campo in ("url", "cuentas")
-        }
-        for marca in MARCAS
+        **{
+            marca: {
+                campo: guardado.get(_clave(marca, campo)) if _clave(marca, campo) in guardado else PREDETERMINADO[marca][campo]
+                for campo in ("url", "cuentas")
+            }
+            for marca in MARCAS
+        },
+        "radio": {"puerto": guardado.get(CLAVE_PUERTO_RADIO, PUERTO_RADIO_PREDETERMINADO)},
     }
 
 
@@ -72,6 +79,10 @@ async def guardar_acceso_onu(db: AsyncSession, datos: dict) -> dict:
             if campo == "url" and valor and not valor.startswith(("http://", "https://")):
                 valor = f"http://{valor}"
             valores[_clave(marca, campo)] = valor
+    puerto = str((datos.get("radio") or {}).get("puerto") or "").strip()
+    if puerto and not (puerto.isdigit() and 1 <= int(puerto) <= 65535):
+        raise ValueError("El puerto del router de radio debe ser un número de 1 a 65535")
+    valores[CLAVE_PUERTO_RADIO] = puerto
     existentes = {
         r.clave: r
         for r in (

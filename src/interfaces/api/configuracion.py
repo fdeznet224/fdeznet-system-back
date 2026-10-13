@@ -710,9 +710,14 @@ class AccesoOnuMarca(BaseModel):
     cuentas: str = ""
 
 
+class AccesoRouterRadio(BaseModel):
+    puerto: str = "8080"
+
+
 class AccesoOnuConfig(BaseModel):
     huawei: AccesoOnuMarca = AccesoOnuMarca()
     zte: AccesoOnuMarca = AccesoOnuMarca()
+    radio: AccesoRouterRadio = AccesoRouterRadio()
 
 
 @router.get("/acceso-onu")
