@@ -964,6 +964,10 @@ class ServicioPlanUpdate(BaseModel):
     plan_id: int = Field(gt=0)
 
 
+class ServicioIpUpdate(BaseModel):
+    ip: str = Field(min_length=7, max_length=15)
+
+
 class ServicioPlanCatalogo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1019,6 +1023,11 @@ class ServicioResponse(BaseModel):
 class ServicioPlanUpdateResponse(BaseModel):
     servicio: ServicioResponse
     mikrotik_sincronizado: Optional[bool] = None
+    mensaje: str
+
+
+class ServicioIpUpdateResponse(BaseModel):
+    servicio: ServicioResponse
     mensaje: str
 
 # ==========================================

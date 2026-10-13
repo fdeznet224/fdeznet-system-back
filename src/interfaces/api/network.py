@@ -38,6 +38,7 @@ from src.domain.schemas import (
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.application.services.network_service import NetworkService
 from src.application.services.ipam_service import IPAMService
+from src.application.services.ip_uso_service import IpUsoService
 from src.application.services.mikrotik_reconciliation_service import (
     MikrotikReconciliationService,
 )
@@ -331,7 +332,27 @@ async def obtener_ips_libres(
     if not red:
         raise HTTPException(404, "Red no encontrada")
     try:
-        return await IPAMService(db).listar_disponibles(red, limite=254)
+        # Sin las que el MikroTik ya usa (casa, site, familiares sin ficha).
+        return (await IpUsoService(db).uso_de_red(red))["disponibles"]
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/redes/{red_id}/uso-ips")
+async def uso_ips_red(
+    red_id: int,
+    response: Response,
+    servicio_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """IP libres de la red y las que el MikroTik usa sin cliente en el sistema."""
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    red = await db.get(RedModel, red_id)
+    if not red:
+        raise HTTPException(404, "Red no encontrada")
+    try:
+        return await IpUsoService(db).uso_de_red(red, excluir_servicio_id=servicio_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

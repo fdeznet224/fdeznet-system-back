@@ -84,12 +84,15 @@ class IPAMService:
         limite: int = 254,
         excluir_cliente_id: int | None = None,
         excluir_servicio_id: int | None = None,
+        evitar: set[str] | None = None,
     ) -> list[str]:
         network = self._red_ipv4(red)
         ocupadas = await self._ips_ocupadas(
             excluir_cliente_id,
             excluir_servicio_id,
         )
+        # IP que el MikroTik usa sin cliente en el sistema (ip_uso_service).
+        ocupadas |= set(evitar or ())
 
         if red.gateway:
             ocupadas.add(self._normalizar_ip(red.gateway))
@@ -111,7 +114,9 @@ class IPAMService:
         router_id: int | None = None,
         excluir_cliente_id: int | None = None,
         excluir_servicio_id: int | None = None,
+        evitar: dict[str, str] | None = None,
     ) -> str:
+        evitar = evitar or {}
         # Serializa las asignaciones concurrentes de una misma red.
         red = (
             await self.db.execute(
@@ -157,11 +162,16 @@ class IPAMService:
                 )
             if candidata in ocupadas:
                 raise ValueError(f"La IP {candidata} ya está ocupada")
+            if candidata in evitar:
+                raise ValueError(
+                    f"La IP {candidata} ya se usa en el MikroTik "
+                    f"({evitar[candidata]})"
+                )
             return candidata
 
         for ip in network.hosts():
             candidata = str(ip)
-            if candidata not in ocupadas:
+            if candidata not in ocupadas and candidata not in evitar:
                 return candidata
 
         raise ValueError(f"No hay IPs disponibles en la red {red.nombre}")
@@ -172,6 +182,7 @@ class IPAMService:
         ip_solicitada: str | None = None,
         router_id: int | None = None,
         excluir_servicio_id: int | None = None,
+        evitar: dict[str, str] | None = None,
     ) -> str:
         """Reserva una IP para un contrato sin confundirlo con la persona."""
         return await self.reservar_para_cliente(
@@ -179,4 +190,5 @@ class IPAMService:
             ip_solicitada=ip_solicitada,
             router_id=router_id,
             excluir_servicio_id=excluir_servicio_id,
+            evitar=evitar,
         )

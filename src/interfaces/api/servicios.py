@@ -11,6 +11,8 @@ from src.domain.schemas import (
     ServicioActivacion,
     ServicioCreate,
     ServicioEstadoUpdate,
+    ServicioIpUpdate,
+    ServicioIpUpdateResponse,
     ServicioPlanUpdate,
     ServicioPlanUpdateResponse,
     ServicioResponse,
@@ -178,3 +180,32 @@ async def cambiar_plan_servicio(
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.put(
+    "/{servicio_id}/ip",
+    response_model=ServicioIpUpdateResponse,
+)
+async def cambiar_ip_servicio(
+    servicio_id: int,
+    datos: ServicioIpUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    try:
+        servicio = await SubscriptionService(db).obtener(servicio_id)
+        await verificar_acceso_cliente(
+            db,
+            current_user,
+            servicio.cliente_id,
+        )
+        return await SubscriptionService(db).cambiar_ip(servicio_id, datos.ip)
+    except PermissionError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

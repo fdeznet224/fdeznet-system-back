@@ -386,6 +386,18 @@ class SubscriptionService:
             else None
         )
         if servicio.red_id:
+            from src.application.services.ip_uso_service import IpUsoService
+
+            red = await self.db.get(RedModel, servicio.red_id)
+            # Sin MikroTik a la mano se asigna como antes; la activación
+            # fallará más adelante de todos modos si no responde.
+            en_mikrotik, _ = (
+                await IpUsoService(self.db).ips_en_mikrotik(
+                    red, ignorar_usuario=servicio.user_pppoe
+                )
+                if red
+                else ({}, None)
+            )
             servicio.ip_asignada = await IPAMService(
                 self.db
             ).reservar_para_servicio(
@@ -393,6 +405,7 @@ class SubscriptionService:
                 ip_solicitada=ip_solicitada,
                 router_id=servicio.router_id,
                 excluir_servicio_id=servicio.id,
+                evitar=en_mikrotik,
             )
         elif ip_solicitada:
             ocupante = (
@@ -713,6 +726,67 @@ class SubscriptionService:
                 servicio.plan.nombre.strip()
             ):
                 raise RuntimeError("MikroTik no confirmó el perfil del plan")
+
+    async def cambiar_ip(self, servicio_id: int, ip: str) -> dict:
+        """Mueve el contrato a otra IP libre de su red y lo aplica al MikroTik.
+
+        Se rechaza una IP que el MikroTik ya use aunque no haya cliente con
+        ella (casa, site, familiares). Si el MikroTik no confirma, no cambia.
+        """
+        from src.application.services.ip_uso_service import IpUsoService
+
+        servicio = await self.obtener(servicio_id)
+        if servicio.estado == "cancelado":
+            raise ValueError("No se puede cambiar la IP de un servicio cancelado")
+        if not servicio.red_id:
+            raise ValueError("El servicio no tiene una red de IP asignada")
+        nueva = IPAMService._normalizar_ip(ip)
+        anterior = servicio.ip_asignada
+        if nueva == anterior:
+            return {"servicio": servicio, "mensaje": "El servicio ya tiene esa IP"}
+
+        instalado = servicio.estado in {"activo", "suspendido"}
+        red = await self.db.get(RedModel, servicio.red_id)
+        en_mikrotik, error = await IpUsoService(self.db).ips_en_mikrotik(
+            red, ignorar_usuario=servicio.user_pppoe
+        )
+        if error and instalado:
+            raise ValueError(f"{error}; la IP no se cambió")
+        servicio.ip_asignada = await IPAMService(self.db).reservar_para_servicio(
+            red_id=servicio.red_id,
+            ip_solicitada=nueva,
+            router_id=servicio.router_id,
+            excluir_servicio_id=servicio.id,
+            evitar=en_mikrotik,
+        )
+
+        if instalado:
+            try:
+                mk = MikroTikService(
+                    servicio.router.ip_vpn,
+                    servicio.router.user_api,
+                    servicio.router.pass_api,
+                    servicio.router.port_api,
+                )
+                await self._aplicar_plan_en_mikrotik(servicio)
+                if anterior:
+                    # La IP vieja no debe quedar en la lista de corte.
+                    await asyncio.to_thread(mk.gestionar_corte_cliente, anterior, False)
+                if not self._usa_dhcp(servicio.router) and servicio.user_pppoe:
+                    # Al reconectar, la ONU toma la IP nueva.
+                    await asyncio.to_thread(mk.desconectar_cliente_activo, servicio.user_pppoe)
+            except Exception as exc:
+                await self.db.rollback()
+                raise RuntimeError(
+                    f"MikroTik no confirmó el cambio de IP; se queda con {anterior}: {exc}"
+                ) from exc
+
+        await self._sincronizar_legacy_si_principal(servicio)
+        await self.db.commit()
+        mensaje = f"IP cambiada de {anterior or 'sin IP'} a {servicio.ip_asignada}"
+        if instalado:
+            mensaje += " y aplicada en el MikroTik"
+        return {"servicio": await self.obtener(servicio.id), "mensaje": mensaje}
 
     async def cambiar_estado(
         self,

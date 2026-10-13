@@ -7,13 +7,20 @@ PON y número sigue el serial que el usuario ve en pantalla.
 """
 
 import asyncio
+import re
+import unicodedata
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from src.application.services.cache_olt import olvidar
 from src.application.services.descripcion_onu_service import DescripcionOnuService, LARGO_MAXIMO
 from src.application.services.vsol_api_service import VsolApiService, guardar_en_olt
-from src.infrastructure.models import LogActividadModel, OLTModel
+from src.infrastructure.models import (
+    ClienteModel, InventarioONUModel, LogActividadModel, OLTModel, ServicioModel,
+)
 
 # who de /action/gpononuauthinfo para cada botón de la fila (como el panel).
 # OJO: who=0 borra; who=2 borra TODO el PON.
@@ -37,6 +44,23 @@ NOMBRE_ACCION = {
 
 def _texto(valor: Any) -> str:
     return str(valor if valor is not None else "").strip()
+
+
+def _plano(valor: Any) -> str:
+    """Minúsculas, sin acentos ni separadores: "Pérez" = "perez", "HWTC-12" = "hwtc12"."""
+    texto = unicodedata.normalize("NFKD", _texto(valor)).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[\s:\-_./]+", "", texto)
+
+
+def coincide(buscar: str, auth: Dict[str, Any], del_cliente: str = "") -> bool:
+    """Busca en SN, descripción, ONU (0/1:5) y los datos del cliente del sistema."""
+    aguja = _plano(buscar)
+    if not aguja:
+        return True
+    pajar = "|".join(_plano(v) for v in (
+        auth.get("info"), auth.get("description"), auth.get("onu_id"), auth.get("model"), del_cliente,
+    ))
+    return aguja in pajar
 
 
 def fila_onu(auth: Dict[str, Any], optica: Optional[Dict[str, Any]], estado: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -118,7 +142,8 @@ class PanelOltService:
                                  "nombre": f"PON 0/{datos['portid']}"})
             return pons
 
-    def _lista_sync(self, olt: OLTModel, pon: Optional[int], buscar: Optional[str]) -> List[Dict[str, Any]]:
+    def _lista_sync(self, olt: OLTModel, pon: Optional[int],
+                    filtro: Optional[Callable[[Dict[str, Any]], bool]]) -> List[Dict[str, Any]]:
         with self.vsol._sesion(olt) as (opener, base_url, verify_ssl):
             todos = [dict(urllib.parse.parse_qsl(p.decode("utf-8")))
                      for p in self.vsol._descubrir_payloads_pon_sync(opener, base_url, verify_ssl)]
@@ -126,9 +151,10 @@ class PanelOltService:
                 (VsolApiService._post_form(self.vsol, opener, base_url, accion, datos, verify_ssl).get("data") or {})
                 .get(lista) or []
             )
-            if buscar:
-                # "Buscar en TODAS las PON" del panel: who=10 con el texto.
-                auth = leer("gpononuauthinfo", {**todos[0], "who": "10", "searchONU": buscar}, "onuAuth_list") if todos else []
+            if filtro:
+                # "Buscar en TODAS las PON": se filtra aquí y no con el who=10
+                # de la OLT, que no encuentra por SN completo ni por cliente.
+                auth = [a for datos in todos for a in leer("gpononuauthinfo", datos, "onuAuth_list") if filtro(a)]
                 pons_con_resultado = {str(a.get("pon_id")) for a in auth}
                 consultas = [p for p in todos if str(p.get("portid")) in pons_con_resultado]
             else:
@@ -147,8 +173,17 @@ class PanelOltService:
 
     async def lista(self, olt_id: int, pon: Optional[int] = None, buscar: Optional[str] = None) -> Dict[str, Any]:
         olt = await self._olt(olt_id)
-        filas = await asyncio.to_thread(self._lista_sync, olt, pon, (buscar or "").strip() or None)
         clientes = await DescripcionOnuService(self.db, self.vsol)._clientes_por_onu()
+        texto = (buscar or "").strip()
+        filtro = None
+        if texto:
+            # Se arma antes de salir del hilo de la base: solo textos.
+            del_cliente = {
+                serial: " ".join(_texto(v) for v in (c.nombre, c.cedula, c.user_pppoe, c.ip_asignada, c.telefono))
+                for serial, c in clientes.items()
+            }
+            filtro = lambda a: coincide(texto, a, del_cliente.get(VsolApiService._normalizar_sn(a.get("info")), ""))
+        filas = await asyncio.to_thread(self._lista_sync, olt, pon, filtro)
         for fila in filas:
             cliente = clientes.get(VsolApiService._normalizar_sn(fila["serial"]))
             fila["cliente_id"] = cliente.id if cliente else None
@@ -164,10 +199,60 @@ class PanelOltService:
             optica = VsolApiService._propiedades((post("gpononuoptical", ubicacion).get("data") or {}).get("onu_optical_info"))
             auth = self.vsol._onu_en_pon_sync(opener, base_url, verify_ssl, pon, onuid) or {}
             return {"onu_id": f"GPON0/{pon}:{onuid}", "pon": pon, "onuid": onuid,
-                    "online": _texto(auth.get("state")) == "1", "detalle": detalle, "optica": optica}
+                    "online": _texto(auth.get("state")) == "1", "serial": _texto(auth.get("info")) or detalle.get("SN"),
+                    "detalle": detalle, "optica": optica}
 
     async def detalle(self, olt_id: int, pon: int, onuid: int) -> Dict[str, Any]:
-        return await asyncio.to_thread(self._detalle_sync, await self._olt(olt_id), int(pon), int(onuid))
+        datos = await asyncio.to_thread(self._detalle_sync, await self._olt(olt_id), int(pon), int(onuid))
+        datos["cliente"] = await self.cliente_de_onu(datos.get("serial"))
+        return datos
+
+    async def cliente_de_onu(self, serial: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Lo que el sistema sabe del cliente de esa ONU (contrato, IP, PPPoE...)."""
+        serial = VsolApiService._normalizar_sn(serial)
+        if not serial:
+            return None
+        onu = (await self.db.execute(
+            select(InventarioONUModel).where(InventarioONUModel.identificador == serial)
+        )).scalars().first()
+        if not onu:
+            return None
+        servicio = (await self.db.execute(
+            select(ServicioModel)
+            .options(selectinload(ServicioModel.cliente), selectinload(ServicioModel.plan),
+                     selectinload(ServicioModel.zona), selectinload(ServicioModel.router),
+                     selectinload(ServicioModel.caja_nap))
+            .where(ServicioModel.onu_id == onu.id, ServicioModel.estado != "cancelado")
+            .order_by(ServicioModel.id)
+        )).scalars().first()
+        cliente = servicio.cliente if servicio else (await self.db.execute(
+            select(ClienteModel)
+            .options(selectinload(ClienteModel.plan), selectinload(ClienteModel.zona),
+                     selectinload(ClienteModel.router), selectinload(ClienteModel.caja_nap))
+            .where(ClienteModel.onu_id == onu.id, ClienteModel.estado != "cancelado")
+        )).scalars().first()
+        if not cliente:
+            return None
+        origen = servicio or cliente
+        nombre = lambda rel: getattr(getattr(origen, rel, None), "nombre", None)
+        return {
+            "id": cliente.id,
+            "nombre": cliente.nombre,
+            "contrato": cliente.cedula,
+            "telefono": cliente.telefono,
+            "estado_cliente": cliente.estado,
+            "servicio_id": servicio.id if servicio else None,
+            "estado_servicio": servicio.estado if servicio else None,
+            "direccion": origen.direccion or cliente.direccion,
+            "zona": nombre("zona"),
+            "plan": nombre("plan"),
+            "mikrotik": nombre("router"),
+            "ip": origen.ip_asignada,
+            "usuario_pppoe": origen.user_pppoe,
+            "en_linea": bool(origen.is_online),
+            "caja_nap": nombre("caja_nap"),
+            "puerto_nap": origen.puerto_nap,
+        }
 
     # ------------------------------------------------------------ acciones
     def _confirmar_serial(self, opener, base_url, verify_ssl, pon: int, onuid: int, serial: str) -> Dict[str, Any]:
