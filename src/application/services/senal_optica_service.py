@@ -49,6 +49,12 @@ def a_dbm(valor) -> Decimal | None:
     return numero.quantize(Decimal("0.01"))
 
 
+def numero_pon(valor) -> int | None:
+    """"4", 4 o "GPON0/4" → 4."""
+    digitos = "".join(c for c in str(valor or "").split("/")[-1] if c.isdigit())
+    return int(digitos) if digitos else None
+
+
 def evaluar(actual: Decimal, anterior: Decimal | None) -> str | None:
     """Motivo de alerta para una lectura, o None si está bien."""
     if actual < UMBRAL_DEBIL_DBM and (anterior is None or anterior >= UMBRAL_DEBIL_DBM):
@@ -69,7 +75,7 @@ class SenalOpticaService:
         if olt.api_enabled or integracion in {"vsol_api", "auto"}:
             datos = await VsolApiService(self.db).listar_onus_unificadas(olt.id)
             return [
-                {"identificador": o.get("identificador"), "rx": o.get("rx_power"), "tx": o.get("tx_power")}
+                {"identificador": o.get("identificador"), "rx": o.get("rx_power"), "tx": o.get("tx_power"), "pon": o.get("pon_id")}
                 for o in datos.get("onus", [])
             ]
         onus = await SNMPMonitorService(self.db)._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
@@ -143,6 +149,8 @@ class SenalOpticaService:
                     onu_id=onu_inventario.id,
                     potencia_rx_dbm=rx,
                     potencia_tx_dbm=a_dbm(onu.get("tx")),
+                    olt_id=olt.id,
+                    pon=numero_pon(onu.get("pon")),
                     origen=ORIGEN,
                 ))
                 reporte["leidas"] += 1

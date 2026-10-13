@@ -787,6 +787,7 @@ class LecturaOpticaModel(Base):
     __table_args__ = (
         Index("ix_lecturas_opticas_cliente_fecha", "cliente_id", "fecha"),
         Index("ix_lecturas_opticas_onu_fecha", "onu_id", "fecha"),
+        Index("ix_lecturas_opticas_fecha", "fecha"),
     )
 
     id = Column(Integer, primary_key=True)
@@ -818,6 +819,9 @@ class LecturaOpticaModel(Base):
     )
     potencia_rx_dbm = Column(Numeric(6, 2), nullable=False)
     potencia_tx_dbm = Column(Numeric(6, 2), nullable=True)
+    # Troncal de la ONU al leerla (la API de VSOL la dice; por SNMP queda vacía).
+    olt_id = Column(Integer, ForeignKey("olts.id", ondelete="SET NULL"), nullable=True)
+    pon = Column(Integer, nullable=True)
     origen = Column(String(20), nullable=False, default="manual", server_default="manual")
     observaciones = Column(String(500), nullable=True)
     fecha = Column(

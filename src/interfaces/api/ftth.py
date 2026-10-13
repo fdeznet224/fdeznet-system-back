@@ -304,6 +304,17 @@ async def potencias_por_cliente(
     return await SenalOpticaService(db).potencias_por_cliente()
 
 
+@router.get("/atenuacion")
+async def atenuacion(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Clientes cuya señal bajó contra su normal y troncales, NAP o zonas que bajaron juntas."""
+    from src.application.services.atenuacion_service import AtenuacionService
+
+    return await AtenuacionService(db).analizar()
+
+
 @router.get("/clientes/{cliente_id}/potencia-actual")
 async def potencia_actual(
     cliente_id: int,
