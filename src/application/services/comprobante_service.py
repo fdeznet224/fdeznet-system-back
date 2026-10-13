@@ -53,8 +53,8 @@ SIN_INTENTO_DE_APLICAR = {"esperando_confirmacion", "sin_referencia"}
 
 
 def normalizar_contrato(contrato: str | None) -> str:
-    """Los contratos son hexadecimales: la O y la I del OCR o del cliente son 0 y 1."""
-    return (contrato or "").strip().upper().replace("O", "0").replace("I", "1")
+    """Los contratos son hexadecimales: la O, la I y la S del OCR o del cliente son 0, 1 y 5."""
+    return (contrato or "").strip().upper().replace("O", "0").replace("I", "1").replace("S", "5")
 
 
 MESES_EN_CONCEPTO = {
@@ -159,8 +159,20 @@ class ComprobanteService:
                 ),
             }
         if not resultado.get("parece_comprobante", True):
-            # Foto del módem, una promoción, un recibo... no un pago. No se
-            # registra: no hay nada que conciliar.
+            # Foto del módem o de la red WiFi: el nombre de la red trae el contrato.
+            contrato = await self._contrato_existente(resultado.get("contratos_en_red_wifi"))
+            if contrato:
+                return {
+                    "estado": "contrato_en_foto",
+                    "contrato": contrato,
+                    "detalle": (
+                        "No es un comprobante: es la foto del módem o de su red WiFi y trae su número de "
+                        f"contrato {contrato}. Si no está identificado, usa identificar_cliente con ese "
+                        "contrato y continúa con lo que pidió."
+                    ),
+                }
+            # Una promoción, un recibo... no un pago. No se registra: no hay
+            # nada que conciliar.
             return {
                 "estado": "no_es_comprobante",
                 "detalle": (
@@ -680,6 +692,20 @@ class ComprobanteService:
                 ))
         await self.db.commit()
         return [r.id for r in elegidos]
+
+    async def _contrato_existente(self, candidatos: list[str] | None) -> str | None:
+        """El único de los códigos leídos que es el contrato de un cliente."""
+        contratos = {normalizar_contrato(c) for c in candidatos or []} - {""}
+        if not contratos:
+            return None
+        encontrados = (
+            await self.db.execute(
+                select(ClienteModel.cedula).where(
+                    ClienteModel.cedula.in_(contratos), ClienteModel.estado != "eliminado"
+                )
+            )
+        ).scalars().all()
+        return encontrados[0] if len(set(encontrados)) == 1 else None
 
     async def _factura_cobrable(self, cliente_id: int):
         factura = (

@@ -58,7 +58,7 @@ MODOS = ("apagado", "sugerencia", "automatico")
 MAX_VUELTAS = 5
 MAX_INTENTOS_CONTRATO = 5
 MENSAJES_DE_CONTEXTO = 12
-# Una conversación "nueva" vuelve a preguntar con quién se habla.
+# Una conversación "nueva" vuelve a preguntar con quién se habla (si no se sabe quién es).
 VIGENCIA_NOMBRE = timedelta(hours=12)
 # Si nadie atiende al pasar a un asesor, el agente retoma la conversación.
 PAUSA_AL_PASAR_A_ASESOR = timedelta(minutes=30)
@@ -155,7 +155,7 @@ HERRAMIENTAS = [
     _herramienta("medir_velocidad", "Mide durante 6 segundos cuánto internet está consumiendo el cliente identificado y lo compara con su plan (para quejas de lentitud)."),
     _herramienta("consultar_avisos", "Avisos de mantenimiento o fallas enviados en las últimas 24 horas."),
     _herramienta("datos_de_pago", "Cuenta para depósito o transferencia."),
-    _herramienta("leer_comprobante", "Lee la última imagen de comprobante que envió el cliente (monto, folio, contrato)."),
+    _herramienta("leer_comprobante", "Lee la última imagen que envió el cliente: comprobante (monto, folio, contrato) o foto del módem o de su red WiFi (contrato)."),
     _herramienta("registrar_prospecto", "Registra a una persona nueva que quiere contratar: crea la orden de instalación y avisa al personal.",
                  {"nombre": {"type": "string"},
                   "colonia": {"type": "string", "description": "la colonia o zona que dijo"},
@@ -388,8 +388,15 @@ class AgenteIAService:
             f"Ahora son las {ahora:%H:%M} del {ahora:%d/%m} ({saludo_para(ahora)}). Lo de días anteriores "
             "es solo contexto: atiende lo que pide ahora y no retomes temas viejos como si fueran de hoy."
         )
+        # Si ya se sabe quién es (contrato o teléfono registrado), no se le pregunta el nombre.
+        conocido = contexto.cliente or await contexto._cliente_del_telefono_registrado()
         if contexto.nombre_contacto:
             quien = f"Hablas con {contexto.nombre_contacto}."
+        elif conocido and conocido.nombre:
+            quien = (
+                f"Hablas con {conocido.nombre}: ya sabes quién es, NO le preguntes con quién tienes el gusto. "
+                "Salúdalo por su nombre de pila y atiende lo que pide."
+            )
         elif media_url:
             quien = (
                 "INICIO DE CONVERSACIÓN con una imagen: primero usa leer_comprobante y, si es un comprobante "
@@ -400,9 +407,10 @@ class AgenteIAService:
             quien = (
                 "INICIO DE CONVERSACIÓN: todavía no sabes con quién hablas. Si en su último mensaje ya "
                 "dice su nombre (por ejemplo, respondiendo a tu pregunta), usa registrar_nombre y continúa "
-                "con lo que pidió al principio de la conversación. Si no, saluda, dile en una frase que con "
-                "gusto lo ayudas con lo que pidió y pregúntale con quién tienes el gusto; en esa respuesta "
-                "no pidas contrato ni uses herramientas de cuenta."
+                "con lo que pidió al principio de la conversación. Si su último mensaje trae su número de "
+                "contrato, usa identificar_cliente y atiéndelo por el nombre que devuelve, sin preguntarle "
+                "el suyo. Si no, saluda, dile en una frase que con gusto lo ayudas con lo que pidió y "
+                "pregúntale con quién tienes el gusto; en esa respuesta no pidas contrato."
             )
         if contexto.cliente:
             identidad = (
@@ -411,7 +419,10 @@ class AgenteIAService:
             )
         else:
             identidad = "Cliente NO identificado: si pide algo de su cuenta, pídele su número de contrato."
-        adjunto = "\n(El cliente envió una imagen; si parece comprobante usa leer_comprobante.)" if media_url else ""
+        adjunto = (
+            "\n(El cliente envió una imagen; si parece comprobante o foto del módem o de su red WiFi, "
+            "usa leer_comprobante.)" if media_url else ""
+        )
         if not contexto._telefono_de_contacto():
             identidad += "\nNo se conoce el teléfono de este chat: si vas a registrar un interesado, pídele un número de contacto."
         return (
@@ -916,26 +927,33 @@ class _Contexto:
 
         Es el mismo número al que ya le llegan los avisos con su contrato, así
         que mostrárselo no revela nada nuevo. Solo sirve para los datos de pago:
-        no identifica al cliente para consultar la cuenta. Si el teléfono lo
-        comparten varios clientes, no se muestra ninguno.
+        no identifica al cliente para consultar la cuenta.
+        """
+        cliente = await self._cliente_del_telefono_registrado()
+        return cliente.cedula if cliente else None
+
+    async def _cliente_del_telefono_registrado(self):
+        """Contrato y nombre del cliente cuyo teléfono registrado es el de este chat.
+
+        Si el teléfono lo comparten varios clientes, no devuelve ninguno.
         """
         telefono = self._telefono_de_contacto()
         if not telefono:
             return None
         filas = (
             await self.db.execute(
-                select(ClienteModel.cedula, ClienteModel.telefono).where(
+                select(ClienteModel.cedula, ClienteModel.nombre, ClienteModel.telefono).where(
                     ClienteModel.estado != "eliminado",
                     ClienteModel.cedula.is_not(None),
                     ClienteModel.telefono.like(f"%{telefono}%"),
                 )
             )
         ).all()
-        contratos = {
-            fila.cedula for fila in filas
+        clientes = {
+            fila.cedula: fila for fila in filas
             if re.sub(r"\D", "", fila.telefono or "")[-10:] == telefono
         }
-        return contratos.pop() if len(contratos) == 1 else None
+        return next(iter(clientes.values())) if len(clientes) == 1 else None
 
     def _telefono_de_contacto(self) -> str | None:
         """Teléfono real del chat (un LID no sirve para llamar)."""

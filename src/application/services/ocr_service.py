@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
+from src.application.services.pagos_captura import PALABRAS_GENERICAS
+
 logger = logging.getLogger(__name__)
 WHATSAPP_UPLOADS = Path(__file__).resolve().parents[3] / "bot_whatsapp" / "uploads"
 # Los comprobantes del banco caben en una o dos páginas.
@@ -133,6 +135,44 @@ def datos_cep(texto_crudo: str) -> dict | None:
     }
 
 
+def monto_mal_leido(texto: str) -> float:
+    """Monto que el OCR leyó sin el punto o con el "$" como 8 o "~".
+
+    BanCoppel: "$300.00" sale "$30000" o "~830000"; Banco Azteca: "8300.00".
+    Solo se toma junto al "$" o a la etiqueta del monto, nunca una referencia
+    suelta. Un pago al ISP no llega a $8,000, así que "8300.00" es "$300.00".
+    """
+    numero = r"(\d{3,7})(?:\.(\d{2}))?(?![\w.,/:])"
+    for patron in (
+        rf"(?<![\w.,/:])([$~]){numero}",
+        rf"(?<![\w.,/:$~])(){numero}(?=\s+(?:monto|importe))",
+        rf"(?<![\w.,/:$~])()(8\d{{3}})\.(\d{{2}})(?![\w.,/:])",
+    ):
+        match = re.search(patron, texto)
+        if not match:
+            continue
+        signo, enteros, centavos = match.groups()
+        if centavos is None and len(enteros) >= 5:
+            enteros, centavos = enteros[:-2], enteros[-2:]
+        if signo != "$" and len(enteros) == 4 and enteros.startswith("8"):
+            enteros = enteros[1:]
+        monto = int(enteros) + int(centavos or 0) / 100
+        if monto > 0:
+            return monto
+    return 0.0
+
+
+def contratos_en_red_wifi(texto: str) -> list[str]:
+    """Contratos en el nombre de la red WiFi: "FdezNet-F766".
+
+    Sale en la etiqueta del módem y en la pantalla de WiFi del celular; el
+    OCR a veces separa el guion ("FdezNet- F766"). Hay que comprobar que el
+    contrato exista: solo es un código de 4 caracteres después de un guion.
+    """
+    candidatos = re.findall(r"\b[a-z][a-z0-9]{2,}[-_]\s?([0-9a-z]{4})\b", texto)
+    return list(dict.fromkeys(c.upper() for c in candidatos))
+
+
 def terminaciones_de_cuenta(numero: str) -> set[str]:
     """Cómo puede terminar la cuenta de un número de tarjeta o de una CLABE.
 
@@ -183,6 +223,8 @@ class OCRService:
             r"referencia[^\w]*([a-z0-9-]{6,50})",
             r"ref\.[^\w]*([a-z0-9-]{6,50})",
             r"autorizaci[oó]n[^\w]*([a-z0-9-]{6,50})",
+            # Mercado Pago: "Comprobante #183642536052".
+            r"#\s?(\d{8,30})\b",
         ]
         for patron in patrones_folio:
             match = re.search(patron, texto)
@@ -203,6 +245,8 @@ class OCRService:
                 for palabra in texto_crudo.split()
                 if len(palabra) >= 10
                 and any(c.isdigit() for c in palabra)
+                # "11/octubre/2026" es la fecha, no el folio.
+                and "/" not in palabra
             ]
             # Una clave de rastreo tiene hasta 30 caracteres; más largo es un
             # sello digital o un código, no un folio.
@@ -235,18 +279,24 @@ class OCRService:
                 continue
             if monto > 0:
                 break
+        if monto <= 0:
+            monto = monto_mal_leido(texto)
 
         cedula_detectada = None
         for patron in [
-            r"concepto[^\w]*([a-z0-9]{3,20})",
-            r"motivo[^\w]*([a-z0-9]{3,20})",
-            r"mensaje[^\w]*([a-z0-9]{3,20})",
-            r"descripci[oó]n[^\w]*([a-z0-9]{3,20})",
+            r"concepto[^\w]*([a-z0-9]{3,20})(?:\W+([a-z0-9]{3,20}))?",
+            r"motivo[^\w]*([a-z0-9]{3,20})(?:\W+([a-z0-9]{3,20}))?",
+            r"mensaje[^\w]*([a-z0-9]{3,20})(?:\W+([a-z0-9]{3,20}))?",
+            r"descripci[oó]n[^\w]*([a-z0-9]{3,20})(?:\W+([a-z0-9]{3,20}))?",
         ]:
             match = re.search(patron, texto)
             if match:
+                primera, segunda = match.groups()
+                if primera in PALABRAS_GENERICAS:
+                    # "Transf. D440" sí trae el contrato; "Transf. erika gutierrez", no.
+                    primera = segunda if segunda and any(c.isdigit() for c in segunda) else None
                 # "fdeznet2E3A": el contrato va pegado al nombre de la empresa.
-                cedula_detectada = re.sub(r"^fdeznet", "", match.group(1)).upper() or None
+                cedula_detectada = re.sub(r"^fdeznet", "", primera or "").upper() or None
                 break
 
         # Fecha y hora de la transferencia (hora local de la captura):
@@ -281,15 +331,29 @@ class OCRService:
 
         if fecha_pago is None:
             # Mercado Pago y otros: "7 de octubre de 2026, 10:15 hs".
+            # BBVA: "12 octubre 2026 Hora 12:50"; Mercado Pago "11/octubre/2026" (el OCR lee "I1").
             match = re.search(
-                r"(\d{1,2}) de ([a-z]+) (?:de |del )?(\d{4})\D{0,20}?(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?",
+                r"([0-9il]{1,2})(?: de |[ /])([a-z]+)(?: de | del |[ /])(\d{4})\D{0,20}?(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?",
                 texto,
             )
             mes = MESES_LARGOS.get(match.group(2)) if match else None
             if mes:
                 dia, _, anio, hora, minuto, segundo = match.groups()
+                dia = dia.replace("i", "1").replace("l", "1")
                 try:
                     fecha_pago = datetime(int(anio), mes, int(dia), int(hora), int(minuto), int(segundo or 0))
+                except ValueError:
+                    fecha_pago = None
+
+        # Sin hora la huella no sirve (el mismo monto se repite), pero la fecha
+        # sí dice si la captura es vieja. BanCoppel: "Fecha de operación 09/05/2026".
+        con_hora = fecha_pago is not None
+        if fecha_pago is None:
+            match = re.search(r"fecha[^\d]{0,30}?(\d{1,2})[/-](\d{1,2})[/-](\d{4})", texto)
+            if match:
+                dia, mes, anio = match.groups()
+                try:
+                    fecha_pago = datetime(int(anio), int(mes), int(dia))
                 except ValueError:
                     fecha_pago = None
 
@@ -311,10 +375,11 @@ class OCRService:
             "folio": folio,
             "monto": monto,
             "cedula_detectada": cedula_detectada,
+            "contratos_en_red_wifi": contratos_en_red_wifi(texto),
             "fecha_pago": fecha_pago,
             "cuentas": sorted(set(cuentas)),
             "concepto": concepto,
-            "huella": huella_captura(monto, fecha_pago, cuentas),
+            "huella": huella_captura(monto, fecha_pago, cuentas) if con_hora else None,
             "parece_comprobante": bool(RE_SENAL_DE_PAGO.search(texto)),
             "exito": folio is not None and monto > 0,
         }

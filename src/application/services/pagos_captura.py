@@ -19,7 +19,7 @@ HORA_APLICAR_ADELANTADOS = time(8, 0)
 
 # Palabras que traen casi todos los conceptos y no identifican a nadie.
 PALABRAS_GENERICAS = {
-    "pago", "pagos", "internet", "fdeznet", "transferencia", "envio", "folio",
+    "pago", "pagos", "internet", "fdeznet", "transferencia", "transf", "envio", "folio",
     "cuenta", "servicio", "mensualidad", "renta", "comision", "incluye", "iva",
     "contactanos", "ayuda", "linea", "azteca", "banco", "tipo", "operacion",
     "concepto", "spei", "abono", "deposito", "mes", "del", "los", "las", "para",

@@ -367,28 +367,51 @@ def test_el_nombre_vale_solo_para_la_conversacion_reciente(horas, esperado):
     assert contexto.nombre_contacto == esperado
 
 
-def _mensaje_para_modelo(nombre, media_url=None, historial=()):
+def _mensaje_para_modelo(nombre, media_url=None, historial=(), cliente=CLIENTE, registrados=(), telefono_busqueda=None):
     servicio = AgenteIAService(_DB())
 
     class _Resultado:
+        def __init__(self, filas):
+            self.filas = filas
+
         def scalars(self):
             return self
 
         def all(self):
-            return list(historial)
+            return list(self.filas)
 
-    async def execute(_consulta):
-        return _Resultado()
+    async def execute(consulta):
+        if "clientes" in str(consulta):
+            return _Resultado(SimpleNamespace(cedula=c, nombre=n, telefono=t) for c, n, t in registrados)
+        return _Resultado(historial)
 
     servicio.db.execute = execute
-    contexto = _contexto(cliente=CLIENTE, db=servicio.db)
+    contexto = _contexto(cliente=cliente, db=servicio.db)
+    contexto.telefono_busqueda = telefono_busqueda
     contexto.nombre_contacto = nombre
     return asyncio.run(servicio._mensaje_usuario(contexto, "no tengo internet", media_url))
 
 
-def test_al_iniciar_la_conversacion_se_pide_el_nombre_aunque_sea_cliente():
+def test_al_cliente_identificado_no_se_le_pregunta_el_nombre():
     texto = _mensaje_para_modelo(None)
-    assert "INICIO DE CONVERSACIÓN" in texto and "CLIENTE IDENTIFICADO" in texto
+    assert "Hablas con Juana Pérez" in texto and "NO le preguntes" in texto
+    assert "INICIO DE CONVERSACIÓN" not in texto and "CLIENTE IDENTIFICADO" in texto
+
+
+def test_desde_el_telefono_registrado_no_se_le_pregunta_el_nombre():
+    texto = _mensaje_para_modelo(
+        None, cliente=None, registrados=[("D440", "Pedro López", "961 123 4567")],
+        telefono_busqueda="5219611234567@c.us",
+    )
+    assert "Hablas con Pedro López" in texto and "INICIO DE CONVERSACIÓN" not in texto
+    # Saber su nombre no lo identifica para consultar la cuenta.
+    assert "Cliente NO identificado" in texto
+
+
+def test_sin_saber_quien_es_se_pregunta_el_nombre_salvo_que_mande_su_contrato():
+    texto = _mensaje_para_modelo(None, cliente=None)
+    assert "INICIO DE CONVERSACIÓN" in texto and "con quién tienes el gusto" in texto
+    assert "trae su número de contrato, usa identificar_cliente" in texto
 
 
 def test_con_nombre_ya_no_se_vuelve_a_preguntar():
@@ -397,7 +420,7 @@ def test_con_nombre_ya_no_se_vuelve_a_preguntar():
 
 
 def test_si_llega_un_comprobante_se_revisa_antes_de_preguntar_el_nombre():
-    texto = _mensaje_para_modelo(None, media_url="whatsapp-media://pago.jpg")
+    texto = _mensaje_para_modelo(None, media_url="whatsapp-media://pago.jpg", cliente=None)
     assert "primero usa leer_comprobante" in texto
     assert "No esperes su nombre" in texto
 
@@ -626,7 +649,7 @@ def _datos_de_pago(cliente, plantilla=PLANTILLA_DATOS, registrados=(), telefono_
             return plantilla
 
         def all(self):
-            return [SimpleNamespace(cedula=c, telefono=t) for c, t in registrados]
+            return [SimpleNamespace(cedula=c, nombre="Cliente " + c, telefono=t) for c, t in registrados]
 
     db = _DB()
 

@@ -30,6 +30,7 @@ def test_ocr_extrae_folio_monto_y_cedula_de_transferencia():
         "folio": "202607281234567890",
         "monto": 500.0,
         "cedula_detectada": "329B",
+        "contratos_en_red_wifi": [],
         "fecha_pago": None,
         "cuentas": [],
         "concepto": "329b",
