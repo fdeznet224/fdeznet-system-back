@@ -1172,8 +1172,9 @@ async def asignar_politica_cobranza(
 # ==========================================
 @router.get("/pagos-reporte")
 async def obtener_reporte_cobranza(
-    start_date: date,
-    end_date: date,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    busqueda: Optional[str] = None,
     usuario_id: Optional[int] = Query(None),
     router_id: Optional[int] = Query(None),
     zona_id: Optional[int] = Query(None),
@@ -1198,8 +1199,25 @@ async def obtener_reporte_cobranza(
      .outerjoin(ZonaModel, ClienteModel.zona_id == ZonaModel.id)\
      .outerjoin(RouterModel, ClienteModel.router_id == RouterModel.id)
 
-    query = query.where(func.date(PagoModel.fecha_pago) >= start_date)
-    query = query.where(func.date(PagoModel.fecha_pago) <= end_date)
+    busqueda = (busqueda or "").strip()
+    if busqueda:
+        # Nombre, contrato, número de pago o factura, o referencia: en todas las fechas.
+        termino = f"%{busqueda.lower()}%"
+        condiciones = [
+            func.lower(ClienteModel.nombre).like(termino),
+            func.lower(ClienteModel.cedula).like(termino),
+            ClienteModel.cedula == normalizar_contrato(busqueda),
+            func.lower(PagoModel.referencia).like(termino),
+        ]
+        numero = busqueda.lstrip("#")
+        if numero.isdigit():
+            condiciones += [PagoModel.id == int(numero), PagoModel.factura_id == int(numero)]
+        query = query.where(or_(*condiciones))
+    elif start_date and end_date:
+        query = query.where(func.date(PagoModel.fecha_pago) >= start_date)
+        query = query.where(func.date(PagoModel.fecha_pago) <= end_date)
+    else:
+        raise HTTPException(status_code=400, detail="Indica un rango de fechas o una búsqueda")
     query = query.where(PagoModel.estado == "aplicado")
 
     if current_user.rol != 'admin':
@@ -1212,7 +1230,10 @@ async def obtener_reporte_cobranza(
     if zona_id:
         query = query.where(ClienteModel.zona_id == zona_id)
 
-    result = await db.execute(query.order_by(desc(PagoModel.id)))
+    query = query.order_by(desc(PagoModel.id))
+    if busqueda:
+        query = query.limit(200)
+    result = await db.execute(query)
     pagos = result.all()
 
     total = sum([p.monto_total for p in pagos])
@@ -1246,25 +1267,37 @@ async def get_estadisticas(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    query = select(
-        func.extract('month', FacturaModel.fecha_emision).label('mes'),
-        func.sum(FacturaModel.total).label('total')
-    ).where(func.extract('year', FacturaModel.fecha_emision) == anio)
-
+    """Por mes: lo facturado (sin anuladas) y lo cobrado (pagos aplicados)."""
+    routers = None
     if current_user.rol != 'admin':
-         allowed = [r.id for r in current_user.routers_asignados]
-         if allowed:
-             query = query.join(ClienteModel).where(ClienteModel.router_id.in_(allowed))
-         else:
-             return []
+        routers = [r.id for r in current_user.routers_asignados]
+        if not routers:
+            return []
     elif router_id:
-        query = query.join(ClienteModel).where(ClienteModel.router_id == router_id)
-        
-    query = query.group_by('mes').order_by('mes')
-    result = await db.execute(query)
-    data = result.all()
-    
-    return [{"mes": int(row.mes), "total": float(row.total)} for row in data]
+        routers = [router_id]
+
+    mes_factura = func.extract('month', FacturaModel.fecha_emision)
+    facturado = select(mes_factura.label('mes'), func.sum(FacturaModel.total).label('total')).where(
+        func.extract('year', FacturaModel.fecha_emision) == anio,
+        FacturaModel.estado.notin_(["anulada", "sin_cargo"]),
+    )
+    mes_pago = func.extract('month', PagoModel.fecha_pago)
+    cobrado = select(mes_pago.label('mes'), func.sum(PagoModel.monto_total).label('total')).where(
+        func.extract('year', PagoModel.fecha_pago) == anio,
+        PagoModel.estado == "aplicado",
+    )
+    if routers:
+        facturado = facturado.join(ClienteModel, FacturaModel.cliente_id == ClienteModel.id).where(
+            ClienteModel.router_id.in_(routers))
+        cobrado = cobrado.join(ClienteModel, PagoModel.cliente_id == ClienteModel.id).where(
+            ClienteModel.router_id.in_(routers))
+
+    meses: dict[int, dict] = {}
+    for consulta, campo in ((facturado, "total"), (cobrado, "cobrado")):
+        for fila in (await db.execute(consulta.group_by('mes').order_by('mes'))).all():
+            mes = meses.setdefault(int(fila.mes), {"mes": int(fila.mes), "total": 0.0, "cobrado": 0.0})
+            mes[campo] = float(fila.total or 0)
+    return [meses[m] for m in sorted(meses)]
 
 
 @router.get("/cobranza/pendientes-diarios")
