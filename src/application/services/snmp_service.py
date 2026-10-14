@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from src.infrastructure.models import OLTModel, ClienteModel
-from src.infrastructure.snmp_oids import MAPA_OIDS, procesar_potencia
+from src.infrastructure.snmp_oids import MAPA_OIDS, cruzar_epon, procesar_potencia
 from src.application.services.cache_olt import lectura_compartida
 
 class SNMPMonitorService:
@@ -81,7 +81,9 @@ class SNMPMonitorService:
             raise ValueError(f"No hay OIDs configurados para el modelo {modelo_key}")
 
         tipo_tec = conf['TIPO']
-        rama_walk = conf['RAMA_POTENCIA'] if tipo_tec == 'EPON' else conf['RAMA_IDS']
+        if tipo_tec == 'EPON':
+            return await self._escanear_epon(ip, comunidad, conf)
+        rama_walk = conf['RAMA_IDS']
         
         res_walk = await self._ejecutar_comando(
             "/usr/bin/snmpwalk",
@@ -113,40 +115,47 @@ class SNMPMonitorService:
                 else:
                     val_id = valor_crudo.replace('"', '')
 
-                if tipo_tec == 'EPON':
-                    # Lógica V-SOL EPON (No cambia)
-                    pwr_limpia = procesar_potencia(val_id, tipo_tec)
-                    sub_idx = full_idx.split('.')[-1]
-                    val_id = await self._consulta_individual(ip, comunidad, f"{conf['RAMA_IDS']}.{sub_idx}")
+                # Lógica GPON (V-SOL 1 Pon y 4 Pon)
+                if modelo_key == 'V1600GS':
+                    # Ajuste para la de 1 puerto (Cambiamos el "0.x" por "1.x")
+                    idx_potencia = full_idx.replace("0.", "1.") if full_idx.startswith("0.") else full_idx
                 else:
-                    # Lógica GPON (V-SOL 1 Pon y 4 Pon)
-                    if modelo_key == 'V1600GS':
-                        # Ajuste para la de 1 puerto (Cambiamos el "0.x" por "1.x")
-                        idx_potencia = full_idx.replace("0.", "1.") if full_idx.startswith("0.") else full_idx
-                    else:
-                        # Ajuste para la de 4 puertos (Usa el índice directo, ej. .1.4 o .2.1)
-                        idx_potencia = full_idx
-                        
-                    oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{idx_potencia}"
-                    raw_pwr = await self._consulta_individual(ip, comunidad, oid_buscar_potencia)
-                    pwr_limpia = procesar_potencia(raw_pwr, tipo_tec)
-
-                try:
-                    p_float = float(pwr_limpia)
-                    if p_float < -100:
-                        p_float = p_float / 100.0
-                    pwr_limpia = f"{p_float:.2f}"
-                    status = "online" if -5.0 > p_float > -35.0 else "offline"
-                except:
-                    pwr_limpia = "0.00"
-                    status = "offline"
-
-                reporte.append({
-                    "identificador": val_id.upper().strip(),
-                    "potencia": pwr_limpia,
-                    "status": status
-                })
+                    # Ajuste para la de 4 puertos (Usa el índice directo, ej. .1.4 o .2.1)
+                    idx_potencia = full_idx
+                    
+                oid_buscar_potencia = f"{conf['RAMA_POTENCIA']}.{idx_potencia}"
+                raw_pwr = await self._consulta_individual(ip, comunidad, oid_buscar_potencia)
+                pwr_limpia = procesar_potencia(raw_pwr, tipo_tec)
+                reporte.append({"identificador": val_id.upper().strip(), **self._potencia_y_estado(pwr_limpia)})
         return reporte
+
+    @staticmethod
+    def _potencia_y_estado(pwr_limpia: str) -> dict:
+        try:
+            p_float = float(pwr_limpia)
+            if p_float < -100:
+                p_float = p_float / 100.0
+            return {"potencia": f"{p_float:.2f}", "status": "online" if -5.0 > p_float > -35.0 else "offline"}
+        except (TypeError, ValueError):
+            return {"potencia": "0.00", "status": "offline"}
+
+    async def _escanear_epon(self, ip: str, comunidad: str, conf: dict) -> list[dict]:
+        """V-SOL EPON: la potencia se cruza con la MAC por PON y número de ONU."""
+        # En bloque y solo las columnas PON (2), ONU (3) y MAC (6): la tabla
+        # completa con snmpwalk tarda ~40 s en la V1601E02; así, ~2 s.
+        registro = "\n".join([
+            await self._ejecutar_comando(
+                "/usr/bin/snmpbulkwalk", "-v2c", "-c", comunidad, "-On", ip, f"{conf['RAMA_REGISTRO']}.{columna}"
+            )
+            for columna in (2, 3, 6)
+        ])
+        potencias = await self._ejecutar_comando(
+            "/usr/bin/snmpbulkwalk", "-v2c", "-c", comunidad, "-On", ip, conf['RAMA_POTENCIA']
+        )
+        return [
+            {"identificador": onu["identificador"].upper(), "pon": onu["pon"], **self._potencia_y_estado(onu["potencia"])}
+            for onu in cruzar_epon(registro, potencias, conf)
+        ]
 
     # ==========================================
     # 2. EL CEREBRO: CRUCE BD VS HARDWARE

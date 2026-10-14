@@ -79,7 +79,7 @@ class SenalOpticaService:
                 for o in datos.get("onus", [])
             ]
         onus = await SNMPMonitorService(self.db)._escanear_olt_fisica(olt.ip, olt.comunidad, olt.modelo)
-        return [{"identificador": o.get("identificador"), "rx": o.get("potencia"), "tx": None} for o in onus]
+        return [{"identificador": o.get("identificador"), "rx": o.get("potencia"), "tx": None, "pon": o.get("pon")} for o in onus]
 
     async def _servicios_por_onu(self) -> dict:
         """Identificador de ONU → (servicio, onu).
