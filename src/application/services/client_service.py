@@ -1159,6 +1159,25 @@ class ClientService:
                     "La caja NAP seleccionada no pertenece al router indicado"
                 )
 
+        if "caja_nap_id" in update_data or "puerto_nap" in update_data:
+            puerto_objetivo = update_data.get(
+                "puerto_nap", cliente_db.puerto_nap
+            )
+            if not nap_objetiva:
+                puerto_objetivo = None
+            if (nap_objetiva, puerto_objetivo) != (
+                cliente_db.caja_nap_id,
+                cliente_db.puerto_nap,
+            ):
+                await FTTHService(self.db).mover_puerto_desde_ficha(
+                    cliente_db,
+                    servicios_activos,
+                    nap_objetiva,
+                    puerto_objetivo,
+                )
+            update_data.pop("caja_nap_id", None)
+            update_data.pop("puerto_nap", None)
+
         # 🔥 4. LÓGICA DE VINCULACIÓN DE HARDWARE BLINDADA 🔥
         sn_texto = update_data.get("identificador_onu") or update_data.get("mac_address")
     

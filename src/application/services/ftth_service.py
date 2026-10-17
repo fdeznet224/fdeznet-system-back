@@ -546,6 +546,131 @@ class FTTHService:
         await self.db.flush()
         return lectura
 
+    async def mover_puerto_desde_ficha(
+        self,
+        cliente: ClienteModel,
+        servicios_activos: list,
+        caja_nap_id: Optional[int],
+        numero: Optional[int],
+    ):
+        """Corrige la caja/puerto desde la ficha del cliente.
+
+        El contrato se mueve junto con el cliente: si sólo cambiara la ficha,
+        el servicio dejaría el puerto viejo ocupado. Si el destino es de otro
+        cliente de la misma caja, intercambian lugares.
+        """
+        if bool(caja_nap_id) != bool(numero):
+            raise ValueError("Debes indicar la caja NAP y el puerto")
+        anterior = (cliente.caja_nap_id, cliente.puerto_nap)
+        destino = (caja_nap_id, numero)
+
+        propios = [
+            s for s in servicios_activos
+            if (s.caja_nap_id, s.puerto_nap) == anterior
+        ]
+        if not propios and len(servicios_activos) == 1:
+            # Contrato desfasado por ediciones anteriores de la ficha.
+            propios = list(servicios_activos)
+
+        socio = None
+        ajenos = []
+        if caja_nap_id:
+            caja = await self.db.get(CajaNapModel, caja_nap_id)
+            if numero < 1 or numero > (caja.capacidad or 0):
+                raise ValueError(
+                    f"El puerto debe estar entre 1 y {caja.capacidad}"
+                )
+            registro = (
+                await self.db.execute(
+                    select(PuertoNapModel).where(
+                        PuertoNapModel.caja_nap_id == caja_nap_id,
+                        PuertoNapModel.numero == numero,
+                    )
+                )
+            ).scalar_one_or_none()
+            if registro and registro.estado == "danado":
+                raise ValueError("El puerto NAP está marcado como dañado")
+            socio = (
+                await self.db.execute(
+                    select(ClienteModel).where(
+                        ClienteModel.caja_nap_id == caja_nap_id,
+                        ClienteModel.puerto_nap == numero,
+                        ClienteModel.id != cliente.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            ajenos = (
+                await self.db.execute(
+                    select(ServicioModel).where(
+                        ServicioModel.caja_nap_id == caja_nap_id,
+                        ServicioModel.puerto_nap == numero,
+                        ServicioModel.id.notin_(
+                            [s.id for s in propios] or [0]
+                        ),
+                    )
+                )
+            ).scalars().all()
+
+        intercambia = anterior[0] == caja_nap_id and anterior[1] is not None
+        if socio and not intercambia:
+            raise ValueError(
+                f"El puerto {numero} ya pertenece a {socio.nombre}. "
+                "Sólo se puede intercambiar con un cliente de la misma caja."
+            )
+
+        # Cada ocupante del destino se va a otro lado: el socio y su contrato
+        # al puerto que dejamos; un contrato cancelado o desfasado de otro
+        # cliente vuelve a donde está su ficha.
+        nuevos = {}
+        for servicio in ajenos:
+            if servicio.estado == "cancelado":
+                nuevos[servicio] = (None, None)
+            elif socio and servicio.cliente_id == socio.id:
+                nuevos[servicio] = anterior
+            else:
+                dueno = await self.db.get(ClienteModel, servicio.cliente_id)
+                nuevos[servicio] = (
+                    (dueno.caja_nap_id, dueno.puerto_nap)
+                    if dueno and dueno.puerto_nap != numero
+                    else (None, None)
+                )
+        for servicio in propios:
+            nuevos[servicio] = destino
+        if socio:
+            nuevos[socio] = anterior
+        nuevos[cliente] = destino
+
+        ids_clientes = {c.id for c in nuevos if isinstance(c, ClienteModel)}
+        ids_servicios = {s.id for s in nuevos if isinstance(s, ServicioModel)}
+        cajas = {c for c, _ in nuevos.values() if c} | {
+            c for c in (anterior[0], caja_nap_id) if c
+        }
+
+        # Primero se vacía todo para no chocar con los índices únicos en
+        # medio del intercambio.
+        for registro in (
+            await self.db.execute(
+                select(PuertoNapModel).where(
+                    (PuertoNapModel.cliente_id.in_(ids_clientes))
+                    | (PuertoNapModel.servicio_id.in_(ids_servicios or [0]))
+                )
+            )
+        ).scalars():
+            registro.estado = "libre"
+            registro.cliente_id = None
+            registro.servicio_id = None
+        for objeto in nuevos:
+            objeto.caja_nap_id = None
+            objeto.puerto_nap = None
+        await self.db.flush()
+
+        for objeto, (caja_id, puerto) in nuevos.items():
+            objeto.caja_nap_id = caja_id
+            objeto.puerto_nap = puerto
+        await self.db.flush()
+        for caja_id in cajas:
+            await self.sincronizar_puertos_nap(caja_id)
+
     async def _obtener_puerto_bloqueado(self, caja_nap_id: int, numero: int):
         caja = await self.db.get(CajaNapModel, caja_nap_id)
         if not caja:
