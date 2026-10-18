@@ -1,3 +1,4 @@
+import time
 import asyncio
 from decimal import Decimal
 from typing import Optional
@@ -304,6 +305,10 @@ async def potencias_por_cliente(
     return await SenalOpticaService(db).potencias_por_cliente()
 
 
+ATENUACION_TTL_S = 300
+_atenuacion_cache: tuple[float, dict] | None = None
+
+
 @router.get("/atenuacion")
 async def atenuacion(
     db: AsyncSession = Depends(get_db),
@@ -312,7 +317,15 @@ async def atenuacion(
     """Clientes cuya señal bajó contra su normal y troncales, NAP o zonas que bajaron juntas."""
     from src.application.services.atenuacion_service import AtenuacionService
 
-    return await AtenuacionService(db).analizar()
+    # Las lecturas de señal llegan cada hora y Clientes pide esto cada minuto:
+    # recalcular 7 días de lecturas en cada consulta no cambia el resultado.
+    global _atenuacion_cache
+    ahora = time.monotonic()
+    if _atenuacion_cache and ahora - _atenuacion_cache[0] < ATENUACION_TTL_S:
+        return _atenuacion_cache[1]
+    resultado = await AtenuacionService(db).analizar()
+    _atenuacion_cache = (ahora, resultado)
+    return resultado
 
 
 @router.get("/clientes/{cliente_id}/potencia-actual")

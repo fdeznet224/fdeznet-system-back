@@ -87,7 +87,8 @@ def test_catalogo_nap_combina_zona_router_y_olt():
     assert "cajas_nap.olt_id" in texto
     assert "olts.router_id" in texto
     assert set(consulta.compile().params.values()) == {3, 4, 5}
-    assert db.commits == 1
+    # Listar sólo lee: la sincronización de puertos va al abrir una caja.
+    assert db.commits == 0
 
 
 def test_cambio_plan_rechaza_plan_de_otro_mikrotik():

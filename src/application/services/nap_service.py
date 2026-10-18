@@ -64,6 +64,48 @@ class NapService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _ocupacion(self, cajas) -> dict[int, tuple[int, int]]:
+        """Puertos usados y libres de varias cajas con tres consultas.
+
+        Mismo criterio que la sincronización de puertos: servicios vigentes y
+        clientes antiguos ocupan; dañados y reservados tampoco se pueden usar.
+        """
+        ids = [c.id for c in cajas]
+        if not ids:
+            return {}
+        ocupados: dict[int, set] = {i: set() for i in ids}
+        bloqueados: dict[int, set] = {i: set() for i in ids}
+        for consulta in (
+            select(ServicioModel.caja_nap_id, ServicioModel.puerto_nap).where(
+                ServicioModel.caja_nap_id.in_(ids),
+                ServicioModel.puerto_nap.isnot(None),
+                ServicioModel.estado != "cancelado",
+            ),
+            select(ClienteModel.caja_nap_id, ClienteModel.puerto_nap).where(
+                ClienteModel.caja_nap_id.in_(ids),
+                ClienteModel.puerto_nap.isnot(None),
+            ),
+        ):
+            for caja_id, puerto in (await self.db.execute(consulta)).all():
+                ocupados[caja_id].add(puerto)
+        for caja_id, numero in (
+            await self.db.execute(
+                select(PuertoNapModel.caja_nap_id, PuertoNapModel.numero).where(
+                    PuertoNapModel.caja_nap_id.in_(ids),
+                    PuertoNapModel.estado.in_(("danado", "reservado")),
+                )
+            )
+        ).all():
+            bloqueados[caja_id].add(numero)
+
+        resultado = {}
+        for caja in cajas:
+            capacidad = caja.capacidad or 0
+            usados = {p for p in ocupados[caja.id] if 1 <= p <= capacidad}
+            fuera = {p for p in bloqueados[caja.id] if 1 <= p <= capacidad} - usados
+            resultado[caja.id] = (len(usados), max(capacidad - len(usados) - len(fuera), 0))
+        return resultado
+
     async def listar_naps(
         self,
         zona_id: int | None = None,
@@ -87,32 +129,12 @@ class NapService:
         result = await self.db.execute(stmt)
         cajas = result.scalars().all()
         
+        ocupacion = await self._ocupacion(cajas)
+
         respuesta = []
         for caja in cajas:
-            await FTTHService(self.db).sincronizar_puertos_nap(caja.id)
-            usados = int(
-                (
-                    await self.db.execute(
-                        select(func.count(PuertoNapModel.id)).where(
-                            PuertoNapModel.caja_nap_id == caja.id,
-                            PuertoNapModel.estado == "ocupado",
-                        )
-                    )
-                ).scalar_one()
-                or 0
-            )
-            libres = int(
-                (
-                    await self.db.execute(
-                        select(func.count(PuertoNapModel.id)).where(
-                            PuertoNapModel.caja_nap_id == caja.id,
-                            PuertoNapModel.estado == "libre",
-                        )
-                    )
-                ).scalar_one()
-                or 0
-            )
-            
+            usados, libres = ocupacion[caja.id]
+
             # 🔥 Mapeo manual 100% a prueba de fallos
             caja_dict = {
                 "id": caja.id,
@@ -138,7 +160,6 @@ class NapService:
             }
             respuesta.append(caja_dict)
 
-        await self.db.commit()
         return respuesta
 
     async def sugerir_naps(
@@ -205,48 +226,14 @@ class NapService:
                     if lat is not None and lng is not None:
                         estimadas.setdefault(caja_id, (float(lat), float(lng)))
 
+        ocupacion = await self._ocupacion(cajas)
         candidatas = []
         for caja in cajas:
             registrada = parsear_coordenadas(caja.coordenadas)
             posicion = registrada or estimadas.get(caja.id)
             if not posicion:
                 continue
-            # Mismo criterio que la sincronización de puertos: servicios
-            # vigentes y clientes antiguos ocupan; dañados y reservados
-            # tampoco se pueden usar.
-            usados = set(
-                (
-                    await self.db.execute(
-                        select(ServicioModel.puerto_nap).where(
-                            ServicioModel.caja_nap_id == caja.id,
-                            ServicioModel.puerto_nap.isnot(None),
-                            ServicioModel.estado != "cancelado",
-                        )
-                    )
-                ).scalars()
-            )
-            usados |= set(
-                (
-                    await self.db.execute(
-                        select(ClienteModel.puerto_nap).where(
-                            ClienteModel.caja_nap_id == caja.id,
-                            ClienteModel.puerto_nap.isnot(None),
-                        )
-                    )
-                ).scalars()
-            )
-            usados |= set(
-                (
-                    await self.db.execute(
-                        select(PuertoNapModel.numero).where(
-                            PuertoNapModel.caja_nap_id == caja.id,
-                            PuertoNapModel.estado.in_(("danado", "reservado")),
-                        )
-                    )
-                ).scalars()
-            )
-            capacidad = caja.capacidad or 0
-            libres = capacidad - len({p for p in usados if 1 <= p <= capacidad})
+            libres = ocupacion[caja.id][1]
             candidatas.append(
                 {
                     "id": caja.id,
@@ -257,7 +244,7 @@ class NapService:
                     "olt_id": caja.olt_id,
                     "olt_nombre": caja.olt.nombre if caja.olt else None,
                     "capacidad": caja.capacidad,
-                    "puertos_libres": max(libres, 0),
+                    "puertos_libres": libres,
                     "posicion": posicion,
                     "posicion_estimada": registrada is None,
                 }

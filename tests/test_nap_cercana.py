@@ -43,3 +43,36 @@ def test_ruta_cercanas_no_choca_con_id():
         for p in app.openapi()["paths"]["/infraestructura/naps/cercanas"]["get"]["parameters"]
     }
     assert {"latitud", "longitud", "zona_id", "olt_id", "limite"} <= params
+
+
+def test_ocupacion_en_bloque_cuenta_como_la_sincronizacion():
+    import asyncio
+    from types import SimpleNamespace
+
+    from src.application.services.nap_service import NapService
+
+    class _Filas:
+        def __init__(self, filas):
+            self.filas = filas
+
+        def all(self):
+            return self.filas
+
+    class _DB:
+        def __init__(self):
+            self.respuestas = iter([
+                _Filas([(1, 1), (1, 2), (2, 9)]),   # servicios (el 9 no existe en una caja de 8)
+                _Filas([(1, 2), (1, 3)]),           # clientes antiguos
+                _Filas([(1, 3), (1, 5), (2, 1)]),   # dañados/reservados
+            ])
+
+        async def execute(self, _consulta):
+            return next(self.respuestas)
+
+    cajas = [SimpleNamespace(id=1, capacidad=8), SimpleNamespace(id=2, capacidad=8), SimpleNamespace(id=3, capacidad=16)]
+    ocupacion = asyncio.run(NapService(_DB())._ocupacion(cajas))
+
+    # Caja 1: ocupan 1, 2 y 3; el 5 está dañado → 4 libres.
+    assert ocupacion[1] == (3, 4)
+    assert ocupacion[2] == (0, 7)
+    assert ocupacion[3] == (0, 16)
