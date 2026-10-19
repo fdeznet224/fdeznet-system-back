@@ -22,6 +22,13 @@ LARGO_MAXIMO = 100
 # remota en la WAN). Vacío: el clic en la IP abre el puerto 80.
 CLAVE_PUERTO_RADIO = "router_radio_puerto"
 PUERTO_RADIO_PREDETERMINADO = "8080"
+# Puerto web de la ONU por marca al abrirla por su IP desde el admin (Huawei
+# en el 80, ZTE en el 8090). Si no responde se prueban los demás.
+PUERTO_ONU_PREDETERMINADO = {"huawei": "80", "zte": "8090"}
+# Antena Ubiquiti del radioenlace: AirOS atiende en HTTPS (el 80 redirige al
+# 443 y se perdería el puerto del puente del MikroTik).
+CLAVE_PUERTO_ANTENA = "antena_puerto"
+PUERTO_ANTENA_PREDETERMINADO = "443"
 
 
 def _clave(marca: str, campo: str) -> str:
@@ -39,6 +46,13 @@ def marca_de_onu(identificador: Optional[str], modelo: Optional[str] = None) -> 
     return None
 
 
+def _puerto_valido(puerto: str, nombre: str) -> str:
+    puerto = str(puerto or "").strip()
+    if puerto and not (puerto.isdigit() and 1 <= int(puerto) <= 65535):
+        raise ValueError(f"El puerto {nombre} debe ser un número de 1 a 65535")
+    return puerto
+
+
 def cuentas_de(texto: str) -> list[dict]:
     """"usuario:clave,usuario2:clave2" → [{usuario, clave}, ...]."""
     cuentas = []
@@ -50,7 +64,7 @@ def cuentas_de(texto: str) -> list[dict]:
 
 
 async def obtener_acceso_onu(db: AsyncSession) -> dict:
-    claves = [_clave(m, c) for m in MARCAS for c in ("url", "cuentas")] + [CLAVE_PUERTO_RADIO]
+    claves = [_clave(m, c) for m in MARCAS for c in ("url", "cuentas", "puerto")] + [CLAVE_PUERTO_RADIO, CLAVE_PUERTO_ANTENA]
     guardado = {
         r.clave: r.valor
         for r in (
@@ -63,9 +77,11 @@ async def obtener_acceso_onu(db: AsyncSession) -> dict:
                 campo: guardado.get(_clave(marca, campo)) if _clave(marca, campo) in guardado else PREDETERMINADO[marca][campo]
                 for campo in ("url", "cuentas")
             }
+            | {"puerto": guardado.get(_clave(marca, "puerto")) or PUERTO_ONU_PREDETERMINADO[marca]}
             for marca in MARCAS
         },
         "radio": {"puerto": guardado.get(CLAVE_PUERTO_RADIO, PUERTO_RADIO_PREDETERMINADO)},
+        "antena": {"puerto": guardado.get(CLAVE_PUERTO_ANTENA) or PUERTO_ANTENA_PREDETERMINADO},
     }
 
 
@@ -79,10 +95,11 @@ async def guardar_acceso_onu(db: AsyncSession, datos: dict) -> dict:
             if campo == "url" and valor and not valor.startswith(("http://", "https://")):
                 valor = f"http://{valor}"
             valores[_clave(marca, campo)] = valor
-    puerto = str((datos.get("radio") or {}).get("puerto") or "").strip()
-    if puerto and not (puerto.isdigit() and 1 <= int(puerto) <= 65535):
-        raise ValueError("El puerto del router de radio debe ser un número de 1 a 65535")
-    valores[CLAVE_PUERTO_RADIO] = puerto
+        valores[_clave(marca, "puerto")] = _puerto_valido(
+            (datos.get(marca) or {}).get("puerto"), f"de la ONU {marca.upper()}"
+        )
+    valores[CLAVE_PUERTO_RADIO] = _puerto_valido((datos.get("radio") or {}).get("puerto"), "del router de radio")
+    valores[CLAVE_PUERTO_ANTENA] = _puerto_valido((datos.get("antena") or {}).get("puerto"), "de la antena")
     existentes = {
         r.clave: r
         for r in (

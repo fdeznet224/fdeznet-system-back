@@ -708,16 +708,22 @@ async def cambiar_password_default(
 class AccesoOnuMarca(BaseModel):
     url: str = ""
     cuentas: str = ""
+    puerto: str = ""
 
 
 class AccesoRouterRadio(BaseModel):
     puerto: str = "8080"
 
 
+class AccesoAntena(BaseModel):
+    puerto: str = "443"
+
+
 class AccesoOnuConfig(BaseModel):
     huawei: AccesoOnuMarca = AccesoOnuMarca()
     zte: AccesoOnuMarca = AccesoOnuMarca()
     radio: AccesoRouterRadio = AccesoRouterRadio()
+    antena: AccesoAntena = AccesoAntena()
 
 
 @router.get("/acceso-onu")

@@ -242,6 +242,21 @@ async def obtener_datos_portal(
 # ==========================================
 
 
+@router.get("/acceso-web")
+async def acceso_web_equipo(
+    ip: str = Query(..., min_length=7, max_length=45),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Página de la ONU o del router de radio del cliente en el puerto que contesta."""
+    from src.application.services.acceso_remoto_service import AccesoRemotoService
+
+    try:
+        return await AccesoRemotoService(db).equipo_por_ip(ip)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
 @router.get("/buscar")
 async def buscar_clientes_global(
     query: str = Query(..., min_length=3), 
@@ -597,6 +612,23 @@ async def verificar_antena_cliente(
         raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"No se pudo revisar la antena: {str(error)[:200]}") from error
+
+
+@router.post("/{cliente_id}/acceso-antena")
+async def acceso_antena_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Puente temporal en el MikroTik para abrir la antena que está en su VLAN."""
+    from src.application.services.acceso_remoto_service import AccesoRemotoService
+
+    try:
+        return {"status": "success", "data": await AccesoRemotoService(db).abrir_antena(cliente_id)}
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"No se pudo abrir la antena: {str(error)[:200]}") from error
 
 
 @router.post("/{cliente_id}/reiniciar-onu")

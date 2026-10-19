@@ -38,3 +38,16 @@ def test_se_guarda_el_puerto_y_vacio_es_el_80():
 def test_un_puerto_invalido_se_rechaza(puerto):
     with pytest.raises(ValueError):
         asyncio.run(config.guardar_acceso_onu(_DB(), {"radio": {"puerto": puerto}}))
+
+
+def test_puertos_de_onu_por_marca_y_de_la_antena():
+    datos = asyncio.run(config.obtener_acceso_onu(_DB()))
+    assert datos["huawei"]["puerto"] == "80"
+    assert datos["zte"]["puerto"] == "8090"
+    assert datos["antena"] == {"puerto": "443"}
+    db = _DB()
+    datos = asyncio.run(config.guardar_acceso_onu(db, {"zte": {"puerto": "8091"}, "antena": {"puerto": "80"}}))
+    assert datos["zte"]["puerto"] == "8091"
+    assert datos["antena"]["puerto"] == "80"
+    # Vacío regresa al de fábrica de la marca.
+    assert asyncio.run(config.guardar_acceso_onu(db, {"zte": {"puerto": ""}}))["zte"]["puerto"] == "8090"
