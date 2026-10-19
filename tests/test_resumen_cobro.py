@@ -1,7 +1,8 @@
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
-from src.application.services.resumen_cobro import Prorrateo, resumen_cobro
+from src.application.services.resumen_cobro import Prorrateo, resumen_cobro, simular_cobro
 
 
 def test_mes_gratis_con_prorrateo_como_guadalupe():
@@ -66,3 +67,42 @@ def test_postpago_paga_al_terminar_el_mes_y_cambia_de_anio():
     assert resumen["primer_pago"]["fecha"] == "2027-02-01"
     assert "El 1 de febrero de 2027 paga $554.84 en un solo recibo" in resumen["explicacion"][2]
     assert resumen["explicacion"][3] == "Después paga $400.00 cada día 1, al terminar cada mes de servicio."
+
+
+def _plantilla(dia_pago, dias_tolerancia=10, impuesto=0, ciclo="calendario"):
+    return SimpleNamespace(dia_pago=dia_pago, dias_tolerancia=dias_tolerancia, impuesto=impuesto, ciclo_facturacion=ciclo)
+
+
+def test_simulador_da_lo_mismo_que_la_activacion_de_guadalupe():
+    simulado = simular_cobro(
+        activacion=date(2026, 10, 5), meses_gratis=1, precio_mensual=Decimal("350"), plantilla=_plantilla(15),
+    )
+    real = resumen_cobro(
+        activacion=date(2026, 10, 5),
+        meses_gratis=1,
+        gratis_hasta=date(2026, 11, 4),
+        proxima_mensualidad=date(2026, 11, 15),
+        tipo_facturacion="prepago",
+        precio_mensual=Decimal("350"),
+        impuesto_porcentaje=Decimal("0"),
+        dias_tolerancia=10,
+        prorrateo=Prorrateo(Decimal("112.90"), date(2026, 11, 5), date(2026, 11, 14), 10),
+    )
+    assert simulado == real
+
+
+def test_simulador_sin_prorrateo_si_se_instala_el_dia_de_pago():
+    simulado = simular_cobro(
+        activacion=date(2026, 10, 15), meses_gratis=0, precio_mensual=Decimal("300"), plantilla=_plantilla(15, 0),
+    )
+    assert simulado["prorrateo"] is None
+    assert simulado["primer_pago"] == {"fecha": "2026-10-15", "total": 300.0}
+
+
+def test_simulador_aniversario_paga_el_dia_que_se_activa():
+    simulado = simular_cobro(
+        activacion=date(2026, 10, 20), meses_gratis=0, precio_mensual=Decimal("300"),
+        plantilla=_plantilla(1, 0, ciclo="aniversario"),
+    )
+    assert simulado["prorrateo"] is None
+    assert simulado["primer_pago"]["fecha"] == "2026-10-20"

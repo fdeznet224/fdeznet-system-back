@@ -121,3 +121,45 @@ def resumen_cobro(
         "primer_pago": {"fecha": primer_pago.isoformat(), "total": float(total_primer_pago)},
         "explicacion": explicacion,
     }
+
+
+def simular_cobro(
+    *,
+    activacion: date,
+    meses_gratis: int,
+    precio_mensual: Decimal,
+    plantilla,
+) -> dict:
+    """El resumen que saldría al activar hoy, sin crear nada.
+
+    Repite los pasos de la activación: fechas del servicio, ciclo de la
+    plantilla y prorrateo inicial hasta el día de pago (solo en calendario).
+    """
+    cal = BillingCalendarService
+    ciclo = cal.resolver_ciclo(None, plantilla)
+    fechas = cal.calcular_fechas_servicio(
+        fecha_instalacion=activacion,
+        fecha_activacion=activacion,
+        meses_gratis=meses_gratis,
+        ciclo_facturacion=ciclo,
+    )
+    impuesto = (plantilla.impuesto if plantilla else 0) or 0
+    proxima = fechas.proxima_facturacion
+    prorrateo = None
+    if plantilla and ciclo != "aniversario":
+        periodo = cal.calcular_periodo_por_dia_ciclo(proxima, plantilla.dia_pago or 1, precio_mensual, impuesto)
+        if periodo.es_prorrateada:
+            prorrateo = Prorrateo(periodo.total, periodo.periodo_desde, periodo.periodo_hasta, periodo.dias_facturados)
+            proxima = periodo.siguiente_facturacion
+    return resumen_cobro(
+        activacion=activacion,
+        meses_gratis=meses_gratis,
+        gratis_hasta=fechas.fecha_fin_periodo_gratis,
+        proxima_mensualidad=proxima,
+        # La app del técnico siempre activa en prepago.
+        tipo_facturacion="prepago",
+        precio_mensual=precio_mensual,
+        impuesto_porcentaje=impuesto,
+        dias_tolerancia=(plantilla.dias_tolerancia or 0) if plantilla else 0,
+        prorrateo=prorrateo,
+    )
