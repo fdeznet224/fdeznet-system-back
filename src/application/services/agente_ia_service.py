@@ -47,6 +47,7 @@ from src.infrastructure.models import (
     MensajeChatModel,
     OrdenServicioModel,
     PlantillaMensajeModel,
+    PromesaPagoHistorialModel,
     ServicioModel,
     UsuarioModel,
     WhatsappIdentidadModel,
@@ -236,7 +237,10 @@ class AgenteIAService:
             respuesta = await self._conversar(modelo, clave, mensajes, contexto)
         except Exception as exc:
             logger.exception("El agente de IA falló en el chat %s", telefono)
-            return await self._fallar(interaccion, f"{type(exc).__name__}: {str(exc)[:500]}", contexto)
+            await self._fallar(interaccion, f"{type(exc).__name__}: {str(exc)[:500]}", contexto)
+            if modo == "automatico":
+                await self._no_dejar_sin_respuesta(contexto, interaccion)
+            return interaccion
 
         interaccion.respuesta_propuesta = respuesta
         interaccion.herramientas_json = _texto_json(contexto.consultas)
@@ -433,6 +437,10 @@ class AgenteIAService:
         ).format("\n".join(lineas) or "(sin mensajes previos)", hora, quien, identidad, texto or "", adjunto)
 
     async def _fallar(self, interaccion, error, contexto=None):
+        if contexto:
+            # La falla pudo dejar la sesión a medias; se limpia antes de anotarla.
+            await contexto._deshacer()
+            interaccion.cliente_id = contexto.cliente.id if contexto.cliente else None
         interaccion.estado = "error"
         interaccion.error = error
         if contexto:
@@ -442,6 +450,28 @@ class AgenteIAService:
             interaccion.costo_usd = contexto.costo
         await self.db.commit()
         return interaccion
+
+    async def _no_dejar_sin_respuesta(self, contexto, interaccion):
+        """Si el agente falla (error del sistema o del proveedor de IA), el
+        cliente no se queda esperando: se le dice como lo diría una persona y
+        el chat pasa a un asesor."""
+        nombre = (contexto.nombre_contacto or (contexto.cliente.nombre if contexto.cliente else "") or "").split()
+        saludo = saludo_para(datetime.now()).capitalize()
+        texto = (
+            f"¡{saludo}{', *' + nombre[0] + '*' if nombre else ''}! Gracias por escribirnos.\n\n"
+            "Tuve un problema al revisar lo que me pides y no quiero darte un dato equivocado. "
+            "Ya le pasé tu mensaje a un asesor para que te atienda en breve por aquí. 🙏"
+        )
+        try:
+            if self.enviar:
+                await self.enviar(contexto.telefono, texto)
+                interaccion.respuesta_enviada = texto
+            await contexto._pasar_a_humano(
+                f"El agente no pudo atender «{(interaccion.mensaje_cliente or '')[:120]}» ({(interaccion.error or '')[:150]})"
+            )
+            await self.db.commit()
+        except Exception:
+            logger.exception("No se pudo avisar al chat %s que el agente falló", contexto.telefono)
 
 
 def saludo_para(momento: datetime) -> str:
@@ -772,6 +802,13 @@ class _Contexto:
             return {"error": "El cliente no tiene saldo pendiente."}
         if factura.es_promesa_activa:
             return {"error": f"Ya tiene una promesa activa hasta {factura.fecha_promesa_pago}."}
+        # Lo que se verifica para explicarle al cliente por qué no se pudo
+        # (el rollback del rechazo deja la factura vencida).
+        situacion = {
+            "saldo": str(factura.saldo_pendiente or 0),
+            "vencio": factura.fecha_vencimiento.isoformat() if factura.fecha_vencimiento else None,
+            "se_suspende_despues_del": factura.fecha_limite_corte.isoformat() if factura.fecha_limite_corte else None,
+        }
         try:
             promesa, factura, cliente, _, reactivado = await BillingService(self.db).registrar_promesa_y_reactivar(
                 factura.id,
@@ -783,7 +820,22 @@ class _Contexto:
             )
         except ValueError as exc:
             await self._deshacer()
-            return {"error": str(exc)}
+            incumplidas = (
+                await self.db.execute(
+                    select(PromesaPagoHistorialModel.fecha_prometida)
+                    .where(
+                        PromesaPagoHistorialModel.cliente_id == self.cliente.id,
+                        PromesaPagoHistorialModel.estado == "incumplida",
+                        PromesaPagoHistorialModel.resuelta_en >= datetime.now() - timedelta(days=90),
+                    )
+                    .order_by(PromesaPagoHistorialModel.fecha_prometida.desc())
+                )
+            ).scalars().all()
+            return {
+                "error": str(exc),
+                **situacion,
+                "promesas_incumplidas_90_dias": [f.isoformat() for f in incumplidas],
+            }
         return {"registrada": True, "fecha_limite": fecha_promesa, "reactivado": bool(reactivado)}
 
     async def _crear_orden_tecnica(self, categoria: str, descripcion: str, ubicacion: str = "") -> dict:

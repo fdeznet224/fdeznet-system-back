@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -204,7 +204,17 @@ def test_si_la_promesa_se_rechaza_el_agente_igual_le_contesta(monkeypatch):
     async def refresh(objeto):
         vencidos.discard(id(objeto))
 
-    db.rollback, db.refresh = rollback, refresh
+    class _Incumplidas:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [date(2026, 9, 28), date(2026, 8, 29)]
+
+    async def execute(_consulta):
+        return _Incumplidas()
+
+    db.rollback, db.refresh, db.execute = rollback, refresh, execute
 
     async def config_bot(_db):
         return config
@@ -223,7 +233,8 @@ def test_si_la_promesa_se_rechaza_el_agente_igual_le_contesta(monkeypatch):
             pass
 
         async def _factura_cobrable(self, _cliente_id):
-            return SimpleNamespace(id=1, es_promesa_activa=False)
+            return SimpleNamespace(id=1, es_promesa_activa=False, saldo_pendiente=Decimal("350.00"),
+                                   fecha_vencimiento=date(2026, 10, 15), fecha_limite_corte=date(2026, 10, 25))
 
     class _Cobros:
         def __init__(self, _db):
@@ -263,7 +274,64 @@ def test_si_la_promesa_se_rechaza_el_agente_igual_le_contesta(monkeypatch):
 
     assert enviados == ["Tu promesa solo puede ser hasta el día 25."]
     assert interaccion.estado == "enviada" and interaccion.cliente_id == 29
-    assert "día 25" in json.loads(interaccion.acciones_resultado_json)[0]["resultado"]["error"]
+    rechazo = json.loads(interaccion.acciones_resultado_json)[0]["resultado"]
+    # Lo que el agente necesita para explicarle el motivo como una persona.
+    assert "día 25" in rechazo["error"]
+    assert rechazo["promesas_incumplidas_90_dias"] == ["2026-09-28", "2026-08-29"]
+    assert rechazo["se_suspende_despues_del"] == "2026-10-25" and rechazo["saldo"] == "350.00"
+
+
+def test_si_el_agente_falla_el_cliente_no_se_queda_sin_respuesta(monkeypatch):
+    db = _DB()
+    db.refresh = lambda _objeto: _nada()
+    config = SimpleNamespace(agente_modo="automatico", agente_api_key="clave", agente_modelo="m",
+                             agente_url="https://api.ejemplo", agente_conocimiento="")
+    cliente = SimpleNamespace(id=29, nombre="Norma Olivia de la Cruz", cedula="5EAE", estado="activo")
+    pausados, avisos, enviados = [], [], []
+
+    async def config_bot(_db):
+        return config
+
+    async def sin_pausa(_db, _telefono):
+        return False
+
+    async def pausar(_db, telefono, motivo, duracion=None):
+        pausados.append(telefono)
+
+    async def identidad(self):
+        self.cliente = cliente
+
+    async def avisar(self, texto):
+        avisos.append(texto)
+
+    async def caido(*_args):
+        raise RuntimeError("HTTP 503: el proveedor de IA no responde")
+
+    async def enviar(telefono, texto):
+        enviados.append(texto)
+        return True
+
+    monkeypatch.setattr(agente_mod, "get_or_create_bot_config", config_bot)
+    monkeypatch.setattr(agente_mod, "bot_en_pausa", sin_pausa)
+    monkeypatch.setattr(agente_mod, "pausar_bot", pausar)
+    monkeypatch.setattr(_Contexto, "cargar_identidad", identidad)
+    monkeypatch.setattr(_Contexto, "_avisar_personal", avisar)
+    servicio = AgenteIAService(db, enviar=enviar)
+    monkeypatch.setattr(servicio, "_llamar_modelo", caido)
+    monkeypatch.setattr(servicio, "_instrucciones", lambda _config: _nada())
+    monkeypatch.setattr(servicio, "_mensaje_usuario", lambda *_args: _nada())
+
+    interaccion = asyncio.run(servicio.atender("262491842027612@lid", None, 15542, "promesa de pago"))
+
+    assert interaccion.estado == "error" and "503" in interaccion.error
+    assert len(enviados) == 1 and "*Norma*" in enviados[0] and "asesor" in enviados[0]
+    assert interaccion.respuesta_enviada == enviados[0]
+    assert pausados == ["262491842027612@lid"]
+    assert "5EAE" in avisos[0] and "promesa de pago" in avisos[0]
+
+
+async def _nada(*_args, **_kwargs):
+    return None
 
 
 def _interaccion(pendientes):
