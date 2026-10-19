@@ -229,8 +229,11 @@ class AgenteIAService:
             {"role": "system", "content": await self._instrucciones(config)},
             {"role": "user", "content": await self._mensaje_usuario(contexto, texto, media_url)},
         ]
+        # Copia fija: si una acción falla y se deshace, la sesión olvida la
+        # configuración y leerla de nuevo a media conversación truena.
+        modelo = SimpleNamespace(agente_modelo=config.agente_modelo, agente_url=config.agente_url)
         try:
-            respuesta = await self._conversar(config, clave, mensajes, contexto)
+            respuesta = await self._conversar(modelo, clave, mensajes, contexto)
         except Exception as exc:
             logger.exception("El agente de IA falló en el chat %s", telefono)
             return await self._fallar(interaccion, f"{type(exc).__name__}: {str(exc)[:500]}", contexto)
@@ -527,8 +530,16 @@ class _Contexto:
             return await getattr(self, "_" + nombre)(**argumentos)
         except Exception as exc:
             logger.exception("Falló la acción %s", nombre)
-            await self.db.rollback()
+            await self._deshacer()
             return {"error": str(exc)[:300]}
+
+    async def _deshacer(self):
+        """Deshace una acción fallida sin perder la interacción ni al cliente,
+        que la conversación sigue usando (el rollback los deja vencidos)."""
+        await self.db.rollback()
+        for objeto in (self.interaccion, self.cliente):
+            if objeto is not None:
+                await self.db.refresh(objeto)
 
     # ------------------------------------------------------------ consultas
     async def _registrar_nombre(self, nombre: str) -> dict:
@@ -771,7 +782,7 @@ class _Contexto:
                 origen="bot",
             )
         except ValueError as exc:
-            await self.db.rollback()
+            await self._deshacer()
             return {"error": str(exc)}
         return {"registrada": True, "fecha_limite": fecha_promesa, "reactivado": bool(reactivado)}
 

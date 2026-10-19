@@ -178,6 +178,94 @@ def test_el_modelo_consulta_y_luego_responde(monkeypatch):
     assert contexto.costo == (Decimal(200) * Decimal("0.30") + Decimal(1800) * Decimal("0.006") + Decimal(200) * Decimal("1.20")) / Decimal(1_000_000)
 
 
+def test_si_la_promesa_se_rechaza_el_agente_igual_le_contesta(monkeypatch):
+    """Norma Olivia (19 oct): la promesa falló, se deshizo y el agente ya no respondió."""
+    vencidos = set()
+
+    class _Vence:
+        """Como un objeto de SQLAlchemy: tras un rollback, leerlo truena hasta refrescarlo."""
+
+        def __init__(self, **campos):
+            self.__dict__.update(campos)
+
+        def __getattribute__(self, nombre):
+            if not nombre.startswith("__") and id(self) in vencidos:
+                raise RuntimeError("MissingGreenlet: greenlet_spawn has not been called")
+            return object.__getattribute__(self, nombre)
+
+    config = _Vence(agente_modo="automatico", agente_api_key="clave", agente_modelo="deepseek-chat",
+                    agente_url="https://api.ejemplo", agente_conocimiento="")
+    cliente = _Vence(id=29, nombre="Norma Olivia", cedula="5EAE", estado="activo")
+    db = _DB()
+
+    async def rollback():
+        vencidos.update({id(config), id(cliente)})
+
+    async def refresh(objeto):
+        vencidos.discard(id(objeto))
+
+    db.rollback, db.refresh = rollback, refresh
+
+    async def config_bot(_db):
+        return config
+
+    async def sin_pausa(_db, _telefono):
+        return False
+
+    async def identidad(self):
+        self.cliente = cliente
+
+    async def nada(*_args, **_kwargs):
+        return None
+
+    class _Comprobantes:
+        def __init__(self, _db):
+            pass
+
+        async def _factura_cobrable(self, _cliente_id):
+            return SimpleNamespace(id=1, es_promesa_activa=False)
+
+    class _Cobros:
+        def __init__(self, _db):
+            pass
+
+        async def registrar_promesa_y_reactivar(self, *_args, **_kwargs):
+            raise ValueError("La promesa no puede pasar del día 25")
+
+    monkeypatch.setattr(agente_mod, "get_or_create_bot_config", config_bot)
+    monkeypatch.setattr(agente_mod, "bot_en_pausa", sin_pausa)
+    monkeypatch.setattr(agente_mod, "vincular_chat", nada)
+    monkeypatch.setattr(agente_mod, "ComprobanteService", _Comprobantes)
+    monkeypatch.setattr(agente_mod, "BillingService", _Cobros)
+    monkeypatch.setattr(_Contexto, "cargar_identidad", identidad)
+
+    respuestas = iter([
+        _respuesta_modelo(llamadas=[{"id": "t1", "function": {"name": "registrar_promesa", "arguments": '{"fecha": "2026-10-27"}'}}]),
+        _respuesta_modelo(contenido="Tu promesa solo puede ser hasta el día 25."),
+    ])
+
+    async def llamar(modelo, clave, mensajes):
+        assert modelo.agente_modelo == "deepseek-chat" and modelo.agente_url == "https://api.ejemplo"
+        return next(respuestas)
+
+    enviados = []
+
+    async def enviar(telefono, texto):
+        enviados.append(texto)
+        return True
+
+    servicio = AgenteIAService(db, enviar=enviar)
+    monkeypatch.setattr(servicio, "_llamar_modelo", llamar)
+    monkeypatch.setattr(servicio, "_instrucciones", lambda _config: nada())
+    monkeypatch.setattr(servicio, "_mensaje_usuario", lambda *_args: nada())
+
+    interaccion = asyncio.run(servicio.atender("262491842027612@lid", None, 15542, "fdeznet promesa de pago"))
+
+    assert enviados == ["Tu promesa solo puede ser hasta el día 25."]
+    assert interaccion.estado == "enviada" and interaccion.cliente_id == 29
+    assert "día 25" in json.loads(interaccion.acciones_resultado_json)[0]["resultado"]["error"]
+
+
 def _interaccion(pendientes):
     return SimpleNamespace(
         id=3, estado="pendiente", telefono="5219611234567@c.us", cliente_id=7,
