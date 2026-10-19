@@ -1976,6 +1976,20 @@ class WhatsappIdentidadModel(Base):
     nombre_registrado_en = Column(DateTime, nullable=True)
 
 
+class WhatsappContratoModel(Base):
+    """Contratos que se atienden desde un chat: el suyo y, por ejemplo, el del
+    local o la casa de un familiar que también paga. El que está en uso es el
+    de whatsapp_identidades."""
+
+    __tablename__ = "whatsapp_contratos"
+
+    telefono = Column(String(60), primary_key=True)  # msg.from (número o LID)
+    cliente_id = Column(Integer, ForeignKey("clientes.id", ondelete="CASCADE"), primary_key=True)
+    # Cómo lo llama el cliente: "el local", "la casa de mi mamá".
+    etiqueta = Column(String(60), nullable=True)
+    creado_en = Column(DateTime, nullable=False, default=datetime.now)
+
+
 class BotPausaModel(Base):
     """Chats donde el bot no contesta solo porque atiende un asesor."""
 

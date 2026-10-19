@@ -94,6 +94,9 @@ def test_contrato_correcto_identifica_y_recuerda_el_chat(monkeypatch):
         def first(self):
             return CLIENTE
 
+        def all(self):
+            return []
+
     async def execute(_consulta):
         return _Resultado()
 
@@ -103,8 +106,129 @@ def test_contrato_correcto_identifica_y_recuerda_el_chat(monkeypatch):
 
     assert resultado == {"identificado": True, "nombre": "Juana", "estado_servicio": "activo"}
     assert contexto.cliente is CLIENTE
-    identidad = db.agregados[0]
+    identidad, ligado = db.agregados
     assert identidad.cliente_id == 7 and identidad.intentos_fallidos == 0
+    assert (ligado.telefono, ligado.cliente_id) == ("123456789012345@lid", 7)
+
+
+LID = "123456789012345@lid"
+BEIMAR = SimpleNamespace(id=195, nombre="Beimar Moreno Madrigal", cedula="A3F5", estado="activo", telefono="9611849215")
+ALFONSINA = SimpleNamespace(id=253, nombre="Alfonsina Suchiapa Hernandez", cedula="E8E2", estado="activo", telefono="9921153517")
+
+
+class _DBContratos(_DB):
+    """Base simulada con clientes, la identidad del chat y sus contratos ligados."""
+
+    def __init__(self, clientes, ligados, cliente_en_uso, telefono=LID):
+        self.registro = SimpleNamespace(telefono=telefono, cliente_id=cliente_en_uso, intentos_fallidos=0,
+                                        ultimo_intento_en=None, nombre_contacto=None, nombre_registrado_en=None)
+        super().__init__({("ClienteModel", c.id): c for c in clientes} | {("WhatsappIdentidadModel", telefono): self.registro})
+        self.clientes = clientes
+        for cliente_id, etiqueta in ligados:
+            self.objetos[("WhatsappContratoModel", (telefono, cliente_id))] = SimpleNamespace(
+                telefono=telefono, cliente_id=cliente_id, etiqueta=etiqueta)
+
+    def add(self, objeto):
+        super().add(objeto)
+        if type(objeto).__name__ == "WhatsappContratoModel":
+            self.objetos[("WhatsappContratoModel", (objeto.telefono, objeto.cliente_id))] = objeto
+
+    async def execute(self, sentencia):
+        texto = str(sentencia.compile(compile_kwargs={"literal_binds": True}))
+        if "FROM whatsapp_contratos" in texto:
+            filas = [o for (modelo, _), o in self.objetos.items() if modelo == "WhatsappContratoModel"]
+        elif "clientes.cedula =" in texto:
+            filas = [c for c in self.clientes if f"'{c.cedula}'" in texto]
+        else:
+            filas = list(self.clientes)
+        return SimpleNamespace(all=lambda: filas, scalars=lambda: SimpleNamespace(first=lambda: (filas or [None])[0], all=lambda: filas))
+
+
+def _contexto_chat(db, telefono=LID):
+    contexto = _Contexto(AgenteIAService(db), SimpleNamespace(mensaje_chat_id=1), "automatico", telefono, None, None)
+    asyncio.run(contexto.cargar_identidad())
+    return contexto
+
+
+def test_con_dos_contratos_el_agente_elige_antes_de_revisar_y_recuerda_como_lo_llama(monkeypatch):
+    """Beimar paga su casa (A3F5) y el local de su esposa (E8E2): dijo "el local" y se midió la casa."""
+    db = _DBContratos([BEIMAR, ALFONSINA], [(195, None), (253, None)], cliente_en_uso=195)
+    contexto = _contexto_chat(db)
+    assert [c.cedula for c in contexto.contratos] == ["A3F5", "E8E2"]
+
+    medido = []
+
+    async def medir(self):
+        medido.append(self.cliente.cedula)
+        return {"consumo_actual_mbps": 9.5}
+
+    monkeypatch.setattr(_Contexto, "_medir_velocidad", medir)
+    sin_elegir = asyncio.run(contexto.usar("medir_velocidad", {}))
+    assert "varios contratos" in sin_elegir["error"] and medido == []
+    assert [c["contrato"] for c in sin_elegir["contratos"]] == ["A3F5", "E8E2"]
+
+    elegido = asyncio.run(contexto.usar("elegir_contrato", {"contrato": "e8e2", "como_lo_llama": "el local"}))
+    assert elegido["elegido"] == "E8E2"
+    asyncio.run(contexto.usar("medir_velocidad", {}))
+    assert medido == ["E8E2"]
+    # El siguiente mensaje empieza con el local en uso y ya sabe cómo lo llama.
+    assert db.registro.cliente_id == 253
+    siguiente = _contexto_chat(db)
+    assert siguiente.cliente is ALFONSINA
+    assert {"contrato": "E8E2", "titular": ALFONSINA.nombre, "estado_servicio": "activo", "como_lo_llama": "el local"} in siguiente._lista_contratos()
+
+
+def test_con_un_solo_contrato_no_se_pregunta_cual(monkeypatch):
+    db = _DBContratos([BEIMAR], [(195, None)], cliente_en_uso=195)
+    contexto = _contexto_chat(db)
+
+    async def medir(self):
+        return {"consumo_actual_mbps": 1}
+
+    monkeypatch.setattr(_Contexto, "_medir_velocidad", medir)
+    assert asyncio.run(contexto.usar("medir_velocidad", {})) == {"consumo_actual_mbps": 1}
+
+
+def test_dar_otro_contrato_lo_agrega_sin_quitar_el_suyo():
+    db = _DBContratos([BEIMAR, ALFONSINA], [(195, None)], cliente_en_uso=195)
+    contexto = _contexto_chat(db)
+    assert len(contexto.contratos) == 1
+
+    resultado = asyncio.run(contexto.usar("identificar_cliente", {"contrato": "E8E2"}))
+
+    assert contexto.cliente is ALFONSINA and contexto.contrato_elegido
+    assert [c["contrato"] for c in resultado["contratos_del_chat"]] == ["A3F5", "E8E2"]
+    assert ("WhatsappContratoModel", (LID, 195)) in db.objetos and ("WhatsappContratoModel", (LID, 253)) in db.objetos
+
+
+def test_no_se_elige_un_contrato_que_no_es_del_chat():
+    db = _DBContratos([BEIMAR, ALFONSINA], [(195, None)], cliente_en_uso=195)
+    contexto = _contexto_chat(db)
+
+    resultado = asyncio.run(contexto.usar("elegir_contrato", {"contrato": "E8E2"}))
+
+    assert "identificar_cliente" in resultado["error"] and contexto.cliente is BEIMAR
+
+
+def test_una_familia_con_un_solo_numero_ve_sus_dos_contratos():
+    nereida = SimpleNamespace(id=40, nombre="Nereida Perez Caballero", cedula="4EF1", estado="activo", telefono="3112642951")
+    erika = SimpleNamespace(id=41, nombre="Erika Martinez Perez", cedula="48B3", estado="activo", telefono="311 264 2951")
+    telefono = "5213112642951@c.us"
+    db = _DBContratos([nereida, erika], [(40, None)], cliente_en_uso=40, telefono=telefono)
+
+    contexto = _contexto_chat(db, telefono)
+
+    assert [c.cedula for c in contexto.contratos] == ["4EF1", "48B3"]
+
+
+def test_un_chat_lid_no_toma_contratos_por_el_telefono_registrado():
+    # Sin el número real del chat no se sabe si es ese teléfono: pide el otro contrato.
+    otra = SimpleNamespace(id=41, nombre="Erika Martinez Perez", cedula="48B3", estado="activo", telefono="9611849215")
+    db = _DBContratos([BEIMAR, otra], [(195, None)], cliente_en_uso=195)
+
+    contexto = _contexto_chat(db)
+
+    assert [c.cedula for c in contexto.contratos] == ["A3F5"]
 
 
 def test_demasiados_contratos_incorrectos_bloquean_por_una_hora():

@@ -50,6 +50,7 @@ from src.infrastructure.models import (
     PromesaPagoHistorialModel,
     ServicioModel,
     UsuarioModel,
+    WhatsappContratoModel,
     WhatsappIdentidadModel,
 )
 
@@ -70,7 +71,7 @@ SEGUNDOS_ENTRE_LECTURAS = 2
 PRECIOS = {"entrada": Decimal("0.30"), "cache": Decimal("0.006"), "salida": Decimal("1.20")}
 
 CONSULTAS = {
-    "registrar_nombre", "identificar_cliente", "consultar_cuenta", "diagnosticar_conexion", "medir_velocidad",
+    "registrar_nombre", "identificar_cliente", "elegir_contrato", "consultar_cuenta", "diagnosticar_conexion", "medir_velocidad",
     "consultar_avisos", "datos_de_pago", "leer_comprobante",
 }
 ACCIONES = {
@@ -149,8 +150,12 @@ def _herramienta(nombre, descripcion, propiedades=None, requeridas=None):
 HERRAMIENTAS = [
     _herramienta("registrar_nombre", "Guarda el nombre con el que se presenta la persona en esta conversación.",
                  {"nombre": {"type": "string"}}, ["nombre"]),
-    _herramienta("identificar_cliente", "Identifica al cliente con su número de contrato (letras y/o números).",
+    _herramienta("identificar_cliente", "Identifica al cliente con su número de contrato (letras y/o números). Si el chat ya tenía otro contrato, este se agrega sin quitar el anterior.",
                  {"contrato": {"type": "string"}}, ["contrato"]),
+    _herramienta("elegir_contrato", "Cuando el chat tiene varios contratos: elige de cuál habla el cliente antes de consultar o registrar algo.",
+                 {"contrato": {"type": "string"},
+                  "como_lo_llama": {"type": "string", "description": "cómo lo llama el cliente, si lo dijo: \"el local\", \"la casa de mi mamá\""}},
+                 ["contrato"]),
     _herramienta("consultar_cuenta", "Saldo del cliente identificado con el desglose de lo que debe."),
     _herramienta("diagnosticar_conexion", "Revisa en vivo la sesión PPPoE (MikroTik) y la ONU y su potencia (OLT) del cliente identificado."),
     _herramienta("medir_velocidad", "Mide durante 6 segundos cuánto internet está consumiendo el cliente identificado y lo compara con su plan (para quejas de lentitud)."),
@@ -419,10 +424,26 @@ class AgenteIAService:
                 "el suyo. Si no, saluda, dile en una frase que con gusto lo ayudas con lo que pidió y "
                 "pregúntale con quién tienes el gusto; en esa respuesta no pidas contrato."
             )
-        if contexto.cliente:
+        if len(contexto.contratos) > 1:
+            lineas = "\n".join(
+                f"- {c['contrato']}: {c['titular']} (servicio {c['estado_servicio']})"
+                + (f", lo llama \"{c['como_lo_llama']}\"" if c.get("como_lo_llama") else "")
+                for c in contexto._lista_contratos()
+            )
+            identidad = (
+                f"CLIENTE IDENTIFICADO con VARIOS CONTRATOS en este chat:\n{lineas}\n"
+                f"El último que se atendió fue {contexto.cliente.cedula}. Antes de consultar su cuenta o su "
+                "conexión o de registrar algo, usa elegir_contrato: si por la conversación queda claro de cuál "
+                "habla (lo nombra, usa cómo lo llama o venían hablando de ese), elígelo sin preguntar; si no, "
+                "pregúntale cuál con el nombre del titular y el contrato. Si dice cómo lo llama (\"el local\", "
+                "\"la casa de mi mamá\"), pásalo en como_lo_llama. No le pidas un contrato que ya está en la lista."
+            )
+        elif contexto.cliente:
             identidad = (
                 f"CLIENTE IDENTIFICADO: {contexto.cliente.nombre} (contrato {contexto.cliente.cedula}, "
-                f"servicio {contexto.cliente.estado}). No le pidas su contrato."
+                f"servicio {contexto.cliente.estado}). No le pidas su contrato, salvo que hable de OTRO "
+                "servicio (otra casa, un local, la casa de un familiar): pídele el contrato de ese servicio "
+                "y usa identificar_cliente; se agrega a este chat sin quitar el suyo."
             )
         else:
             identidad = "Cliente NO identificado: si pide algo de su cuenta, pídele su número de contrato."
@@ -495,6 +516,10 @@ class _Contexto:
         self.media_url = media_url
         self.usuario = usuario
         self.cliente = None
+        # Contratos que atiende este chat; con más de uno se elige antes de consultar.
+        self.contratos = []
+        self.etiquetas = {}
+        self.contrato_elegido = False
         self.nombre_contacto = None
         self.consultas = []
         self.pendientes = []
@@ -521,6 +546,7 @@ class _Contexto:
             return
         if identidad.cliente_id:
             self.cliente = await self.db.get(ClienteModel, identidad.cliente_id)
+            await self._cargar_contratos()
         if (
             identidad.nombre_contacto
             and identidad.nombre_registrado_en
@@ -538,6 +564,12 @@ class _Contexto:
             return {"error": "Herramienta desconocida"}
         if nombre in REQUIEREN_CLIENTE and not self.cliente and not self._pago_con_cliente_sugerido(nombre, argumentos):
             return {"error": "Cliente no identificado: pídele su número de contrato y usa identificar_cliente."}
+        if nombre in REQUIEREN_CLIENTE and len(self.contratos) > 1 and not self.contrato_elegido:
+            return {
+                "error": "Este chat tiene varios contratos: usa elegir_contrato con el que corresponda "
+                         "(o pregúntale de cuál habla si no queda claro).",
+                "contratos": self._lista_contratos(),
+            }
         if nombre in CONSULTAS:
             try:
                 resultado = await getattr(self, "_" + nombre)(**argumentos)
@@ -613,9 +645,84 @@ class _Contexto:
         registro.cliente_id = cliente.id
         registro.verificado_en = ahora
         registro.intentos_fallidos = 0
+        # Se agrega a los contratos del chat; los que ya tenía se conservan.
+        if not await self.db.get(WhatsappContratoModel, (self.telefono, cliente.id)):
+            self.db.add(WhatsappContratoModel(telefono=self.telefono, cliente_id=cliente.id, creado_en=ahora))
         await self.db.commit()
         self.cliente = cliente
-        return {"identificado": True, "nombre": cliente.nombre.split()[0] if cliente.nombre else "", "estado_servicio": cliente.estado}
+        self.contrato_elegido = True
+        await self._cargar_contratos()
+        return {
+            "identificado": True,
+            "nombre": cliente.nombre.split()[0] if cliente.nombre else "",
+            "estado_servicio": cliente.estado,
+            **({"contratos_del_chat": self._lista_contratos()} if len(self.contratos) > 1 else {}),
+        }
+
+    async def _elegir_contrato(self, contrato: str, como_lo_llama: str = "") -> dict:
+        contrato = normalizar_contrato(contrato)
+        elegido = next((c for c in self.contratos if c.cedula == contrato), None)
+        if not elegido:
+            return {
+                "error": "Ese contrato no está ligado a este chat; si es suyo, usa identificar_cliente con él.",
+                "contratos": self._lista_contratos(),
+            }
+        self.cliente = elegido
+        self.contrato_elegido = True
+        # Queda en uso para los siguientes mensajes del chat.
+        registro = await self.db.get(WhatsappIdentidadModel, self.telefono)
+        if registro:
+            registro.cliente_id = elegido.id
+        etiqueta = " ".join((como_lo_llama or "").split())[:60]
+        if etiqueta:
+            ligado = await self.db.get(WhatsappContratoModel, (self.telefono, elegido.id))
+            if not ligado:
+                ligado = WhatsappContratoModel(telefono=self.telefono, cliente_id=elegido.id, creado_en=datetime.now())
+                self.db.add(ligado)
+            ligado.etiqueta = etiqueta
+            self.etiquetas[elegido.id] = etiqueta
+        await self.db.commit()
+        return {"elegido": elegido.cedula, "titular": elegido.nombre, "estado_servicio": elegido.estado}
+
+    async def _cargar_contratos(self):
+        """Los contratos ligados a este chat, más los que tienen registrado el
+        mismo teléfono que el chat (una familia con un solo número)."""
+        ligados = (
+            await self.db.execute(
+                select(WhatsappContratoModel.cliente_id, WhatsappContratoModel.etiqueta)
+                .where(WhatsappContratoModel.telefono == self.telefono)
+            )
+        ).all()
+        self.etiquetas = {fila.cliente_id: fila.etiqueta for fila in ligados if fila.etiqueta}
+        ids = {fila.cliente_id for fila in ligados} | ({self.cliente.id} if self.cliente else set())
+        telefono = self._telefono_de_contacto()
+        if telefono:
+            filas = (
+                await self.db.execute(
+                    select(ClienteModel.id, ClienteModel.telefono).where(
+                        ClienteModel.estado != "eliminado",
+                        ClienteModel.telefono.like(f"%{telefono}%"),
+                    )
+                )
+            ).all()
+            ids |= {f.id for f in filas if re.sub(r"\D", "", f.telefono or "")[-10:] == telefono}
+        contratos = []
+        for cliente_id in sorted(ids):
+            cliente = self.cliente if self.cliente and self.cliente.id == cliente_id else await self.db.get(ClienteModel, cliente_id)
+            if cliente and cliente.estado != "eliminado" and cliente.cedula:
+                contratos.append(cliente)
+        self.contratos = contratos
+
+    def _lista_contratos(self) -> list[dict]:
+        return [
+            {
+                "contrato": c.cedula,
+                "titular": c.nombre,
+                "estado_servicio": c.estado,
+                **({"como_lo_llama": self.etiquetas[c.id]} if c.id in self.etiquetas else {}),
+            }
+            for c in self.contratos
+        ]
 
     async def _consultar_cuenta(self) -> dict:
         estado = await BillingService(self.db).estado_cuenta_cliente(self.cliente.id)
