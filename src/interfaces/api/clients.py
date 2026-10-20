@@ -631,6 +631,25 @@ async def acceso_antena_cliente(
         raise HTTPException(status_code=502, detail=f"No se pudo abrir la antena: {str(error)[:200]}") from error
 
 
+@router.get("/{cliente_id}/consumo")
+async def consumo_cliente(
+    cliente_id: int,
+    mes: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
+    servicio_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "cajero", "tecnico"])),
+):
+    """Datos que usó el cliente cada día del mes, para mostrarle qué días tuvo internet."""
+    from src.application.services.consumo_service import ConsumoService
+
+    anio, numero = (int(parte) for parte in mes.split("-"))
+    if not 1 <= numero <= 12:
+        raise HTTPException(status_code=422, detail="Mes inválido")
+    if not await db.get(ClienteModel, cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return await ConsumoService(db).del_mes(cliente_id, anio, numero, servicio_id)
+
+
 @router.post("/{cliente_id}/reiniciar-onu")
 async def reiniciar_onu_cliente(
     cliente_id: int,

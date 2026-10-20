@@ -31,6 +31,7 @@ from src.application.services.vpn_service import leer_handshakes_wireguard
 from src.application.services.comprobante_service import ComprobanteService
 from src.application.services.descripcion_onu_service import DescripcionOnuService
 from src.application.services.antena_service import AntenaService
+from src.application.services.consumo_service import ConsumoService
 from src.application.services.acceso_remoto_service import AccesoRemotoService
 from src.application.services.senal_optica_service import SenalOpticaService, mensaje_alerta
 from src.application.services.storage_service import cleanup_storage, close_period, previous_period
@@ -84,6 +85,7 @@ async def limpiar_lecturas_automaticas(db, ahora: datetime | None = None) -> int
 async def tarea_limpiar_bitacora():
     async with SessionLocal() as db:
         await limpiar_lecturas_automaticas(db)
+        await ConsumoService(db).limpiar()
         borrados = await limpiar_bitacora(db)
         if borrados:
             db.add(LogCronjobModel(
@@ -125,6 +127,24 @@ async def tarea_leer_senal_optica():
         config = await db.get(ConfiguracionSistema, 1)
         hora = getattr(config, "hora_aviso_senal", None) if config else "08:00"
         await leer_senal_optica(db, avisar=toca_aviso_senal(hora, datetime.now()))
+
+
+async def tarea_registrar_consumo():
+    """Suma al día lo que creció el contador de cada sesión PPPoE."""
+    async with SessionLocal() as db:
+        try:
+            reporte = await ConsumoService(db).registrar()
+        except Exception as exc:
+            await db.rollback()
+            db.add(LogCronjobModel(nivel="ERROR", origen="Consumo", mensaje=f"Error registrando consumo: {str(exc)[:300]}"))
+            await db.commit()
+            return
+        if reporte["routers_con_error"]:
+            db.add(LogCronjobModel(
+                nivel="WARN", origen="Consumo",
+                mensaje=f"Consumo: no respondió {', '.join(reporte['routers_con_error'])}",
+            ))
+            await db.commit()
 
 
 async def tarea_descripcion_onus():

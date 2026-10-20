@@ -837,6 +837,29 @@ class LecturaOpticaModel(Base):
     tecnico = relationship("UsuarioModel")
 
 
+class ConsumoDiarioModel(Base):
+    """Datos que usó cada servicio por día, sumados de los contadores PPPoE del MikroTik."""
+    __tablename__ = "consumo_diario"
+    __table_args__ = (
+        UniqueConstraint("servicio_id", "fecha", name="uq_consumo_diario_servicio_fecha"),
+        Index("ix_consumo_diario_cliente_fecha", "cliente_id", "fecha"),
+        Index("ix_consumo_diario_fecha", "fecha"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    servicio_id = Column(Integer, ForeignKey("servicios.id", ondelete="CASCADE"), nullable=False)
+    cliente_id = Column(Integer, ForeignKey("clientes.id", ondelete="CASCADE"), nullable=False)
+    fecha = Column(Date, nullable=False)
+    bajada_bytes = Column(BigInteger, nullable=False, default=0, server_default="0")
+    subida_bytes = Column(BigInteger, nullable=False, default=0, server_default="0")
+    minutos_en_linea = Column(Integer, nullable=False, default=0, server_default="0")
+    # Última muestra: con ella se calcula cuánto creció el contador en la siguiente.
+    sesion_mk = Column(String(30), nullable=True)
+    ultimo_rx = Column(BigInteger, nullable=True)
+    ultimo_tx = Column(BigInteger, nullable=True)
+    ultima_lectura = Column(DateTime, nullable=True)
+
+
 class FacturaModel(Base):
     __tablename__ = "facturas"
     __table_args__ = (

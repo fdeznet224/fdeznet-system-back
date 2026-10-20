@@ -19,6 +19,7 @@ from src.jobs import (
     tarea_limpiar_bitacora,
     tarea_leer_senal_optica,
     tarea_descripcion_onus,
+    tarea_registrar_consumo,
     tarea_revisar_antenas,
     tarea_baja_automatica,
     tarea_monitoreo_routers,
@@ -240,6 +241,14 @@ async def lifespan(app: FastAPI):
         "cron",
         minute=5,
         id="senal_optica",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        tarea_registrar_consumo,
+        "interval",
+        minutes=5,
+        id="registrar_consumo",
         coalesce=True,
         max_instances=1,
     )
