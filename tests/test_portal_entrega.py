@@ -272,7 +272,7 @@ def test_lugar_de_pago_en_efectivo_segun_su_zona():
 def test_vender_una_ficha_en_el_sistema_de_fichas():
     from src.application.services.fichas_service import FichasService
 
-    pedidos = []
+    pedidos, llaves = [], []
 
     def responder(request: httpx.Request) -> httpx.Response:
         pedidos.append((request.method, request.url.path, request.headers.get("authorization")))
@@ -282,9 +282,13 @@ def test_vender_una_ficha_en_el_sistema_de_fichas():
             return httpx.Response(200, json=[{"id": "p1", "name": "1 día", "public_price": "10.00", "session_timeout": "1d", "time_mode": "x"}])
         if request.url.path.endswith("/seller/sales/preview"):
             assert json.loads(request.content)["quantity"] == 1
+            llaves.append(json.loads(request.content)["request_key"])
             return httpx.Response(200, json={"quote_token": "q" * 24, "profile_name": "1 día", "gross_total": "10.00"})
         if request.url.path.endswith("/seller/sales"):
             assert json.loads(request.content)["quote_token"] == "q" * 24
+            # La venta exige Idempotency-Key, la misma llave de la cotización.
+            if request.headers.get("idempotency-key") != llaves[0]:
+                return httpx.Response(422, json={"detail": "missing Idempotency-Key"})
             return httpx.Response(201, json={"folio": "F-77", "profile_name": "1 día", "gross_total": "10.00",
                                              "vouchers": [{"code": "ZN4821", "password": "ZN4821", "session_timeout": "1d"}]})
         return httpx.Response(404)

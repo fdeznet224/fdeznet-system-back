@@ -8,6 +8,7 @@ en el .env:
 Sin vendedor configurado el portal no ofrece fichas.
 """
 
+import logging
 import os
 import uuid
 from typing import Any, Dict, List, Optional
@@ -15,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 API_PREDETERMINADA = "http://127.0.0.1:8200/api/v1"
+logger = logging.getLogger(__name__)
 
 
 def configuracion() -> Optional[Dict[str, str]]:
@@ -50,17 +52,20 @@ class FichasService:
                 for p in respuesta.json()]
 
     async def vender(self, perfil_id: str) -> Dict[str, Any]:
-        """Una ficha: cotiza y vende con la misma llave, para no duplicar si se reintenta."""
+        """Una ficha: cotiza y vende con la misma llave (Idempotency-Key), para no duplicar si se reintenta."""
+        llave = uuid.uuid4().hex
         cotizacion = await self.http.post("/seller/sales/preview", json={
-            "profile_id": perfil_id, "quantity": 1, "request_key": uuid.uuid4().hex,
+            "profile_id": perfil_id, "quantity": 1, "request_key": llave,
         })
         if cotizacion.status_code >= 400:
+            logger.warning("Fichas: la cotización respondió %s %s", cotizacion.status_code, cotizacion.text[:500])
             raise ValueError("Esa ficha no está disponible ahora.")
         cotizacion = cotizacion.json()
-        venta = await self.http.post("/seller/sales", json={
+        venta = await self.http.post("/seller/sales", headers={"Idempotency-Key": llave}, json={
             "profile_id": perfil_id, "quantity": 1, "quote_token": cotizacion["quote_token"],
         })
         if venta.status_code >= 400:
+            logger.warning("Fichas: la venta respondió %s %s", venta.status_code, venta.text[:500])
             raise ValueError("El sistema de fichas no pudo generar la ficha; intenta en un momento.")
         venta = venta.json()
         fichas = venta.get("vouchers") or []
