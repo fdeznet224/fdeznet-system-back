@@ -2,6 +2,7 @@ from typing import List, Optional
 from datetime import date
 from decimal import Decimal
 import re 
+import httpx
 from sqlalchemy import select, or_, func
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Body, Query
@@ -648,6 +649,73 @@ async def consumo_cliente(
     if not await db.get(ClienteModel, cliente_id):
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
     return await ConsumoService(db).del_mes(cliente_id, anio, numero, servicio_id)
+
+
+class BloqueoEquipoRequest(BaseModel):
+    mac: str
+    bloquear: bool = True
+    servicio_id: int | None = None
+
+
+class ClaveWifiRequest(BaseModel):
+    ssid: str
+    clave: str
+    servicio_id: int | None = None
+
+
+def _error_red(error: Exception) -> HTTPException:
+    if isinstance(error, LookupError):
+        return HTTPException(status_code=404, detail=str(error))
+    if isinstance(error, ValueError):
+        return HTTPException(status_code=409, detail=str(error))
+    return HTTPException(status_code=502, detail="No se pudo hablar con la ONU del cliente.")
+
+
+@router.get("/{cliente_id}/red")
+async def red_cliente(
+    cliente_id: int,
+    servicio_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Equipos conectados a la ONU del cliente, sus redes WiFi y los equipos bloqueados."""
+    from src.application.services.red_cliente_service import RedClienteService
+
+    try:
+        return await RedClienteService(db).estado(cliente_id, servicio_id)
+    except (LookupError, ValueError, httpx.HTTPError) as error:
+        raise _error_red(error) from error
+
+
+@router.post("/{cliente_id}/red/bloqueo")
+async def bloqueo_equipo_cliente(
+    cliente_id: int,
+    datos: BloqueoEquipoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    from src.application.services.red_cliente_service import RedClienteService
+
+    try:
+        return await RedClienteService(db).bloquear(cliente_id, datos.mac, datos.bloquear, current_user, datos.servicio_id)
+    except (LookupError, ValueError, httpx.HTTPError) as error:
+        raise _error_red(error) from error
+
+
+@router.post("/{cliente_id}/red/clave-wifi")
+async def clave_wifi_cliente(
+    cliente_id: int,
+    datos: ClaveWifiRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Solo la contraseña: el nombre de la red va en el contrato y no se cambia aquí."""
+    from src.application.services.red_cliente_service import RedClienteService
+
+    try:
+        return await RedClienteService(db).cambiar_clave_wifi(cliente_id, datos.ssid, datos.clave, current_user, datos.servicio_id)
+    except (LookupError, ValueError, httpx.HTTPError) as error:
+        raise _error_red(error) from error
 
 
 @router.post("/{cliente_id}/reiniciar-onu")
