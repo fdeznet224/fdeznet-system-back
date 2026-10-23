@@ -272,6 +272,11 @@ class RedClienteService:
             "error_bloqueo": error_web,
         }
 
+    async def bloqueados(self, cliente_id: int, servicio_id: Optional[int] = None) -> Dict[str, Any]:
+        """Solo los filtros de la web de la ONU (unos segundos): para confirmar un bloqueo cuya
+        respuesta no llegó porque la ONU reinició el WiFi y cortó al celular que lo pidió."""
+        return {"bloqueados": sorted(await self._bloqueadas(await self._equipo(cliente_id, servicio_id)))}
+
     async def bloquear(self, cliente_id: int, mac: str, bloquear: bool, usuario=None, servicio_id: Optional[int] = None,
                        solo_principal: bool = False) -> Dict[str, Any]:
         mac = normalizar_mac(mac)

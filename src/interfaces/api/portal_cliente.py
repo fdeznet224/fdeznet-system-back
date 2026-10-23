@@ -182,6 +182,18 @@ async def red(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db
         raise _error(error) from error
 
 
+@router.get("/red/bloqueados")
+async def bloqueados(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    from src.application.services.red_cliente_service import RedClienteService
+
+    lecturas_trafico.ensure_allowed(f"bloqueados:{cliente.id}")
+    lecturas_trafico.register_failure(f"bloqueados:{cliente.id}")
+    try:
+        return await RedClienteService(db).bloqueados(cliente.id)
+    except (LookupError, ValueError, httpx.HTTPError) as error:
+        raise _error(error) from error
+
+
 @router.post("/red/bloqueo")
 async def bloqueo(datos: Bloqueo, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
     from src.application.services.red_cliente_service import RedClienteService
