@@ -62,6 +62,7 @@ from src.interfaces.api import (
     olts,
     ordenes,
     planes,
+    portal_cliente,
     servicios,
     support,
     sync,
@@ -333,6 +334,8 @@ app.include_router(
     dependencies=[Depends(require_valid_license)],
 )
 app.include_router(configuracion.public_router)
+# El cliente entra con su contrato: sesión propia, sin usuario del personal.
+app.include_router(portal_cliente.router, dependencies=[Depends(require_valid_license)])
 app.include_router(control_plane.heartbeat_router)
 
 authenticated = [Depends(get_current_active_user)]

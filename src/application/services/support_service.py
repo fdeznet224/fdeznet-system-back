@@ -34,7 +34,7 @@ CATEGORIAS_SOPORTE = {
     "cambio_domicilio",
     "otro",
 }
-CANALES_REPORTE = {"panel", "telefono", "whatsapp", "presencial", "monitoreo"}
+CANALES_REPORTE = {"panel", "telefono", "whatsapp", "presencial", "monitoreo", "portal"}
 ESTADOS_ABIERTOS = {"pendiente", "asignada", "en_camino", "trabajando"}
 
 

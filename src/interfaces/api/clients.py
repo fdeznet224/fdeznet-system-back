@@ -718,6 +718,36 @@ async def clave_wifi_cliente(
         raise _error_red(error) from error
 
 
+@router.get("/{cliente_id}/portal-acceso")
+async def portal_acceso_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Si el cliente ya puso su contraseña del portal y cuándo entró por última vez."""
+    from src.application.services.portal_cliente_service import PortalClienteService
+
+    if not await db.get(ClienteModel, cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return await PortalClienteService(db).estado_acceso(cliente_id)
+
+
+@router.post("/{cliente_id}/portal-acceso/restablecer")
+async def restablecer_portal_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Olvidó su contraseña: vuelve a entrar con su contrato y pone una nueva."""
+    from src.application.services.portal_cliente_service import PortalClienteService
+
+    if not await db.get(ClienteModel, cliente_id):
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    servicio = PortalClienteService(db)
+    await servicio.restablecer(cliente_id)
+    return await servicio.estado_acceso(cliente_id)
+
+
 @router.post("/{cliente_id}/reiniciar-onu")
 async def reiniciar_onu_cliente(
     cliente_id: int,

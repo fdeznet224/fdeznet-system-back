@@ -860,6 +860,23 @@ class ConsumoDiarioModel(Base):
     ultima_lectura = Column(DateTime, nullable=True)
 
 
+class PortalAccesoModel(Base):
+    """Contraseña propia del cliente en su portal.
+
+    Sin fila, la contraseña es su contrato y el portal le pide cambiarla antes
+    de mostrar nada (el contrato va en el nombre de su WiFi). Restablecer el
+    acceso borra la fila. `version` sube con cada cambio y cierra las sesiones
+    abiertas.
+    """
+    __tablename__ = "portal_accesos"
+
+    cliente_id = Column(Integer, ForeignKey("clientes.id", ondelete="CASCADE"), primary_key=True)
+    password_hash = Column(String(255), nullable=False)
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    cambiado_en = Column(DateTime, nullable=False, default=datetime.now)
+    ultimo_acceso = Column(DateTime, nullable=True)
+
+
 class FacturaModel(Base):
     __tablename__ = "facturas"
     __table_args__ = (

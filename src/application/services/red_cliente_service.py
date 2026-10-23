@@ -255,6 +255,25 @@ class RedClienteService:
                              f"Cliente {cliente_id} · ONU {equipo['identificador'] or equipo['ip']} · red {ssid}")
         return {"aplicado": aplicado, "bandas": len(indices)}
 
+    async def reiniciar(self, cliente_id: int, usuario=None, servicio_id: Optional[int] = None) -> Dict[str, Any]:
+        """Por TR-069 si la ONU se reporta; si no, por la OLT como en la ficha."""
+        equipo = await self._equipo(cliente_id, servicio_id)
+        async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
+            device_id = await self._id_tr069(http, equipo)
+            if device_id:
+                if await self._tarea(http, device_id, {"name": "reboot"}):
+                    await self._bitacora(usuario, "Reiniciar ONU", cliente_id,
+                                         f"Cliente {cliente_id} · ONU {equipo['identificador'] or equipo['ip']} · TR-069")
+                    return {"via": "tr069"}
+                # No contestó: se quita de la cola para que no se reinicie dos veces.
+                pendientes = (await http.get("/tasks", params={"query": json.dumps({"device": device_id, "name": "reboot"})})).json()
+                for tarea in pendientes:
+                    await http.delete(f"/tasks/{tarea['_id']}")
+        from src.application.services.vsol_api_service import VsolApiService
+
+        await VsolApiService(self.db).reiniciar_onu_de_cliente(cliente_id, usuario)
+        return {"via": "olt"}
+
     async def _bitacora(self, usuario, accion: str, cliente_id: int, detalle: str) -> None:
         self.db.add(LogActividadModel(
             usuario_id=getattr(usuario, "id", None), usuario_nombre=getattr(usuario, "usuario", None),
