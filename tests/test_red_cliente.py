@@ -81,11 +81,10 @@ class OnuFalsa:
         ruta = request.url.path
         datos = dict(httpx.QueryParams(request.content.decode())) if request.method == "POST" else {}
         if ruta.endswith("macfilter.asp"):
-            return httpx.Response(200, text=pagina_filtro(self.activo, self.modo, self.macs))
-        if ruta.endswith("tr069.asp"):
-            return httpx.Response(200, text='<input id="onttoken" type="hidden" value="tok123">')
+            return httpx.Response(200, text=pagina_filtro(self.activo, self.modo, self.macs)
+                                  + '<input type="hidden" name="onttoken" id="hwonttoken" value="abc123">')
         if ruta in ("/set.cgi", "/add.cgi", "/del.cgi"):
-            assert datos.pop("x.X_HW_Token") == "tok123"
+            assert datos.pop("x.X_HW_Token") == "abc123"
             self.envios.append((ruta, datos))
             if ruta == "/set.cgi":
                 self.modo = datos.get("x.MacFilterPolicy", self.modo)
@@ -212,3 +211,31 @@ def test_nbi_configurable(monkeypatch):
     assert red.url_nbi() == "http://127.0.0.1:7557"
     monkeypatch.setenv("GENIEACS_NBI_URL", "http://10.0.0.5:7557/")
     assert red.url_nbi() == "http://10.0.0.5:7557"
+
+
+LAN_CON_FICHAS = {
+    "Hosts": {"Host": {
+        "1": {"HostName": {"_value": "Celular"}, "MACAddress": {"_value": "7a:49:bf:ef:ce:78"}, "Active": {"_value": True},
+              "InterfaceType": {"_value": "802.11"}, "Layer2Interface": {"_value": "InternetGatewayDevice.LANDevice.1.WLANConfiguration.5"}},
+        "2": {"HostName": {"_value": "De fichas"}, "MACAddress": {"_value": "ea:9d:ce:f0:2d:1e"}, "Active": {"_value": False},
+              "InterfaceType": {"_value": "802.11"}, "Layer2Interface": {"_value": "InternetGatewayDevice.LANDevice.1.WLANConfiguration.2"}},
+        "3": {"HostName": {"_value": "TV"}, "MACAddress": {"_value": "84:d0:db:f5:c1:20"}, "Active": {"_value": True},
+              "InterfaceType": {"_value": "Ethernet"}, "Layer2Interface": {"_value": "InternetGatewayDevice.LANDevice.1.LANEthernetInterfaceConfig.1"}},
+    }},
+    "WLANConfiguration": {
+        "1": {"SSID": {"_value": "FdezNet-187B"}, "X_HW_RFBand": {"_value": "2.4GHz"}},
+        "2": {"SSID": {"_value": "Zona FdezNet"}, "X_HW_RFBand": {"_value": "2.4GHz"}},
+        "3": {"SSID": {"_value": "Zona FdezNet"}, "X_HW_RFBand": {"_value": "5GHz"}},
+        "5": {"SSID": {"_value": "FdezNet-187B"}, "X_HW_RFBand": {"_value": "5GHz"}},
+    },
+}
+
+
+def test_el_portal_solo_ve_su_red_principal_y_no_la_de_fichas():
+    redes = redes_wifi(LAN_CON_FICHAS)
+    assert red.indices_principales(redes) == {1, 5}
+    suyas, lista = red.solo_de_la_red_principal(redes, equipos(LAN_CON_FICHAS, redes, set()))
+    assert {r["ssid"] for r in suyas} == {"FdezNet-187B"}
+    # El de fichas se fue aunque ya está desconectado (se sabe por Layer2Interface); el de cable se queda.
+    assert [e["nombre"] for e in lista] == ["Celular", "TV"]
+    assert lista[0]["red"] == "FdezNet-187B · 5GHz"

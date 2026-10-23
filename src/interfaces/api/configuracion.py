@@ -246,9 +246,7 @@ async def obtener_marca_publica(db: AsyncSession = Depends(get_db)):
     return await _obtener_configuracion(db)
 
 
-@public_router.get("/manifest.webmanifest", response_class=JSONResponse)
-async def obtener_manifest_pwa(db: AsyncSession = Depends(get_db)):
-    marca = await _obtener_configuracion(db)
+def _iconos_pwa(marca) -> list:
     if marca.favicon_url and marca.favicon_url.startswith(
         "/api/public/marca/archivo/favicon"
     ):
@@ -275,6 +273,13 @@ async def obtener_manifest_pwa(db: AsyncSession = Depends(get_db)):
                 "purpose": "any maskable",
             },
         ]
+    return iconos
+
+
+@public_router.get("/manifest.webmanifest", response_class=JSONResponse)
+async def obtener_manifest_pwa(db: AsyncSession = Depends(get_db)):
+    marca = await _obtener_configuracion(db)
+    iconos = _iconos_pwa(marca)
     return {
         "name": marca.sistema_nombre,
         "short_name": marca.empresa_nombre[:30],
@@ -285,6 +290,24 @@ async def obtener_manifest_pwa(db: AsyncSession = Depends(get_db)):
         "theme_color": marca.color_primario,
         "background_color": marca.color_secundario,
         "icons": iconos,
+    }
+
+
+@public_router.get("/manifest-cliente.webmanifest", response_class=JSONResponse)
+async def obtener_manifest_portal(db: AsyncSession = Depends(get_db)):
+    """Para que el cliente instale su portal como app: abre en /cliente con el nombre del ISP."""
+    marca = await _obtener_configuracion(db)
+    return {
+        "id": "/cliente",
+        "name": f"{marca.empresa_nombre} · Mi internet",
+        "short_name": marca.empresa_nombre[:30],
+        "description": f"Tu cuenta, tus pagos y tu WiFi de {marca.empresa_nombre}",
+        "start_url": "/cliente",
+        "scope": "/cliente",
+        "display": "standalone",
+        "theme_color": marca.color_primario,
+        "background_color": "#ffffff",
+        "icons": _iconos_pwa(marca),
     }
 
 

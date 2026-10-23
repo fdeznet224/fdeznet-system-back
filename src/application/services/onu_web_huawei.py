@@ -88,10 +88,10 @@ async def _direccion_web(ip: str, timeout: float) -> str:
 # formularios de su web (Seguridad → Filtro MAC). Política 0 = lista negra;
 # la 1 (lista blanca) dejaría sin internet a todo lo que no esté en la lista.
 PAGINA_FILTRO_MAC = "html/bbsp/macfilter/macfilter.asp"
-PAGINA_CON_TOKEN = "/html/ssmp/tr069/tr069.asp"
 DOMINIO_SEGURIDAD = "InternetGatewayDevice.X_HW_Security"
 RE_FILTRO = re.compile(r'new stMacFilter\("([^"]+)","([^"]+)"\)')
-RE_TOKEN = re.compile(r'id="onttoken"[^>]*value="([^"]+)"')
+# El formulario lleva el token de la sesión como <input name="onttoken" id="hwonttoken" value="...">.
+RE_TOKEN = re.compile(r'<input[^>]*name="onttoken"[^>]*value="([0-9a-fA-F]+)"')
 
 
 def normalizar_mac(mac: str) -> str:
@@ -153,7 +153,8 @@ class FiltroMacHuawei:
         await self.http.aclose()
 
     async def _token(self) -> str:
-        encontrado = RE_TOKEN.search((await self.http.get(PAGINA_CON_TOKEN)).text)
+        # De la misma página del filtro: la cuenta de usuario (root) no ve otras páginas de administración.
+        encontrado = RE_TOKEN.search((await self.http.get("/" + PAGINA_FILTRO_MAC)).text)
         if not encontrado:
             raise ValueError("La ONU no entregó el token de la sesión.")
         return encontrado.group(1)

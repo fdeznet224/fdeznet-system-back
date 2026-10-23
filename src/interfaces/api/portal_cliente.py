@@ -151,7 +151,7 @@ async def red(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db
     from src.application.services.red_cliente_service import RedClienteService
 
     try:
-        return await RedClienteService(db).estado(cliente.id)
+        return await RedClienteService(db).estado(cliente.id, solo_principal=True)
     except (LookupError, ValueError, httpx.HTTPError) as error:
         raise _error(error) from error
 
@@ -163,7 +163,7 @@ async def bloqueo(datos: Bloqueo, cliente=Depends(cliente_portal), db: AsyncSess
     cambios_red.ensure_allowed(str(cliente.id))
     cambios_red.register_failure(str(cliente.id))
     try:
-        return await RedClienteService(db).bloquear(cliente.id, datos.mac, datos.bloquear, None)
+        return await RedClienteService(db).bloquear(cliente.id, datos.mac, datos.bloquear, None, solo_principal=True)
     except (LookupError, ValueError, httpx.HTTPError) as error:
         raise _error(error) from error
 
@@ -175,7 +175,7 @@ async def clave_wifi(datos: ClaveWifi, cliente=Depends(cliente_portal), db: Asyn
     cambios_red.ensure_allowed(str(cliente.id))
     cambios_red.register_failure(str(cliente.id))
     try:
-        return await RedClienteService(db).cambiar_clave_wifi(cliente.id, datos.ssid, datos.clave, None)
+        return await RedClienteService(db).cambiar_clave_wifi(cliente.id, datos.ssid, datos.clave, None, solo_principal=True)
     except (LookupError, ValueError, httpx.HTTPError) as error:
         raise _error(error) from error
 
