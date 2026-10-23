@@ -275,3 +275,45 @@ def test_el_portal_solo_ve_su_red_principal_y_no_la_de_fichas():
     # El de fichas se fue aunque ya está desconectado (se sabe por Layer2Interface); el de cable se queda.
     assert [e["nombre"] for e in lista] == ["Celular", "TV"]
     assert lista[0]["red"] == "FdezNet-187B · 5GHz"
+
+
+def test_el_nombre_que_le_puso_el_cliente_va_con_el_equipo_aunque_este_bloqueado():
+    redes = redes_wifi(LAN)
+    lista = equipos(LAN, redes, {"aa:aa:aa:aa:aa:aa"}, {"7a:49:bf:ef:ce:78": "Celular de Juan", "aa:aa:aa:aa:aa:aa": "Tablet"})
+    assert {e["mac"]: e["apodo"] for e in lista} == {
+        "7a:49:bf:ef:ce:78": "Celular de Juan", "08:65:f0:5e:1f:7e": None, "aa:aa:aa:aa:aa:aa": "Tablet",
+    }
+    # El nombre de la ONU se queda: el portal muestra los dos.
+    assert lista[0]["nombre"] == "Galaxy"
+
+
+class NombresFalsos:
+    def __init__(self):
+        self.filas = {}
+
+    async def get(self, modelo, llave):
+        return self.filas.get(llave)
+
+    def add(self, fila):
+        self.filas[(fila.cliente_id, fila.mac)] = fila
+
+    async def delete(self, fila):
+        self.filas.pop((fila.cliente_id, fila.mac))
+
+    async def commit(self):
+        pass
+
+
+def test_nombrar_guarda_por_mac_cambia_y_vacio_lo_quita():
+    db = NombresFalsos()
+    servicio = RedClienteService(db)
+    assert asyncio.run(servicio.nombrar(327, "7A-49-BF-EF-CE-78", "  Celular   de Juan ")) == {"mac": "7a:49:bf:ef:ce:78", "apodo": "Celular de Juan"}
+    assert db.filas[(327, "7a:49:bf:ef:ce:78")].nombre == "Celular de Juan"
+    asyncio.run(servicio.nombrar(327, "7a:49:bf:ef:ce:78", "Juan"))
+    assert db.filas[(327, "7a:49:bf:ef:ce:78")].nombre == "Juan"
+    assert asyncio.run(servicio.nombrar(327, "7a:49:bf:ef:ce:78", " "))["apodo"] is None
+    assert db.filas == {}
+    with pytest.raises(ValueError, match="hasta 40"):
+        asyncio.run(servicio.nombrar(327, "7a:49:bf:ef:ce:78", "x" * 41))
+    with pytest.raises(ValueError):
+        asyncio.run(servicio.nombrar(327, "no-es-mac", "Juan"))

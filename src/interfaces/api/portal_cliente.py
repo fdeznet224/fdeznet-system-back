@@ -60,6 +60,11 @@ class Bloqueo(BaseModel):
     bloquear: bool = True
 
 
+class NombreEquipo(BaseModel):
+    mac: str
+    nombre: str = ""
+
+
 class ClaveWifi(BaseModel):
     ssid: str
     clave: str
@@ -203,6 +208,17 @@ async def bloqueo(datos: Bloqueo, cliente=Depends(cliente_portal), db: AsyncSess
     try:
         return await RedClienteService(db).bloquear(cliente.id, datos.mac, datos.bloquear, None, solo_principal=True)
     except (LookupError, ValueError, httpx.HTTPError) as error:
+        raise _error(error) from error
+
+
+@router.post("/red/nombre")
+async def nombre_equipo(datos: NombreEquipo, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    """Ponerle nombre a un equipo ("Celular de Juan") para no equivocarse al bloquear."""
+    from src.application.services.red_cliente_service import RedClienteService
+
+    try:
+        return await RedClienteService(db).nombrar(cliente.id, datos.mac, datos.nombre)
+    except ValueError as error:
         raise _error(error) from error
 
 

@@ -896,6 +896,16 @@ class PushSuscripcionModel(Base):
     fallos = Column(Integer, nullable=False, default=0, server_default="0")
 
 
+class EquipoNombreModel(Base):
+    """Nombre que el cliente o el personal le pone a un equipo de su red ("Celular de Juan")."""
+    __tablename__ = "equipos_nombres"
+
+    cliente_id = Column(Integer, ForeignKey("clientes.id", ondelete="CASCADE"), primary_key=True)
+    mac = Column(String(17), primary_key=True)
+    nombre = Column(String(40), nullable=False)
+    actualizado_en = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+
+
 class FacturaModel(Base):
     __tablename__ = "facturas"
     __table_args__ = (

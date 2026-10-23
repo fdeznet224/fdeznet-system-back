@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from src.application.services.acceso_onu_config import cuentas_de, marca_de_onu, obtener_acceso_onu
 from src.application.services.onu_web_huawei import FiltroMacHuawei, normalizar_mac
-from src.infrastructure.models import ClienteModel, LogActividadModel, ServicioModel
+from src.infrastructure.models import ClienteModel, EquipoNombreModel, LogActividadModel, ServicioModel
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ LAN = "InternetGatewayDevice.LANDevice.1"
 # Lo que espera el admin a que la ONU conteste el aviso; si no, se muestra lo último guardado.
 ESPERA_ONU_MS = 15000
 RE_CLAVE_WIFI = re.compile(r"^[\x20-\x7e]{8,63}$")
+MAX_APODO = 40
 
 
 def url_nbi() -> str:
@@ -72,8 +73,13 @@ def redes_wifi(lan: Dict[str, Any]) -> List[Dict[str, Any]]:
     return redes
 
 
-def equipos(lan: Dict[str, Any], redes: List[Dict[str, Any]], bloqueadas: Optional[set]) -> List[Dict[str, Any]]:
-    """Los equipos que la ONU conoce, más los bloqueados que ya no aparecen."""
+def equipos(lan: Dict[str, Any], redes: List[Dict[str, Any]], bloqueadas: Optional[set],
+            apodos: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+    """Los equipos que la ONU conoce, más los bloqueados que ya no aparecen.
+
+    `apodo` es el nombre que les puso el cliente ("Celular de Juan"); se guarda por MAC.
+    """
+    apodos = apodos or {}
     red_de = {mac: red for red in redes for mac in red["macs"]}
     red_por_indice = {red["indice"]: red for red in redes}
     lista, vistas = [], set()
@@ -98,11 +104,12 @@ def equipos(lan: Dict[str, Any], redes: List[Dict[str, Any]], bloqueadas: Option
             "red": f"{red['ssid']} · {red['banda']}" if red else None,
             "indice_red": red["indice"] if red else (int(interfaz.group(1)) if interfaz else None),
             "bloqueado": mac in bloqueadas if bloqueadas is not None else None,
+            "apodo": apodos.get(mac),
         })
     for mac in sorted((bloqueadas or set()) - vistas):
         lista.append({"mac": mac, "nombre": "", "ip": "", "conectado": False, "conexion": None,
-                      "red": None, "indice_red": None, "bloqueado": True})
-    lista.sort(key=lambda e: (not e["conectado"], not e["bloqueado"], e["nombre"].lower() or "~", e["mac"]))
+                      "red": None, "indice_red": None, "bloqueado": True, "apodo": apodos.get(mac)})
+    lista.sort(key=lambda e: (not e["conectado"], not e["bloqueado"], (e["apodo"] or e["nombre"]).lower() or "~", e["mac"]))
     return lista
 
 
@@ -255,7 +262,7 @@ class RedClienteService:
             (documento, al_dia), (bloqueadas, error_web) = await asyncio.gather(tr069(), web())
         lan = ((documento or {}).get("InternetGatewayDevice") or {}).get("LANDevice", {}).get("1", {})
         redes = redes_wifi(lan)
-        lista = equipos(lan, redes, bloqueadas)
+        lista = equipos(lan, redes, bloqueadas, await self.apodos(cliente_id))
         if solo_principal:
             redes, lista = solo_de_la_red_principal(redes, lista)
         return {
@@ -271,6 +278,29 @@ class RedClienteService:
             "bloqueo_disponible": bloqueadas is not None,
             "error_bloqueo": error_web,
         }
+
+    async def apodos(self, cliente_id: int) -> Dict[str, str]:
+        filas = (await self.db.execute(
+            select(EquipoNombreModel).where(EquipoNombreModel.cliente_id == cliente_id)
+        )).scalars().all()
+        return {f.mac: f.nombre for f in filas}
+
+    async def nombrar(self, cliente_id: int, mac: str, nombre: str) -> Dict[str, Any]:
+        """Le pone nombre a un equipo; vacío se lo quita. Solo se guarda en el sistema, no en la ONU."""
+        mac = normalizar_mac(mac)
+        nombre = " ".join((nombre or "").split())
+        if len(nombre) > MAX_APODO:
+            raise ValueError(f"El nombre puede tener hasta {MAX_APODO} letras.")
+        fila = await self.db.get(EquipoNombreModel, (cliente_id, mac))
+        if not nombre:
+            if fila:
+                await self.db.delete(fila)
+        elif fila:
+            fila.nombre = nombre
+        else:
+            self.db.add(EquipoNombreModel(cliente_id=cliente_id, mac=mac, nombre=nombre))
+        await self.db.commit()
+        return {"mac": mac, "apodo": nombre or None}
 
     async def bloqueados(self, cliente_id: int, servicio_id: Optional[int] = None) -> Dict[str, Any]:
         """Solo los filtros de la web de la ONU (unos segundos): para confirmar un bloqueo cuya
