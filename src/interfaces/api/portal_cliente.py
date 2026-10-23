@@ -38,6 +38,11 @@ codigos_telefono = LoginRateLimiter(max_attempts=3, window_seconds=3600)
 lecturas_trafico = LoginRateLimiter(max_attempts=40, window_seconds=60)
 
 CATEGORIAS_PORTAL = {"sin_internet", "lentitud", "router_wifi", "otro"}
+compras_fichas = LoginRateLimiter(max_attempts=10, window_seconds=600)
+
+
+def rutas_categorias():
+    return [("sin_internet", "Sin internet"), ("lentitud", "Lentitud"), ("router_wifi", "WiFi o módem"), ("otro", "Otro")]
 
 
 class Entrada(BaseModel):
@@ -238,7 +243,13 @@ async def reportar_falla(datos: Falla, cliente=Depends(cliente_portal), db: Asyn
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
     reportes.register_failure(str(cliente.id))
-    return {"id": orden.get("id") if isinstance(orden, dict) else getattr(orden, "id", None)}
+    orden_id = orden.get("id") if isinstance(orden, dict) else getattr(orden, "id", None)
+    nombres = dict(rutas_categorias())
+    await PortalClienteService(db).avisar_personal(
+        f"🛠️ *Nuevo reporte desde el portal* #{orden_id}\n👤 {cliente.nombre} (contrato {cliente.cedula})\n"
+        f"🏷️ {nombres.get(datos.categoria, datos.categoria)}\n📝 {descripcion[:500]}"
+    )
+    return {"id": orden_id}
 
 
 @router.get("/facturas")
@@ -366,3 +377,32 @@ async def probar_notificaciones(cliente=Depends(cliente_portal), db: AsyncSessio
     if not enviadas:
         raise HTTPException(status_code=409, detail="No se pudo enviar a este celular.")
     return {"enviadas": enviadas}
+
+
+class CompraFicha(BaseModel):
+    perfil_id: str
+
+
+@router.get("/fichas")
+async def fichas(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    """Fichas de Zona FdezNet que puede comprar (se cobran en su factura) y las que ya compró."""
+    servicio = PortalClienteService(db)
+    try:
+        disponibles = await servicio.fichas_disponibles()
+    except (ValueError, httpx.HTTPError) as error:
+        logger.warning("Sistema de fichas: %s", error)
+        disponibles = {"disponible": False, "perfiles": []}
+    return {**disponibles, "compradas": await servicio.mis_fichas(cliente.id)}
+
+
+@router.post("/fichas")
+async def comprar_ficha(datos: CompraFicha, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    # Sin límite de compra (así lo pidió el ISP); esto solo evita compras por doble toque.
+    compras_fichas.ensure_allowed(str(cliente.id))
+    compras_fichas.register_failure(str(cliente.id))
+    try:
+        return await PortalClienteService(db).comprar_ficha(cliente, datos.perfil_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=502, detail="El sistema de fichas no respondió; intenta en un momento.") from error

@@ -7,6 +7,7 @@ ni deja tocar nada hasta que pone una contraseña suya.
 
 import re
 import secrets
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -19,8 +20,9 @@ from src.application.services.comprobante_service import normalizar_contrato, pe
 from src.application.services.cuenta_tecnico_service import resumen_cuenta
 from src.infrastructure import auth
 from src.infrastructure.models import (
-    ClienteModel, FacturaModel, MensajeChatModel, OrdenServicioModel, PagoModel, PlantillaMensajeModel,
-    PortalAccesoModel, PromesaPagoHistorialModel, ServicioModel,
+    ClienteModel, ConfiguracionBotModel, ConfiguracionSistema, FacturaConceptoModel, FacturaModel, LogActividadModel,
+    MensajeChatModel, OrdenServicioModel, PagoModel, PlantillaMensajeModel, PortalAccesoModel, PromesaPagoHistorialModel,
+    ServicioModel, ZonaModel,
 )
 
 TIPO_TOKEN = "portal"
@@ -61,6 +63,29 @@ def telefono_mexico(texto: str) -> str:
     if len(digitos) != 10:
         raise ValueError("Escribe tu número de celular a 10 dígitos.")
     return digitos
+
+
+def _plano(texto: str) -> str:
+    return unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower()
+
+
+def pago_en_efectivo(conocimiento: str, zona: Optional[str]) -> Optional[str]:
+    """Dónde paga en efectivo, tomado de lo que sabe el agente de WhatsApp:
+    la línea de su zona en la sección «Pago en efectivo», o la de «las demás colonias»."""
+    lineas, dentro = [], False
+    for linea in (conocimiento or "").splitlines():
+        if linea.lstrip().startswith("#"):
+            dentro = "efectivo" in _plano(linea)
+            continue
+        if dentro and linea.strip().startswith("-") and ":" in linea:
+            lugares, _, donde = linea.strip()[1:].partition(":")
+            lineas.append((_plano(lugares), donde.strip()))
+    zona_plana = _plano(zona or "").strip()
+    if zona_plana:
+        for lugares, donde in lineas:
+            if zona_plana in lugares:
+                return donde
+    return next((donde for lugares, donde in lineas if "demas" in lugares or "otras" in lugares), None)
 
 
 def cuenta_regresiva(factura, hoy: date, proxima: Optional[date]) -> Dict[str, Any]:
@@ -200,11 +225,93 @@ class PortalClienteService:
             "tiene_onu": bool(cliente.onu_id or (servicio and servicio.onu_id)),
             "telefono": cliente.telefono,
             "correo": cliente.correo,
+            **(await self._zona_y_efectivo(servicio, cliente)),
             "calendario": cuenta_regresiva(
                 await self._factura_pendiente(cliente_id), date.today(),
                 (servicio.proxima_facturacion if servicio and servicio.proxima_facturacion else cliente.proxima_factura),
             ),
         }
+
+    async def _zona_y_efectivo(self, servicio, cliente) -> Dict[str, Any]:
+        zona_id = (servicio.zona_id if servicio and servicio.zona_id else None) or cliente.zona_id
+        zona = await self.db.get(ZonaModel, zona_id) if zona_id else None
+        bot = (await self.db.execute(select(ConfiguracionBotModel).limit(1))).scalars().first()
+        conocimiento = getattr(bot, "agente_conocimiento", None) or ""
+        return {"zona": zona.nombre if zona else None, "pago_efectivo": pago_en_efectivo(conocimiento, zona.nombre if zona else None)}
+
+    # ---------------------------------------------------------- WhatsApp
+    async def _whatsapp(self, telefono: str, texto: str, tipo_evento: str, cliente_id: Optional[int] = None) -> None:
+        from src.infrastructure.whatsapp_client import whatsapp_queue
+
+        mensaje = MensajeChatModel(cliente_id=cliente_id, telefono=telefono, direccion="salida", tipo_mensaje="texto",
+                                   tipo_evento=tipo_evento, leido=True, ack=0, estado_envio="pendiente", mensaje=texto)
+        self.db.add(mensaje)
+        await self.db.commit()
+        await self.db.refresh(mensaje)
+        await whatsapp_queue.agregar_tarea({"mensaje_chat_id": mensaje.id, "intervalo": 0, "tipo_evento": tipo_evento})
+
+    async def avisar_personal(self, texto: str) -> None:
+        """A los teléfonos de alerta, como el agente de WhatsApp."""
+        config = await self.db.get(ConfiguracionSistema, 1)
+        for numero in [n.strip() for n in (getattr(config, "telefonos_alerta", "") or "").split(",") if n.strip()]:
+            await self._whatsapp(numero, texto, "aviso_portal")
+
+    # ---------------------------------------------------------- fichas Zona FdezNet
+    async def fichas_disponibles(self) -> Dict[str, Any]:
+        from src.application.services.fichas_service import FichasService, configuracion
+
+        config = configuracion()
+        if not config:
+            return {"disponible": False, "perfiles": []}
+        async with FichasService(config) as fichas:
+            return {"disponible": True, "perfiles": await fichas.perfiles()}
+
+    async def comprar_ficha(self, cliente: ClienteModel, perfil_id: str) -> Dict[str, Any]:
+        """La genera el sistema de fichas, se le manda por WhatsApp y se suma a su próxima factura."""
+        from src.application.services.fichas_service import FichasService, configuracion
+
+        config = configuracion()
+        if not config:
+            raise ValueError("La venta de fichas no está disponible.")
+        async with FichasService(config) as fichas:
+            if perfil_id not in {p["id"] for p in await fichas.perfiles()}:
+                raise ValueError("Esa ficha no está disponible.")
+            ficha = await fichas.vender(perfil_id)
+        servicio_id = (await self.db.execute(
+            select(ServicioModel.id).where(ServicioModel.cliente_id == cliente.id, ServicioModel.estado != "cancelado")
+            .order_by(ServicioModel.id).limit(1)
+        )).scalar_one_or_none()
+        self.db.add(FacturaConceptoModel(
+            cliente_id=cliente.id, servicio_id=servicio_id, tipo="ficha_hotspot",
+            concepto=f"Ficha Zona FdezNet · {ficha['perfil']}"[:150],
+            descripcion=f"Ficha {ficha['codigo']} · folio {ficha['folio']} · comprada en el portal"[:500],
+            monto_original=ficha["precio"], saldo_pendiente=ficha["precio"], estado="pendiente",
+            afecta_corte=False, fecha_cargo=date.today(),
+        ))
+        self.db.add(LogActividadModel(
+            usuario_nombre="Portal del cliente", accion="Portal: comprar ficha", metodo="POST", ruta="/api/portal/fichas",
+            estado_http=200, detalle=f"Cliente {cliente.id} · {ficha['perfil']} · ${ficha['precio']:.2f} · folio {ficha['folio']}",
+        ))
+        await self.db.commit()
+        if cliente.telefono:
+            await self._whatsapp(cliente.telefono, (
+                f"🎟️ *Tu ficha de Zona FdezNet*\n{ficha['perfil']}\nCódigo: *{ficha['codigo']}*"
+                + (f"\nContraseña: *{ficha['clave']}*" if ficha.get("clave") and ficha["clave"] != ficha["codigo"] else "")
+                + f"\n\nConéctate a la red «Zona FdezNet» y escribe el código. Se suma ${ficha['precio']:.2f} a tu próxima factura."
+            ), "ficha_hotspot", cliente.id)
+        return ficha
+
+    async def mis_fichas(self, cliente_id: int) -> List[Dict[str, Any]]:
+        filas = (await self.db.execute(
+            select(FacturaConceptoModel).where(FacturaConceptoModel.cliente_id == cliente_id, FacturaConceptoModel.tipo == "ficha_hotspot")
+            .order_by(FacturaConceptoModel.id.desc()).limit(5)
+        )).scalars().all()
+        resultado = []
+        for f in filas:
+            codigo = re.search(r"Ficha (\S+)", f.descripcion or "")
+            resultado.append({"concepto": f.concepto, "codigo": codigo.group(1) if codigo else None, "precio": float(f.monto_original or 0),
+                              "fecha": f.fecha_cargo.isoformat() if f.fecha_cargo else None, "facturada": f.factura_id is not None})
+        return resultado
 
     async def _factura_pendiente(self, cliente_id: int):
         return (await self.db.execute(

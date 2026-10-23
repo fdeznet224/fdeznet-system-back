@@ -45,6 +45,7 @@ TITULOS = {
     "tecnico_en_camino": "El técnico va en camino",
     "reporte_tecnico_asignado": "Tu reporte tiene técnico",
     "aviso_tecnico": "Aviso del técnico",
+    "ficha_hotspot": "Tu ficha de Zona FdezNet",
 }
 MAX_FALLOS = 5
 LARGO_CUERPO = 240

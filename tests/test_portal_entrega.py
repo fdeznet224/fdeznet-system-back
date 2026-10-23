@@ -245,3 +245,67 @@ def test_las_llaves_se_crean_una_vez_y_se_guardan(monkeypatch):
     assert firmado["Authorization"].endswith(",k=" + primera["publica"])
     monkeypatch.setenv("PUBLIC_URL", "http://10.0.0.5")
     assert push.sujeto() == "mailto:soporte@localhost"
+
+
+CONOCIMIENTO = """## Datos de pago
+- Usa la herramienta `datos_de_pago`: no es un lugar.
+
+## Pago en efectivo (preguntar primero su zona o colonia)
+- Flores Magón: casa de Clari, barrio La Bomba.
+- Vicente Guerrero: por la salida a Ponciano, frente a la purificadora.
+- Paraíso y las demás colonias: en Villa de Guadalupe, tienda de doña Yoli.
+
+## Cobros
+- Reconexión: $30.
+"""
+
+
+def test_lugar_de_pago_en_efectivo_segun_su_zona():
+    assert portal.pago_en_efectivo(CONOCIMIENTO, "Vicente Guerrero").startswith("por la salida a Ponciano")
+    assert portal.pago_en_efectivo(CONOCIMIENTO, "Flores Magon").startswith("casa de Clari")
+    assert portal.pago_en_efectivo(CONOCIMIENTO, "Paraíso").startswith("en Villa de Guadalupe")
+    # Una zona que no aparece: el de «las demás colonias».
+    assert portal.pago_en_efectivo(CONOCIMIENTO, "La Merced").startswith("en Villa de Guadalupe")
+    assert portal.pago_en_efectivo("", "Paraíso") is None
+
+
+def test_vender_una_ficha_en_el_sistema_de_fichas():
+    from src.application.services.fichas_service import FichasService
+
+    pedidos = []
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        pedidos.append((request.method, request.url.path, request.headers.get("authorization")))
+        if request.url.path.endswith("/auth/token"):
+            return httpx.Response(200, json={"access_token": "tok", "token_type": "bearer", "expires_in": 3600})
+        if request.url.path.endswith("/seller/profiles"):
+            return httpx.Response(200, json=[{"id": "p1", "name": "1 día", "public_price": "10.00", "session_timeout": "1d", "time_mode": "x"}])
+        if request.url.path.endswith("/seller/sales/preview"):
+            assert json.loads(request.content)["quantity"] == 1
+            return httpx.Response(200, json={"quote_token": "q" * 24, "profile_name": "1 día", "gross_total": "10.00"})
+        if request.url.path.endswith("/seller/sales"):
+            assert json.loads(request.content)["quote_token"] == "q" * 24
+            return httpx.Response(201, json={"folio": "F-77", "profile_name": "1 día", "gross_total": "10.00",
+                                             "vouchers": [{"code": "ZN4821", "password": "ZN4821", "session_timeout": "1d"}]})
+        return httpx.Response(404)
+
+    async def probar():
+        http = httpx.AsyncClient(base_url="http://fichas/api/v1", transport=httpx.MockTransport(responder))
+        async with FichasService({"url": "http://fichas/api/v1", "usuario": "portal", "clave": "x"}, http) as fichas:
+            perfiles = await fichas.perfiles()
+            ficha = await fichas.vender("p1")
+        return perfiles, ficha
+
+    perfiles, ficha = asyncio.run(probar())
+    assert perfiles == [{"id": "p1", "nombre": "1 día", "precio": 10.0, "duracion": "1d"}]
+    assert (ficha["codigo"], ficha["precio"], ficha["folio"]) == ("ZN4821", 10.0, "F-77")
+    # Después del token, todo va con el vendedor del portal.
+    assert all(a == "Bearer tok" for _, ruta, a in pedidos if not ruta.endswith("/auth/token"))
+
+
+def test_sin_vendedor_configurado_no_hay_fichas(monkeypatch):
+    from src.application.services import fichas_service
+
+    monkeypatch.delenv("FICHAS_USUARIO", raising=False)
+    monkeypatch.delenv("FICHAS_CLAVE", raising=False)
+    assert fichas_service.configuracion() is None
