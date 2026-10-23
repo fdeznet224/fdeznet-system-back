@@ -13,9 +13,14 @@ from src.application.services.red_cliente_service import RedClienteService, equi
 
 
 def pagina_filtro(activo="0", modo="0", macs=()):
-    filas = ",".join(f'new stMacFilter("InternetGatewayDevice.X_HW_Security.MacFilter.{i}","{m.replace(":", chr(92) + "x3a")}")'
-                     for i, m in enumerate(macs, start=1))
-    return f"var enableFilter = '{activo}';\nvar Mode = '{modo}';\nvar MacFilter = new Array({filas + ',' if filas else ''}null);"
+    """Página de un filtro; cada mac es "aa:..." (cable) o ("SSID-1", "aa:...") (WiFi)."""
+    filas = []
+    for i, m in enumerate(macs, start=1):
+        red, mac = m if isinstance(m, tuple) else (None, m)
+        campos = [f"InternetGatewayDevice.X_HW_Security.Filtro.{i}"] + ([red] if red else []) + [mac.replace(":", chr(92) + "x3a")]
+        filas.append("new stMacFilter(" + ",".join(f'"{c}"' for c in campos) + ")")
+    return (f"var enableFilter = '{activo}';\nvar Mode = '{modo}';\nvar MacFilter = new Array({','.join(filas) + ',' if filas else ''}null);"
+            '<input type="hidden" name="onttoken" id="hwonttoken" value="abc123">')
 
 
 def test_serial_huawei_como_lo_reporta_tr069():
@@ -34,8 +39,11 @@ def test_mac_en_cualquier_formato():
 
 def test_lee_el_filtro_de_la_pagina_con_escapes():
     estado = filtro_en_pagina(pagina_filtro("1", "0", ["08:65:f0:5e:1f:7e"]))
-    assert estado == {"activo": True, "lista_negra": True,
-                      "macs": {"08:65:f0:5e:1f:7e": "InternetGatewayDevice.X_HW_Security.MacFilter.1"}}
+    assert estado["activo"] and estado["lista_negra"]
+    assert estado["macs"] == {"08:65:f0:5e:1f:7e": ["InternetGatewayDevice.X_HW_Security.Filtro.1"]}
+    # El de WiFi trae la red entre el dominio y la MAC.
+    wifi = filtro_en_pagina(pagina_filtro("1", "0", [("SSID-5", "aa:14:54:0d:2d:55")]))
+    assert wifi["entradas"] == [("InternetGatewayDevice.X_HW_Security.Filtro.1", "aa:14:54:0d:2d:55", "SSID-5")]
     with pytest.raises(ValueError):
         filtro_en_pagina("<html>login</html>")
 
@@ -71,29 +79,38 @@ def test_equipos_con_su_red_y_bloqueados_que_ya_no_aparecen():
     assert all(e["bloqueado"] is None for e in equipos(LAN, redes, None))
 
 
-class OnuFalsa:
-    """La web del HG8145: guarda lo que le mandan los formularios."""
-
+class Filtro:
     def __init__(self, activo="0", modo="0", macs=()):
-        self.activo, self.modo, self.macs, self.envios = activo, modo, list(macs), []
+        self.activo, self.modo, self.macs = activo, modo, list(macs)
+
+
+class OnuFalsa:
+    """La web del HG8145 con sus dos filtros (cable y WiFi): guarda lo que mandan los formularios."""
+
+    def __init__(self, cable=None, wifi=None):
+        self.cable, self.wifi, self.envios = cable or Filtro(), wifi or Filtro(), []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         ruta = request.url.path
         datos = dict(httpx.QueryParams(request.content.decode())) if request.method == "POST" else {}
+        if ruta.endswith("wlanmacfilter.asp"):
+            return httpx.Response(200, text=pagina_filtro(self.wifi.activo, self.wifi.modo, self.wifi.macs))
         if ruta.endswith("macfilter.asp"):
-            return httpx.Response(200, text=pagina_filtro(self.activo, self.modo, self.macs)
-                                  + '<input type="hidden" name="onttoken" id="hwonttoken" value="abc123">')
+            return httpx.Response(200, text=pagina_filtro(self.cable.activo, self.cable.modo, self.cable.macs))
         if ruta in ("/set.cgi", "/add.cgi", "/del.cgi"):
             assert datos.pop("x.X_HW_Token") == "abc123"
-            self.envios.append((ruta, datos))
+            wifi = "wlanmacfilter" in request.url.params.get("RequestFile", "")
+            filtro = self.wifi if wifi else self.cable
+            self.envios.append(("wifi" if wifi else "cable", ruta, datos))
             if ruta == "/set.cgi":
-                self.modo = datos.get("x.MacFilterPolicy", self.modo)
-                self.activo = datos.get("x.MacFilterRight", self.activo)
+                filtro.modo = datos.get("x.WlanMacFilterPolicy" if wifi else "x.MacFilterPolicy", filtro.modo)
+                filtro.activo = datos.get("x.WlanMacFilterRight" if wifi else "x.MacFilterRight", filtro.activo)
             elif ruta == "/add.cgi":
-                self.macs.append(datos["x.SourceMACAddress"])
+                mac = datos["x.SourceMACAddress"]
+                filtro.macs.append((datos["x.SSIDName"], mac) if wifi else mac)
             else:
                 quitar = {int(k.rsplit(".", 1)[1]) for k in datos}
-                self.macs = [m for i, m in enumerate(self.macs, start=1) if i not in quitar]
+                filtro.macs = [m for i, m in enumerate(filtro.macs, start=1) if i not in quitar]
         return httpx.Response(200, text="ok")
 
 
@@ -111,33 +128,52 @@ def con_onu(monkeypatch, onu):
     monkeypatch.setattr(web.httpx, "AsyncClient", cliente)
 
 
-def test_bloquear_enciende_el_filtro_en_lista_negra_y_desbloquear_lo_apaga(monkeypatch):
-    # La ONU tenía guardada la lista blanca apagada: encenderla así cortaría a todos.
-    onu = OnuFalsa(activo="0", modo="1")
+def test_bloquear_pone_la_mac_en_cable_y_en_cada_banda_del_wifi(monkeypatch):
+    # Los dos filtros tenían guardada la lista blanca apagada: encenderla así cortaría a todos.
+    onu = OnuFalsa(Filtro("0", "1"), Filtro("0", "1"))
     con_onu(monkeypatch, onu)
 
     async def probar():
-        async with FiltroMacHuawei("10.10.10.254", [("telecomadmin", "x")]) as filtro:
-            await filtro.bloquear("08-65-F0-5E-1F-7E")
-            assert (onu.activo, onu.modo, onu.macs) == ("1", "0", ["08:65:f0:5e:1f:7e"])
-            await filtro.desbloquear("08:65:f0:5e:1f:7e")
+        async with FiltroMacHuawei("10.10.10.254", [("root", "admin")]) as filtro:
+            estado = await filtro.bloquear("AA-14-54-0D-2D-55", [1, 5])
+            assert estado["bloqueadas"] == {"aa:14:54:0d:2d:55"}
+            await filtro.desbloquear("aa:14:54:0d:2d:55")
 
     asyncio.run(probar())
-    assert onu.envios[0] == ("/set.cgi", {"x.MacFilterPolicy": "0", "x.MacFilterRight": "1"})
-    assert (onu.activo, onu.macs) == ("0", [])
+    sets = [(f, d) for f, r, d in onu.envios if r == "/set.cgi"]
+    assert ("cable", {"x.MacFilterPolicy": "0", "x.MacFilterRight": "1"}) in sets
+    assert ("wifi", {"x.WlanMacFilterPolicy": "0", "x.WlanMacFilterRight": "1"}) in sets
+    altas = [d for f, r, d in onu.envios if f == "wifi" and r == "/add.cgi"]
+    assert [a["x.SSIDName"] for a in altas] == ["SSID-1", "SSID-5"]
+    # Al quitar la última, se apagan los dos filtros como estaban.
+    assert (onu.cable.activo, onu.cable.macs, onu.wifi.activo, onu.wifi.macs) == ("0", [], "0", [])
 
 
 def test_no_se_toca_el_encendido_si_quedan_otros_bloqueados(monkeypatch):
-    onu = OnuFalsa(activo="1", modo="0", macs=["aa:aa:aa:aa:aa:aa", "08:65:f0:5e:1f:7e"])
+    otro = "bb:bb:bb:bb:bb:bb"
+    onu = OnuFalsa(Filtro("1", "0", [otro, "08:65:f0:5e:1f:7e"]),
+                   Filtro("1", "0", [("SSID-1", otro), ("SSID-1", "08:65:f0:5e:1f:7e"), ("SSID-5", "08:65:f0:5e:1f:7e")]))
     con_onu(monkeypatch, onu)
 
     async def probar():
-        async with FiltroMacHuawei("10.10.10.254", [("telecomadmin", "x")]) as filtro:
+        async with FiltroMacHuawei("10.10.10.254", [("root", "admin")]) as filtro:
             await filtro.desbloquear("08:65:f0:5e:1f:7e")
 
     asyncio.run(probar())
-    assert onu.macs == ["aa:aa:aa:aa:aa:aa"] and onu.activo == "1"
-    assert [ruta for ruta, _ in onu.envios] == ["/del.cgi"]
+    assert onu.cable.macs == [otro] and onu.wifi.macs == [("SSID-1", otro)]
+    assert onu.cable.activo == "1" and onu.wifi.activo == "1"
+    assert [r for _, r, _ in onu.envios] == ["/del.cgi", "/del.cgi"]
+
+
+def test_bloquea_en_las_bandas_de_la_red_donde_esta_el_equipo():
+    mac_fichas = "ea:9d:ce:f0:2d:1e"
+    assert red.redes_para_bloquear(LAN_CON_FICHAS, "7a:49:bf:ef:ce:78", True) == [1, 5]
+    # Desde el portal no se bloquea al de la red de fichas; desde la ficha sí, en sus dos bandas.
+    with pytest.raises(ValueError, match="no está en tu red"):
+        red.redes_para_bloquear(LAN_CON_FICHAS, mac_fichas, True)
+    assert red.redes_para_bloquear(LAN_CON_FICHAS, mac_fichas, False) == [2, 3]
+    # Uno que la ONU no conoce: la red principal.
+    assert red.redes_para_bloquear(LAN_CON_FICHAS, "cc:cc:cc:cc:cc:cc", False) == [1, 5]
 
 
 def nbi(respuestas):

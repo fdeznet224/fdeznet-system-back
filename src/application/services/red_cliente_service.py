@@ -121,6 +121,19 @@ def solo_de_la_red_principal(redes: List[Dict[str, Any]], lista: List[Dict[str, 
             [e for e in lista if e["indice_red"] is None or e["indice_red"] in suyos])
 
 
+def redes_para_bloquear(lan: Dict[str, Any], mac: str, solo_principal: bool) -> List[int]:
+    redes = redes_wifi(lan)
+    suyos = indices_principales(redes)
+    del_equipo = next((e for e in equipos(lan, redes, None) if e["mac"] == mac), None)
+    indice = del_equipo["indice_red"] if del_equipo else None
+    if solo_principal and indice is not None and indice not in suyos:
+        raise ValueError("Ese equipo no está en tu red.")
+    if indice is None or indice in suyos:
+        return sorted(suyos) or [1]
+    ssid = next((r["ssid"] for r in redes if r["indice"] == indice), None)
+    return sorted(r["indice"] for r in redes if r["ssid"] == ssid) or [indice]
+
+
 class RedClienteService:
     def __init__(self, db: AsyncSession, nbi: Optional[str] = None):
         self.db = db
@@ -203,8 +216,7 @@ class RedClienteService:
         if equipo["marca"] != "huawei" or not equipo["ip"]:
             raise ValueError("El bloqueo por MAC solo está hecho para ONU Huawei.")
         async with FiltroMacHuawei(equipo["ip"], await self._cuentas_huawei()) as filtro:
-            estado = filtro.estado_inicial
-        return set(estado["macs"]) if estado["activo"] and estado["lista_negra"] else set()
+            return set(filtro.estado_inicial["bloqueadas"])
 
     # ---------------------------------------------------------- lo que ve el admin
     async def estado(self, cliente_id: int, servicio_id: Optional[int] = None, solo_principal: bool = False) -> Dict[str, Any]:
@@ -249,13 +261,13 @@ class RedClienteService:
         equipo = await self._equipo(cliente_id, servicio_id)
         if equipo["marca"] != "huawei" or not equipo["ip"]:
             raise ValueError("El bloqueo por MAC solo está hecho para ONU Huawei.")
-        if solo_principal and bloquear:
-            await self._exigir_red_principal(equipo, mac=mac)
+        redes = await self._redes_del_equipo(equipo, mac, solo_principal) if bloquear else []
         async with FiltroMacHuawei(equipo["ip"], await self._cuentas_huawei()) as filtro:
-            estado = await (filtro.bloquear(mac) if bloquear else filtro.desbloquear(mac))
+            estado = await (filtro.bloquear(mac, redes) if bloquear else filtro.desbloquear(mac))
         await self._bitacora(usuario, "Bloquear equipo" if bloquear else "Desbloquear equipo", cliente_id,
-                             f"Cliente {cliente_id} · ONU {equipo['identificador'] or equipo['ip']} · {mac}")
-        return {"bloqueados": sorted(estado["macs"])}
+                             f"Cliente {cliente_id} · ONU {equipo['identificador'] or equipo['ip']} · {mac}"
+                             + (f" · WiFi {', '.join(map(str, redes))}" if redes else ""))
+        return {"bloqueados": sorted(estado["bloqueadas"])}
 
     async def cambiar_clave_wifi(self, cliente_id: int, ssid: str, clave: str, usuario=None,
                                  servicio_id: Optional[int] = None, solo_principal: bool = False) -> Dict[str, Any]:
@@ -284,18 +296,15 @@ class RedClienteService:
                              f"Cliente {cliente_id} · ONU {equipo['identificador'] or equipo['ip']} · red {ssid}")
         return {"aplicado": aplicado, "bandas": len(indices)}
 
-    async def _exigir_red_principal(self, equipo: Dict[str, Any], mac: str) -> None:
-        """Desde el portal no se bloquea a quien está en otra red (por ejemplo, la de fichas)."""
+    async def _redes_del_equipo(self, equipo: Dict[str, Any], mac: str, solo_principal: bool) -> List[int]:
+        """En qué redes WiFi bloquearlo: todas las bandas de la red donde está (2.4 y 5 GHz).
+        Desde el portal solo la red principal; un equipo de otra red (la de fichas) no se toca."""
         async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
             device_id = await self._id_tr069(http, equipo)
             if not device_id:
-                return
+                return [1]
             lan = ((await self._leer_lan(http, device_id)).get("InternetGatewayDevice") or {}).get("LANDevice", {}).get("1", {})
-        redes = redes_wifi(lan)
-        suyos = indices_principales(redes)
-        del_equipo = next((e for e in equipos(lan, redes, None) if e["mac"] == mac), None)
-        if del_equipo and del_equipo["indice_red"] is not None and del_equipo["indice_red"] not in suyos:
-            raise ValueError("Ese equipo no está en tu red.")
+        return redes_para_bloquear(lan, mac, solo_principal)
 
     async def reiniciar(self, cliente_id: int, usuario=None, servicio_id: Optional[int] = None) -> Dict[str, Any]:
         """Por TR-069 si la ONU se reporta; si no, por la OLT como en la ficha."""

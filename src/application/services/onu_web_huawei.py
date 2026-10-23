@@ -85,11 +85,23 @@ async def _direccion_web(ip: str, timeout: float) -> str:
 
 # ------------------------------------------------------------------ filtro MAC
 # El HG8145V5 no publica su filtro MAC por TR-069: se maneja con los mismos
-# formularios de su web (Seguridad → Filtro MAC). Política 0 = lista negra;
-# la 1 (lista blanca) dejaría sin internet a todo lo que no esté en la lista.
-PAGINA_FILTRO_MAC = "html/bbsp/macfilter/macfilter.asp"
+# formularios de su web. Tiene dos filtros y hacen falta los dos:
+# - Seguridad → Filtro MAC: lo que entra por los puertos de cable.
+# - Seguridad → Filtro MAC WLAN: lo de WiFi, por red ("SSID-1" = WLAN 1). El
+#   de cable no corta a un equipo conectado por WiFi.
+# Política 0 = lista negra; la 1 (lista blanca) dejaría sin internet a todo lo
+# que no esté en la lista, por eso se manda siempre junto con el encendido.
 DOMINIO_SEGURIDAD = "InternetGatewayDevice.X_HW_Security"
-RE_FILTRO = re.compile(r'new stMacFilter\("([^"]+)","([^"]+)"\)')
+FILTRO_CABLE = {
+    "pagina": "html/bbsp/macfilter/macfilter.asp", "objeto": "MacFilter",
+    "encendido": "MacFilterRight", "politica": "MacFilterPolicy",
+}
+FILTRO_WIFI = {
+    "pagina": "html/bbsp/wlanmacfilter/wlanmacfilter.asp", "objeto": "WLANMacFilter",
+    "encendido": "WlanMacFilterRight", "politica": "WlanMacFilterPolicy",
+}
+PAGINA_FILTRO_MAC = FILTRO_CABLE["pagina"]
+RE_FILTRO = re.compile(r'new stMacFilter\(("[^"]*"(?:,"[^"]*")*)\)')
 # El formulario lleva el token de la sesión como <input name="onttoken" id="hwonttoken" value="...">.
 RE_TOKEN = re.compile(r'<input[^>]*name="onttoken"[^>]*value="([0-9a-fA-F]+)"')
 
@@ -107,19 +119,34 @@ def _sin_escapes(texto: str) -> str:
     return re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), texto)
 
 
+def red_wifi(indice: int) -> str:
+    """WLANConfiguration.5 → "SSID-5", como lo nombra el filtro WLAN."""
+    return f"SSID-{indice}"
+
+
 def filtro_en_pagina(html: str) -> dict:
-    """{"activo": bool, "lista_negra": bool, "macs": {mac: dominio}} de la página del filtro."""
+    """{"activo", "lista_negra", "entradas": [(dominio, mac, red)], "macs": {mac: [dominios]}}.
+
+    En el filtro de cable cada fila es (dominio, mac); en el de WiFi, (dominio, red, mac).
+    """
     activo = re.search(r"var enableFilter = '(\d)'", html or "")
     modo = re.search(r"var Mode = '(\d)'", html or "")
     if not activo or not modo:
         raise ValueError("La ONU no mostró su filtro MAC (¿usuario sin permiso?).")
-    macs = {}
-    for dominio, mac in RE_FILTRO.findall(html):
+    entradas = []
+    for fila in RE_FILTRO.findall(html):
+        campos = [_sin_escapes(c) for c in re.findall(r'"([^"]*)"', fila)]
+        if len(campos) < 2 or not campos[0]:
+            continue
+        dominio, mac, red = campos[0], campos[-1], (campos[1] if len(campos) > 2 else None)
         try:
-            macs[normalizar_mac(_sin_escapes(mac))] = dominio
+            entradas.append((dominio, normalizar_mac(mac), red))
         except ValueError:
             continue
-    return {"activo": activo.group(1) == "1", "lista_negra": modo.group(1) == "0", "macs": macs}
+    macs: dict = {}
+    for dominio, mac, _ in entradas:
+        macs.setdefault(mac, []).append(dominio)
+    return {"activo": activo.group(1) == "1", "lista_negra": modo.group(1) == "0", "entradas": entradas, "macs": macs}
 
 
 class FiltroMacHuawei:
@@ -138,7 +165,7 @@ class FiltroMacHuawei:
         for usuario, clave in self.cuentas:
             await _entrar(self.http, usuario, clave)
             try:
-                self.estado_inicial = filtro_en_pagina((await self.http.get("/" + PAGINA_FILTRO_MAC)).text)
+                self.estado_inicial = await self.estado()
                 return self
             except ValueError:
                 continue
@@ -152,44 +179,73 @@ class FiltroMacHuawei:
             pass
         await self.http.aclose()
 
-    async def _token(self) -> str:
-        # De la misma página del filtro: la cuenta de usuario (root) no ve otras páginas de administración.
-        encontrado = RE_TOKEN.search((await self.http.get("/" + PAGINA_FILTRO_MAC)).text)
-        if not encontrado:
-            raise ValueError("La ONU no entregó el token de la sesión.")
-        return encontrado.group(1)
+    async def _leer(self, filtro: dict) -> tuple[str, dict]:
+        html = (await self.http.get("/" + filtro["pagina"])).text
+        return html, filtro_en_pagina(html)
 
-    async def _enviar(self, cgi: str, dominio: str, datos: dict) -> None:
-        await self.http.post(f"/{cgi}?x={dominio}&RequestFile={PAGINA_FILTRO_MAC}",
-                             data={**datos, "x.X_HW_Token": await self._token()})
+    async def _enviar(self, filtro: dict, cgi: str, dominio: str, datos: dict) -> None:
+        # El token sale de la misma página del filtro: la cuenta de usuario (root) no ve otras.
+        token = RE_TOKEN.search((await self.http.get("/" + filtro["pagina"])).text)
+        if not token:
+            raise ValueError("La ONU no entregó el token de la sesión.")
+        await self.http.post(f"/{cgi}?x={dominio}&RequestFile={filtro['pagina']}",
+                             data={**datos, "x.X_HW_Token": token.group(1)})
+
+    async def _encender(self, filtro: dict, estado: dict) -> None:
+        if not estado["activo"] or not estado["lista_negra"]:
+            await self._enviar(filtro, "set.cgi", DOMINIO_SEGURIDAD,
+                               {f"x.{filtro['politica']}": "0", f"x.{filtro['encendido']}": "1"})
+
+    async def _quitar(self, filtro: dict, mac: str) -> dict:
+        _, estado = await self._leer(filtro)
+        dominios = estado["macs"].get(mac, [])
+        if dominios:
+            await self._enviar(filtro, "del.cgi", f"{DOMINIO_SEGURIDAD}.{filtro['objeto']}", {d: "" for d in dominios})
+            _, estado = await self._leer(filtro)
+        if mac in estado["macs"]:
+            raise ValueError("La ONU no quitó el bloqueo.")
+        if not estado["macs"] and estado["activo"]:
+            await self._enviar(filtro, "set.cgi", DOMINIO_SEGURIDAD, {f"x.{filtro['encendido']}": "0"})
+            _, estado = await self._leer(filtro)
+        return estado
 
     async def estado(self) -> dict:
-        return filtro_en_pagina((await self.http.get("/" + PAGINA_FILTRO_MAC)).text)
+        """Bloqueadas = las del filtro de cable o del de WiFi (con su filtro encendido en lista negra)."""
+        _, cable = await self._leer(FILTRO_CABLE)
+        _, wifi = await self._leer(FILTRO_WIFI)
+        bloqueadas = set()
+        for filtro in (cable, wifi):
+            if filtro["activo"] and filtro["lista_negra"]:
+                bloqueadas |= set(filtro["macs"])
+        return {"cable": cable, "wifi": wifi, "bloqueadas": bloqueadas}
 
-    async def bloquear(self, mac: str) -> dict:
+    async def bloquear(self, mac: str, redes: list[int]) -> dict:
+        """Sin internet por cable y en cada red WiFi indicada (la del cliente en 2.4 y 5 GHz)."""
         mac = normalizar_mac(mac)
+        _, cable = await self._leer(FILTRO_CABLE)
+        await self._encender(FILTRO_CABLE, cable)
+        if mac not in cable["macs"]:
+            await self._enviar(FILTRO_CABLE, "add.cgi", f"{DOMINIO_SEGURIDAD}.MacFilter", {"x.SourceMACAddress": mac})
+        _, wifi = await self._leer(FILTRO_WIFI)
+        await self._encender(FILTRO_WIFI, wifi)
+        ya = {red for _, m, red in wifi["entradas"] if m == mac}
+        for indice in redes:
+            if red_wifi(indice) not in ya:
+                await self._enviar(FILTRO_WIFI, "add.cgi", f"{DOMINIO_SEGURIDAD}.WLANMacFilter",
+                                   {"x.SourceMACAddress": mac, "x.SSIDName": red_wifi(indice), "x.Enable": "1"})
         estado = await self.estado()
-        if not estado["activo"] or not estado["lista_negra"]:
-            # Política y encendido juntos: nunca queda activa una lista blanca.
-            await self._enviar("set.cgi", DOMINIO_SEGURIDAD, {"x.MacFilterPolicy": "0", "x.MacFilterRight": "1"})
-        if mac not in estado["macs"]:
-            await self._enviar("add.cgi", f"{DOMINIO_SEGURIDAD}.MacFilter", {"x.SourceMACAddress": mac})
-        estado = await self.estado()
-        if mac not in estado["macs"] or not estado["activo"] or not estado["lista_negra"]:
+        en_wifi = {red for _, m, red in estado["wifi"]["entradas"] if m == mac}
+        if mac not in estado["bloqueadas"] or not {red_wifi(i) for i in redes} <= en_wifi:
             raise ValueError("La ONU no guardó el bloqueo.")
         return estado
 
     async def desbloquear(self, mac: str) -> dict:
         mac = normalizar_mac(mac)
+        await self._quitar(FILTRO_CABLE, mac)
+        await self._quitar(FILTRO_WIFI, mac)
         estado = await self.estado()
-        if mac in estado["macs"]:
-            await self._enviar("del.cgi", f"{DOMINIO_SEGURIDAD}.MacFilter", {estado["macs"][mac]: ""})
-            estado = await self.estado()
-        if mac in estado["macs"]:
+        if mac in estado["bloqueadas"]:
             raise ValueError("La ONU no quitó el bloqueo.")
-        if not estado["macs"] and estado["activo"]:
-            await self._enviar("set.cgi", DOMINIO_SEGURIDAD, {"x.MacFilterRight": "0"})
-            estado = await self.estado()
         return estado
 
 
