@@ -87,7 +87,8 @@ def equipos(lan: Dict[str, Any], redes: List[Dict[str, Any]], bloqueadas: Option
         vistas.add(mac)
         # Layer2Interface dice en qué WiFi está aunque ya se haya desconectado.
         interfaz = re.search(r"WLANConfiguration\.(\d+)", str(_valor(host.get("Layer2Interface")) or ""))
-        red = red_de.get(mac) or (red_por_indice.get(int(interfaz.group(1))) if interfaz else None)
+        # Layer2Interface viene fresco con los equipos; AssociatedDevice puede ser de una lectura vieja del WiFi.
+        red = (red_por_indice.get(int(interfaz.group(1))) if interfaz else None) or red_de.get(mac)
         lista.append({
             "mac": mac,
             "nombre": _valor(host.get("HostName")) or "",
@@ -215,8 +216,16 @@ class RedClienteService:
     async def _bloqueadas(self, equipo: Dict[str, Any]) -> set:
         if equipo["marca"] != "huawei" or not equipo["ip"]:
             raise ValueError("El bloqueo por MAC solo está hecho para ONU Huawei.")
-        async with FiltroMacHuawei(equipo["ip"], await self._cuentas_huawei()) as filtro:
-            return set(filtro.estado_inicial["bloqueadas"])
+        cuentas = await self._cuentas_huawei()
+        for intento in range(2):
+            try:
+                async with FiltroMacHuawei(equipo["ip"], cuentas) as filtro:
+                    return set(filtro.estado_inicial["bloqueadas"])
+            except (ValueError, httpx.HTTPError):
+                # La web de la ONU deja una sola sesión: si estaba ocupada (otro cambio), se espera y se reintenta.
+                if intento:
+                    raise
+                await asyncio.sleep(2)
 
     # ---------------------------------------------------------- lo que ve el admin
     async def estado(self, cliente_id: int, servicio_id: Optional[int] = None, solo_principal: bool = False) -> Dict[str, Any]:
@@ -227,8 +236,15 @@ class RedClienteService:
             async def tr069():
                 if not device_id:
                     return None, False
-                al_dia = await self._tarea(http, device_id, {"name": "refreshObject", "objectName": LAN})
-                return await self._leer_lan(http, device_id), al_dia
+                # Solo los equipos (unos 3 s): dicen en qué red está cada uno. El WiFi tarda ~12 s en
+                # contestar y sus nombres casi no cambian; se lee completo solo si no se tiene.
+                al_dia = await self._tarea(http, device_id, {"name": "refreshObject", "objectName": f"{LAN}.Hosts"})
+                documento = await self._leer_lan(http, device_id)
+                lan = ((documento.get("InternetGatewayDevice") or {}).get("LANDevice") or {}).get("1") or {}
+                if al_dia and not redes_wifi(lan):
+                    await self._tarea(http, device_id, {"name": "refreshObject", "objectName": f"{LAN}.WLANConfiguration"})
+                    documento = await self._leer_lan(http, device_id)
+                return documento, al_dia
 
             async def web():
                 try:
@@ -250,7 +266,8 @@ class RedClienteService:
             "al_dia": al_dia,
             "ultimo_reporte": (documento or {}).get("_lastInform"),
             "equipos": [{k: v for k, v in e.items() if k != "indice_red"} for e in lista],
-            "redes": [{k: v for k, v in r.items() if k != "macs"} | {"conectados": len(r["macs"])} for r in redes],
+            "redes": [{k: v for k, v in r.items() if k != "macs"}
+                      | {"conectados": sum(1 for e in lista if e["conectado"] and e["indice_red"] == r["indice"])} for r in redes],
             "bloqueo_disponible": bloqueadas is not None,
             "error_bloqueo": error_web,
         }
@@ -262,8 +279,17 @@ class RedClienteService:
         if equipo["marca"] != "huawei" or not equipo["ip"]:
             raise ValueError("El bloqueo por MAC solo está hecho para ONU Huawei.")
         redes = await self._redes_del_equipo(equipo, mac, solo_principal) if bloquear else []
-        async with FiltroMacHuawei(equipo["ip"], await self._cuentas_huawei()) as filtro:
-            estado = await (filtro.bloquear(mac, redes) if bloquear else filtro.desbloquear(mac))
+        cuentas = await self._cuentas_huawei()
+        for intento in range(2):
+            try:
+                async with FiltroMacHuawei(equipo["ip"], cuentas) as filtro:
+                    estado = await (filtro.bloquear(mac, redes) if bloquear else filtro.desbloquear(mac))
+                break
+            except (ValueError, httpx.HTTPError):
+                # Sesión de la web ocupada (por ejemplo, otra lectura de la red): un reintento.
+                if intento:
+                    raise
+                await asyncio.sleep(2)
         await self._bitacora(usuario, "Bloquear equipo" if bloquear else "Desbloquear equipo", cliente_id,
                              f"Cliente {cliente_id} · ONU {equipo['identificador'] or equipo['ip']} · {mac}"
                              + (f" · WiFi {', '.join(map(str, redes))}" if redes else ""))
