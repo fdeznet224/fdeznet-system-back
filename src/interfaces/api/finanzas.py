@@ -22,17 +22,14 @@ from src.infrastructure.models import (
     ZonaModel,
     RouterModel,
     ServicioAdicionalModel,
-    ConfiguracionSistema,
-    PlantillaMensajeModel,
 )
 
 # Servicios
 from src.application.services.billing_service import BillingService
-from src.application.helpers.pdf_generator import generar_factura_pdf
+from src.application.services.factura_pdf_service import nombre_pdf, pdf_de_factura
 from src.application.services.comprobante_service import (
     ComprobanteService,
     normalizar_contrato,
-    personalizar_datos_pago,
 )
 from src.application.services.finance_service import (
     FinanceService,
@@ -424,29 +421,12 @@ async def descargar_factura_pdf(
     factura = (await db.execute(query)).scalars().first()
     if not factura:
         raise HTTPException(status_code=404, detail="Factura no encontrada")
-    marca = await db.get(ConfiguracionSistema, 1)
-    plantilla_pago = (
-        await db.execute(
-            select(PlantillaMensajeModel.texto).where(
-                PlantillaMensajeModel.tipo == "datos_pago",
-                PlantillaMensajeModel.activo.is_(True),
-            )
-        )
-    ).scalar_one_or_none()
-    hoy = date.today()
-    limite = factura.fecha_promesa_pago if (factura.es_promesa_activa and factura.fecha_promesa_pago) else factura.fecha_vencimiento
-    contenido = generar_factura_pdf(
-        factura,
-        factura.cliente,
-        marca,
-        vencida=bool(limite and limite < hoy),
-        datos_pago=personalizar_datos_pago(plantilla_pago, factura.cliente.cedula) if plantilla_pago else None,
-    )
+    contenido = await pdf_de_factura(db, factura)
     return Response(
         content=contenido,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="factura-{str(factura.id).zfill(6)}.pdf"',
+            "Content-Disposition": f'attachment; filename="{nombre_pdf(factura)}"',
             "Cache-Control": "no-store",
         },
     )

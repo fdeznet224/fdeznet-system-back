@@ -39,6 +39,23 @@ def calcular_fecha_maxima_promesa(
     return min(limite_por_dias, siguiente_pago - timedelta(days=1))
 
 
+async def politica_del_cliente(db: AsyncSession, cliente: ClienteModel) -> PoliticaCobranzaModel | None:
+    """La política propia del cliente o, si no tiene, la activa de su tipo."""
+    politica = None
+    if cliente.politica_cobranza_id:
+        politica = await db.get(PoliticaCobranzaModel, cliente.politica_cobranza_id)
+    if not politica or not politica.activa:
+        politica = (
+            await db.execute(
+                select(PoliticaCobranzaModel).where(
+                    PoliticaCobranzaModel.tipo_cliente == cliente.tipo_cliente,
+                    PoliticaCobranzaModel.activa.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+    return politica
+
+
 CENTAVO = Decimal("0.01")
 METODOS_PERMITIDOS = {
     "efectivo",
@@ -862,21 +879,7 @@ class FinanceService:
             raise ValueError("La factura no tiene saldo pendiente")
 
         cliente = await self.db.get(ClienteModel, factura.cliente_id)
-        politica = None
-        if cliente.politica_cobranza_id:
-            politica = await self.db.get(
-                PoliticaCobranzaModel,
-                cliente.politica_cobranza_id,
-            )
-        if not politica or not politica.activa:
-            politica = (
-                await self.db.execute(
-                    select(PoliticaCobranzaModel).where(
-                        PoliticaCobranzaModel.tipo_cliente == cliente.tipo_cliente,
-                        PoliticaCobranzaModel.activa.is_(True),
-                    )
-                )
-            ).scalar_one_or_none()
+        politica = await politica_del_cliente(self.db, cliente)
         if not politica:
             raise ValueError("El cliente no tiene una política de cobranza activa")
 
@@ -923,7 +926,7 @@ class FinanceService:
             )
 
         origen_normalizado = (origen or "manual").strip().lower()
-        if origen_normalizado not in {"manual", "bot"}:
+        if origen_normalizado not in {"manual", "bot", "portal"}:
             raise ValueError("El origen de la promesa no es válido")
 
         promesa = PromesaPagoHistorialModel(

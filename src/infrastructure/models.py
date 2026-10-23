@@ -875,6 +875,25 @@ class PortalAccesoModel(Base):
     version = Column(Integer, nullable=False, default=1, server_default="1")
     cambiado_en = Column(DateTime, nullable=False, default=datetime.now)
     ultimo_acceso = Column(DateTime, nullable=True)
+    # Cambio de teléfono: se confirma con un código que el bot manda al número nuevo.
+    telefono_pendiente = Column(String(20), nullable=True)
+    codigo_hash = Column(String(255), nullable=True)
+    codigo_expira = Column(DateTime, nullable=True)
+    codigo_intentos = Column(Integer, nullable=False, default=0, server_default="0")
+
+
+class PushSuscripcionModel(Base):
+    """Un celular o navegador del cliente que aceptó notificaciones del portal."""
+    __tablename__ = "push_suscripciones"
+
+    id = Column(Integer, primary_key=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id", ondelete="CASCADE"), nullable=False, index=True)
+    endpoint = Column(String(500), nullable=False, unique=True)
+    p256dh = Column(String(200), nullable=False)
+    auth = Column(String(100), nullable=False)
+    creado_en = Column(DateTime, nullable=False, default=datetime.now)
+    ultimo_envio = Column(DateTime, nullable=True)
+    fallos = Column(Integer, nullable=False, default=0, server_default="0")
 
 
 class FacturaModel(Base):

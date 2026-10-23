@@ -425,6 +425,14 @@ class WhatsAppQueue:
                         mensaje_id,
                         resultado,
                     )
+                    # El mismo aviso como notificación del portal (si la activó).
+                    # Una sola vez: cuando salió o cuando ya no se va a reintentar.
+                    if resultado.get("ok") or not resultado.get("reintentable"):
+                        from src.application.services.push_service import avisar_por_push
+
+                        asyncio.create_task(avisar_por_push(
+                            datos.get("cliente_id"), datos.get("tipo_evento") or tarea.get("tipo_evento"), datos["mensaje"],
+                        ))
                 except Exception as e:
                     logger.error(f"❌ Fallo crítico en el hilo de la cola: {e}")
                     await self._actualizar_registro(
@@ -559,6 +567,7 @@ class WhatsAppQueue:
                 "cliente_id": registro.cliente_id,
                 "mensaje": registro.mensaje,
                 "ruta": registro.ruta_archivo,
+                "tipo_evento": registro.tipo_evento,
                 "intervalo": (
                     registro.intervalo_salida
                     if registro.intervalo_salida and registro.intervalo_salida > 0

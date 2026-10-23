@@ -4,17 +4,23 @@ La sesión va en la cookie fdeznet_portal, aparte de la del personal. Hasta
 que el cliente pone su propia contraseña solo puede cambiarla.
 """
 
+import asyncio
+import logging
 from datetime import date
 
 import httpx
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.services.portal_cliente_service import SESION_HORAS, PortalClienteService
 from src.infrastructure.auth import LoginRateLimiter
 from src.infrastructure.database import get_db
+from src.infrastructure.models import ServicioModel
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/portal", tags=["Portal del cliente"])
 
@@ -27,6 +33,9 @@ intentos_ip = LoginRateLimiter(max_attempts=20, window_seconds=900)
 reinicios = LoginRateLimiter(max_attempts=1, window_seconds=600)
 cambios_red = LoginRateLimiter(max_attempts=20, window_seconds=600)
 reportes = LoginRateLimiter(max_attempts=3, window_seconds=3600)
+codigos_telefono = LoginRateLimiter(max_attempts=3, window_seconds=3600)
+# La gráfica en vivo pregunta cada pocos segundos; esto evita que alguien sature el MikroTik.
+lecturas_trafico = LoginRateLimiter(max_attempts=40, window_seconds=60)
 
 CATEGORIAS_PORTAL = {"sin_internet", "lentitud", "router_wifi", "otro"}
 
@@ -54,6 +63,18 @@ class ClaveWifi(BaseModel):
 class Falla(BaseModel):
     categoria: str
     descripcion: str
+
+
+class Promesa(BaseModel):
+    fecha: date
+
+
+class Telefono(BaseModel):
+    telefono: str
+
+
+class Codigo(BaseModel):
+    codigo: str
 
 
 def _ip(request: Request) -> str:
@@ -218,3 +239,130 @@ async def reportar_falla(datos: Falla, cliente=Depends(cliente_portal), db: Asyn
         raise HTTPException(status_code=409, detail=str(error)) from error
     reportes.register_failure(str(cliente.id))
     return {"id": orden.get("id") if isinstance(orden, dict) else getattr(orden, "id", None)}
+
+
+@router.get("/facturas")
+async def facturas(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    return await PortalClienteService(db).facturas(cliente.id)
+
+
+@router.get("/facturas/{factura_id}/pdf")
+async def factura_pdf(factura_id: int, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    from src.application.services.factura_pdf_service import nombre_pdf, pdf_de_factura
+
+    try:
+        factura = await PortalClienteService(db).factura_con_cliente(cliente.id, factura_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(content=await pdf_de_factura(db, factura), media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{nombre_pdf(factura)}"', "Cache-Control": "no-store",
+    })
+
+
+@router.get("/promesa")
+async def opciones_promesa(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    return await PortalClienteService(db).opciones_promesa(cliente)
+
+
+@router.post("/promesa")
+async def registrar_promesa(datos: Promesa, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    try:
+        return await PortalClienteService(db).registrar_promesa(cliente, datos.fecha)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.get("/reportes")
+async def mis_reportes(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    return await PortalClienteService(db).reportes(cliente.id)
+
+
+@router.get("/trafico")
+async def trafico(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    """Lo que está usando en este momento (bits por segundo), leído de su sesión PPPoE."""
+    from src.application.services.network_service import NetworkService
+
+    lecturas_trafico.ensure_allowed(str(cliente.id))
+    lecturas_trafico.register_failure(str(cliente.id))
+    servicio_id = (await db.execute(
+        select(ServicioModel.id).where(ServicioModel.cliente_id == cliente.id, ServicioModel.estado != "cancelado",
+                                       ServicioModel.user_pppoe.isnot(None)).order_by(ServicioModel.id).limit(1)
+    )).scalar_one_or_none()
+    try:
+        servicio_red = NetworkService(db)
+        mk, servicio = await (servicio_red._get_mk_session_servicio(servicio_id) if servicio_id else servicio_red._get_mk_session(cliente.id))
+        usuario_pppoe = servicio.user_pppoe
+        # La API del MikroTik bloquea: en un hilo para que muchos clientes mirando no frenen el servidor.
+        consumo = (await asyncio.to_thread(mk.obtener_consumo_interfaz_pppoe, usuario_pppoe) if usuario_pppoe else None) or {}
+    except Exception as error:  # el MikroTik no contestó: se muestra en cero, como en la ficha
+        logger.warning("Tráfico en vivo del cliente %s: %s", cliente.id, error)
+        return {"bajada_bps": 0, "subida_bps": 0, "disponible": False}
+    return {"bajada_bps": consumo.get("down_bps", 0), "subida_bps": consumo.get("up_bps", 0), "disponible": bool(usuario_pppoe)}
+
+
+@router.post("/telefono/codigo")
+async def pedir_codigo(datos: Telefono, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    codigos_telefono.ensure_allowed(str(cliente.id))
+    try:
+        resultado = await PortalClienteService(db).pedir_codigo_telefono(cliente, datos.telefono)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    codigos_telefono.register_failure(str(cliente.id))
+    return resultado
+
+
+@router.post("/telefono/confirmar")
+async def confirmar_codigo(datos: Codigo, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    try:
+        return await PortalClienteService(db).confirmar_codigo_telefono(cliente, datos.codigo)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+class Suscripcion(BaseModel):
+    endpoint: str
+    keys: dict
+
+
+class Cancelacion(BaseModel):
+    endpoint: str
+
+
+@router.get("/notificaciones")
+async def notificaciones(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    """La llave pública para que el navegador se suscriba (se crea la primera vez)."""
+    from src.application.services.push_service import PushService, llaves
+
+    config = await llaves(db)
+    return {"disponible": True, "clave_publica": config["publica"], "dispositivos": await PushService(db).cuantas(cliente.id)}
+
+
+@router.post("/notificaciones")
+async def activar_notificaciones(datos: Suscripcion, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    from src.application.services.push_service import PushService
+
+    try:
+        await PushService(db).suscribir(cliente.id, datos.model_dump())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"ok": True}
+
+
+@router.post("/notificaciones/quitar")
+async def quitar_notificaciones(datos: Cancelacion, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    from src.application.services.push_service import PushService
+
+    await PushService(db).cancelar(cliente.id, datos.endpoint)
+    return {"ok": True}
+
+
+@router.post("/notificaciones/prueba")
+async def probar_notificaciones(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    from src.application.services.push_service import PushService
+
+    reportes.ensure_allowed(f"prueba:{cliente.id}")
+    reportes.register_failure(f"prueba:{cliente.id}")
+    enviadas = await PushService(db).enviar(cliente.id, "Notificaciones activadas", "Aquí te avisaremos de tus pagos y de tu servicio.")
+    if not enviadas:
+        raise HTTPException(status_code=409, detail="No se pudo enviar a este celular.")
+    return {"enviadas": enviadas}
