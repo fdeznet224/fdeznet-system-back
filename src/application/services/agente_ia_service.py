@@ -36,6 +36,7 @@ from src.application.services.comprobante_service import (
 )
 from src.application.services.network_service import NetworkService
 from src.application.services.orden_service import OrdenService
+from src.application.services.red_cliente_service import RE_CLAVE_WIFI, RedClienteService
 from src.application.services.support_service import SupportService
 from src.application.services.usuario_sistema_service import usuario_agente_ia
 from src.infrastructure.models import (
@@ -182,7 +183,7 @@ HERRAMIENTAS = [
                       "type": "boolean",
                       "description": "true solo si el cliente no identificado confirmó que el pago es para el cliente_sugerido de leer_comprobante",
                   }}, ["revision_id"]),
-    _herramienta("solicitar_cambio_contrasena", "Pide al personal cambiar la contraseña del WiFi del cliente identificado.",
+    _herramienta("solicitar_cambio_contrasena", "Cambia la contraseña del WiFi principal del cliente identificado (si no se puede al momento, se la pide al personal).",
                  {"nueva": {"type": "string"}}, ["nueva"]),
     _herramienta("pasar_a_humano", "Pasa la conversación a un asesor y pausa el agente en este chat.",
                  {"motivo": {"type": "string"}}, ["motivo"]),
@@ -1018,8 +1019,23 @@ class _Contexto:
 
     async def _solicitar_cambio_contrasena(self, nueva: str) -> dict:
         nueva = (nueva or "").strip()
-        if len(nueva) < 8:
-            return {"error": "La contraseña debe tener al menos 8 caracteres."}
+        if not RE_CLAVE_WIFI.match(nueva):
+            return {"error": "La contraseña debe tener de 8 a 63 caracteres, sin acentos ni ñ."}
+        # El contrato va en el nombre del WiFi: cualquiera que vea la red lo sabe. Solo se cambia
+        # al momento si escribe desde el teléfono registrado del cliente; si no, lo verifica el personal.
+        registrado = await self._cliente_del_telefono_registrado()
+        if registrado and registrado.cedula == self.cliente.cedula:
+            try:
+                resultado = await RedClienteService(self.db).cambiar_clave_wifi(
+                    self.cliente.id, None, nueva, self.usuario or await self._usuario_sistema(), solo_principal=True,
+                )
+                return {
+                    "cambiada": True, "red": resultado["ssid"], "aplicada_al_momento": resultado["aplicado"],
+                    "nota": "Dile que ya quedó (o que su módem la aplica en unos minutos si aplicada_al_momento es false) "
+                            "y que sus equipos se desconectan y deben conectarse con la nueva. El nombre de la red no cambia.",
+                }
+            except (LookupError, ValueError, httpx.HTTPError) as exc:
+                logger.info("El agente no pudo cambiar el WiFi del cliente %s: %s", self.cliente.id, exc)
         return await self._crear_orden_tecnica(
             "router_wifi", f"Cambio de contraseña del WiFi solicitado por el cliente. Nueva contraseña: {nueva}"
         )

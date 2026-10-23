@@ -913,6 +913,11 @@ def test_cada_orden_del_agente_avisa_a_los_administradores(monkeypatch):
     monkeypatch.setattr(agente_mod, "SupportService", _Soporte)
     contexto, enviados, _ = _contexto_con_avisos(monkeypatch)
     contexto.cliente = CLIENTE
+
+    async def sin_telefono_registrado():
+        return None
+
+    contexto._cliente_del_telefono_registrado = sin_telefono_registrado
     resultado = asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "FdezNet2026"}))
     assert resultado == {"orden_creada": True, "orden_id": 55}
     assert [n for n, _ in enviados] == ["9610000001", "9610000002"]
@@ -1067,3 +1072,65 @@ def test_colonia_sin_zona_se_registra_igual_y_lo_confirma_un_asesor(monkeypatch)
     }))
     assert resultado["orden_creada"] is True and "asesor" in resultado["zona"]
     assert "sin reconocer (Otra Colonia)" in enviados[0][1]
+
+
+# --------------------------------------------------------- contraseña del WiFi
+def _contexto_wifi(monkeypatch, registrado, falla=None):
+    cambios = []
+
+    class _Red:
+        def __init__(self, db):
+            pass
+
+        async def cambiar_clave_wifi(self, cliente_id, ssid, clave, usuario=None, servicio_id=None, solo_principal=False):
+            if falla:
+                raise falla
+            cambios.append((cliente_id, ssid, clave, solo_principal))
+            return {"aplicado": True, "bandas": 2, "ssid": "FdezNet-" + CLIENTE.cedula}
+
+    class _Soporte:
+        def __init__(self, db):
+            pass
+
+        async def crear_incidencia(self, **datos):
+            return SimpleNamespace(id=56)
+
+    monkeypatch.setattr(agente_mod, "RedClienteService", _Red)
+    monkeypatch.setattr(agente_mod, "SupportService", _Soporte)
+    contexto, enviados, _ = _contexto_con_avisos(monkeypatch)
+    contexto.cliente = CLIENTE
+    contexto.usuario = SimpleNamespace(id=1, usuario="agente")
+
+    async def del_telefono():
+        return SimpleNamespace(cedula=registrado) if registrado else None
+
+    contexto._cliente_del_telefono_registrado = del_telefono
+    return contexto, cambios, enviados
+
+
+def test_desde_su_telefono_registrado_el_agente_cambia_la_contrasena_al_momento(monkeypatch):
+    contexto, cambios, enviados = _contexto_wifi(monkeypatch, registrado=CLIENTE.cedula)
+    resultado = asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "FdezNet2026"}))
+    assert resultado["cambiada"] is True and resultado["aplicada_al_momento"] is True
+    # Solo su red principal, nunca la de fichas.
+    assert cambios == [(CLIENTE.id, None, "FdezNet2026", True)]
+    assert enviados == []
+
+
+def test_desde_otro_numero_no_se_cambia_y_lo_verifica_el_personal(monkeypatch):
+    # El contrato va en el nombre del WiFi: un vecino lo conoce.
+    contexto, cambios, enviados = _contexto_wifi(monkeypatch, registrado=None)
+    resultado = asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "FdezNet2026"}))
+    assert resultado == {"orden_creada": True, "orden_id": 56}
+    assert cambios == [] and "FdezNet2026" in enviados[0][1]
+
+
+def test_si_su_modem_no_tiene_tr069_queda_la_orden(monkeypatch):
+    contexto, _, _ = _contexto_wifi(monkeypatch, registrado=CLIENTE.cedula, falla=ValueError("sin TR-069"))
+    assert asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "FdezNet2026"})) == {"orden_creada": True, "orden_id": 56}
+
+
+def test_contrasena_wifi_invalida_ni_se_intenta(monkeypatch):
+    contexto, cambios, _ = _contexto_wifi(monkeypatch, registrado=CLIENTE.cedula)
+    assert "sin acentos" in asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "contraseña1"}))["error"]
+    assert cambios == []

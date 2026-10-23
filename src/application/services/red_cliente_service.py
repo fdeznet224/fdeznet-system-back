@@ -330,9 +330,9 @@ class RedClienteService:
                              + (f" · WiFi {', '.join(map(str, redes))}" if redes else ""))
         return {"bloqueados": sorted(estado["bloqueadas"])}
 
-    async def cambiar_clave_wifi(self, cliente_id: int, ssid: str, clave: str, usuario=None,
+    async def cambiar_clave_wifi(self, cliente_id: int, ssid: Optional[str], clave: str, usuario=None,
                                  servicio_id: Optional[int] = None, solo_principal: bool = False) -> Dict[str, Any]:
-        """Cambia la contraseña en todas las bandas que usan ese nombre de red."""
+        """Cambia la contraseña en todas las bandas que usan ese nombre de red (sin nombre: la principal)."""
         if not RE_CLAVE_WIFI.match(clave or ""):
             raise ValueError("La contraseña debe tener de 8 a 63 caracteres, sin acentos ni ñ.")
         equipo = await self._equipo(cliente_id, servicio_id)
@@ -342,6 +342,8 @@ class RedClienteService:
                 raise ValueError("La ONU del cliente todavía no se reporta por TR-069.")
             lan = ((await self._leer_lan(http, device_id)).get("InternetGatewayDevice") or {}).get("LANDevice", {}).get("1", {})
             redes = redes_wifi(lan)
+            if ssid is None:
+                ssid = next((r["ssid"] for r in redes if r["indice"] in indices_principales(redes)), None)
             indices = [r["indice"] for r in redes if r["ssid"] == ssid]
             if not indices:
                 raise ValueError("Esa red WiFi no está en la ONU.")
@@ -355,7 +357,7 @@ class RedClienteService:
             aplicado = await self._tarea(http, device_id, {"name": "setParameterValues", "parameterValues": valores})
         await self._bitacora(usuario, "Cambiar contraseña WiFi", cliente_id,
                              f"Cliente {cliente_id} · ONU {equipo['identificador'] or equipo['ip']} · red {ssid}")
-        return {"aplicado": aplicado, "bandas": len(indices)}
+        return {"aplicado": aplicado, "bandas": len(indices), "ssid": ssid}
 
     async def _redes_del_equipo(self, equipo: Dict[str, Any], mac: str, solo_principal: bool) -> List[int]:
         """En qué redes WiFi bloquearlo: todas las bandas de la red donde está (2.4 y 5 GHz).
