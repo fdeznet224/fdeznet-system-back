@@ -1,0 +1,149 @@
+"""La ONU del cliente nuevo se configura sola: PPPoE del cliente y WiFi con su contrato."""
+
+import asyncio
+import json
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import httpx
+
+from src.application.services import aprovisionamiento_onu_service as aprov
+from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService, valores_para
+
+LAN = "InternetGatewayDevice.LANDevice.1"
+WAN = "InternetGatewayDevice.WANDevice.1.WANConnectionDevice"
+
+
+def v(valor):
+    return {"_value": valor}
+
+
+DOCUMENTO = {"InternetGatewayDevice": {
+    "LANDevice": {"1": {"WLANConfiguration": {
+        "1": {"SSID": v("HUAWEI-2.4G-ABCD"), "X_HW_RFBand": v("2.4GHz")},
+        "2": {"SSID": v("Zona FdezNet"), "X_HW_RFBand": v("2.4GHz")},
+        "5": {"SSID": v("HUAWEI-2.4G-ABCD"), "X_HW_RFBand": v("5GHz")},
+    }}},
+    "WANDevice": {"1": {"WANConnectionDevice": {
+        "1": {"WANPPPConnection": {"1": {"X_HW_SERVICELIST": v("TR069_INTERNET"), "Username": v("FdezNet")}}},
+        "2": {"WANIPConnection": {"1": {"X_HW_SERVICELIST": v("INTERNET")}}},
+    }}},
+}}
+
+
+def test_pone_el_wifi_en_las_dos_bandas_de_su_red_y_el_pppoe_al_final():
+    valores = valores_para(DOCUMENTO, "FdezNet-187B", "12345678", "juan_perez", "clave-pppoe")
+    rutas = [r for r, _, _ in valores]
+    assert f"{LAN}.WLANConfiguration.1.SSID" in rutas and f"{LAN}.WLANConfiguration.5.SSID" in rutas
+    # La red de fichas no se toca.
+    assert not any(".WLANConfiguration.2." in r for r in rutas)
+    assert valores[-2:] == [[f"{WAN}.1.WANPPPConnection.1.Username", "juan_perez", "xsd:string"],
+                            [f"{WAN}.1.WANPPPConnection.1.Password", "clave-pppoe", "xsd:string"]]
+    assert [x for r, x, _ in valores if r.endswith("KeyPassphrase")] == ["12345678"] * 4
+
+
+def test_nombre_y_contrasena_del_wifi():
+    assert aprov.ssid_para("187B") == "FdezNet-187B"
+    clave = aprov.clave_wifi_nueva()
+    assert len(clave) == 8 and clave.isdigit()
+
+
+class BaseFalsa:
+    def __init__(self, cliente):
+        self.cliente = cliente
+
+    async def get(self, modelo, llave):
+        return self.cliente
+
+    async def commit(self):
+        pass
+
+
+CLIENTE = SimpleNamespace(id=9, nombre="Juan Pérez", cedula="187B", telefono="9931112222",
+                          user_pppoe="juan_perez", pass_pppoe="clave-pppoe")
+
+
+def registro(identificador, creado=None):
+    return SimpleNamespace(cliente_id=9, identificador=identificador, ssid="FdezNet-187B", clave_wifi="12345678",
+                           estado="pendiente", intentos=0, detalle=None, device_id=None,
+                           creado_en=creado or datetime.now(), aplicado_en=None)
+
+
+def genieacs(dispositivos, mac_epon=None):
+    """GenieACS falso: `dispositivos` es {_id: serial}; la EPON nueva contesta su MAC al preguntarle."""
+    tareas, preguntada = [], set()
+
+    def manejar(request):
+        if request.method == "POST" and request.url.path.endswith("/tasks"):
+            tarea = json.loads(request.content)
+            dispositivo = request.url.path.split("/")[2]
+            tareas.append((dispositivo, tarea["name"], tarea))
+            if tarea["name"] == "getParameterValues":
+                preguntada.add(dispositivo)
+            return httpx.Response(200, json={})
+        if request.url.path == "/tasks":
+            return httpx.Response(200, json=[])
+        consulta = json.loads(request.url.params.get("query", "{}"))
+        if "_deviceId._SerialNumber" in consulta:
+            return httpx.Response(200, json=[{"_id": i} for i, s in dispositivos.items() if s == consulta["_deviceId._SerialNumber"]])
+        if any(k.endswith("MACAddress._value") for k in consulta):
+            ids = [i for i in preguntada if mac_epon and i == mac_epon[0]]
+            if "_id" in consulta:
+                ids = [i for i in ids if i == consulta["_id"]]
+            return httpx.Response(200, json=[{"_id": i} for i in ids])
+        if consulta.get("_id"):
+            return httpx.Response(200, json=[{"_id": consulta["_id"], **DOCUMENTO}])
+        # Lista para buscar EPON nuevas.
+        ahora = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return httpx.Response(200, json=[{"_id": i, "_registered": ahora} for i in dispositivos])
+
+    return httpx.MockTransport(manejar), tareas
+
+
+def servicio(transporte, enviados):
+    async def enviar(cliente, texto):
+        enviados.append((cliente.telefono, texto))
+
+    return AprovisionamientoOnuService(BaseFalsa(CLIENTE), nbi="http://nbi", enviar_whatsapp=enviar, transporte=transporte)
+
+
+def correr(srv, reg):
+    async def probar():
+        async with httpx.AsyncClient(base_url="http://nbi", transport=srv.transporte) as http:
+            return await srv._procesar_uno(http, reg)
+
+    return asyncio.run(probar())
+
+
+def test_gpon_se_reconoce_por_serial_se_configura_y_se_le_manda_su_wifi():
+    transporte, tareas = genieacs({"00259E-HG8145V5-48575443F1C8D69E": "48575443F1C8D69E"})
+    enviados = []
+    reg = registro("HWTCF1C8D69E")
+    assert correr(servicio(transporte, enviados), reg) is True
+    assert reg.estado == "aplicado" and reg.device_id == "00259E-HG8145V5-48575443F1C8D69E"
+    cambio = next(t for _, nombre, t in tareas if nombre == "setParameterValues")
+    assert [f"{WAN}.1.WANPPPConnection.1.Username", "juan_perez", "xsd:string"] in cambio["parameterValues"]
+    telefono, texto = enviados[0]
+    assert telefono == "9931112222" and "FdezNet-187B" in texto and "12345678" in texto and "187B" in texto
+
+
+def test_si_aun_no_se_reporta_se_sigue_esperando():
+    transporte, tareas = genieacs({})
+    reg = registro("HWTCF1C8D69E")
+    assert correr(servicio(transporte, []), reg) is False
+    assert reg.estado == "pendiente" and tareas == []
+
+
+def test_epon_nueva_se_reconoce_por_su_mac():
+    transporte, tareas = genieacs({"00259E-HG8145X6-A": "48575443AEB7B6AD", "00259E-HG8145X6-B": "485754430000BBBB"},
+                                  mac_epon=("00259E-HG8145X6-A",))
+    reg = registro("3C:FF:D8:E7:4D:EB")
+    assert correr(servicio(transporte, []), reg) is True
+    assert reg.device_id == "00259E-HG8145X6-A"
+
+
+def test_a_las_24_horas_deja_de_esperar():
+    transporte, _ = genieacs({})
+    reg = registro("HWTCF1C8D69E", creado=datetime.now() - timedelta(hours=25))
+    correr(servicio(transporte, []), reg)
+    assert reg.estado == "vencido" and "ACS" in reg.detalle

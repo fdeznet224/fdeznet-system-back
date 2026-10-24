@@ -702,6 +702,32 @@ async def bloqueo_equipo_cliente(
         raise _error_red(error) from error
 
 
+@router.get("/{cliente_id}/onu-automatica")
+async def onu_automatica_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Cómo va la configuración automática de la ONU del cliente nuevo (PPPoE y WiFi)."""
+    from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
+
+    return await AprovisionamientoOnuService(db).del_cliente(cliente_id)
+
+
+@router.post("/{cliente_id}/onu-automatica/reintentar")
+async def reintentar_onu_automatica_cliente(
+    cliente_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
+
+    try:
+        return await AprovisionamientoOnuService(db).reintentar(cliente_id)
+    except ValueError as error:
+        raise _error_red(error) from error
+
+
 @router.post("/{cliente_id}/red/clave-wifi")
 async def clave_wifi_cliente(
     cliente_id: int,

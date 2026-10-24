@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.application.services import activacion_service as modulo
+from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
 from src.application.services.activacion_service import (
     ActivacionService,
     ActivacionTecnicoRequest,
@@ -96,7 +97,12 @@ def _escenario(monkeypatch, plan_solicitado=11, tecnico_orden=7):
     monkeypatch.setattr(modulo.ClientService, "activar_instalacion", activar)
     monkeypatch.setattr(ActivacionService, "_solicitud", solicitud)
     monkeypatch.setattr(ActivacionService, "_infraestructura", infraestructura)
+    async def programar_onu(self, cliente_id):
+        llamadas["onu_automatica"] = cliente_id
+        return {"red": "FdezNet-A7F2", "clave": "12345678"}
+
     monkeypatch.setattr(ActivacionService, "_senal", senal)
+    monkeypatch.setattr(AprovisionamientoOnuService, "programar", programar_onu)
     return db, orden, llamadas
 
 
@@ -133,6 +139,9 @@ def test_el_tecnico_activa_la_solicitud_con_la_infraestructura_de_la_zona(monkey
     assert resultado["contrato"] == "A7F2"
     assert resultado["password_pppoe"] == "secreta"
     assert resultado["senal"]["potencia"] == "-19.5 dBm"
+    # La ONU queda esperando para configurarse sola con el WiFi del contrato.
+    assert llamadas["onu_automatica"] == 90
+    assert resultado["wifi"] == {"red": "FdezNet-A7F2", "clave": "12345678"}
     assert resultado["cambios"] == []
     assert activacion.meses_gratis == 1
     assert orden.solucion == "Instalado y activado por el técnico (1 mes gratis)"

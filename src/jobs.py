@@ -31,6 +31,7 @@ from src.application.services.vpn_service import leer_handshakes_wireguard
 from src.application.services.comprobante_service import ComprobanteService
 from src.application.services.descripcion_onu_service import DescripcionOnuService
 from src.application.services.antena_service import AntenaService
+from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
 from src.application.services.consumo_service import ConsumoService
 from src.application.services.acceso_remoto_service import AccesoRemotoService
 from src.application.services.senal_optica_service import SenalOpticaService, mensaje_alerta
@@ -179,6 +180,12 @@ async def tarea_revisar_antenas():
                         f"{conteo['errores']} sin poder revisar (MikroTik sin respuesta)",
             ))
             await db.commit()
+
+
+async def tarea_aprovisionar_onus():
+    """Configura la ONU de los clientes recién activados en cuanto se reporta en GenieACS."""
+    async with SessionLocal() as db:
+        await AprovisionamientoOnuService(db).procesar()
 
 
 async def tarea_aplicar_pagos_adelantados():

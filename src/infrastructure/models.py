@@ -906,6 +906,25 @@ class EquipoNombreModel(Base):
     actualizado_en = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
 
 
+class AprovisionamientoOnuModel(Base):
+    """La ONU de un cliente recién activado, esperando a que se reporte en GenieACS
+    para ponerle el PPPoE del cliente y su WiFi con el contrato."""
+    __tablename__ = "aprovisionamientos_onu"
+
+    id = Column(Integer, primary_key=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id", ondelete="CASCADE"), nullable=False, index=True)
+    identificador = Column(String(100), nullable=False)
+    ssid = Column(String(32), nullable=False)
+    clave_wifi = Column(String(63), nullable=False)
+    # pendiente → aplicado; o vencido (no se reportó a tiempo) / error (la ONU lo rechazó).
+    estado = Column(String(20), nullable=False, default="pendiente", server_default="pendiente", index=True)
+    intentos = Column(Integer, nullable=False, default=0, server_default="0")
+    detalle = Column(String(255), nullable=True)
+    device_id = Column(String(120), nullable=True)
+    creado_en = Column(DateTime, nullable=False, default=datetime.now)
+    aplicado_en = Column(DateTime, nullable=True)
+
+
 class FacturaModel(Base):
     __tablename__ = "facturas"
     __table_args__ = (

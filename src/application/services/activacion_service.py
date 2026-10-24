@@ -310,6 +310,11 @@ class ActivacionService:
             orden_id=orden.id,
         )
 
+        # La ONU se configura sola en cuanto se reporte: PPPoE del cliente y WiFi con su contrato.
+        from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
+
+        wifi = await AprovisionamientoOnuService(self.db).programar(activado.id) if modo != "dhcp" else None
+
         orden = await self.db.get(OrdenServicioModel, orden.id)
         meses = datos.meses_gratis
         gratis = f"{meses} mes{'es' if meses != 1 else ''} gratis" if meses else "sin mes gratis"
@@ -340,6 +345,7 @@ class ActivacionService:
             "onu": activado.onu_asignada.identificador if activado.onu_asignada else None,
             "senal": await self._senal(activado.id) if activado.olt_id and activado.onu_id else None,
             "cambios": cambios,
+            "wifi": wifi,
             "meses_gratis": datos.meses_gratis,
             "cobro": await self._cobro(orden.servicio_id),
         }
