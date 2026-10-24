@@ -28,6 +28,9 @@ LAN = "InternetGatewayDevice.LANDevice.1"
 # Lo que espera el admin a que la ONU conteste el aviso; si no, se muestra lo último guardado.
 ESPERA_ONU_MS = 15000
 RE_CLAVE_WIFI = re.compile(r"^[\x20-\x7e]{8,63}$")
+# Dónde va la contraseña del WiFi: la Huawei V5R020 rechaza KeyPassphrase y solo acepta
+# PreSharedKey.1.KeyPassphrase; si una ONU rechaza el primero, se prueba el otro.
+CAMPOS_CLAVE_WIFI = ("PreSharedKey.1.KeyPassphrase", "KeyPassphrase")
 MAX_APODO = 40
 
 
@@ -349,15 +352,23 @@ class RedClienteService:
                 raise ValueError("Esa red WiFi no está en la ONU.")
             if solo_principal and not set(indices) <= indices_principales(redes):
                 raise ValueError("Solo puedes cambiar la contraseña de tu red principal.")
-            valores = []
-            for i in indices:
-                base = f"{LAN}.WLANConfiguration.{i}"
-                valores += [[f"{base}.KeyPassphrase", clave, "xsd:string"],
-                            [f"{base}.PreSharedKey.1.KeyPassphrase", clave, "xsd:string"]]
-            aplicado = await self._tarea(http, device_id, {"name": "setParameterValues", "parameterValues": valores})
+            aplicado = await self.poner_con_clave_wifi(http, device_id, indices, clave)
         await self._bitacora(usuario, "Cambiar contraseña WiFi", cliente_id,
                              f"Cliente {cliente_id} · ONU {equipo['identificador'] or equipo['ip']} · red {ssid}")
         return {"aplicado": aplicado, "bandas": len(indices), "ssid": ssid}
+
+    async def poner_con_clave_wifi(self, http: httpx.AsyncClient, device_id: str, indices: List[int], clave: str,
+                                   antes: Optional[list] = None, despues: Optional[list] = None) -> bool:
+        """La contraseña del WiFi en esas redes (con otros valores en la misma orden), en el campo que acepte la ONU."""
+        for n, campo in enumerate(CAMPOS_CLAVE_WIFI):
+            valores = (list(antes or []) + [[f"{LAN}.WLANConfiguration.{i}.{campo}", clave, "xsd:string"] for i in indices]
+                       + list(despues or []))
+            try:
+                return await self._tarea(http, device_id, {"name": "setParameterValues", "parameterValues": valores})
+            except ValueError:
+                if n == len(CAMPOS_CLAVE_WIFI) - 1:
+                    raise
+        return False
 
     async def _redes_del_equipo(self, equipo: Dict[str, Any], mac: str, solo_principal: bool) -> List[int]:
         """En qué redes WiFi bloquearlo: todas las bandas de la red donde está (2.4 y 5 GHz).

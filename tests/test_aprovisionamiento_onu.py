@@ -32,14 +32,12 @@ DOCUMENTO = {"InternetGatewayDevice": {
 
 
 def test_pone_el_wifi_en_las_dos_bandas_de_su_red_y_el_pppoe_al_final():
-    valores = valores_para(DOCUMENTO, "FdezNet-187B", "12345678", "juan_perez", "clave-pppoe")
-    rutas = [r for r, _, _ in valores]
-    assert f"{LAN}.WLANConfiguration.1.SSID" in rutas and f"{LAN}.WLANConfiguration.5.SSID" in rutas
+    nombres, indices, pppoe = valores_para(DOCUMENTO, "FdezNet-187B", "juan_perez", "clave-pppoe")
+    assert [r for r, _, _ in nombres] == [f"{LAN}.WLANConfiguration.1.SSID", f"{LAN}.WLANConfiguration.5.SSID"]
     # La red de fichas no se toca.
-    assert not any(".WLANConfiguration.2." in r for r in rutas)
-    assert valores[-2:] == [[f"{WAN}.1.WANPPPConnection.1.Username", "juan_perez", "xsd:string"],
-                            [f"{WAN}.1.WANPPPConnection.1.Password", "clave-pppoe", "xsd:string"]]
-    assert [x for r, x, _ in valores if r.endswith("KeyPassphrase")] == ["12345678"] * 4
+    assert indices == [1, 5]
+    assert pppoe == [[f"{WAN}.1.WANPPPConnection.1.Username", "juan_perez", "xsd:string"],
+                     [f"{WAN}.1.WANPPPConnection.1.Password", "clave-pppoe", "xsd:string"]]
 
 
 def test_nombre_y_contrasena_del_wifi():
@@ -186,3 +184,22 @@ def test_zte_no_acepta_el_acs_y_el_tecnico_pone_el_wifi_a_mano():
     assert resultado["automatica"] is False and len(resultado["clave"]) == 8
     # No se espera a GenieACS: queda anotado para consultarlo en Mi red.
     assert agregados[0].estado == "manual"
+
+
+def test_si_la_onu_rechaza_un_campo_de_la_contrasena_prueba_el_otro():
+    """La HG8145V5 V5R020 contesta 9007 a KeyPassphrase; la V5R019 acepta los dos."""
+    enviados = []
+
+    async def tarea(http, device_id, tarea):
+        campos = [r for r, _, _ in tarea["parameterValues"]]
+        enviados.append(campos)
+        if any(c.endswith(".PreSharedKey.1.KeyPassphrase") for c in campos):
+            raise ValueError("La ONU rechazó el cambio: Invalid parameter value")
+        return True
+
+    srv = AprovisionamientoOnuService(BaseFalsa(CLIENTE), nbi="http://nbi")
+    srv.red._tarea = tarea
+    nombres = [[f"{LAN}.WLANConfiguration.1.SSID", "FdezNet-187B", "xsd:string"]]
+    assert asyncio.run(srv.red.poner_con_clave_wifi(None, "dev", [1, 5], "12345678", nombres)) is True
+    assert enviados[1] == [f"{LAN}.WLANConfiguration.1.SSID", f"{LAN}.WLANConfiguration.1.KeyPassphrase",
+                           f"{LAN}.WLANConfiguration.5.KeyPassphrase"]

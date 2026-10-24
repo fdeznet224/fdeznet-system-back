@@ -70,7 +70,8 @@ def wan_de_internet(wan: Dict[str, Any]) -> Optional[str]:
     return min(candidatas)[1] if candidatas else None
 
 
-def valores_para(documento: Dict[str, Any], ssid: str, clave_wifi: str, usuario_pppoe: str, clave_pppoe: str) -> list:
+def valores_para(documento: Dict[str, Any], ssid: str, usuario_pppoe: str, clave_pppoe: str) -> tuple:
+    """(nombre de red, redes donde va la contraseña, PPPoE): la contraseña la pone `poner_con_clave_wifi`."""
     igd = documento.get("InternetGatewayDevice") or {}
     lan = (igd.get("LANDevice") or {}).get("1") or {}
     indices = sorted(indices_principales(redes_wifi(lan)))
@@ -79,14 +80,10 @@ def valores_para(documento: Dict[str, Any], ssid: str, clave_wifi: str, usuario_
     ppp = wan_de_internet((igd.get("WANDevice") or {}).get("1", {}).get("WANConnectionDevice") or {})
     if not ppp:
         raise ValueError("La ONU no tiene WAN PPPoE de internet.")
-    valores = []
-    for i in indices:
-        base = f"{LAN}.WLANConfiguration.{i}"
-        valores += [[f"{base}.SSID", ssid, "xsd:string"],
-                    [f"{base}.KeyPassphrase", clave_wifi, "xsd:string"],
-                    [f"{base}.PreSharedKey.1.KeyPassphrase", clave_wifi, "xsd:string"]]
+    nombres = [[f"{LAN}.WLANConfiguration.{i}.SSID", ssid, "xsd:string"] for i in indices]
     # El PPPoE al final: al cambiarlo la ONU se reconecta con la cuenta del cliente.
-    return valores + [[f"{ppp}.Username", usuario_pppoe, "xsd:string"], [f"{ppp}.Password", clave_pppoe, "xsd:string"]]
+    pppoe = [[f"{ppp}.Username", usuario_pppoe, "xsd:string"], [f"{ppp}.Password", clave_pppoe, "xsd:string"]]
+    return nombres, indices, pppoe
 
 
 class AprovisionamientoOnuService:
@@ -182,8 +179,8 @@ class AprovisionamientoOnuService:
             if not al_dia:
                 return False  # No contestó al aviso: se intenta en la siguiente vuelta.
             documento = await self._leer(http, device_id)
-            valores = valores_para(documento, registro.ssid, registro.clave_wifi, cliente.user_pppoe, cliente.pass_pppoe)
-            aplicado = await self.red._tarea(http, device_id, {"name": "setParameterValues", "parameterValues": valores})
+            nombres, indices, pppoe = valores_para(documento, registro.ssid, cliente.user_pppoe, cliente.pass_pppoe)
+            aplicado = await self.red.poner_con_clave_wifi(http, device_id, indices, registro.clave_wifi, nombres, pppoe)
         except ValueError as error:
             registro.intentos += 1
             registro.detalle = str(error)[:255]
