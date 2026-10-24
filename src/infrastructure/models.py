@@ -917,6 +917,7 @@ class AprovisionamientoOnuModel(Base):
     ssid = Column(String(32), nullable=False)
     clave_wifi = Column(String(63), nullable=False)
     # pendiente → aplicado; o vencido (no se reportó a tiempo) / error (la ONU lo rechazó).
+    # manual: ZTE sin ACS, el técnico pone el WiFi a mano.
     estado = Column(String(20), nullable=False, default="pendiente", server_default="pendiente", index=True)
     intentos = Column(Integer, nullable=False, default=0, server_default="0")
     detalle = Column(String(255), nullable=True)

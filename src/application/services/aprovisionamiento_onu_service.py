@@ -6,6 +6,9 @@ pendiente su configuración: en cuanto la ONU se reporta en GenieACS (se
 reconoce por su serial GPON o, en EPON, por su MAC), se le pone el PPPoE del
 cliente y su WiFi "FdezNet-CONTRATO" con una contraseña nueva, que se le
 manda por WhatsApp junto con el acceso a su portal.
+
+Las ZTE vienen con firmware de otra compañía y no aceptan el ACS: para ellas
+el WiFi se genera igual, pero lo configura el técnico a mano (estado "manual").
 """
 
 import json
@@ -20,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.application.services.acceso_onu_config import marca_de_onu
 from src.application.services.onu_web_huawei import normalizar_mac
 from src.application.services.red_cliente_service import (
     LAN, RedClienteService, _instancias, _valor, indices_principales, redes_wifi, serial_tr069,
@@ -92,8 +96,9 @@ class AprovisionamientoOnuService:
         self.red = RedClienteService(db, nbi)
         self.enviar_whatsapp = enviar_whatsapp or self._whatsapp
 
-    async def programar(self, cliente_id: int) -> Optional[Dict[str, str]]:
-        """Deja lista la configuración de la ONU del cliente; None si no aplica (sin ONU, sin PPPoE)."""
+    async def programar(self, cliente_id: int) -> Optional[Dict[str, Any]]:
+        """Deja lista la configuración de la ONU del cliente; None si no aplica (sin ONU, sin PPPoE).
+        `automatica` dice si se configura sola o si el técnico pone el WiFi a mano (ZTE)."""
         cliente = (await self.db.execute(
             select(ClienteModel).options(selectinload(ClienteModel.onu_asignada)).where(ClienteModel.id == cliente_id)
         )).scalars().first()
@@ -102,6 +107,7 @@ class AprovisionamientoOnuService:
             return None
         if not (serial_tr069(identificador) or mac_epon(identificador)):
             return None
+        automatica = marca_de_onu(identificador, cliente.onu_asignada.modelo) != "zte"
         anteriores = (await self.db.execute(
             select(AprovisionamientoOnuModel).where(AprovisionamientoOnuModel.cliente_id == cliente_id,
                                                     AprovisionamientoOnuModel.estado == "pendiente")
@@ -109,10 +115,11 @@ class AprovisionamientoOnuService:
         for anterior in anteriores:
             await self.db.delete(anterior)
         registro = AprovisionamientoOnuModel(cliente_id=cliente_id, identificador=identificador,
-                                             ssid=ssid_para(cliente.cedula), clave_wifi=clave_wifi_nueva())
+                                             ssid=ssid_para(cliente.cedula), clave_wifi=clave_wifi_nueva(),
+                                             estado="pendiente" if automatica else "manual")
         self.db.add(registro)
         await self.db.commit()
-        return {"red": registro.ssid, "clave": registro.clave_wifi}
+        return {"red": registro.ssid, "clave": registro.clave_wifi, "automatica": automatica}
 
     async def del_cliente(self, cliente_id: int) -> Optional[Dict[str, Any]]:
         registro = (await self.db.execute(

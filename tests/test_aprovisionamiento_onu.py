@@ -147,3 +147,42 @@ def test_a_las_24_horas_deja_de_esperar():
     reg = registro("HWTCF1C8D69E", creado=datetime.now() - timedelta(hours=25))
     correr(servicio(transporte, []), reg)
     assert reg.estado == "vencido" and "ACS" in reg.detalle
+
+
+class ConsultasFalsas:
+    def __init__(self, cliente):
+        self.cliente, self.agregados = cliente, []
+
+    async def execute(self, _consulta):
+        objetos = [self.cliente] if not self.agregados and not getattr(self, "_leido", False) else []
+        self._leido = True
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: objetos[0] if objetos else None, all=lambda: objetos[1:]))
+
+    def add(self, objeto):
+        self.agregados.append(objeto)
+
+    async def delete(self, objeto):
+        pass
+
+    async def commit(self):
+        pass
+
+
+def programar(identificador, modelo=None):
+    onu = SimpleNamespace(identificador=identificador, modelo=modelo)
+    db = ConsultasFalsas(SimpleNamespace(**vars(CLIENTE), onu_asignada=onu))
+    resultado = asyncio.run(AprovisionamientoOnuService(db, nbi="http://nbi").programar(9))
+    return resultado, db.agregados
+
+
+def test_huawei_queda_esperando_para_configurarse_sola():
+    resultado, agregados = programar("HWTCF1C8D69E", "HG8145V5")
+    assert resultado["automatica"] is True and resultado["red"] == "FdezNet-187B"
+    assert agregados[0].estado == "pendiente"
+
+
+def test_zte_no_acepta_el_acs_y_el_tecnico_pone_el_wifi_a_mano():
+    resultado, agregados = programar("ZTEG00000001", "F660")
+    assert resultado["automatica"] is False and len(resultado["clave"]) == 8
+    # No se espera a GenieACS: queda anotado para consultarlo en Mi red.
+    assert agregados[0].estado == "manual"
