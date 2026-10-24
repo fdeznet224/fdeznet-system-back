@@ -216,3 +216,14 @@ def test_la_bienvenida_quita_los_renglones_del_wifi_si_no_hay():
     assert "{red_wifi}" not in sin_wifi and "{clave_wifi}" not in sin_wifi and "{portal}" in sin_wifi
     assert "\n\n\n" not in sin_wifi
     assert sin_lineas_vacias(texto, {"red_wifi": "R", "clave_wifi": "C", "portal": "P"}) == texto
+
+
+def test_toma_las_dos_bandas_aunque_ya_no_tengan_el_mismo_nombre():
+    import copy
+
+    documento = copy.deepcopy(DOCUMENTO)
+    wlan = documento["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
+    wlan["1"]["SSID"] = v("FdezNet-187B")
+    wlan["5"]["SSID"] = v("FdezNet-")
+    _, indices, _ = valores_para(documento, "FdezNet-187B", "juan_perez", "clave-pppoe")
+    assert indices == [1, 5]

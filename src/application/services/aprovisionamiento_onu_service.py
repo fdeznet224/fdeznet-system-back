@@ -74,7 +74,10 @@ def valores_para(documento: Dict[str, Any], ssid: str, usuario_pppoe: str, clave
     """(nombre de red, redes donde va la contraseña, PPPoE): la contraseña la pone `poner_con_clave_wifi`."""
     igd = documento.get("InternetGatewayDevice") or {}
     lan = (igd.get("LANDevice") or {}).get("1") or {}
-    indices = sorted(indices_principales(redes_wifi(lan)))
+    redes = redes_wifi(lan)
+    # Su red (la WLAN 1 y sus otras bandas) y las que traen el nombre de la plantilla ("FdezNet-"),
+    # aunque las bandas ya no coincidan; la de fichas ("Zona FdezNet") no empieza así.
+    indices = sorted(indices_principales(redes) | {r["indice"] for r in redes if r["ssid"].startswith(prefijo_wifi())})
     if not indices:
         raise ValueError("La ONU no reporta su WiFi.")
     ppp = wan_de_internet((igd.get("WANDevice") or {}).get("1", {}).get("WANConnectionDevice") or {})
