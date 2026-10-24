@@ -99,10 +99,10 @@ def genieacs(dispositivos, mac_epon=None):
 
 
 def servicio(transporte, enviados):
-    async def enviar(cliente, texto):
-        enviados.append((cliente.telefono, texto))
+    async def enviar(cliente, registro):
+        enviados.append((cliente.telefono, registro and (registro.ssid, registro.clave_wifi)))
 
-    return AprovisionamientoOnuService(BaseFalsa(CLIENTE), nbi="http://nbi", enviar_whatsapp=enviar, transporte=transporte)
+    return AprovisionamientoOnuService(BaseFalsa(CLIENTE), nbi="http://nbi", enviar_bienvenida=enviar, transporte=transporte)
 
 
 def correr(srv, reg):
@@ -121,8 +121,8 @@ def test_gpon_se_reconoce_por_serial_se_configura_y_se_le_manda_su_wifi():
     assert reg.estado == "aplicado" and reg.device_id == "00259E-HG8145V5-48575443F1C8D69E"
     cambio = next(t for _, nombre, t in tareas if nombre == "setParameterValues")
     assert [f"{WAN}.1.WANPPPConnection.1.Username", "juan_perez", "xsd:string"] in cambio["parameterValues"]
-    telefono, texto = enviados[0]
-    assert telefono == "9931112222" and "FdezNet-187B" in texto and "12345678" in texto and "187B" in texto
+    # Su bienvenida sale ya con el WiFi puesto.
+    assert enviados == [("9931112222", ("FdezNet-187B", "12345678"))]
 
 
 def test_si_aun_no_se_reporta_se_sigue_esperando():
@@ -143,8 +143,11 @@ def test_epon_nueva_se_reconoce_por_su_mac():
 def test_a_las_24_horas_deja_de_esperar():
     transporte, _ = genieacs({})
     reg = registro("HWTCF1C8D69E", creado=datetime.now() - timedelta(hours=25))
-    correr(servicio(transporte, []), reg)
+    enviados = []
+    correr(servicio(transporte, enviados), reg)
     assert reg.estado == "vencido" and "ACS" in reg.detalle
+    # La bienvenida sale igual, sin un WiFi que no se pudo poner.
+    assert enviados == [("9931112222", None)]
 
 
 class ConsultasFalsas:
@@ -203,3 +206,13 @@ def test_si_la_onu_rechaza_un_campo_de_la_contrasena_prueba_el_otro():
     assert asyncio.run(srv.red.poner_con_clave_wifi(None, "dev", [1, 5], "12345678", nombres)) is True
     assert enviados[1] == [f"{LAN}.WLANConfiguration.1.SSID", f"{LAN}.WLANConfiguration.1.KeyPassphrase",
                            f"{LAN}.WLANConfiguration.5.KeyPassphrase"]
+
+
+def test_la_bienvenida_quita_los_renglones_del_wifi_si_no_hay():
+    from src.application.services.notification_service import PLANTILLAS_OBLIGATORIAS, sin_lineas_vacias
+
+    texto = PLANTILLAS_OBLIGATORIAS["bienvenida"]
+    sin_wifi = sin_lineas_vacias(texto, {"red_wifi": "", "clave_wifi": "", "portal": "https://x/cliente"})
+    assert "{red_wifi}" not in sin_wifi and "{clave_wifi}" not in sin_wifi and "{portal}" in sin_wifi
+    assert "\n\n\n" not in sin_wifi
+    assert sin_lineas_vacias(texto, {"red_wifi": "R", "clave_wifi": "C", "portal": "P"}) == texto

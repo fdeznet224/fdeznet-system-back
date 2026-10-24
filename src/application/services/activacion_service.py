@@ -8,6 +8,7 @@ Lo que el técnico cambie respecto a la solicitud queda anotado en la orden.
 """
 
 import asyncio
+import logging
 import re
 import unicodedata
 from typing import Optional
@@ -40,6 +41,7 @@ from src.infrastructure.models import (
 )
 
 ESPERA_SENAL_SEGUNDOS = 20
+logger = logging.getLogger(__name__)
 
 
 class ActivacionTecnicoRequest(BaseModel):
@@ -308,12 +310,16 @@ class ActivacionService:
             ),
             usuario_operador=usuario,
             orden_id=orden.id,
+            enviar_bienvenida=False,
         )
 
         # La ONU se configura sola en cuanto se reporte: PPPoE del cliente y WiFi con su contrato.
         from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
 
         wifi = await AprovisionamientoOnuService(self.db).programar(activado.id) if modo != "dhcp" else None
+        # Una sola bienvenida con el WiFi: la que se configura sola la manda al quedar lista.
+        if not (wifi and wifi["automatica"]):
+            await self._bienvenida(activado.id, wifi)
 
         orden = await self.db.get(OrdenServicioModel, orden.id)
         meses = datos.meses_gratis
@@ -432,6 +438,16 @@ class ActivacionService:
             usuario_id=usuario.id,
         )
         return nueva.id
+
+    async def _bienvenida(self, cliente_id: int, wifi: Optional[dict]) -> None:
+        from src.application.services.notification_service import NotificationService
+
+        try:
+            await NotificationService(self.db).notificar(
+                "bienvenida", cliente_id, {"red_wifi": wifi["red"], "clave_wifi": wifi["clave"]} if wifi else None,
+            )
+        except Exception:
+            logger.exception("No se pudo mandar la bienvenida del cliente %s", cliente_id)
 
     async def _senal(self, cliente_id: int) -> Optional[dict]:
         """Lectura de la ONU recién instalada; si la OLT no responde, no frena el alta."""

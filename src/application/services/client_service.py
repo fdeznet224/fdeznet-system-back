@@ -518,9 +518,11 @@ class ClientService:
         datos_finales: InstalacionRequest,
         usuario_operador=None,
         orden_id: int = None,
+        enviar_bienvenida: bool = True,
     ):
         """
         Activa el servicio en Mikrotik. Si el técnico cambia la ONU, actualiza el inventario.
+        `enviar_bienvenida=False`: la manda quien activa (la activación del técnico, con el WiFi).
         """
         # A. Recuperar Cliente
         cliente = await self.db.get(ClienteModel, cliente_id)
@@ -979,7 +981,7 @@ class ClientService:
             await self.db.commit()
 
             # --- 🚀 ENVÍO DE MENSAJE DE BIENVENIDA ---
-            if cliente.telefono:
+            if cliente.telefono and enviar_bienvenida:
                 try:
                     notificador = NotificationService(self.db)
                     await notificador.notificar("bienvenida", cliente.id)

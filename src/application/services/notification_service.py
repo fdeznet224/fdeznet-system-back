@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
+import os
 import re
 
 from src.infrastructure.models import (
@@ -19,6 +20,9 @@ from src.infrastructure.whatsapp_client import whatsapp_queue
 logger = logging.getLogger(__name__)
 
 PLANTILLAS_OBLIGATORIAS = {
+    "bienvenida": (
+        "👋 ¡Bienvenido a {empresa}, *{nombre}*!\n\n📄 Contrato: *{contrato}*\n📡 Plan: *{plan}* · {precio} al mes\n🗓️ Pagas del día *{dia_inicio_pago}* al *{ultimo_dia_pago}*; el corte es el día *{dia_corte_servicio}*.\n\n📶 Red WiFi: *{red_wifi}*\n🔑 Contraseña: *{clave_wifi}*\n\n📲 Tu portal: {portal} (entra con tu contrato)\n¿Dudas o fallas? Escríbenos aquí."
+    ),
     "pago_recibido": (
         "✅ Hola {nombre}, recibimos tu pago por {monto_pagado}. "
         "Gracias por tu pago.\n\n{detalle_cobro}"
@@ -62,6 +66,18 @@ def quitar_aviso_de_pdf(texto: str) -> str:
         if not ("pdf" in linea.lower() and ("adjunt" in linea.lower() or "recibo" in linea.lower()))
     )
     return re.sub(r"\n{3,}", "\n\n", limpio)
+
+
+OPCIONALES = ("red_wifi", "clave_wifi", "portal")
+
+
+def sin_lineas_vacias(texto: str, datos: dict) -> str:
+    """Quita los renglones del WiFi o del portal cuando no hay dato (cliente sin ONU, ONU sin configurar)."""
+    vacias = [f"{{{k}}}" for k in OPCIONALES if not str(datos.get(k) or "").strip()]
+    if not vacias:
+        return texto
+    renglones = [r for r in texto.split("\n") if not any(v in r for v in vacias)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(renglones)).strip()
 
 
 class NotificationService:
@@ -248,6 +264,11 @@ class NotificationService:
             "total_factura": "$0.00",
             "total_a_pagar": "$0.00",
             "desglose_total": "",
+
+            # Instalación: el WiFi que se le puso a su ONU y su portal.
+            "red_wifi": "",
+            "clave_wifi": "",
+            "portal": (os.getenv("PUBLIC_URL", "").strip().rstrip("/") + "/cliente") if os.getenv("PUBLIC_URL", "").strip() else "",
         }
 
         # 5. UNIFICAR DATOS (Las variables de 'variables_extra' sobrescriben los valores por defecto)
@@ -255,7 +276,7 @@ class NotificationService:
 
         # 6. FORMATEAR MENSAJE
         mensaje_formateado = formatear_mensaje(
-            texto_plantilla,
+            sin_lineas_vacias(texto_plantilla, datos_finales),
             datos_finales,
         )
         detalle_cobro = str(datos_finales.get("detalle_cobro") or "").strip()

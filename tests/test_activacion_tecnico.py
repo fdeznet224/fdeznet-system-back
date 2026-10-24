@@ -78,8 +78,9 @@ def _escenario(monkeypatch, plan_solicitado=11, tecnico_orden=7):
         llamadas["registro"] = (datos, orden_solicitud_id)
         return SimpleNamespace(id=90)
 
-    async def activar(self, cliente_id, datos, usuario_operador=None, orden_id=None):
+    async def activar(self, cliente_id, datos, usuario_operador=None, orden_id=None, enviar_bienvenida=True):
         llamadas["activacion"] = (cliente_id, datos, orden_id)
+        llamadas["bienvenida_al_activar"] = enviar_bienvenida
         return activado
 
     async def solicitud(self, orden_id, usuario):
@@ -99,10 +100,14 @@ def _escenario(monkeypatch, plan_solicitado=11, tecnico_orden=7):
     monkeypatch.setattr(ActivacionService, "_infraestructura", infraestructura)
     async def programar_onu(self, cliente_id):
         llamadas["onu_automatica"] = cliente_id
-        return {"red": "FdezNet-A7F2", "clave": "12345678"}
+        return {"red": "FdezNet-A7F2", "clave": "12345678", "automatica": True}
+
+    async def bienvenida(self, cliente_id, wifi):
+        llamadas["bienvenida"] = (cliente_id, wifi)
 
     monkeypatch.setattr(ActivacionService, "_senal", senal)
     monkeypatch.setattr(AprovisionamientoOnuService, "programar", programar_onu)
+    monkeypatch.setattr(ActivacionService, "_bienvenida", bienvenida)
     return db, orden, llamadas
 
 
@@ -141,7 +146,9 @@ def test_el_tecnico_activa_la_solicitud_con_la_infraestructura_de_la_zona(monkey
     assert resultado["senal"]["potencia"] == "-19.5 dBm"
     # La ONU queda esperando para configurarse sola con el WiFi del contrato.
     assert llamadas["onu_automatica"] == 90
-    assert resultado["wifi"] == {"red": "FdezNet-A7F2", "clave": "12345678"}
+    assert resultado["wifi"] == {"red": "FdezNet-A7F2", "clave": "12345678", "automatica": True}
+    # Una sola bienvenida: la manda la ONU al quedar configurada, no el alta.
+    assert llamadas["bienvenida_al_activar"] is False and "bienvenida" not in llamadas
     assert resultado["cambios"] == []
     assert activacion.meses_gratis == 1
     assert orden.solucion == "Instalado y activado por el técnico (1 mes gratis)"

@@ -4,8 +4,8 @@ La ONU sale del almacén con el PPPoE de instalación (la cuenta FdezNet de cada
 MikroTik), el ACS y la WAN TR069_INTERNET. Al activar al cliente queda
 pendiente su configuración: en cuanto la ONU se reporta en GenieACS (se
 reconoce por su serial GPON o, en EPON, por su MAC), se le pone el PPPoE del
-cliente y su WiFi "FdezNet-CONTRATO" con una contraseña nueva, que se le
-manda por WhatsApp junto con el acceso a su portal.
+cliente y su WiFi "FdezNet-CONTRATO" con una contraseña nueva, que va en
+su mensaje de bienvenida por WhatsApp.
 
 Las ZTE vienen con firmware de otra compañía y no aceptan el ACS: para ellas
 el WiFi se genera igual, pero lo configura el técnico a mano (estado "manual").
@@ -28,7 +28,7 @@ from src.application.services.onu_web_huawei import normalizar_mac
 from src.application.services.red_cliente_service import (
     LAN, RedClienteService, _instancias, _valor, indices_principales, redes_wifi, serial_tr069,
 )
-from src.infrastructure.models import AprovisionamientoOnuModel, ClienteModel, MensajeChatModel
+from src.infrastructure.models import AprovisionamientoOnuModel, ClienteModel
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +87,11 @@ def valores_para(documento: Dict[str, Any], ssid: str, usuario_pppoe: str, clave
 
 
 class AprovisionamientoOnuService:
-    def __init__(self, db: AsyncSession, nbi: Optional[str] = None, enviar_whatsapp=None, transporte=None):
+    def __init__(self, db: AsyncSession, nbi: Optional[str] = None, enviar_bienvenida=None, transporte=None):
         self.db = db
         self.transporte = transporte
         self.red = RedClienteService(db, nbi)
-        self.enviar_whatsapp = enviar_whatsapp or self._whatsapp
+        self.enviar_bienvenida = enviar_bienvenida or self._bienvenida
 
     async def programar(self, cliente_id: int) -> Optional[Dict[str, Any]]:
         """Deja lista la configuración de la ONU del cliente; None si no aplica (sin ONU, sin PPPoE).
@@ -161,6 +161,7 @@ class AprovisionamientoOnuService:
         if datetime.now() - registro.creado_en > VIGENCIA:
             registro.estado = "vencido"
             registro.detalle = "La ONU no se reportó en GenieACS: revisa que traiga el ACS y la WAN TR069_INTERNET."
+            await self._avisar(await self.db.get(ClienteModel, registro.cliente_id), None)
             return False
         device_id = await self._buscar(http, registro)
         if not device_id:
@@ -186,6 +187,7 @@ class AprovisionamientoOnuService:
             registro.detalle = str(error)[:255]
             if registro.intentos >= MAX_RECHAZOS:
                 registro.estado = "error"
+                await self._avisar(cliente, None)
             return False
         registro.estado, registro.device_id, registro.aplicado_en = "aplicado", device_id, datetime.now()
         registro.detalle = None if aplicado else "Enviado; la ONU lo aplica en su próximo reporte."
@@ -231,31 +233,20 @@ class AprovisionamientoOnuService:
         respuesta.raise_for_status()
         return (respuesta.json() or [{}])[0]
 
-    async def _avisar(self, cliente: ClienteModel, registro: AprovisionamientoOnuModel) -> None:
-        if not cliente.telefono:
+    async def _avisar(self, cliente: ClienteModel, registro: Optional[AprovisionamientoOnuModel]) -> None:
+        """La bienvenida del cliente, con su WiFi si quedó puesto (sin él si la ONU no se pudo configurar)."""
+        if not cliente or not cliente.telefono:
             return
-        portal = (os.getenv("PUBLIC_URL", "").strip().rstrip("/") + "/cliente") if os.getenv("PUBLIC_URL") else None
-        texto = (
-            f"¡Bienvenido, {cliente.nombre.split()[0] if cliente.nombre else ''}! Tu internet ya está listo.\n\n"
-            f"📶 Red WiFi: *{registro.ssid}*\n🔑 Contraseña: *{registro.clave_wifi}*\n"
-            f"📄 Tu contrato: *{cliente.cedula}*"
-            + (f"\n\nEn tu portal puedes ver tus pagos, cambiar la contraseña del WiFi y controlar tus equipos: {portal}\n"
-               f"Entra con tu contrato; la primera vez la contraseña también es tu contrato." if portal else "")
-        )
         try:
-            await self.enviar_whatsapp(cliente, texto)
+            await self.enviar_bienvenida(cliente, registro)
         except Exception:
-            logger.exception("No se pudo mandar el WiFi al cliente %s", cliente.id)
+            logger.exception("No se pudo mandar la bienvenida al cliente %s", cliente.id)
 
-    async def _whatsapp(self, cliente: ClienteModel, texto: str) -> None:
-        from src.infrastructure.whatsapp_client import whatsapp_queue
+    async def _bienvenida(self, cliente: ClienteModel, registro: Optional[AprovisionamientoOnuModel]) -> None:
+        from src.application.services.notification_service import NotificationService
 
-        mensaje = MensajeChatModel(cliente_id=cliente.id, telefono=cliente.telefono, direccion="salida", tipo_mensaje="texto",
-                                   tipo_evento="wifi_instalacion", leido=True, ack=0, estado_envio="pendiente", mensaje=texto)
-        self.db.add(mensaje)
-        await self.db.commit()
-        await self.db.refresh(mensaje)
-        await whatsapp_queue.agregar_tarea({"mensaje_chat_id": mensaje.id, "intervalo": 0, "tipo_evento": "wifi_instalacion"})
+        wifi = {"red_wifi": registro.ssid, "clave_wifi": registro.clave_wifi} if registro else None
+        await NotificationService(self.db).notificar("bienvenida", cliente.id, wifi)
 
 
 def _iso(valor: str) -> float:
