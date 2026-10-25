@@ -125,3 +125,17 @@ def test_con_deuda_y_comprobante_en_revision(monkeypatch):
 
 def test_la_suspension_manual_no_promete_reconexion(monkeypatch):
     assert reconexion(suspendido(), "manual", monkeypatch=monkeypatch) is None
+
+
+def test_la_app_del_cliente_se_instala_como_mi_internet_con_el_icono_del_isp(monkeypatch):
+    from src.interfaces.api import configuracion
+
+    marca = SimpleNamespace(empresa_nombre="FdezNet", color_primario="#2563eb", favicon_url=None)
+
+    async def obtener(db):
+        return marca
+
+    monkeypatch.setattr(configuracion, "_obtener_configuracion", obtener)
+    manifiesto = asyncio.run(configuracion.obtener_manifest_portal(db=None))
+    assert manifiesto["name"] == manifiesto["short_name"] == "Mi Internet"
+    assert manifiesto["icons"] == configuracion._iconos_pwa(marca)

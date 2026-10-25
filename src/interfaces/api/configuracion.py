@@ -293,14 +293,18 @@ async def obtener_manifest_pwa(db: AsyncSession = Depends(get_db)):
     }
 
 
+NOMBRE_APP_CLIENTE = "Mi Internet"
+
+
 @public_router.get("/manifest-cliente.webmanifest", response_class=JSONResponse)
 async def obtener_manifest_portal(db: AsyncSession = Depends(get_db)):
-    """Para que el cliente instale su portal como app: abre en /cliente con el nombre del ISP."""
+    """Para que el cliente instale su portal como app: abre en /cliente y se llama "Mi Internet"."""
     marca = await _obtener_configuracion(db)
     return {
         "id": "/cliente",
-        "name": f"{marca.empresa_nombre} · Mi internet",
-        "short_name": marca.empresa_nombre[:30],
+        # Bajo el ícono va "Mi Internet", no el nombre del ISP: así la busca el cliente.
+        "name": NOMBRE_APP_CLIENTE,
+        "short_name": NOMBRE_APP_CLIENTE,
         "description": f"Tu cuenta, tus pagos y tu WiFi de {marca.empresa_nombre}",
         "start_url": "/cliente",
         "scope": "/cliente",
