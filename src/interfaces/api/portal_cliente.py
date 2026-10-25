@@ -166,6 +166,12 @@ async def resumen(cliente=Depends(cliente_portal), db: AsyncSession = Depends(ge
     return await PortalClienteService(db).resumen(cliente.id)
 
 
+@router.get("/estado-servicio")
+async def estado_servicio(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    """Falla en su zona o cómo va su reconexión; Inicio lo vuelve a pedir mientras haya algo que avisar."""
+    return await PortalClienteService(db).estado_servicio(cliente.id)
+
+
 @router.get("/consumo")
 async def consumo(mes: str = Query(..., pattern=r"^\d{4}-\d{2}$"), cliente=Depends(cliente_portal),
                   db: AsyncSession = Depends(get_db)):

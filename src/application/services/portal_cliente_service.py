@@ -20,9 +20,9 @@ from src.application.services.comprobante_service import normalizar_contrato, pe
 from src.application.services.cuenta_tecnico_service import resumen_cuenta
 from src.infrastructure import auth
 from src.infrastructure.models import (
-    ClienteModel, ConfiguracionBotModel, ConfiguracionSistema, FacturaConceptoModel, FacturaModel, LogActividadModel,
+    ClienteModel, ComprobantePagoRevisionModel, ConfiguracionBotModel, ConfiguracionSistema, FacturaConceptoModel, FacturaModel, LogActividadModel,
     MensajeChatModel, OrdenServicioModel, PagoModel, PlantillaMensajeModel, PortalAccesoModel, PromesaPagoHistorialModel,
-    ServicioModel, ZonaModel,
+    ServicioModel, SuspensionFacturacionModel, ZonaModel,
 )
 
 TIPO_TOKEN = "portal"
@@ -33,6 +33,10 @@ ESTADOS_SIN_PORTAL = ("eliminado",)
 ESTADOS_ADEUDO = ("pendiente", "vencida", "promesa")
 CODIGO_MINUTOS = 10
 CODIGO_INTENTOS = 5
+# Tras reactivarse, Inicio le confirma al cliente que volvió el servicio.
+HORAS_AVISO_REACTIVADO = 2
+HORAS_COMPROBANTE_EN_REVISION = 48
+MOTIVOS_CORTE_POR_PAGO = ("falta_pago", "promesa_incumplida")
 
 
 def crear_token(cliente_id: int, version: int, debe_cambiar: bool) -> str:
@@ -240,6 +244,58 @@ class PortalClienteService:
                 (servicio.proxima_facturacion if servicio and servicio.proxima_facturacion else cliente.proxima_factura),
             ),
         }
+
+    async def estado_servicio(self, cliente_id: int) -> Dict[str, Any]:
+        """Lo que Inicio le avisa arriba: falla en su zona o cómo va su reconexión."""
+        from src.application.services.falla_zona_service import FallaZonaService
+
+        cliente = await self.db.get(ClienteModel, cliente_id)
+        servicio = (await self.db.execute(
+            select(ServicioModel).where(ServicioModel.cliente_id == cliente_id, ServicioModel.estado != "cancelado")
+            .order_by(ServicioModel.id).limit(1)
+        )).scalars().first()
+        if not servicio:
+            return {"falla": None, "reconexion": None}
+        return {
+            "falla": await FallaZonaService(self.db).para_servicio(servicio, cliente),
+            "reconexion": await self._reconexion(servicio),
+        }
+
+    async def _reconexion(self, servicio: ServicioModel) -> Optional[Dict[str, Any]]:
+        """revisando_comprobante → reactivando → reactivado (con si ya volvió a conectarse)."""
+        from types import SimpleNamespace
+
+        from src.application.services.billing_service import BillingService
+
+        ahora = datetime.now()
+        if servicio.estado == "activo":
+            if servicio.ultima_reactivacion_en and ahora - servicio.ultima_reactivacion_en <= timedelta(hours=HORAS_AVISO_REACTIVADO):
+                return {"etapa": "reactivado", "desde": servicio.ultima_reactivacion_en.isoformat(),
+                        "conectado": bool(servicio.is_online)}
+            return None
+        if servicio.estado != "suspendido":
+            return None
+        suspension = (await self.db.execute(
+            select(SuspensionFacturacionModel.motivo_inicio).where(
+                SuspensionFacturacionModel.servicio_id == servicio.id, SuspensionFacturacionModel.fecha_fin.is_(None),
+            ).order_by(SuspensionFacturacionModel.id.desc()).limit(1)
+        )).scalar_one_or_none()
+        if suspension not in MOTIVOS_CORTE_POR_PAGO:
+            return None
+        # Lo mismo que revisa la tarea que reconecta cada 10 minutos.
+        referencia = SimpleNamespace(servicio_id=servicio.id, cliente_id=servicio.cliente_id)
+        if not await BillingService(self.db)._servicio_tiene_deuda_pendiente(referencia):
+            return {"etapa": "reactivando", "desde": None, "conectado": False}
+        revision = (await self.db.execute(
+            select(ComprobantePagoRevisionModel.fecha_recepcion).where(
+                ComprobantePagoRevisionModel.cliente_id == servicio.cliente_id,
+                ComprobantePagoRevisionModel.estado.in_(("pendiente", "procesando")),
+                ComprobantePagoRevisionModel.fecha_recepcion >= ahora - timedelta(hours=HORAS_COMPROBANTE_EN_REVISION),
+            ).order_by(ComprobantePagoRevisionModel.fecha_recepcion.desc()).limit(1)
+        )).scalar_one_or_none()
+        if revision:
+            return {"etapa": "revisando_comprobante", "desde": revision.isoformat(), "conectado": False}
+        return None
 
     async def _zona_y_efectivo(self, servicio, cliente) -> Dict[str, Any]:
         zona_id = (servicio.zona_id if servicio and servicio.zona_id else None) or cliente.zona_id
