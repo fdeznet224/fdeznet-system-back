@@ -1107,6 +1107,7 @@ class ClienteFullResponse(BaseModel):
     zona: Optional[str] = "Sin Zona"
     tipo_conexion: str = "fibra"
     antena: Optional[dict] = None
+    app: Optional[dict] = None
     servicio: ServicioTecnico
     finanzas: FacturacionResumen
 

@@ -1553,7 +1553,11 @@ class ClientService:
                    inv.identificador as onu_identificador, -- 👇 Agregamos el identificador de la ONU
                    inv.modelo as onu_modelo, -- 👇 Agregamos el modelo de la ONU
                    c.tipo_conexion, c.ip_antena, c.antena_responde, c.antena_latencia_ms,
-                   c.antena_perdida, c.antena_revisada_en
+                   c.antena_perdida, c.antena_revisada_en,
+                   -- Portal del cliente: si ya puso su contraseña y en cuántos celulares recibe avisos.
+                   (SELECT pa.ultimo_acceso FROM portal_accesos pa WHERE pa.cliente_id = c.id) as app_ultimo_acceso,
+                   EXISTS (SELECT 1 FROM portal_accesos pa WHERE pa.cliente_id = c.id) as app_activa,
+                   (SELECT count(*) FROM push_suscripciones ps WHERE ps.cliente_id = c.id) as app_notificaciones
             FROM clientes c
             LEFT JOIN planes p ON c.plan_id = p.id
             LEFT JOIN routers r ON c.router_id = r.id
@@ -1590,6 +1594,11 @@ class ClientService:
                     "perdida": row.antena_perdida,
                     "fecha": row.antena_revisada_en.isoformat() if row.antena_revisada_en else None,
                 } if row.tipo_conexion == "radio" else None,
+                "app": {
+                    "activa": bool(row.app_activa),
+                    "ultimo_acceso": row.app_ultimo_acceso.isoformat() if row.app_ultimo_acceso else None,
+                    "notificaciones": int(row.app_notificaciones or 0),
+                },
                 "servicio": {
                     "plan_nombre": row.plan_nombre or "Sin Plan",
                     "precio_plan": row.precio_plan or 0,

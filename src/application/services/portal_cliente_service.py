@@ -177,13 +177,22 @@ class PortalClienteService:
     async def estado_acceso(self, cliente_id: int) -> Dict[str, Any]:
         acceso = await self.db.get(PortalAccesoModel, cliente_id)
         cliente = await self.db.get(ClienteModel, cliente_id)
+        from src.application.services.push_service import PushService
+
         return {
             "contrato": cliente.cedula if cliente else None,
             "activado": bool(acceso),
             "ultimo_acceso": acceso.ultimo_acceso.isoformat() if acceso and acceso.ultimo_acceso else None,
+            # Celulares donde le llegan los avisos de cobro como notificación.
+            "notificaciones": await PushService(self.db).cuantas(cliente_id),
         }
 
     async def resumen(self, cliente_id: int) -> Dict[str, Any]:
+        # Con la app instalada la sesión dura semanas: abrirla también cuenta como acceso.
+        acceso = await self.db.get(PortalAccesoModel, cliente_id)
+        if acceso and (not acceso.ultimo_acceso or datetime.now() - acceso.ultimo_acceso > timedelta(minutes=30)):
+            acceso.ultimo_acceso = datetime.now()
+            await self.db.commit()
         cliente = (await self.db.execute(
             select(ClienteModel).options(selectinload(ClienteModel.facturas), selectinload(ClienteModel.plan))
             .where(ClienteModel.id == cliente_id)
