@@ -56,3 +56,14 @@ async def get_status_tabla_clientes(
     """
     service = DashboardService(db)
     return await service.obtener_tabla_coloreada()
+
+
+@router.get("/olts")
+async def get_resumen_olts(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """OLT que responden y ONU de clientes en línea, fuera de línea y con potencia baja."""
+    from src.application.services.monitoreo_olt_service import MonitoreoOltService
+
+    return await MonitoreoOltService(db).resumen()
