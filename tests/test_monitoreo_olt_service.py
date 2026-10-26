@@ -16,6 +16,7 @@ def test_resumen_cuenta_olts_caidas_onus_y_potencia_baja():
                 {"id_cliente": 3, "rx_power": "-22.00 dBm"},
             ],
             "clientes_caidos": [{"id_cliente": 4, "rx_power": "LOS / Sin señal"}],
+            "onus_desconocidas": [{"identificador": "VSOL0001"}],
         }),
         ("OLT Paraíso", None),
         # El cliente 3 tiene otro domicilio con la ONU caída: cuenta como caído.
@@ -29,6 +30,7 @@ def test_resumen_cuenta_olts_caidas_onus_y_potencia_baja():
         "onu_en_linea": 2,
         "onu_fuera": 2,
         "onu_potencia_baja": 1,
+        "onu_sin_cliente": 1,
         "clientes_onu_fuera": [3, 4],
         "clientes_potencia_baja": [2],
     }

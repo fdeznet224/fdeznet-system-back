@@ -475,12 +475,34 @@ class DashboardService:
         total_routers = int(routers.total or 0)
         conectados = int(routers.conectados or 0)
 
-        # Personas con al menos un contrato activo (un cliente puede tener varios).
-        clientes_activos = (
-            await self.db.execute(
-                select(func.count(func.distinct(ServicioModel.cliente_id))).where(ServicioModel.estado == "activo")
+        # Cada cliente cuenta una vez: activo si tiene algún contrato activo,
+        # suspendido si no tiene activos pero sí suspendido, y si no, sin contrato.
+        # Las tres cifras suman todos los clientes registrados.
+        por_cliente = (
+            select(
+                ServicioModel.cliente_id,
+                func.max(case((ServicioModel.estado == "activo", 1), else_=0)).label("activo"),
+                func.max(case((ServicioModel.estado == "suspendido", 1), else_=0)).label("suspendido"),
             )
-        ).scalar()
+            .group_by(ServicioModel.cliente_id)
+            .subquery()
+        )
+        activo = func.coalesce(por_cliente.c.activo, 0) == 1
+        suspendido = and_(~activo, func.coalesce(por_cliente.c.suspendido, 0) == 1)
+        clientes = (
+            await self.db.execute(
+                select(
+                    func.count(ClienteModel.id).label("total"),
+                    func.count(case((activo, ClienteModel.id), else_=None)).label("activos"),
+                    func.count(case((suspendido, ClienteModel.id), else_=None)).label("suspendidos"),
+                )
+                .select_from(ClienteModel)
+                .outerjoin(por_cliente, por_cliente.c.cliente_id == ClienteModel.id)
+            )
+        ).one()
+        total_clientes = int(clientes.total or 0)
+        clientes_activos = int(clientes.activos or 0)
+        clientes_suspendidos = int(clientes.suspendidos or 0)
 
         return {
             "facturas_no_pagadas": int(adeudo.no_pagadas or 0),
@@ -491,7 +513,10 @@ class DashboardService:
             "ordenes_reparacion": int(ordenes.reparaciones or 0),
             "routers_conectados": conectados,
             "routers_desconectados": max(total_routers - conectados, 0),
-            "clientes_activos": int(clientes_activos or 0),
+            "clientes_registrados": total_clientes,
+            "clientes_activos": clientes_activos,
+            "clientes_suspendidos": clientes_suspendidos,
+            "clientes_sin_contrato": max(total_clientes - clientes_activos - clientes_suspendidos, 0),
         }
 
     # ==========================================

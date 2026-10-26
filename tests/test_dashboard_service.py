@@ -232,7 +232,7 @@ def test_pendientes_cuenta_adeudo_ordenes_abiertas_y_routers_caidos():
             ResultadoFalso(one=SimpleNamespace(no_pagadas=40, saldo=12000, vencidas=9, saldo_vencido=2700)),
             ResultadoFalso(one=SimpleNamespace(instalaciones=3, reparaciones=5)),
             ResultadoFalso(one=SimpleNamespace(total=4, conectados=3)),
-            ResultadoFalso(scalar=198),
+            ResultadoFalso(one=SimpleNamespace(total=243, activos=198, suspendidos=12)),
         ]
     )
 
@@ -245,5 +245,8 @@ def test_pendientes_cuenta_adeudo_ordenes_abiertas_y_routers_caidos():
         "ordenes_reparacion": 5,
         "routers_conectados": 3,
         "routers_desconectados": 1,
+        "clientes_registrados": 243,
         "clientes_activos": 198,
+        "clientes_suspendidos": 12,
+        "clientes_sin_contrato": 33,
     }

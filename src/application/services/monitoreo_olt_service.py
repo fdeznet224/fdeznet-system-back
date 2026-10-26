@@ -35,6 +35,7 @@ def resumir(lecturas: list[tuple[str, dict | None]]) -> dict:
     umbral = float(UMBRAL_DEBIL_DBM)
     en_linea, fuera, baja = set(), set(), set()
     olts_fuera = []
+    sin_cliente = 0
     for nombre, datos in lecturas:
         if datos is None:
             olts_fuera.append(nombre)
@@ -46,6 +47,7 @@ def resumir(lecturas: list[tuple[str, dict | None]]) -> dict:
                 baja.add(cliente["id_cliente"])
         for cliente in datos.get("clientes_caidos", []):
             fuera.add(cliente["id_cliente"])
+        sin_cliente += len(datos.get("onus_desconocidas", []))
     # Con dos domicilios, basta una ONU caída para que el cliente salga como caído.
     en_linea -= fuera
     return {
@@ -55,6 +57,7 @@ def resumir(lecturas: list[tuple[str, dict | None]]) -> dict:
         "onu_en_linea": len(en_linea),
         "onu_fuera": len(fuera),
         "onu_potencia_baja": len(baja),
+        "onu_sin_cliente": sin_cliente,
         "clientes_onu_fuera": sorted(fuera),
         "clientes_potencia_baja": sorted(baja),
     }
