@@ -12,8 +12,10 @@ from src.infrastructure.models import (
     PagoModel,
     RouterModel,
     FacturaModel,
+    OrdenServicioModel,
     ServicioModel,
 )
+from src.application.services.orden_service import ESTADOS_TERMINALES
 
 class DashboardService:
     def __init__(self, db: AsyncSession):
@@ -426,7 +428,70 @@ class DashboardService:
                 "ram_usada_percent": vmem.percent,
                 "disco_libre_percent": 100 - disk.percent
             },
-            "ultimos_pagos": await self._obtener_ultimos_pagos()
+            "ultimos_pagos": await self._obtener_ultimos_pagos(),
+            "pendientes": await self._obtener_pendientes(),
+        }
+
+    async def _obtener_pendientes(self):
+        """Adeudo de todos los meses, órdenes abiertas y routers caídos para las tarjetas de Inicio."""
+        con_saldo = and_(
+            FacturaModel.estado.in_(["pendiente", "vencida"]),
+            FacturaModel.saldo_pendiente > 0,
+        )
+        es_vencida = and_(con_saldo, FacturaModel.estado == "vencida")
+        adeudo = (
+            await self.db.execute(
+                select(
+                    func.count(FacturaModel.id).label("no_pagadas"),
+                    func.coalesce(func.sum(FacturaModel.saldo_pendiente), 0).label("saldo"),
+                    func.count(case((es_vencida, FacturaModel.id), else_=None)).label("vencidas"),
+                    func.coalesce(
+                        func.sum(case((es_vencida, FacturaModel.saldo_pendiente), else_=0)),
+                        0,
+                    ).label("saldo_vencido"),
+                )
+                .join(ServicioModel, ServicioModel.id == FacturaModel.servicio_id)
+                .where(con_saldo, ServicioModel.estado.in_(["activo", "suspendido"]))
+            )
+        ).one()
+
+        ordenes = (
+            await self.db.execute(
+                select(
+                    func.count(case((OrdenServicioModel.tipo == "instalacion", OrdenServicioModel.id), else_=None)).label("instalaciones"),
+                    func.count(case((OrdenServicioModel.tipo == "reparacion", OrdenServicioModel.id), else_=None)).label("reparaciones"),
+                ).where(OrdenServicioModel.estado.notin_(ESTADOS_TERMINALES))
+            )
+        ).one()
+
+        routers = (
+            await self.db.execute(
+                select(
+                    func.count(RouterModel.id).label("total"),
+                    func.count(case((RouterModel.is_online == True, RouterModel.id), else_=None)).label("conectados"),  # noqa: E712
+                ).where(RouterModel.is_active == True)  # noqa: E712
+            )
+        ).one()
+        total_routers = int(routers.total or 0)
+        conectados = int(routers.conectados or 0)
+
+        # Personas con al menos un contrato activo (un cliente puede tener varios).
+        clientes_activos = (
+            await self.db.execute(
+                select(func.count(func.distinct(ServicioModel.cliente_id))).where(ServicioModel.estado == "activo")
+            )
+        ).scalar()
+
+        return {
+            "facturas_no_pagadas": int(adeudo.no_pagadas or 0),
+            "saldo_no_pagado": float(adeudo.saldo or 0),
+            "facturas_vencidas": int(adeudo.vencidas or 0),
+            "saldo_vencido": float(adeudo.saldo_vencido or 0),
+            "ordenes_instalacion": int(ordenes.instalaciones or 0),
+            "ordenes_reparacion": int(ordenes.reparaciones or 0),
+            "routers_conectados": conectados,
+            "routers_desconectados": max(total_routers - conectados, 0),
+            "clientes_activos": int(clientes_activos or 0),
         }
 
     # ==========================================

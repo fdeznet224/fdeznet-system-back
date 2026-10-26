@@ -86,6 +86,7 @@ def test_home_distingue_historico_de_contratos_activos(monkeypatch):
     )
     servicio = DashboardService(db)
     servicio._obtener_ultimos_pagos = AsyncMock(return_value=[])
+    servicio._obtener_pendientes = AsyncMock(return_value={})
 
     respuesta = asyncio.run(servicio.obtener_home_data())
     assert respuesta["inventario"] == stock
@@ -223,3 +224,26 @@ def test_moroso_offline_no_se_pierde_en_la_conciliacion():
     assert metricas["clientes_activos_sin_sesion"] == 1
     assert respuesta["conciliacion"]["cuadra_contratos"] is True
 
+
+
+def test_pendientes_cuenta_adeudo_ordenes_abiertas_y_routers_caidos():
+    db = BaseDatosFalsa(
+        [
+            ResultadoFalso(one=SimpleNamespace(no_pagadas=40, saldo=12000, vencidas=9, saldo_vencido=2700)),
+            ResultadoFalso(one=SimpleNamespace(instalaciones=3, reparaciones=5)),
+            ResultadoFalso(one=SimpleNamespace(total=4, conectados=3)),
+            ResultadoFalso(scalar=198),
+        ]
+    )
+
+    assert asyncio.run(DashboardService(db)._obtener_pendientes()) == {
+        "facturas_no_pagadas": 40,
+        "saldo_no_pagado": 12000.0,
+        "facturas_vencidas": 9,
+        "saldo_vencido": 2700.0,
+        "ordenes_instalacion": 3,
+        "ordenes_reparacion": 5,
+        "routers_conectados": 3,
+        "routers_desconectados": 1,
+        "clientes_activos": 198,
+    }
