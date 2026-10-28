@@ -536,6 +536,16 @@ def restaurar_respaldo(isp_id: int, nombre: str, _csrf_ok: str = Depends(sesion)
     return _ir(f"/isp/{isp_id}", f"Restaurado desde {nombre}")
 
 
+@app.get("/caddy/permitir")
+def permitir_certificado(domain: str = ""):
+    """Caddy pregunta antes de sacar un certificado: solo para ISP dados de alta."""
+    with Sesion() as db:
+        existe = db.scalar(select(Isp.id).where(Isp.dominio == domain.strip().lower()))
+    if not existe:
+        raise HTTPException(status_code=404)
+    return {"ok": True}
+
+
 @app.get("/salud")
 def salud():
     return {"status": "ok"}

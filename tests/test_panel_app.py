@@ -186,3 +186,12 @@ def test_descarga_no_sale_de_la_carpeta_del_isp(panel, tmp_path, monkeypatch):
     assert cliente.get("/isp/1/respaldos/aaa-20261028-030000.tar").content == b"respaldo"
     assert cliente.get("/isp/1/respaldos/..%2Fpanel.db").status_code == 404
     assert cliente.get("/isp/1/respaldos/bbb-20261028-030000.tar").status_code == 404
+
+
+def test_caddy_solo_saca_certificados_de_isp_dados_de_alta(panel):
+    cliente, _ = panel
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "A", "slug": "aaa"})
+    assert cliente.get("/caddy/permitir", params={"domain": "aaa.ejemplo.com"}).status_code == 200
+    assert cliente.get("/caddy/permitir", params={"domain": "otro.ejemplo.com"}).status_code == 404
+    assert cliente.get("/caddy/permitir").status_code == 404

@@ -21,7 +21,14 @@ services:
       - datos:/data
     ports:
       - "127.0.0.1:${PANEL_PORT:-18000}:8100"
+    networks:
+      - default
+      - fdezpay-proxy
     mem_limit: 256m
 
 volumes:
   datos:
+
+networks:
+  fdezpay-proxy:
+    external: true

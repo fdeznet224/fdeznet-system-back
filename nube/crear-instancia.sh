@@ -73,6 +73,7 @@ FDEZNET_LIMITE_ROUTERS=${LIMITE_ROUTERS:-}
 ENV
 
 # 3. Contenedores.
+docker network inspect fdezpay-proxy >/dev/null 2>&1 || docker network create fdezpay-proxy >/dev/null
 docker compose -p "$ISP" --env-file "$INST/compose.env" -f "$DIR/compose.isp.yml" up -d
 
 # 4. Cuando la API ya creó al administrador, su contraseña sale del archivo.

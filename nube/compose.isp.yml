@@ -70,11 +70,13 @@ services:
       API_UPSTREAM: api:8000
     depends_on:
       - api
-    # Solo en localhost: el proxy de subdominios de la VPS (Fase 3) entra aquí.
+    # El proxy de la VPS (compose.proxy.yml) entra por la red fdezpay-proxy;
+    # el puerto local queda para revisar sin pasar por el proxy.
     ports:
       - "127.0.0.1:${WEB_PORT}:80"
     networks:
       - interna
+      - fdezpay-proxy
     mem_limit: 64m
 
 volumes:
@@ -92,4 +94,6 @@ volumes:
 networks:
   interna:
   fdezpay-db:
+    external: true
+  fdezpay-proxy:
     external: true

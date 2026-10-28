@@ -1,0 +1,45 @@
+# Proxy de la VPS: HTTPS para el panel y para cada ISP (<isp>.{$DOMINIO}).
+# Cada ISP saca su propio certificado la primera vez que alguien entra; antes
+# Caddy le pregunta al panel si ese subdominio es de un ISP dado de alta.
+{
+	on_demand_tls {
+		ask http://fdezpay-panel-panel-1:8100/caddy/permitir
+	}
+}
+
+(seguro) {
+	header Strict-Transport-Security "max-age=31536000"
+	header -Server
+}
+
+panel.{$DOMINIO} {
+	import seguro
+	reverse_proxy fdezpay-panel-panel-1:8100
+}
+
+{$DOMINIO} {
+	import seguro
+	redir https://panel.{$DOMINIO}{uri}
+}
+
+# Cualquier otro subdominio: el contenedor web de ese ISP (<isp>-web-1), que
+# solo existe en la red fdezpay-proxy si el ISP está dado de alta.
+https:// {
+	import seguro
+	tls {
+		on_demand
+	}
+	reverse_proxy {labels.2}-web-1:80
+	# ISP suspendido o reiniciando: su contenedor no responde.
+	handle_errors 502 503 504 {
+		root * /srv/no-disponible
+		rewrite * /index.html
+		file_server {
+			status 503
+		}
+	}
+}
+
+http:// {
+	redir https://{host}{uri} permanent
+}

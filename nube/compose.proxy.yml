@@ -1,0 +1,32 @@
+# Proxy de la VPS (puertos 80 y 443): HTTPS del panel y de cada ISP.
+#   docker network create fdezpay-proxy   (una vez por VPS)
+#   DOMINIO=wispay.click docker compose -f compose.proxy.yml up -d
+# Los contenedores web de los ISP y el panel se unen a la red fdezpay-proxy.
+name: fdezpay-proxy
+
+services:
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    environment:
+      DOMINIO: ${DOMINIO:?Falta DOMINIO, ej. wispay.click}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./proxy/no-disponible:/srv/no-disponible:ro
+      - datos:/data
+      - config:/config
+    networks:
+      - fdezpay-proxy
+    mem_limit: 128m
+
+volumes:
+  datos:
+  config:
+
+networks:
+  fdezpay-proxy:
+    external: true

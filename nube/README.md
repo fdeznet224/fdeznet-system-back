@@ -14,6 +14,7 @@ contenedores (api, bot, web), sus volúmenes y su propio WireGuard.
 | `construir-version.sh` | Construye las imágenes de una versión (etiqueta = `src/version.py`) |
 | `panel/`, `panel.Dockerfile`, `compose.panel.yml` | Panel central del dueño: ISP, mensualidades, suspender, actualizar |
 | `preparar-panel.sh` | Crea `secretos/panel.env` con el usuario y la contraseña del panel |
+| `compose.proxy.yml`, `proxy/` | Caddy: HTTPS del panel y de cada ISP en su subdominio |
 | `respaldar-instancia.sh` | Respaldo de un ISP: base, volúmenes y secretos en un `.tar` |
 | `restaurar-instancia.sh` | Regresa un ISP a un respaldo (antes respalda el estado actual) |
 
@@ -26,15 +27,22 @@ por ejemplo en `/opt/fdezpay/`.
 cd /opt/fdezpay/backend-nube/nube
 install -d -m 0700 secretos
 openssl rand -base64 32 | tr -dc A-Za-z0-9 > secretos/mysql_root && chmod 600 secretos/mysql_root
+docker network create fdezpay-proxy
 docker compose -f compose.mysql.yml up -d
 ./construir-version.sh
 docker compose -f compose.panel.yml --env-file /dev/null build
 ./preparar-panel.sh tudominio.com
 docker compose -f compose.panel.yml --env-file secretos/panel.env up -d
+DOMINIO=tudominio.com docker compose -f compose.proxy.yml up -d
 ```
 
-Los ISP se dan de alta desde el panel (127.0.0.1:18000, y `panel.tudominio.com`
-cuando esté el proxy de la Fase 3). `crear-instancia.sh` también sirve a mano.
+En el DNS del dominio: registros A de `@` y `*` hacia la IP de la VPS. El panel
+queda en `panel.tudominio.com` y cada ISP en `<isp>.tudominio.com`. Caddy saca
+el certificado de cada ISP la primera vez que alguien entra, solo si el panel
+confirma que existe (`/caddy/permitir`). Si un ISP está suspendido, su
+dirección muestra "Servicio no disponible".
+
+Los ISP se dan de alta desde el panel (`panel.tudominio.com`, o 127.0.0.1:18000 por túnel SSH). `crear-instancia.sh` también sirve a mano.
 
 `instancias/` y `secretos/` nunca se suben a git.
 
