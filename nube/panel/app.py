@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 import os
+import secrets
 import threading
 import time
 from collections import defaultdict, deque
@@ -404,6 +405,24 @@ def guardar_ajustes(
         _bitacora(db, isp.id, "ajustes", f"{antes} → {despues}")
         db.commit()
     return _ir(f"/isp/{isp_id}", "Ajustes aplicados")
+
+
+@app.post("/isp/{isp_id}/restablecer-admin", response_class=HTMLResponse)
+def restablecer_admin(request: Request, isp_id: int, csrf: str = Depends(sesion), usuario: str = Form("admin")):
+    usuario = usuario.strip() or "admin"
+    clave = secrets.token_urlsafe(12).replace("-", "x").replace("_", "y")
+    with Sesion() as db:
+        isp = _isp(db, isp_id)
+        if isp.suspendido:
+            return _ir(f"/isp/{isp_id}", "Error: reactiva el ISP antes de restablecer la contraseña")
+        try:
+            docker_ops.restablecer_admin(isp.slug, usuario, clave)
+        except (docker_ops.ErrorDocker, OSError) as error:
+            return _ir(f"/isp/{isp_id}", f"Error: {error}")
+        _bitacora(db, isp.id, "contraseña restablecida", f"usuario {usuario}")
+        db.commit()
+    # Como en el alta: se muestra una sola vez y no se guarda en el panel.
+    return _render(request, "creado.html", csrf, isp=isp, clave=clave, usuario=usuario, restablecida=True)
 
 
 @app.post("/isp/{isp_id}/suspender")

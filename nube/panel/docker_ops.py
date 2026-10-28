@@ -212,3 +212,13 @@ def restaurar(slug: str, nombre: str, *, arrancar: bool) -> None:
         timeout=1800,
         env={**_ajustes_respaldo(), "ARRANCAR": "1" if arrancar else "0"},
     )
+
+
+def restablecer_admin(slug: str, usuario: str, clave: str) -> None:
+    """Contraseña nueva para el admin del ISP; va por variable, no queda en el historial."""
+    _correr(
+        ["docker", "exec", "-e", "RESTABLECER_USUARIO", "-e", "RESTABLECER_PASSWORD",
+         f"{slug}-api-1", "python", "-m", "src.restablecer_admin"],
+        timeout=120,
+        env={"RESTABLECER_USUARIO": usuario, "RESTABLECER_PASSWORD": clave},
+    )

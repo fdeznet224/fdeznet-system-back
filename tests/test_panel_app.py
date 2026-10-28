@@ -28,6 +28,7 @@ def panel(tmp_path, monkeypatch):
     monkeypatch.setattr(docker_ops, "uso_memoria", lambda: {})
     monkeypatch.setattr(docker_ops, "versiones_disponibles", lambda: ["2.109.0"])
     monkeypatch.setattr(docker_ops, "puertos_en_uso", lambda: ([], []))
+    monkeypatch.setattr(docker_ops, "restablecer_admin", lambda slug, usuario, clave: llamadas.append(("restablecer", slug, usuario, clave)))
     monkeypatch.setattr(docker_ops, "respaldar", lambda slug: llamadas.append(("respaldar", slug)) or {
         "ARCHIVO": f"{slug}-20261028-030000.tar", "TAMANO": "2048", "REMOTO": "ok"})
     monkeypatch.setattr(docker_ops, "restaurar", lambda slug, nombre, **k: llamadas.append(("restaurar", slug, nombre, k)))
@@ -195,3 +196,15 @@ def test_caddy_solo_saca_certificados_de_isp_dados_de_alta(panel):
     assert cliente.get("/caddy/permitir", params={"domain": "aaa.ejemplo.com"}).status_code == 200
     assert cliente.get("/caddy/permitir", params={"domain": "otro.ejemplo.com"}).status_code == 404
     assert cliente.get("/caddy/permitir").status_code == 404
+
+
+def test_restablecer_contrasena_del_admin_se_muestra_una_vez(panel):
+    cliente, llamadas = panel
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "A", "slug": "aaa"})
+    respuesta = cliente.post("/isp/1/restablecer-admin", data={"csrf": csrf, "usuario": "admin"})
+    _, slug, usuario, clave = [c for c in llamadas if c[0] == "restablecer"][0]
+    assert (slug, usuario) == ("aaa", "admin") and len(clave) >= 16
+    assert clave in respuesta.text and "Contraseña nueva" in respuesta.text
+    detalle = cliente.get("/isp/1").text
+    assert clave not in detalle and "contraseña restablecida" in detalle.lower()

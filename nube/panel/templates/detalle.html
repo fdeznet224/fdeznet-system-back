@@ -108,6 +108,14 @@
   <button class="boton secundario">Guardar datos</button>
 </form>
 
+<h2>Acceso del ISP</h2>
+<form method="post" action="/isp/{{ isp.id }}/restablecer-admin" onsubmit="return confirm('Se le pone una contraseña nueva a ese usuario y la anterior deja de servir. ¿Continuar?')">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="lista"><label class="campo"><span>Usuario</span><input name="usuario" value="admin" autocomplete="off" required></label></div>
+  <p class="nota">Para cuando el ISP olvida su contraseña. La nueva se muestra una sola vez.</p>
+  <button class="boton secundario">Restablecer contraseña</button>
+</form>
+
 <h2>Servicio</h2>
 {% if isp.suspendido %}
 <form method="post" action="/isp/{{ isp.id }}/reactivar">

@@ -1,14 +1,14 @@
 {% extends "base.html" %}
-{% block titulo %}ISP creado · Panel FdezPay{% endblock %}
+{% block titulo %}{{ "Contraseña nueva" if restablecida else "ISP creado" }} · Panel FdezPay{% endblock %}
 {% block contenido %}
-<h1>{{ isp.nombre }} listo</h1>
+<h1>{{ "Contraseña nueva de " ~ isp.nombre if restablecida else isp.nombre ~ " listo" }}</h1>
 <div class="lista">
   <div class="fila"><div class="crece">Dirección</div><div class="der"><a href="https://{{ isp.dominio }}" target="_blank" rel="noopener">{{ isp.dominio }}</a></div></div>
-  <div class="fila"><div class="crece">Usuario</div><div class="der">admin</div></div>
+  <div class="fila"><div class="crece">Usuario</div><div class="der">{{ usuario or "admin" }}</div></div>
   <div class="fila"><div class="crece">Contraseña</div></div>
   <div class="fila"><div class="clave">{{ clave }}</div></div>
   <div class="fila"><div class="crece">Puerto WireGuard</div><div class="der">{{ isp.wg_port }} UDP</div></div>
 </div>
-<p class="nota">Cópiala y pásasela al ISP. <b>No se vuelve a mostrar</b>; si se pierde, él la cambia desde su panel o se restablece desde la VPS.</p>
+<p class="nota">Cópiala y pásasela al ISP. <b>No se vuelve a mostrar</b>; si se pierde, se restablece desde el detalle del ISP.</p>
 <a class="boton" href="/isp/{{ isp.id }}">Ver el ISP</a>
 {% endblock %}
