@@ -50,7 +50,19 @@ def _preparar(monkeypatch, tipo="reparacion", estado="en_camino", **cliente):
         return orden
 
     monkeypatch.setattr(modulo.OrdenService, "obtener", obtener)
-    return _DB(objetos), orden
+    db = _DB(objetos)
+    db.programadas = []
+
+    async def wifi_conocido(_self, cliente_id):
+        return {"red": "FdezNet-187B", "clave": "11223344"}
+
+    async def programar(_self, cliente_id, ssid=None, clave=None, cambio_onu=False):
+        db.programadas.append((cliente_id, ssid, clave, cambio_onu))
+        return {"red": ssid, "clave": clave, "automatica": True, "clave_nueva": not clave}
+
+    monkeypatch.setattr(modulo.AprovisionamientoOnuService, "wifi_conocido", wifi_conocido)
+    monkeypatch.setattr(modulo.AprovisionamientoOnuService, "programar", programar)
+    return db, orden
 
 
 def test_completa_telefono_y_ubicacion_del_cliente(monkeypatch):
@@ -93,9 +105,40 @@ def test_cambia_la_onu_por_una_del_inventario(monkeypatch):
     monkeypatch.setattr(modulo.ClientService, "procesar_cambio_onu", cambio)
     resultado = asyncio.run(ReparacionCampoService(db).cambiar_onu(50, TECNICO, "con_falla", onu_id=11))
     assert llamadas == [(244, 11, "CON_FALLA", 50)]
-    assert resultado == {"onu": "HWTC22222222", "onu_anterior": "HWTC11111111"}
+    assert resultado["onu"] == "HWTC22222222" and resultado["onu_anterior"] == "HWTC11111111"
     historial = [o for o in db.agregados if isinstance(o, HistorialEstadoOrdenModel)]
     assert historial[0].comentario == "ONU cambiada por el técnico: HWTC11111111 (con falla) → HWTC22222222"
+
+
+def test_la_onu_nueva_se_configura_sola_con_el_wifi_que_ya_tenia(monkeypatch):
+    db, _ = _preparar(monkeypatch)
+
+    async def cambio(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(modulo.ClientService, "procesar_cambio_onu", cambio)
+    resultado = asyncio.run(ReparacionCampoService(db).cambiar_onu(50, TECNICO, "CON_FALLA", onu_id=11))
+    assert db.programadas == [(244, "FdezNet-187B", "11223344", True)]
+    assert resultado["wifi"]["red"] == "FdezNet-187B"
+
+
+def test_el_wifi_que_escribe_el_tecnico_manda(monkeypatch):
+    db, _ = _preparar(monkeypatch)
+
+    async def cambio(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(modulo.ClientService, "procesar_cambio_onu", cambio)
+    asyncio.run(ReparacionCampoService(db).cambiar_onu(
+        50, TECNICO, "CON_FALLA", onu_id=11, wifi_red=" Casa Lopez ", wifi_clave="lopez2024"))
+    assert db.programadas == [(244, "Casa Lopez", "lopez2024", True)]
+
+
+def test_rechaza_contrasena_wifi_corta_antes_de_cambiar(monkeypatch):
+    db, _ = _preparar(monkeypatch)
+    with pytest.raises(ValueError, match="8 a 63"):
+        asyncio.run(ReparacionCampoService(db).cambiar_onu(50, TECNICO, "CON_FALLA", onu_id=11, wifi_clave="123"))
+    assert db.commits == 0 and db.programadas == []
 
 
 def test_registra_la_onu_que_trae_en_mano(monkeypatch):

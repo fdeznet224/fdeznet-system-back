@@ -13,9 +13,11 @@ from sqlalchemy import func, select
 
 from src.application.services.acceso_onu_config import acceso_para_tecnico, marca_de_onu
 from src.application.services.activacion_service import ActivacionService
+from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
 from src.application.services.client_service import ClientService
 from src.application.services.ftth_service import FTTHService
 from src.application.services.orden_service import ESTADOS_TERMINALES, OrdenService
+from src.application.services.red_cliente_service import RE_CLAVE_WIFI
 from src.infrastructure.models import (
     CajaNapModel,
     ClienteModel,
@@ -130,12 +132,24 @@ class ReparacionCampoService:
         estado_vieja_onu: str,
         onu_id: Optional[int] = None,
         onu_identificador: Optional[str] = None,
+        wifi_red: Optional[str] = None,
+        wifi_clave: Optional[str] = None,
     ) -> dict:
-        """ONU del inventario o la que el técnico trae en mano (se registra)."""
+        """ONU del inventario o la que el técnico trae en mano (se registra).
+
+        La nueva se configura sola al reportarse en el ACS: PPPoE del cliente y su mismo WiFi
+        (el que escribió el técnico; si no, el que el sistema conoce; si no, uno nuevo)."""
         orden, cliente = await self._orden_y_cliente(orden_id, usuario)
         estado = (estado_vieja_onu or "").upper().strip()
         if estado not in ESTADOS_ONU_ANTERIOR:
             raise ValueError("Indica si la ONU retirada tiene falla o funciona")
+        wifi_red, wifi_clave = (wifi_red or "").strip() or None, wifi_clave or None
+        if wifi_red and len(wifi_red) > 32:
+            raise ValueError("El nombre del WiFi puede tener hasta 32 caracteres")
+        if wifi_clave and not RE_CLAVE_WIFI.match(wifi_clave):
+            raise ValueError("La contraseña del WiFi debe tener de 8 a 63 caracteres, sin acentos ni ñ")
+        aprovisionamiento = AprovisionamientoOnuService(self.db)
+        conocido = await aprovisionamiento.wifi_conocido(cliente.id)
         anterior = await self.db.get(InventarioONUModel, cliente.onu_id) if cliente.onu_id else None
         if not onu_id:
             if not (onu_identificador or "").strip():
@@ -159,7 +173,15 @@ class ReparacionCampoService:
             f" → {nueva.identificador}",
         )
         await self.db.commit()
-        return {"onu": nueva.identificador, "onu_anterior": anterior.identificador if anterior else None}
+        wifi = await aprovisionamiento.programar(
+            cliente.id, wifi_red or conocido["red"], wifi_clave or conocido["clave"], cambio_onu=True,
+        )
+        return {"onu": nueva.identificador, "onu_anterior": anterior.identificador if anterior else None, "wifi": wifi}
+
+    async def wifi_del_cliente(self, orden_id: int, usuario: UsuarioModel) -> dict:
+        """Lo que se le pondrá a la ONU de reemplazo; el técnico lo corrige si el cliente lo sabe distinto."""
+        _, cliente = await self._orden_y_cliente(orden_id, usuario)
+        return await AprovisionamientoOnuService(self.db).wifi_conocido(cliente.id)
 
     async def revision(self, orden_id: int, usuario: UsuarioModel) -> dict:
         """Lo que no se lee en vivo: potencia de antes del reporte, vecinos de su

@@ -874,17 +874,23 @@ async def cambiar_onu_cliente(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
 ):
-    """Sustituye la ONU de un cliente y actualiza el inventario."""
+    """Sustituye la ONU de un cliente y actualiza el inventario.
+    La nueva se configura sola con su PPPoE y el WiFi que ya tenía (si no se conoce, uno nuevo)."""
+    from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
+
     service = ClientService(db)
     try:
         await verificar_acceso_cliente(db, current_user, cliente_id)
+        aprovisionamiento = AprovisionamientoOnuService(db)
+        conocido = await aprovisionamiento.wifi_conocido(cliente_id)
         mensaje = await service.procesar_cambio_onu(
             cliente_id,
             req.nuevo_inventario_id,
             req.estado_vieja_onu,
             usuario_operador=current_user,
         )
-        return {"status": "success", "message": mensaje}
+        wifi = await aprovisionamiento.programar(cliente_id, conocido["red"], conocido["clave"], cambio_onu=True)
+        return {"status": "success", "message": mensaje, "wifi": wifi}
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
     except ValueError as e:

@@ -7,6 +7,9 @@ reconoce por su serial GPON o, en EPON, por su MAC), se le pone el PPPoE del
 cliente y su WiFi "FdezNet-CONTRATO" con una contraseña nueva, que va en
 su mensaje de bienvenida por WhatsApp.
 
+Lo mismo con la ONU de reemplazo de una reparación, pero con el WiFi que ya
+tenía el cliente (para que sus equipos se conecten solos) y sin bienvenida.
+
 Las ZTE vienen con firmware de otra compañía y no aceptan el ACS: para ellas
 el WiFi se genera igual, pero lo configura el técnico a mano (estado "manual").
 """
@@ -37,6 +40,8 @@ MAC_EPON = f"{LAN}.LANHostConfigManagement.MACAddress"
 # Si en un día no se reporta, ya no se espera (la ONU no trae el ACS o no se conectó).
 VIGENCIA = timedelta(hours=24)
 MAX_RECHAZOS = 3
+# Registros cuyo WiFi está puesto en la ONU del cliente (o lo puso él): sirven para la de reemplazo.
+CON_WIFI_PUESTO = ("aplicado", "guardado", "manual")
 
 
 def prefijo_wifi() -> str:
@@ -96,11 +101,15 @@ class AprovisionamientoOnuService:
         self.red = RedClienteService(db, nbi)
         self.enviar_bienvenida = enviar_bienvenida or self._bienvenida
 
-    async def programar(self, cliente_id: int) -> Optional[Dict[str, Any]]:
+    async def programar(self, cliente_id: int, ssid: Optional[str] = None, clave: Optional[str] = None,
+                        cambio_onu: bool = False) -> Optional[Dict[str, Any]]:
         """Deja lista la configuración de la ONU del cliente; None si no aplica (sin ONU, sin PPPoE).
-        `automatica` dice si se configura sola o si el técnico pone el WiFi a mano (ZTE)."""
+        `automatica` dice si se configura sola o si el técnico pone el WiFi a mano (ZTE).
+        Sin `ssid`/`clave` va "FdezNet-CONTRATO" y una contraseña nueva (`clave_nueva`)."""
+        # Tras un cambio de ONU, el cliente en memoria todavía trae la anterior.
         cliente = (await self.db.execute(
             select(ClienteModel).options(selectinload(ClienteModel.onu_asignada)).where(ClienteModel.id == cliente_id)
+            .execution_options(populate_existing=True)
         )).scalars().first()
         identificador = (cliente.onu_asignada.identificador or "").strip() if cliente and cliente.onu_asignada else ""
         if not cliente or not cliente.cedula or not cliente.user_pppoe or not cliente.pass_pppoe:
@@ -115,11 +124,36 @@ class AprovisionamientoOnuService:
         for anterior in anteriores:
             await self.db.delete(anterior)
         registro = AprovisionamientoOnuModel(cliente_id=cliente_id, identificador=identificador,
-                                             ssid=ssid_para(cliente.cedula), clave_wifi=clave_wifi_nueva(),
-                                             estado="pendiente" if automatica else "manual")
+                                             ssid=(ssid or ssid_para(cliente.cedula))[:32], clave_wifi=clave or clave_wifi_nueva(),
+                                             estado="pendiente" if automatica else "manual", cambio_onu=cambio_onu)
         self.db.add(registro)
         await self.db.commit()
-        return {"red": registro.ssid, "clave": registro.clave_wifi, "automatica": automatica}
+        return {"red": registro.ssid, "clave": registro.clave_wifi, "automatica": automatica, "clave_nueva": not clave}
+
+    async def wifi_conocido(self, cliente_id: int) -> Dict[str, Optional[str]]:
+        """El WiFi que tiene hoy el cliente, para ponérselo a la ONU de reemplazo.
+        La contraseña solo se sabe si la puso el sistema, el portal o el admin (la Huawei no la deja leer);
+        si no, el nombre sale de lo último que reportó su ONU."""
+        registro = (await self.db.execute(
+            select(AprovisionamientoOnuModel).where(AprovisionamientoOnuModel.cliente_id == cliente_id,
+                                                    AprovisionamientoOnuModel.estado.in_(CON_WIFI_PUESTO))
+            .order_by(AprovisionamientoOnuModel.id.desc()).limit(1)
+        )).scalars().first()
+        if registro:
+            return {"red": registro.ssid, "clave": registro.clave_wifi}
+        try:
+            equipo = await self.red._equipo(cliente_id)
+            async with httpx.AsyncClient(base_url=self.red.nbi, timeout=10, transport=self.transporte) as http:
+                device_id = await self.red._id_tr069(http, equipo)
+                documento = await self.red._leer_lan(http, device_id) if device_id else {}
+        except (LookupError, ValueError, httpx.HTTPError):
+            return {"red": None, "clave": None}
+        lan = ((documento.get("InternetGatewayDevice") or {}).get("LANDevice") or {}).get("1") or {}
+        redes = redes_wifi(lan)
+        principal = next((r for r in redes if r["indice"] in indices_principales(redes)), None)
+        if not principal:
+            return {"red": None, "clave": None}
+        return {"red": principal["ssid"], "clave": principal["clave"]}
 
     async def del_cliente(self, cliente_id: int) -> Optional[Dict[str, Any]]:
         registro = (await self.db.execute(
@@ -129,7 +163,7 @@ class AprovisionamientoOnuService:
         if not registro:
             return None
         return {"estado": registro.estado, "red": registro.ssid, "clave": registro.clave_wifi, "detalle": registro.detalle,
-                "creado_en": registro.creado_en, "aplicado_en": registro.aplicado_en}
+                "cambio_onu": bool(registro.cambio_onu), "creado_en": registro.creado_en, "aplicado_en": registro.aplicado_en}
 
     async def reintentar(self, cliente_id: int) -> Optional[Dict[str, Any]]:
         """Vuelve a esperar a la ONU (por ejemplo, ya se le puso el ACS) con la misma red y contraseña."""
@@ -164,7 +198,7 @@ class AprovisionamientoOnuService:
         if datetime.now() - registro.creado_en > VIGENCIA:
             registro.estado = "vencido"
             registro.detalle = "La ONU no se reportó en GenieACS: revisa que traiga el ACS y la WAN TR069_INTERNET."
-            await self._avisar(await self.db.get(ClienteModel, registro.cliente_id), None)
+            await self._avisar(await self.db.get(ClienteModel, registro.cliente_id), None, registro)
             return False
         device_id = await self._buscar(http, registro)
         if not device_id:
@@ -190,11 +224,11 @@ class AprovisionamientoOnuService:
             registro.detalle = str(error)[:255]
             if registro.intentos >= MAX_RECHAZOS:
                 registro.estado = "error"
-                await self._avisar(cliente, None)
+                await self._avisar(cliente, None, registro)
             return False
         registro.estado, registro.device_id, registro.aplicado_en = "aplicado", device_id, datetime.now()
         registro.detalle = None if aplicado else "Enviado; la ONU lo aplica en su próximo reporte."
-        await self._avisar(cliente, registro)
+        await self._avisar(cliente, registro, registro)
         return True
 
     async def _buscar(self, http: httpx.AsyncClient, registro: AprovisionamientoOnuModel) -> Optional[str]:
@@ -236,9 +270,11 @@ class AprovisionamientoOnuService:
         respuesta.raise_for_status()
         return (respuesta.json() or [{}])[0]
 
-    async def _avisar(self, cliente: ClienteModel, registro: Optional[AprovisionamientoOnuModel]) -> None:
-        """La bienvenida del cliente, con su WiFi si quedó puesto (sin él si la ONU no se pudo configurar)."""
-        if not cliente or not cliente.telefono:
+    async def _avisar(self, cliente: ClienteModel, registro: Optional[AprovisionamientoOnuModel],
+                      origen: AprovisionamientoOnuModel) -> None:
+        """La bienvenida del cliente, con su WiFi si quedó puesto (sin él si la ONU no se pudo configurar).
+        En un cambio de ONU no hay bienvenida: el cliente ya la recibió y su WiFi sigue igual."""
+        if not cliente or not cliente.telefono or getattr(origen, "cambio_onu", False):
             return
         try:
             await self.enviar_bienvenida(cliente, registro)

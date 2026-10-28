@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -317,3 +318,32 @@ def test_nombrar_guarda_por_mac_cambia_y_vacio_lo_quita():
         asyncio.run(servicio.nombrar(327, "7a:49:bf:ef:ce:78", "x" * 41))
     with pytest.raises(ValueError):
         asyncio.run(servicio.nombrar(327, "no-es-mac", "Juan"))
+
+
+class _UltimoRegistro:
+    """BD falsa: `registro` es el último aprovisionamiento del cliente (o None)."""
+
+    def __init__(self, registro):
+        self.registro, self.agregados = registro, []
+
+    async def execute(self, _consulta):
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: self.registro))
+
+    def add(self, objeto):
+        self.agregados.append(objeto)
+
+    async def commit(self):
+        pass
+
+
+def test_la_contrasena_que_pone_el_cliente_se_guarda_para_la_onu_de_reemplazo():
+    instalado = SimpleNamespace(estado="aplicado", ssid="FdezNet-187B", clave_wifi="11223344")
+    db = _UltimoRegistro(instalado)
+    asyncio.run(RedClienteService(db, nbi="http://nbi")._recordar_wifi(9, "HWTC1", "FdezNet-187B", "nueva-clave"))
+    assert instalado.clave_wifi == "nueva-clave" and db.agregados == []
+
+
+def test_cliente_sin_instalacion_por_el_sistema_queda_con_su_contrasena_guardada():
+    db = _UltimoRegistro(None)
+    asyncio.run(RedClienteService(db, nbi="http://nbi")._recordar_wifi(9, "HWTC1", "Casa Lopez", "lopez2024"))
+    assert [(r.estado, r.ssid, r.clave_wifi) for r in db.agregados] == [("guardado", "Casa Lopez", "lopez2024")]

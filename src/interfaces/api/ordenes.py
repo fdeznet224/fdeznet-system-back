@@ -588,6 +588,8 @@ class CambioOnuReparacion(BaseModel):
     estado_vieja_onu: str = Field(min_length=1, max_length=20)
     onu_id: Optional[int] = Field(default=None, gt=0)
     onu_identificador: Optional[str] = Field(default=None, max_length=40)
+    wifi_red: Optional[str] = Field(default=None, max_length=32)
+    wifi_clave: Optional[str] = Field(default=None, max_length=63)
 
 
 @router.patch("/{orden_id}/cliente-contacto")
@@ -636,9 +638,25 @@ async def cambiar_onu_en_reparacion(
     try:
         return await ReparacionCampoService(db).cambiar_onu(
             orden_id, current_user, datos.estado_vieja_onu, datos.onu_id, datos.onu_identificador,
+            datos.wifi_red, datos.wifi_clave,
         )
     except (ValueError, PermissionError, RuntimeError) as error:
         await db.rollback()
+        manejar_error(error)
+
+
+@router.get("/{orden_id}/wifi-cliente")
+async def wifi_para_reemplazo(
+    orden_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """El WiFi que tiene el cliente, para que la ONU de reemplazo quede igual."""
+    from src.application.services.reparacion_campo_service import ReparacionCampoService
+
+    try:
+        return await ReparacionCampoService(db).wifi_del_cliente(orden_id, current_user)
+    except (ValueError, PermissionError, RuntimeError) as error:
         manejar_error(error)
 
 

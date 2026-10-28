@@ -125,6 +125,16 @@ def test_gpon_se_reconoce_por_serial_se_configura_y_se_le_manda_su_wifi():
     assert enviados == [("9931112222", ("FdezNet-187B", "12345678"))]
 
 
+def test_onu_de_reemplazo_se_configura_sin_mandar_bienvenida():
+    transporte, tareas = genieacs({"00259E-HG8145V5-48575443F1C8D69E": "48575443F1C8D69E"})
+    enviados = []
+    reg = registro("HWTCF1C8D69E")
+    reg.cambio_onu = True
+    assert correr(servicio(transporte, enviados), reg) is True
+    assert reg.estado == "aplicado" and enviados == []
+    assert any(nombre == "setParameterValues" for _, nombre, _ in tareas)
+
+
 def test_si_aun_no_se_reporta_se_sigue_esperando():
     transporte, tareas = genieacs({})
     reg = registro("HWTCF1C8D69E")
@@ -169,11 +179,15 @@ class ConsultasFalsas:
         pass
 
 
-def programar(identificador, modelo=None):
+def programar_con(identificador, modelo=None, **opciones):
     onu = SimpleNamespace(identificador=identificador, modelo=modelo)
     db = ConsultasFalsas(SimpleNamespace(**vars(CLIENTE), onu_asignada=onu))
-    resultado = asyncio.run(AprovisionamientoOnuService(db, nbi="http://nbi").programar(9))
+    resultado = asyncio.run(AprovisionamientoOnuService(db, nbi="http://nbi").programar(9, **opciones))
     return resultado, db.agregados
+
+
+def programar(identificador, modelo=None):
+    return programar_con(identificador, modelo)
 
 
 def test_huawei_queda_esperando_para_configurarse_sola():
@@ -187,6 +201,17 @@ def test_zte_no_acepta_el_acs_y_el_tecnico_pone_el_wifi_a_mano():
     assert resultado["automatica"] is False and len(resultado["clave"]) == 8
     # No se espera a GenieACS: queda anotado para consultarlo en Mi red.
     assert agregados[0].estado == "manual"
+
+
+def test_onu_de_reemplazo_lleva_el_wifi_que_ya_tenia():
+    resultado, agregados = programar_con("HWTC22222222", ssid="Casa Lopez", clave="lopez2024", cambio_onu=True)
+    assert resultado == {"red": "Casa Lopez", "clave": "lopez2024", "automatica": True, "clave_nueva": False}
+    assert agregados[0].cambio_onu is True and agregados[0].estado == "pendiente"
+
+
+def test_si_no_se_sabe_su_wifi_va_uno_nuevo():
+    resultado, _ = programar_con("HWTC22222222", cambio_onu=True)
+    assert resultado["red"] == "FdezNet-187B" and resultado["clave_nueva"] is True
 
 
 def test_si_la_onu_rechaza_un_campo_de_la_contrasena_prueba_el_otro():
@@ -227,3 +252,13 @@ def test_toma_las_dos_bandas_aunque_ya_no_tengan_el_mismo_nombre():
     wlan["5"]["SSID"] = v("FdezNet-")
     _, indices, _ = valores_para(documento, "FdezNet-187B", "juan_perez", "clave-pppoe")
     assert indices == [1, 5]
+
+
+def test_el_wifi_conocido_sale_de_lo_que_puso_el_sistema_o_el_cliente():
+    class UnRegistro:
+        async def execute(self, _consulta):
+            registro = SimpleNamespace(ssid="FdezNet-187B", clave_wifi="11223344")
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: registro))
+
+    srv = AprovisionamientoOnuService(UnRegistro(), nbi="http://nbi")
+    assert asyncio.run(srv.wifi_conocido(9)) == {"red": "FdezNet-187B", "clave": "11223344"}

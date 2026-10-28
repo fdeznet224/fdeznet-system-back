@@ -19,7 +19,9 @@ from sqlalchemy.orm import selectinload
 
 from src.application.services.acceso_onu_config import cuentas_de, marca_de_onu, obtener_acceso_onu
 from src.application.services.onu_web_huawei import FiltroMacHuawei, normalizar_mac
-from src.infrastructure.models import ClienteModel, EquipoNombreModel, LogActividadModel, ServicioModel
+from src.infrastructure.models import (
+    AprovisionamientoOnuModel, ClienteModel, EquipoNombreModel, LogActividadModel, ServicioModel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +355,8 @@ class RedClienteService:
             if solo_principal and not set(indices) <= indices_principales(redes):
                 raise ValueError("Solo puedes cambiar la contraseña de tu red principal.")
             aplicado = await self.poner_con_clave_wifi(http, device_id, indices, clave)
+        if set(indices) <= indices_principales(redes):
+            await self._recordar_wifi(cliente_id, equipo["identificador"] or "", ssid, clave)
         await self._bitacora(usuario, "Cambiar contraseña WiFi", cliente_id,
                              f"Cliente {cliente_id} · ONU {equipo['identificador'] or equipo['ip']} · red {ssid}")
         return {"aplicado": aplicado, "bandas": len(indices), "ssid": ssid}
@@ -398,6 +402,19 @@ class RedClienteService:
 
         await VsolApiService(self.db).reiniciar_onu_de_cliente(cliente_id, usuario)
         return {"via": "olt"}
+
+    async def _recordar_wifi(self, cliente_id: int, identificador: str, ssid: str, clave: str) -> None:
+        """La ONU no deja leer la contraseña: se guarda para ponérsela igual a la ONU de reemplazo."""
+        registro = (await self.db.execute(
+            select(AprovisionamientoOnuModel).where(AprovisionamientoOnuModel.cliente_id == cliente_id)
+            .order_by(AprovisionamientoOnuModel.id.desc()).limit(1)
+        )).scalars().first()
+        if registro and registro.estado in ("aplicado", "guardado", "manual"):
+            registro.ssid, registro.clave_wifi = ssid[:32], clave
+        else:
+            self.db.add(AprovisionamientoOnuModel(cliente_id=cliente_id, identificador=identificador[:100],
+                                                  ssid=ssid[:32], clave_wifi=clave, estado="guardado"))
+        await self.db.commit()
 
     async def _bitacora(self, usuario, accion: str, cliente_id: int, detalle: str) -> None:
         self.db.add(LogActividadModel(
