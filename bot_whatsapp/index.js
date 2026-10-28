@@ -23,8 +23,11 @@ const {
     esEscritaPorPersona,
     esRespuestaPropia,
 } = require('./manual-reply');
+const { argumentosChrome, msHastaHora } = require('./memoria');
 
 const PORT = process.env.PORT || 3000;
+// En contenedor escucha en 0.0.0.0 para que la API lo alcance por la red interna.
+const HOST = process.env.HOST || '127.0.0.1';
 const BACKEND_URL = process.env.API_BACKEND_URL || 'http://127.0.0.1:8000';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 
@@ -117,15 +120,7 @@ function iniciarMotor() {
         authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
         puppeteer: { 
             headless: true, 
-            args: [
-                '--no-sandbox', 
-                '--disable-setuid-sandbox', 
-                '--disable-extensions',
-                '--disable-gpu',
-                '--disable-dev-shm-usage',      // CRÍTICO: Evita caídas de memoria compartida en Linux
-                '--no-first-run',
-                '--disable-accelerated-2d-canvas'
-            ] 
+            args: argumentosChrome(),
         }
     });
 
@@ -478,7 +473,30 @@ app.post('/enviar-mensaje', async (req, res) => {
     }
 });
 
-app.listen(PORT, '127.0.0.1', () => {
+// Reinicio diario (BOT_REINICIO_DIARIO=HH:MM): Chrome suelta la memoria que
+// acumula durante el día. La sesión queda guardada y el contenedor lo levanta.
+function programarReinicioDiario() {
+    const espera = msHastaHora(process.env.BOT_REINICIO_DIARIO);
+    if (espera === null) return;
+    setTimeout(async function reiniciar() {
+        if (enviosEnCurso.size > 0) {
+            setTimeout(reiniciar, 60 * 1000);
+            return;
+        }
+        console.log('🌙 Reinicio diario para liberar memoria');
+        await detenerMotor();
+        process.exit(0);
+    }, espera).unref();
+}
+
+// docker stop manda SIGTERM: cerrar Chrome bien para no dañar la sesión.
+process.once('SIGTERM', async () => {
+    await detenerMotor();
+    process.exit(0);
+});
+
+app.listen(PORT, HOST, () => {
     console.log(`🚀 Motor WhatsApp en puerto ${PORT}`);
     iniciarMotor();
+    programarReinicioDiario();
 });

@@ -1,0 +1,93 @@
+# Instancia aislada de un ISP. Se levanta con el nombre del ISP como proyecto:
+#   docker compose -p <isp> --env-file instancias/<isp>/compose.env -f compose.isp.yml up -d
+# Cada proyecto tiene su red, sus volúmenes y su propio WireGuard, así dos ISP
+# pueden usar la misma LAN (192.168.88.0/24) sin chocar.
+services:
+  api:
+    image: fdezpay-api:${IMAGEN_VERSION:-local}
+    build:
+      context: ..
+      dockerfile: nube/api.Dockerfile
+    restart: unless-stopped
+    env_file: instancias/${ISP}/api.env
+    environment:
+      WG_PORT: ${WG_PORT}
+      WHATSAPP_BASE_URL: http://bot:3000
+      TZ: America/Mexico_City
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: "1"
+    ports:
+      - "${WG_PORT}:${WG_PORT}/udp"
+    volumes:
+      - wireguard:/etc/wireguard
+      - static:/app/static
+      - uploads:/app/uploads
+      - whatsapp-uploads:/app/bot_whatsapp/uploads
+      - whatsapp-sesion:/app/bot_whatsapp/.wwebjs_auth:ro
+      - respaldos:/var/backups/fdeznet
+      - estado:/var/lib/fdeznet
+      - ocr-modelos:/root/.EasyOCR
+    networks:
+      - interna
+      - fdezpay-db
+    mem_limit: ${API_MEMORIA:-1200m}
+    cpus: ${API_CPUS:-1.5}
+
+  # Opcional: solo arranca con COMPOSE_PROFILES=whatsapp en compose.env. Un ISP
+  # sin bot se ahorra el Chrome (lo que más RAM gasta).
+  bot:
+    profiles: ["whatsapp"]
+    image: fdezpay-bot:${IMAGEN_VERSION:-local}
+    build:
+      context: ..
+      dockerfile: nube/bot.Dockerfile
+    restart: unless-stopped
+    environment:
+      API_BACKEND_URL: http://api:8000
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      BOT_REINICIO_DIARIO: ${BOT_REINICIO_DIARIO:-04:00}
+      TZ: America/Mexico_City
+    # Tiempo para que Chrome cierre la sesión de WhatsApp sin dañarla.
+    stop_grace_period: 30s
+    volumes:
+      - whatsapp-uploads:/app/bot_whatsapp/uploads
+      - whatsapp-sesion:/app/bot_whatsapp/.wwebjs_auth
+    networks:
+      - interna
+    mem_limit: ${BOT_MEMORIA:-1500m}
+    cpus: ${BOT_CPUS:-1}
+
+  web:
+    image: fdezpay-web:${IMAGEN_VERSION:-local}
+    build:
+      context: ../../frontend-nube
+    restart: unless-stopped
+    environment:
+      API_UPSTREAM: api:8000
+    depends_on:
+      - api
+    # Solo en localhost: el proxy de subdominios de la VPS (Fase 3) entra aquí.
+    ports:
+      - "127.0.0.1:${WEB_PORT}:80"
+    networks:
+      - interna
+    mem_limit: 64m
+
+volumes:
+  wireguard:
+  static:
+  uploads:
+  whatsapp-uploads:
+  whatsapp-sesion:
+  respaldos:
+  estado:
+  ocr-modelos:
+    # Los modelos de EasyOCR son iguales para todos: se descargan una sola vez.
+    name: fdezpay-ocr-modelos
+
+networks:
+  interna:
+  fdezpay-db:
+    external: true

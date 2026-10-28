@@ -11,7 +11,9 @@ test('los adjuntos no se publican como archivos estáticos', () => {
 });
 
 test('el puente de WhatsApp solamente escucha en localhost', () => {
-    assert.match(source, /app\.listen\(PORT, '127\.0\.0\.1'/);
+    // Solo localhost salvo que el contenedor pida HOST=0.0.0.0 para su red interna.
+    assert.match(source, /const HOST = process\.env\.HOST \|\| '127\.0\.0\.1'/);
+    assert.match(source, /app\.listen\(PORT, HOST/);
 });
 
 test('los nombres de adjuntos no son predecibles', () => {

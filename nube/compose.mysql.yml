@@ -1,0 +1,40 @@
+# MySQL compartido de la VPS de nube: un solo servidor, una base y un usuario
+# por ISP (cada usuario solo tiene permisos sobre su propia base).
+name: fdezpay-mysql
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root
+      TZ: America/Mexico_City
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL:-512M}
+      # Las estadísticas internas de MySQL ocupan ~200 MB y nadie las consulta.
+      - --performance-schema=OFF
+      - --max-connections=${MYSQL_MAX_CONEXIONES:-300}
+    secrets:
+      - mysql_root
+    volumes:
+      - datos:/var/lib/mysql
+    networks:
+      - fdezpay-db
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -uroot -p\"$$(cat /run/secrets/mysql_root)\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+secrets:
+  mysql_root:
+    file: ./secretos/mysql_root
+
+volumes:
+  datos:
+
+networks:
+  fdezpay-db:
+    name: fdezpay-db

@@ -64,3 +64,13 @@ def test_parsea_handshakes_por_ip_del_peer():
         "k2\t(none)\t(none)\t10.8.0.5/32\t0\t0\t0\toff\n"
     )
     assert parsear_handshakes(dump) == {"10.8.0.2": 1758600000, "10.8.0.5": 0}
+
+
+def test_comandos_wireguard_sin_sudo_en_contenedor(monkeypatch):
+    from src.application.services.vpn_service import con_privilegios
+
+    monkeypatch.setenv("SUDO_BIN", "")
+    assert con_privilegios(["/usr/bin/wg", "show"]) == ["/usr/bin/wg", "show"]
+
+    monkeypatch.setenv("SUDO_BIN", "/usr/bin/sudo")
+    assert con_privilegios(["/usr/bin/wg", "show"]) == ["/usr/bin/sudo", "/usr/bin/wg", "show"]

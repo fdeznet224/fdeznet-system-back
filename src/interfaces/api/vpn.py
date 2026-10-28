@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
-from src.application.services.vpn_service import VPNService, asegurar_vigilante
+from src.application.services.vpn_service import VPNService, asegurar_vigilante, con_privilegios
 from src.domain.schemas import VpnTunnelCreate, VpnTunnelResponse
 from src.infrastructure.database import get_db
 from src.infrastructure.models import VpnTunnelModel
@@ -63,14 +63,14 @@ async def eliminar_tunel(tunnel_id: int, db: AsyncSession = Depends(get_db)):
         
     try:
         # 1. Quitar el peer de Linux (Opcional, pero recomendado para mantener limpio wg0)
-        service._ejecutar_comando([
-            service.SUDO_BIN, service.WG_BIN, "set", service.WG_INTERFACE,
+        service._ejecutar_comando(con_privilegios([
+            service.WG_BIN, "set", service.WG_INTERFACE,
             "peer", tunel.public_key, 
             "remove"
-        ])
-        service._ejecutar_comando([
-            service.SUDO_BIN, service.WG_QUICK_BIN, "save", service.WG_INTERFACE
-        ])
+        ]))
+        service._ejecutar_comando(con_privilegios([
+            service.WG_QUICK_BIN, "save", service.WG_INTERFACE
+        ]))
     except Exception as e:
         print(f"No se pudo remover el peer de Linux: {e}")
         # Seguimos adelante para borrarlo de la BD de todos modos
