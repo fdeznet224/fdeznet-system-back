@@ -54,3 +54,4 @@ backups/
 # Nube: secretos e instancias de cada ISP
 nube/instancias/
 nube/secretos/
+nube/respaldos/

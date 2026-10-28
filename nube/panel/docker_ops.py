@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from nube.panel.cuentas import poner_variable
@@ -153,3 +154,61 @@ def versiones_disponibles() -> list[str]:
         return [int(p) for p in partes] if all(p.isdigit() for p in partes) else [-1]
 
     return sorted(etiquetas, key=orden, reverse=True)
+
+
+# --- Respaldos ------------------------------------------------------------
+
+RESPALDOS = NUBE_DIR / "respaldos"
+
+
+def _ajustes_respaldo() -> dict[str, str]:
+    return {
+        "RESPALDOS_LOCALES": os.getenv("PANEL_RESPALDOS_LOCALES", "7"),
+        "RESPALDO_REMOTO": os.getenv("PANEL_RESPALDO_REMOTO", ""),
+        "RESPALDO_DIAS_REMOTO": os.getenv("PANEL_RESPALDO_DIAS_REMOTO", "30"),
+    }
+
+
+def _claves(salida: str) -> dict[str, str]:
+    return dict(re.findall(r"^([A-Z]+)=(.*)$", salida, re.MULTILINE))
+
+
+def respaldar(slug: str) -> dict[str, str]:
+    """Respalda base, volúmenes y secretos; devuelve ARCHIVO, TAMANO y REMOTO."""
+    salida = _correr([str(NUBE_DIR / "respaldar-instancia.sh"), slug], timeout=1800, env=_ajustes_respaldo())
+    datos = _claves(salida)
+    if "ARCHIVO" not in datos:
+        raise ErrorDocker("El respaldo terminó sin archivo")
+    return datos
+
+
+def archivo_respaldo(slug: str, nombre: str) -> Path:
+    """Ruta de un respaldo del ISP; el nombre no puede salirse de su carpeta."""
+    if not re.fullmatch(rf"{re.escape(slug)}-\d{{8}}-\d{{6}}\.tar", nombre):
+        raise ErrorDocker("Respaldo inválido")
+    ruta = RESPALDOS / slug / nombre
+    if not ruta.is_file():
+        raise ErrorDocker("Ese respaldo ya no está en la VPS")
+    return ruta
+
+
+def listar_respaldos(slug: str) -> list[dict]:
+    """Respaldos guardados en la VPS, del más reciente al más viejo."""
+    archivos = [
+        archivo for archivo in (RESPALDOS / slug).glob(f"{slug}-*.tar")
+        if re.fullmatch(rf"{re.escape(slug)}-\d{{8}}-\d{{6}}\.tar", archivo.name)
+    ]
+    return [
+        {"nombre": archivo.name, "tamano": archivo.stat().st_size,
+         "fecha": datetime.strptime(archivo.name[len(slug) + 1:-4], "%Y%m%d-%H%M%S")}
+        for archivo in sorted(archivos, key=lambda a: a.name, reverse=True)
+    ]
+
+
+def restaurar(slug: str, nombre: str, *, arrancar: bool) -> None:
+    ruta = archivo_respaldo(slug, nombre)
+    _correr(
+        [str(NUBE_DIR / "restaurar-instancia.sh"), slug, str(ruta)],
+        timeout=1800,
+        env={**_ajustes_respaldo(), "ARRANCAR": "1" if arrancar else "0"},
+    )

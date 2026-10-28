@@ -5,16 +5,19 @@ reactiva y le aplica actualizaciones. Corre aparte de las instancias.
 """
 import hashlib
 import hmac
+import logging
 import os
+import threading
 import time
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import jwt
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.hash import pbkdf2_sha256
@@ -26,10 +29,12 @@ from nube.panel.cuentas import (
     PRIMER_PUERTO_WG,
     SLUG,
     estado_cuenta,
+    estado_respaldo,
     nuevo_vencimiento,
+    segundos_hasta,
     siguiente_puerto,
 )
-from nube.panel.db import Bitacora, Isp, Pago, Sesion, crear_tablas
+from nube.panel.db import Bitacora, Isp, Pago, Respaldo, Sesion, crear_tablas
 
 USUARIO = os.getenv("PANEL_USUARIO", "dueno")
 CLAVE_HASH = os.getenv("PANEL_CLAVE_HASH", "")
@@ -39,16 +44,28 @@ DIAS_GRACIA = int(os.getenv("PANEL_DIAS_GRACIA", "5"))
 COOKIE = "panel_sesion"
 HORAS_SESION = 12
 COOKIE_SEGURA = os.getenv("PANEL_COOKIE_SEGURA", "1") == "1"
+HORA_RESPALDO = os.getenv("PANEL_HORA_RESPALDO", "03:00")  # vacío: sin respaldo diario
 
 if not CLAVE_HASH or len(SECRETO) < 32:
     raise RuntimeError("Configura PANEL_CLAVE_HASH y PANEL_SECRETO (32+ caracteres)")
 
 AQUI = Path(__file__).resolve().parent
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+log = logging.getLogger("panel")
+
+
+@asynccontextmanager
+async def ciclo_de_vida(_app: FastAPI):
+    if HORA_RESPALDO:
+        threading.Thread(target=_respaldos_diarios, daemon=True, name="respaldos").start()
+    yield
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=ciclo_de_vida)
 app.mount("/static", StaticFiles(directory=AQUI / "static"), name="static")
 plantillas = Jinja2Templates(directory=AQUI / "templates")
 plantillas.env.filters["dinero"] = lambda valor: f"${Decimal(valor or 0):,.2f}"
 plantillas.env.filters["fecha"] = lambda valor: valor.strftime("%d/%m/%Y") if valor else "—"
+plantillas.env.filters["tamano"] = lambda b: f"{b / 1048576:.1f} MB" if b >= 1048576 else f"{b / 1024:.0f} KB"
 
 crear_tablas()
 
@@ -159,6 +176,7 @@ def _contenedores() -> tuple[dict, dict, str | None]:
 def inicio(request: Request, msg: str = "", csrf: str = Depends(sesion)):
     with Sesion() as db:
         isps = db.scalars(select(Isp).order_by(Isp.nombre)).all()
+        respaldos = {isp.id: _estado_respaldo(db, isp) for isp in isps}
     contenedores, memoria, error = _contenedores()
     filas = []
     for isp in isps:
@@ -168,12 +186,14 @@ def inicio(request: Request, msg: str = "", csrf: str = Depends(sesion)):
             "estado": _estado(isp),
             "en_linea": servicios.get("api", "").startswith("Up"),
             "ram": sum(mb for nombre, mb in memoria.items() if nombre.startswith(f"{isp.slug}-")),
+            "respaldo": respaldos[isp.id],
         })
     resumen = {
         "total": len(isps),
         "mensual": sum((isp.precio_mensual for isp in isps if not isp.suspendido), Decimal(0)),
         "atencion": sum(1 for f in filas if f["estado"].clave in {"por_vencer", "gracia", "vencido", "sin_pago"}),
         "ram": sum(memoria.values()),
+        "respaldos": sum(1 for r in respaldos.values() if r.tono in {"rojo", "ambar"}),
     }
     return _render(request, "inicio.html", csrf, filas=filas, resumen=resumen, msg=msg, error=error)
 
@@ -268,6 +288,7 @@ def detalle(request: Request, isp_id: int, msg: str = "", csrf: str = Depends(se
         bitacora = db.scalars(
             select(Bitacora).where(Bitacora.isp_id == isp_id).order_by(Bitacora.fecha.desc()).limit(20)
         ).all()
+        respaldo = _estado_respaldo(db, isp)
     contenedores, memoria, error = _contenedores()
     try:
         versiones = docker_ops.versiones_disponibles()
@@ -284,7 +305,8 @@ def detalle(request: Request, isp_id: int, msg: str = "", csrf: str = Depends(se
     return _render(
         request, "detalle.html", csrf, isp=isp, estado=_estado(isp), pagos=pagos,
         bitacora=bitacora, servicios=servicios, versiones=versiones, msg=msg, error=error,
-        hoy=date.today(),
+        hoy=date.today(), respaldo=respaldo, respaldos=docker_ops.listar_respaldos(isp.slug),
+        hora_respaldo=HORA_RESPALDO,
     )
 
 
@@ -410,6 +432,108 @@ def reactivar(isp_id: int, _csrf_ok: str = Depends(sesion)):
         _bitacora(db, isp.id, "reactivado")
         db.commit()
     return _ir(f"/isp/{isp_id}", "ISP reactivado")
+
+
+# --- Respaldos ------------------------------------------------------------
+
+_ocupados: set[str] = set()
+_candado = threading.Lock()
+
+
+def _estado_respaldo(db, isp: Isp):
+    ultimo = db.scalar(
+        select(Respaldo).where(Respaldo.isp_id == isp.id).order_by(Respaldo.id.desc()).limit(1)
+    )
+    if ultimo and ultimo.error:
+        return estado_respaldo(ultimo.fecha, ultimo.error, None, isp.creado, datetime.now())
+    return estado_respaldo(
+        ultimo.fecha if ultimo else None, None, ultimo.remoto if ultimo else None,
+        isp.creado, datetime.now(),
+    )
+
+
+def _respaldar(isp_id: int, slug: str) -> str | None:
+    """Respalda un ISP y lo anota; devuelve el error o None. Uno a la vez por ISP."""
+    with _candado:
+        if slug in _ocupados:
+            return "Ya hay un respaldo o restauración en curso"
+        _ocupados.add(slug)
+    try:
+        datos = docker_ops.respaldar(slug)
+        error = None
+    except Exception as fallo:  # noqa: BLE001 - cualquier falla se anota en el panel
+        datos, error = {}, str(fallo)[-500:] or fallo.__class__.__name__
+    finally:
+        with _candado:
+            _ocupados.discard(slug)
+    with Sesion() as db:
+        db.add(Respaldo(
+            isp_id=isp_id, archivo=datos.get("ARCHIVO"), remoto=datos.get("REMOTO"), error=error,
+            tamano=int(datos["TAMANO"]) if datos.get("TAMANO", "").isdigit() else None,
+        ))
+        if error:
+            _bitacora(db, isp_id, "respaldo falló", error)
+        db.commit()
+    return error
+
+
+def _respaldos_diarios() -> None:
+    """Hilo del panel: a la HORA_RESPALDO respalda a todos los ISP, uno tras otro."""
+    while True:
+        time.sleep(segundos_hasta(HORA_RESPALDO, datetime.now()))
+        try:
+            with Sesion() as db:
+                isps = [(isp.id, isp.slug) for isp in db.scalars(select(Isp).order_by(Isp.id))]
+            for isp_id, slug in isps:
+                error = _respaldar(isp_id, slug)
+                if error:
+                    log.error("Respaldo de %s falló: %s", slug, error)
+        except Exception:  # noqa: BLE001 - el hilo no debe morir; mañana lo intenta otra vez
+            log.exception("Falló la ronda de respaldos")
+        time.sleep(61)  # que no repita dentro del mismo minuto
+
+
+@app.post("/isp/{isp_id}/respaldar")
+def respaldar_ahora(isp_id: int, _csrf_ok: str = Depends(sesion)):
+    with Sesion() as db:
+        isp = _isp(db, isp_id)
+    error = _respaldar(isp.id, isp.slug)
+    return _ir(f"/isp/{isp_id}", f"Error: {error}" if error else "Respaldo listo")
+
+
+@app.get("/isp/{isp_id}/respaldos/{nombre}")
+def descargar_respaldo(isp_id: int, nombre: str, _csrf_ok: str = Depends(sesion)):
+    with Sesion() as db:
+        isp = _isp(db, isp_id)
+    try:
+        ruta = docker_ops.archivo_respaldo(isp.slug, nombre)
+    except docker_ops.ErrorDocker as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    return FileResponse(ruta, media_type="application/x-tar", filename=nombre)
+
+
+@app.post("/isp/{isp_id}/respaldos/{nombre}/restaurar")
+def restaurar_respaldo(isp_id: int, nombre: str, _csrf_ok: str = Depends(sesion), confirmar: str = Form("")):
+    with Sesion() as db:
+        isp = _isp(db, isp_id)
+        if confirmar.strip() != isp.slug:
+            return _ir(f"/isp/{isp_id}", f"Error: escribe {isp.slug} para confirmar la restauración")
+        with _candado:
+            if isp.slug in _ocupados:
+                return _ir(f"/isp/{isp_id}", "Error: ya hay un respaldo o restauración en curso")
+            _ocupados.add(isp.slug)
+        try:
+            docker_ops.restaurar(isp.slug, nombre, arrancar=not isp.suspendido)
+        except (docker_ops.ErrorDocker, OSError) as error:
+            _bitacora(db, isp.id, "restauración falló", f"{nombre}: {error}")
+            db.commit()
+            return _ir(f"/isp/{isp_id}", f"Error: {error}")
+        finally:
+            with _candado:
+                _ocupados.discard(isp.slug)
+        _bitacora(db, isp.id, "restaurado", f"{nombre} (antes se respaldó el estado previo)")
+        db.commit()
+    return _ir(f"/isp/{isp_id}", f"Restaurado desde {nombre}")
 
 
 @app.get("/salud")

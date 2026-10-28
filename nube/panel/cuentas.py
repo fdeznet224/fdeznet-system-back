@@ -2,7 +2,7 @@
 import calendar
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 
 SLUG = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
 PRIMER_PUERTO_WEB = 18001
@@ -70,3 +70,35 @@ def poner_variable(contenido: str, clave: str, valor: str) -> str:
     if contenido and not contenido.endswith("\n"):
         contenido += "\n"
     return f"{contenido}{linea}\n"
+
+
+def segundos_hasta(hora: str, ahora: datetime) -> float:
+    """Segundos para la próxima vez que el reloj marque HH:MM (hoy o mañana)."""
+    horas, minutos = (int(parte) for parte in hora.split(":"))
+    objetivo = ahora.replace(hour=horas, minute=minutos, second=0, microsecond=0)
+    if objetivo <= ahora:
+        objetivo += timedelta(days=1)
+    return (objetivo - ahora).total_seconds()
+
+
+def estado_respaldo(
+    fecha: datetime | None,
+    error: str | None,
+    remoto: str | None,
+    creado: datetime,
+    ahora: datetime,
+    horas_maximas: int = 36,
+) -> Estado:
+    """Cómo va el último respaldo de un ISP; ámbar o rojo piden revisarlo."""
+    if error:
+        return Estado("fallo", f"Falló el {fecha:%d/%m %H:%M}: {error}", "rojo")
+    if fecha is None:
+        if ahora - creado > timedelta(hours=horas_maximas):
+            return Estado("sin_respaldo", "Nunca se ha respaldado", "rojo")
+        return Estado("pendiente", "Todavía sin respaldo", "gris")
+    if ahora - fecha > timedelta(hours=horas_maximas):
+        return Estado("atrasado", f"Último respaldo el {fecha:%d/%m/%Y}", "rojo")
+    if remoto and remoto.startswith("error"):
+        return Estado("solo_local", f"Solo en la VPS; la copia externa falló ({remoto[7:].strip()})", "ambar")
+    donde = " y fuera de la VPS" if remoto == "ok" else " (solo en la VPS)"
+    return Estado("ok", f"Respaldado el {fecha:%d/%m %H:%M}{donde}", "verde")

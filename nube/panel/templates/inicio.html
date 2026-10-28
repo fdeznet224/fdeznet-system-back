@@ -6,6 +6,7 @@
   <div class="cifra"><b>{{ resumen.mensual | dinero }}</b><span>Mensualidades activas</span></div>
   <div class="cifra"><b class="{{ 'rojo' if resumen.atencion else '' }}">{{ resumen.atencion }}</b><span>Por cobrar o vencidos</span></div>
   <div class="cifra"><b>{{ '%.1f' % (resumen.ram / 1024) }} GB</b><span>RAM en uso</span></div>
+  <div class="cifra"><b class="{{ 'rojo' if resumen.respaldos else '' }}">{{ resumen.respaldos }}</b><span>Respaldos por revisar</span></div>
 </div>
 
 <h2>Clientes de la nube</h2>
@@ -16,6 +17,7 @@
     <div class="crece">
       <div class="titulo">{{ f.isp.nombre }}</div>
       <div class="sub">{{ f.isp.dominio }} · <span class="{{ f.estado.tono }}">{{ f.estado.texto }}</span></div>
+      {% if f.respaldo.tono in ('rojo', 'ambar') %}<div class="sub {{ f.respaldo.tono }}">Respaldo: {{ f.respaldo.texto }}</div>{% endif %}
     </div>
     <div class="der">
       {{ f.isp.precio_mensual | dinero }}<br>

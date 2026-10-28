@@ -1,7 +1,7 @@
 """Panel central: sesión, CSRF, alta, pagos y suspensión (Docker simulado)."""
 import importlib
 import re
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,6 +28,11 @@ def panel(tmp_path, monkeypatch):
     monkeypatch.setattr(docker_ops, "uso_memoria", lambda: {})
     monkeypatch.setattr(docker_ops, "versiones_disponibles", lambda: ["2.109.0"])
     monkeypatch.setattr(docker_ops, "puertos_en_uso", lambda: ([], []))
+    monkeypatch.setattr(docker_ops, "respaldar", lambda slug: llamadas.append(("respaldar", slug)) or {
+        "ARCHIVO": f"{slug}-20261028-030000.tar", "TAMANO": "2048", "REMOTO": "ok"})
+    monkeypatch.setattr(docker_ops, "restaurar", lambda slug, nombre, **k: llamadas.append(("restaurar", slug, nombre, k)))
+    monkeypatch.setattr(docker_ops, "listar_respaldos", lambda slug: [
+        {"nombre": f"{slug}-20261028-030000.tar", "tamano": 2048, "fecha": datetime(2026, 10, 28, 3)}])
     cliente = TestClient(app_mod.app, follow_redirects=False)
     return cliente, llamadas
 
@@ -122,3 +127,62 @@ def test_alta_salta_puertos_de_instancias_hechas_a_mano(panel, monkeypatch):
     csrf = _entrar(cliente)
     cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "Demo", "slug": "demo"})
     assert llamadas[0][2][:2] == (18002, 51822)
+
+
+def test_respaldar_ahora_y_ver_su_estado(panel):
+    cliente, llamadas = panel
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "A", "slug": "aaa"})
+    assert "Todavía sin respaldo" in cliente.get("/isp/1").text
+
+    assert cliente.post("/isp/1/respaldar", data={"csrf": csrf}).status_code == 303
+    assert ("respaldar", "aaa") in llamadas
+    detalle = cliente.get("/isp/1").text
+    assert "y fuera de la VPS" in detalle
+    assert "aaa-20261028-030000.tar" in detalle
+
+
+def test_respaldo_fallido_se_marca_en_inicio(panel, monkeypatch):
+    cliente, _ = panel
+    from nube.panel import docker_ops
+
+    def falla(slug):
+        raise docker_ops.ErrorDocker("disco lleno")
+
+    monkeypatch.setattr(docker_ops, "respaldar", falla)
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "A", "slug": "aaa"})
+    respuesta = cliente.post("/isp/1/respaldar", data={"csrf": csrf})
+    assert "disco" in respuesta.headers["location"]
+    inicio = cliente.get("/").text
+    assert "Respaldo: Falló" in inicio and "disco lleno" in inicio
+    assert "respaldo falló" in cliente.get("/isp/1").text.lower()
+
+
+def test_restaurar_pide_escribir_el_subdominio(panel):
+    cliente, llamadas = panel
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "A", "slug": "aaa"})
+    ruta = "/isp/1/respaldos/aaa-20261028-030000.tar/restaurar"
+
+    cliente.post(ruta, data={"csrf": csrf, "confirmar": "otro"})
+    assert not [c for c in llamadas if c[0] == "restaurar"]
+
+    cliente.post("/isp/1/suspender", data={"csrf": csrf})
+    cliente.post(ruta, data={"csrf": csrf, "confirmar": "aaa"})
+    assert ("restaurar", "aaa", "aaa-20261028-030000.tar", {"arrancar": False}) in llamadas
+
+
+def test_descarga_no_sale_de_la_carpeta_del_isp(panel, tmp_path, monkeypatch):
+    cliente, _ = panel
+    from nube.panel import docker_ops
+
+    monkeypatch.setattr(docker_ops, "RESPALDOS", tmp_path)
+    (tmp_path / "aaa").mkdir()
+    (tmp_path / "aaa" / "aaa-20261028-030000.tar").write_bytes(b"respaldo")
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "A", "slug": "aaa"})
+
+    assert cliente.get("/isp/1/respaldos/aaa-20261028-030000.tar").content == b"respaldo"
+    assert cliente.get("/isp/1/respaldos/..%2Fpanel.db").status_code == 404
+    assert cliente.get("/isp/1/respaldos/bbb-20261028-030000.tar").status_code == 404

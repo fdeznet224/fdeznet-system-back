@@ -55,6 +55,29 @@
   <div class="fila"><div class="crece">WireGuard</div><div class="der">UDP {{ isp.wg_port }}</div></div>
 </div>
 
+<h2>Respaldos</h2>
+<div class="lista">
+  <div class="fila"><span class="punto {{ respaldo.tono }}"></span><div class="crece {{ respaldo.tono }}">{{ respaldo.texto }}</div></div>
+  {% for r in respaldos %}
+  <details class="fila respaldo">
+    <summary><div class="crece"><div class="titulo">{{ r.fecha.strftime('%d/%m/%Y %H:%M') }}</div>
+      <div class="sub">{{ r.tamano | tamano }}</div></div><span class="chevron"></span></summary>
+    <div class="acciones">
+      <a class="boton chico secundario" href="/isp/{{ isp.id }}/respaldos/{{ r.nombre }}" download>Descargar</a>
+      <form method="post" action="/isp/{{ isp.id }}/respaldos/{{ r.nombre }}/restaurar"
+            onsubmit="return confirm('El ISP regresará a como estaba el {{ r.fecha.strftime('%d/%m/%Y %H:%M') }}. Lo de después se pierde (antes se respalda el estado actual). ¿Restaurar?')">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input name="confirmar" placeholder="Escribe {{ isp.slug }}" autocomplete="off" required>
+        <button class="boton chico peligro">Restaurar</button>
+      </form>
+    </div>
+  </details>
+  {% endfor %}
+</div>
+<p class="nota">Se respalda solo cada día{% if hora_respaldo %} a las {{ hora_respaldo }}{% endif %}: base, WireGuard, archivos y sesión de WhatsApp.</p>
+<form method="post" action="/isp/{{ isp.id }}/respaldar">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><button class="boton secundario">Respaldar ahora</button></form>
+
 <h2>Sistema</h2>
 <form method="post" action="/isp/{{ isp.id }}/ajustes" onsubmit="return confirm('Se aplican los cambios y se reinicia lo necesario. ¿Continuar?')">
   <input type="hidden" name="csrf" value="{{ csrf }}">

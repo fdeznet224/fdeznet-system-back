@@ -14,6 +14,8 @@ contenedores (api, bot, web), sus volúmenes y su propio WireGuard.
 | `construir-version.sh` | Construye las imágenes de una versión (etiqueta = `src/version.py`) |
 | `panel/`, `panel.Dockerfile`, `compose.panel.yml` | Panel central del dueño: ISP, mensualidades, suspender, actualizar |
 | `preparar-panel.sh` | Crea `secretos/panel.env` con el usuario y la contraseña del panel |
+| `respaldar-instancia.sh` | Respaldo de un ISP: base, volúmenes y secretos en un `.tar` |
+| `restaurar-instancia.sh` | Regresa un ISP a un respaldo (antes respalda el estado actual) |
 
 ## Primer arranque en una VPS
 
@@ -47,4 +49,33 @@ docker compose -p $ISP --env-file instancias/$ISP/compose.env -f compose.isp.yml
 
 Las licencias ya no existen en la nube: el panel suspende al ISP deteniendo sus
 contenedores y fija sus límites (`FDEZNET_LIMITE_CLIENTES`, `FDEZNET_LIMITE_ROUTERS`).
-Los respaldos por ISP los hará el panel central (pendiente).
+
+## Respaldos
+
+El panel respalda a cada ISP todos los días a `PANEL_HORA_RESPALDO` (03:00) y
+también con **Respaldar ahora** en su detalle. Cada respaldo es un solo archivo
+`respaldos/<isp>/<isp>-AAAAMMDD-HHMMSS.tar` con:
+
+- `base.sql.gz`: la base del ISP (`mysqldump --single-transaction`, sin detener nada).
+- `volumenes.tar.gz`: WireGuard (llaves y peers), archivos subidos, logos,
+  recibos y la sesión de WhatsApp (sin cachés de Chrome).
+- `compose.env`, `api.env`: sus secretos, para llevarlo a otra VPS.
+
+En la VPS se quedan los últimos `PANEL_RESPALDOS_LOCALES` (7). Para que haya
+copia fuera de la VPS, configura un remoto de rclone en `secretos/rclone.conf`
+y ponlo en `PANEL_RESPALDO_REMOTO`; allá se guardan `PANEL_RESPALDO_DIAS_REMOTO`
+días (30). Como llevan secretos, usa un remoto cifrado (`crypt`), por ejemplo
+sobre Cloudflare R2:
+
+```bash
+docker run --rm -it -v $PWD/secretos:/config/rclone rclone/rclone:1.68.2 config
+# 1) remoto "r2" tipo s3 / Cloudflare con su access key
+# 2) remoto "r2-cifrado" tipo crypt sobre "r2:fdezpay-respaldos" (guarda las claves aparte)
+# En secretos/panel.env:  PANEL_RESPALDO_REMOTO=r2-cifrado:
+docker compose -f compose.panel.yml --env-file secretos/panel.env up -d
+```
+
+**Restaurar** (detalle del ISP → respaldo → escribir su subdominio) detiene sus
+contenedores, vacía su base y volúmenes, los carga del respaldo y lo vuelve a
+encender. Antes deja un respaldo del estado actual. A mano:
+`./restaurar-instancia.sh <isp> <archivo.tar>` (`ARRANCAR=0` lo deja detenido).

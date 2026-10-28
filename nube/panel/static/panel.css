@@ -59,3 +59,11 @@ input:focus, select:focus, textarea:focus { color: var(--azul); }
 .vacio { padding: 24px 16px; color: var(--suave); text-align: center; }
 @media (max-width: 520px) { form.lista label > span, .lista .campo > span { width: 48%; } h1 { font-size: 28px; } }
 .enlace.rojo { color: var(--rojo); }
+details.respaldo { display: block; padding: 0; }
+details.respaldo summary { display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-height: 48px;
+  list-style: none; cursor: pointer; }
+details.respaldo summary::-webkit-details-marker { display: none; }
+details.respaldo[open] .chevron::after { content: "⌄"; }
+.acciones { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 16px 12px; }
+.acciones form { display: flex; flex: 1; gap: 8px; min-width: 220px; margin: 0; }
+.acciones input { text-align: left; border: 1px solid var(--linea); border-radius: 8px; padding: 6px 10px; }

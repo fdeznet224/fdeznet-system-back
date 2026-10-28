@@ -1,9 +1,11 @@
-from datetime import date
+from datetime import date, datetime
 
 from nube.panel.cuentas import (
     estado_cuenta,
+    estado_respaldo,
     nuevo_vencimiento,
     poner_variable,
+    segundos_hasta,
     siguiente_puerto,
     sumar_meses,
 )
@@ -46,3 +48,20 @@ def test_poner_variable_cambia_o_agrega_sin_tocar_lo_demas():
     assert poner_variable(contenido, "IMAGEN_VERSION", "2.110.0") == "A=1\nIMAGEN_VERSION=2.110.0\nB=2\n"
     assert poner_variable("A=1", "C", "x") == "A=1\nC=x\n"
     assert poner_variable("A=1\n", "A", "") == "A=\n"
+
+
+def test_segundos_hasta_la_hora_del_respaldo():
+    assert segundos_hasta("03:00", datetime(2026, 10, 28, 2, 0)) == 3600
+    assert segundos_hasta("03:00", datetime(2026, 10, 28, 3, 0)) == 24 * 3600
+    assert segundos_hasta("03:00", datetime(2026, 10, 28, 23, 30)) == 3.5 * 3600
+
+
+def test_estado_del_respaldo():
+    ahora = datetime(2026, 10, 28, 12)
+    creado = datetime(2026, 10, 1)
+    assert estado_respaldo(datetime(2026, 10, 28, 3), None, "ok", creado, ahora).tono == "verde"
+    assert estado_respaldo(datetime(2026, 10, 28, 3), None, "error: 403", creado, ahora).tono == "ambar"
+    assert estado_respaldo(datetime(2026, 10, 26, 3), None, "ok", creado, ahora).clave == "atrasado"
+    assert estado_respaldo(datetime(2026, 10, 28, 3), "disco lleno", None, creado, ahora).clave == "fallo"
+    assert estado_respaldo(None, None, None, creado, ahora).clave == "sin_respaldo"
+    assert estado_respaldo(None, None, None, datetime(2026, 10, 28, 9), ahora).clave == "pendiente"

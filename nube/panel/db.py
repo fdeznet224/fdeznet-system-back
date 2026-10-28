@@ -79,5 +79,19 @@ class Bitacora(Base):
     detalle: Mapped[str | None] = mapped_column(Text)
 
 
+class Respaldo(Base):
+    """Cada respaldo que intentó el panel; los archivos viven en nube/respaldos/<slug>/."""
+
+    __tablename__ = "respaldos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fecha: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    isp_id: Mapped[int] = mapped_column(ForeignKey("isps.id"))
+    archivo: Mapped[str | None] = mapped_column(String(80))
+    tamano: Mapped[int | None] = mapped_column(Integer)
+    remoto: Mapped[str | None] = mapped_column(String(255))  # no, ok o el error de rclone
+    error: Mapped[str | None] = mapped_column(Text)
+
+
 def crear_tablas() -> None:
     Base.metadata.create_all(engine)
