@@ -33,7 +33,8 @@ docker compose -f compose.mysql.yml up -d
 docker compose -f compose.panel.yml --env-file /dev/null build
 ./preparar-panel.sh tudominio.com
 docker compose -f compose.panel.yml --env-file secretos/panel.env up -d
-DOMINIO=tudominio.com docker compose -f compose.proxy.yml up -d
+echo DOMINIO=tudominio.com > proxy/.env
+docker compose -f compose.proxy.yml --env-file proxy/.env up -d
 ```
 
 En el DNS del dominio: registros A de `@` y `*` hacia la IP de la VPS. El panel

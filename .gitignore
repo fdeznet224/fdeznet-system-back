@@ -55,3 +55,4 @@ backups/
 nube/instancias/
 nube/secretos/
 nube/respaldos/
+nube/proxy/.env

@@ -1,6 +1,7 @@
 # Proxy de la VPS (puertos 80 y 443): HTTPS del panel y de cada ISP.
 #   docker network create fdezpay-proxy   (una vez por VPS)
-#   DOMINIO=wispay.click docker compose -f compose.proxy.yml up -d
+#   echo DOMINIO=wispay.click > proxy/.env
+#   docker compose -f compose.proxy.yml --env-file proxy/.env up -d
 # Los contenedores web de los ISP y el panel se unen a la red fdezpay-proxy.
 name: fdezpay-proxy
 
