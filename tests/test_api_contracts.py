@@ -111,44 +111,13 @@ def test_marca_blanca_es_publica_para_lectura_y_protegida_para_edicion():
     assert paths["/configuracion/marca/{tipo}/archivo"]["post"]["security"]
 
 
-def test_control_de_instalaciones_separa_heartbeat_y_administracion():
+def test_la_nube_no_expone_licencias_ni_mantenimiento_del_isp():
+    """Licencias, actualizaciones y respaldos los maneja el panel central."""
     paths = app.openapi()["paths"]
 
-    assert "security" not in paths["/control/heartbeat"]["post"]
-    assert paths["/control/instalaciones"]["get"]["security"]
-    assert paths["/configuracion/licencia"]["get"]["security"]
-    assert "security" not in paths["/control/installer"]["get"]
-    assert "security" not in paths["/control/bootstrap"]["post"]
-    assert paths["/control/instalaciones/{installation_id}/bootstrap"]["post"]["security"]
-    assert "security" not in paths["/control/update-manifest"]["get"]
-    assert "security" not in paths["/control/update-report"]["post"]
-    assert paths["/control/versiones"]["post"]["security"]
-    assert paths["/control/planes"]["get"]["security"]
-    assert paths["/control/planes"]["post"]["security"]
-    assert paths["/control/instalaciones/{installation_id}/renovar"]["post"]["security"]
-    assert paths["/control/instalaciones/{installation_id}/pagos"]["get"]["security"]
-    assert paths["/control/instalaciones/{installation_id}"]["delete"]["security"]
-    assert paths["/control/versiones/{release_id}/publicar-todos"]["post"]["security"]
-    assert paths["/licencia/estado"]["get"]["security"]
-    assert paths["/configuracion/mantenimiento"]["get"]["security"]
-    assert paths["/configuracion/mantenimiento/respaldo"]["post"]["security"]
-    assert paths["/configuracion/mantenimiento/actualizar"]["post"]["security"]
-    assert paths["/configuracion/mantenimiento/verificar"]["post"]["security"]
-    assert paths["/configuracion/respaldos"]["get"]["security"]
-    assert paths["/configuracion/respaldos/politica"]["put"]["security"]
-    assert paths["/configuracion/respaldos/crear"]["post"]["security"]
-    assert paths["/configuracion/respaldos/{archivo}/verificar"]["post"]["security"]
-    assert paths["/configuracion/respaldos/{archivo}/restaurar"]["post"]["security"]
-
-
-def test_actualizacion_manual_registra_consentimiento_del_usuario():
-    from src.interfaces.api import configuracion
-
-    assert configuracion.MANUAL_UPDATE_REQUEST_FILE.name == "manual-update-requested"
-    parameters = {
-        item["name"]
-        for item in app.openapi()["paths"]["/control/update-manifest"]["get"][
-            "parameters"
-        ]
-    }
-    assert "X-Update-Requested" in parameters
+    for path in paths:
+        assert not path.startswith("/control/")
+        assert not path.startswith("/licencia")
+        assert not path.startswith("/configuracion/licencia")
+        assert not path.startswith("/configuracion/mantenimiento")
+        assert not path.startswith("/configuracion/respaldos")

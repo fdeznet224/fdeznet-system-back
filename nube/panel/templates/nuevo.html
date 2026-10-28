@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block titulo %}Nuevo ISP · Panel FdezPay{% endblock %}
+{% block contenido %}
+<p><a href="/">‹ ISP</a></p>
+<h1>Nuevo ISP</h1>
+<form method="post" action="/isp/nuevo">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <h2>Datos</h2>
+  <div class="lista">
+    <label class="campo"><span>Nombre del ISP</span><input name="nombre" required value="{{ previo.nombre if previo else '' }}"></label>
+    <label class="campo"><span>Subdominio</span><input name="slug" required pattern="[a-z][a-z0-9-]{1,30}" placeholder="colega" value="{{ previo.slug if previo else '' }}"></label>
+    <label class="campo"><span>Contacto</span><input name="contacto" value="{{ previo.contacto or '' if previo else '' }}"></label>
+    <label class="campo"><span>Teléfono</span><input name="telefono" inputmode="tel" value="{{ previo.telefono or '' if previo else '' }}"></label>
+  </div>
+  <p class="nota">Entrará por <b>subdominio.{{ dominio_base }}</b></p>
+
+  <h2>Mensualidad</h2>
+  <div class="lista">
+    <label class="campo"><span>Plan</span><input name="plan" placeholder="Básico" value="{{ previo.plan or '' if previo else '' }}"></label>
+    <label class="campo"><span>Precio mensual</span><input name="precio_mensual" inputmode="decimal" placeholder="0.00" value="{{ previo.precio_mensual if previo else '' }}"></label>
+    <label class="campo"><span>Día de pago</span><input name="dia_pago" type="number" min="1" max="31" value="{{ previo.dia_pago if previo else 1 }}"></label>
+  </div>
+
+  <h2>Sistema</h2>
+  <div class="lista">
+    <label class="campo"><span>Límite de abonados</span><input name="limite_clientes" inputmode="numeric" placeholder="Sin límite"></label>
+    <label class="campo"><span>Límite de routers</span><input name="limite_routers" inputmode="numeric" placeholder="Sin límite"></label>
+    <label class="campo"><span>Bot de WhatsApp</span><input name="whatsapp" type="checkbox" value="true" checked></label>
+    <label class="campo"><span>Versión</span>
+      <select name="version">{% for v in versiones %}<option>{{ v }}</option>{% endfor %}</select></label>
+  </div>
+  <p class="nota">El alta crea su base, sus contenedores y su WireGuard. Tarda uno o dos minutos.</p>
+  <button class="boton">Crear ISP</button>
+</form>
+{% endblock %}

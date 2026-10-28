@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block contenido %}
+<h1>ISP</h1>
+<div class="cifras">
+  <div class="cifra"><b>{{ resumen.total }}</b><span>ISP alojados</span></div>
+  <div class="cifra"><b>{{ resumen.mensual | dinero }}</b><span>Mensualidades activas</span></div>
+  <div class="cifra"><b class="{{ 'rojo' if resumen.atencion else '' }}">{{ resumen.atencion }}</b><span>Por cobrar o vencidos</span></div>
+  <div class="cifra"><b>{{ '%.1f' % (resumen.ram / 1024) }} GB</b><span>RAM en uso</span></div>
+</div>
+
+<h2>Clientes de la nube</h2>
+<div class="lista">
+  {% for f in filas %}
+  <a class="fila" href="/isp/{{ f.isp.id }}">
+    <span class="punto {{ f.estado.tono }}" title="{{ f.estado.texto }}"></span>
+    <div class="crece">
+      <div class="titulo">{{ f.isp.nombre }}</div>
+      <div class="sub">{{ f.isp.dominio }} · <span class="{{ f.estado.tono }}">{{ f.estado.texto }}</span></div>
+    </div>
+    <div class="der">
+      {{ f.isp.precio_mensual | dinero }}<br>
+      <small class="{{ 'verde' if f.en_linea else 'gris' }}">{{ 'En línea' if f.en_linea else 'Detenido' }}</small>
+    </div>
+    <span class="chevron"></span>
+  </a>
+  {% else %}
+  <div class="vacio">Todavía no hay ISP. Da de alta el primero.</div>
+  {% endfor %}
+</div>
+<a class="boton" href="/isp/nuevo">Nuevo ISP</a>
+{% endblock %}

@@ -40,15 +40,10 @@ from src.domain.schemas import (
     PlantillaResponse,
     LogCronjobResponse, # 👈 Importante: El schema de respuesta para Logs
     BrandingConfig,
-    LocalLicenseStatus,
-    MaintenanceStatus,
     StoragePolicyUpdate,
-    BackupPolicyUpdate,
-    BackupRestoreRequest,
     BotFlowUpdate,
     BotVisualFlowUpdate,
 )
-from src.application.services.license_service import local_status, verify_license
 from src.application.services.pagos_captura import config_pagos
 from src.application.services.branding_service import get_or_create_system_config
 from src.infrastructure.auth import get_current_active_user
@@ -73,19 +68,10 @@ from src.application.services.pppoe_config_service import (
     guardar_config_pppoe,
     obtener_config_pppoe,
 )
-from src.application.services.backup_service import (
-    backup_dashboard,
-    backup_path,
-    request_backup_operation,
-    save_backup_policy,
-)
 
 # ✅ El prefijo es '/configuracion', así que la ruta final será '/configuracion/logs'
 router = APIRouter(prefix="/configuracion", tags=["Configuración General"])
 public_router = APIRouter(prefix="/public", tags=["Configuración Pública"])
-license_router = APIRouter(prefix="/licencia", tags=["Licencia"])
-MAINTENANCE_STATUS_FILE = Path("/var/lib/fdeznet/maintenance-status.json")
-MANUAL_UPDATE_REQUEST_FILE = Path("/var/lib/fdeznet/manual-update-requested")
 BRANDING_DIR = Path(__file__).resolve().parents[3] / "static" / "branding"
 MAX_BRAND_IMAGE_BYTES = 2 * 1024 * 1024
 
@@ -198,43 +184,6 @@ async def guardar_flujo_visual(
     await db.commit()
     await db.refresh(flow)
     return flow_payload(flow, legacy if alcance == "cliente" else None)
-
-
-MAINTENANCE_REQUESTS = {
-    "fdeznet-backup.service": Path("/var/lib/fdeznet/backup-requested"),
-    "fdeznet-update.service": MANUAL_UPDATE_REQUEST_FILE,
-    "fdeznet-verify.service": Path("/var/lib/fdeznet/verify-latest-requested"),
-    "fdeznet-verify-request.service": Path(
-        "/var/lib/fdeznet/verify-selected-requested"
-    ),
-    "fdeznet-restore.service": Path("/var/lib/fdeznet/restore-requested"),
-}
-
-
-async def _iniciar_mantenimiento(service: str) -> dict[str, str]:
-    request_file = MAINTENANCE_REQUESTS.get(service)
-    if request_file is None:
-        raise HTTPException(status_code=400, detail="Tarea de mantenimiento inválida")
-    request_file.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        descriptor = os.open(
-            request_file,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-    except FileExistsError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="Esta tarea de mantenimiento ya está solicitada o en curso",
-        ) from exc
-    except OSError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="No se pudo registrar la tarea de mantenimiento",
-        ) from exc
-    with os.fdopen(descriptor, "w", encoding="utf-8") as request:
-        request.write("requested\n")
-    return {"status": "ok", "mensaje": "La tarea inició en segundo plano"}
 
 
 async def _obtener_configuracion(db: AsyncSession) -> ConfiguracionSistema:
@@ -390,114 +339,6 @@ async def subir_archivo_marca(
     await db.refresh(config)
     await FastAPICache.clear()
     return config
-
-
-@router.get("/licencia", response_model=LocalLicenseStatus)
-async def obtener_estado_licencia(db: AsyncSession = Depends(get_db)):
-    return local_status(await _obtener_configuracion(db))
-
-
-@license_router.get("/estado", response_model=LocalLicenseStatus)
-async def obtener_estado_licencia_usuario(db: AsyncSession = Depends(get_db)):
-    return local_status(await _obtener_configuracion(db))
-
-
-@router.post("/licencia/verificar", response_model=LocalLicenseStatus)
-async def verificar_estado_licencia(db: AsyncSession = Depends(get_db)):
-    return await verify_license(db)
-
-
-@router.get("/mantenimiento", response_model=MaintenanceStatus)
-async def obtener_estado_mantenimiento():
-    data: dict = {}
-    try:
-        data = json.loads(MAINTENANCE_STATUS_FILE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        pass
-    data["actualizacion_automatica"] = Path(
-        "/etc/systemd/system/timers.target.wants/fdeznet-update.timer"
-    ).exists()
-    data["respaldo_automatico"] = Path(
-        "/etc/systemd/system/timers.target.wants/fdeznet-backup.timer"
-    ).exists()
-    data["revision_automatica"] = Path(
-        "/etc/systemd/system/timers.target.wants/fdeznet-verify.timer"
-    ).exists()
-    remote_dir = os.getenv("FDEZNET_BACKUP_REMOTE_DIR", "").strip()
-    data["respaldo_externo_configurado"] = bool(
-        remote_dir and Path(remote_dir).is_dir()
-    )
-    return MaintenanceStatus.model_validate(data)
-
-
-@router.post("/mantenimiento/respaldo", status_code=202)
-async def iniciar_respaldo():
-    return await _iniciar_mantenimiento("fdeznet-backup.service")
-
-
-@router.post("/mantenimiento/actualizar", status_code=202)
-async def iniciar_actualizacion():
-    return await _iniciar_mantenimiento("fdeznet-update.service")
-
-
-@router.post("/mantenimiento/verificar", status_code=202)
-async def iniciar_revision_recuperacion():
-    return await _iniciar_mantenimiento("fdeznet-verify.service")
-
-
-@router.get("/respaldos")
-async def obtener_respaldos():
-    return backup_dashboard()
-
-
-@router.put("/respaldos/politica")
-async def guardar_politica_respaldos(datos: BackupPolicyUpdate):
-    return {
-        "status": "ok",
-        "politica": save_backup_policy(datos),
-    }
-
-
-@router.post("/respaldos/crear", status_code=202)
-async def crear_respaldo_manual():
-    return await _iniciar_mantenimiento("fdeznet-backup.service")
-
-
-@router.post("/respaldos/{archivo}/verificar", status_code=202)
-async def verificar_respaldo(archivo: str):
-    try:
-        request_backup_operation("verificar", archivo)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    try:
-        return await _iniciar_mantenimiento("fdeznet-verify-request.service")
-    except Exception:
-        Path("/var/lib/fdeznet/backup-operation.json").unlink(missing_ok=True)
-        raise
-
-
-@router.post("/respaldos/{archivo}/restaurar", status_code=202)
-async def restaurar_respaldo(archivo: str, datos: BackupRestoreRequest):
-    try:
-        path = backup_path(archivo)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    expected = f"RESTAURAR {path.name}"
-    if datos.confirmacion != expected:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Escribe exactamente: {expected}",
-        )
-    request_backup_operation("restaurar", path.name)
-    try:
-        return await _iniciar_mantenimiento("fdeznet-restore.service")
-    except Exception:
-        Path("/var/lib/fdeznet/backup-operation.json").unlink(missing_ok=True)
-        raise
 
 
 @router.get("/almacenamiento")

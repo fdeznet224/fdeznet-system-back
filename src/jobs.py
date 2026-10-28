@@ -22,7 +22,6 @@ from src.application.services.finance_service import FinanceService
 from src.application.services.mikrotik_reconciliation_service import (
     MikrotikReconciliationService,
 )
-from src.application.services.license_service import verify_license
 from src.application.services.router_monitor_service import (
     describir_enlace_vpn,
     evaluar_estado_router,
@@ -36,11 +35,6 @@ from src.application.services.consumo_service import ConsumoService
 from src.application.services.acceso_remoto_service import AccesoRemotoService
 from src.application.services.senal_optica_service import SenalOpticaService, mensaje_alerta
 from src.application.services.storage_service import cleanup_storage, close_period, previous_period
-
-
-async def tarea_verificar_licencia():
-    async with SessionLocal() as db:
-        await verify_license(db)
 
 
 # La bitácora de procesos crece unos 7 mil registros al día (monitoreo cada

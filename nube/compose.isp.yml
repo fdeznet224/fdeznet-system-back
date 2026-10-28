@@ -9,7 +9,9 @@ services:
       context: ..
       dockerfile: nube/api.Dockerfile
     restart: unless-stopped
-    env_file: instancias/${ISP}/api.env
+    env_file:
+      - path: instancias/${ISP}/api.env
+        required: false  # construir-version.sh compila sin instancia
     environment:
       WG_PORT: ${WG_PORT}
       WHATSAPP_BASE_URL: http://bot:3000

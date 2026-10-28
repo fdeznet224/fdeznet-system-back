@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block titulo %}Entrar · Panel FdezPay{% endblock %}
+{% block contenido %}
+<h1>Panel FdezPay</h1>
+<form class="lista" method="post" action="/entrar">
+  <label><span>Usuario</span><input name="usuario" autocomplete="username" required autofocus></label>
+  <label><span>Contraseña</span><input name="clave" type="password" autocomplete="current-password" required></label>
+  <button class="boton" style="border-radius:0;margin:0">Entrar</button>
+</form>
+{% endblock %}

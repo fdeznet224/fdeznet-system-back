@@ -45,7 +45,7 @@ from src.application.services.mikrotik_reconciliation_service import (
 from src.application.services.access_control_service import (
     verificar_acceso_cliente,
 )
-from src.application.services.license_service import (
+from src.application.services.limites_service import (
     ensure_router_capacity,
     remaining_client_capacity,
 )

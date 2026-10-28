@@ -1,13 +1,11 @@
 import json
 import os
-import asyncio
 from datetime import datetime
 
 import pytest
 
 from src.application.services import backup_service
 from src.domain.schemas import BackupPolicyUpdate
-from src.interfaces.api import configuracion
 
 
 @pytest.fixture
@@ -102,23 +100,6 @@ def test_panel_calcula_siguiente_respaldo_y_lee_estado(backup_paths):
 
     assert dashboard["estado"]["estado"] == "respaldado"
     assert datetime.fromisoformat(dashboard["proximo_respaldo"]).date().isoformat() == "2026-09-15"
-
-
-def test_tarea_privilegiada_se_solicita_sin_sudo(tmp_path, monkeypatch):
-    request_file = tmp_path / "backup-requested"
-    monkeypatch.setitem(
-        configuracion.MAINTENANCE_REQUESTS,
-        "fdeznet-backup.service",
-        request_file,
-    )
-
-    response = asyncio.run(
-        configuracion._iniciar_mantenimiento("fdeznet-backup.service")
-    )
-
-    assert response["status"] == "ok"
-    assert request_file.read_text() == "requested\n"
-    assert request_file.stat().st_mode & 0o777 == 0o600
 
 
 def test_por_defecto_solo_se_guardan_los_cinco_respaldos_mas_recientes(backup_paths):

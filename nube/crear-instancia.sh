@@ -3,6 +3,8 @@
 # secretos, y sus contenedores. Uso:
 #   nube/crear-instancia.sh <isp> <puerto_web> <puerto_wireguard> <dominio>
 # Ejemplo: nube/crear-instancia.sh prueba 18001 51821 prueba.fdezpay.com
+# Opcionales por entorno (los usa el panel central): LIMITE_CLIENTES,
+# LIMITE_ROUTERS, CON_WHATSAPP=0 e IMAGEN_VERSION.
 set -Eeuo pipefail
 
 ISP="${1:?Falta el nombre del ISP (minúsculas, números y guiones)}"
@@ -25,6 +27,8 @@ BASE="isp_${ISP//-/_}"
 DB_PASSWORD="$(clave 32)"
 WEBHOOK_SECRET="$(clave 48)"
 ADMIN_PASSWORD="$(clave 16)"
+PERFILES=""
+[[ "${CON_WHATSAPP:-1}" != "1" ]] || PERFILES=whatsapp
 
 # 1. Base y usuario en el MySQL compartido (solo con permisos sobre su base).
 docker compose -f "$DIR/compose.mysql.yml" exec -T mysql sh -c \
@@ -42,8 +46,9 @@ ISP=$ISP
 WEB_PORT=$WEB_PORT
 WG_PORT=$WG_PORT
 WEBHOOK_SECRET=$WEBHOOK_SECRET
-# Quitar "whatsapp" si el ISP no usa el bot.
-COMPOSE_PROFILES=whatsapp
+IMAGEN_VERSION=${IMAGEN_VERSION:-local}
+# Vacío si el ISP no usa el bot de WhatsApp.
+COMPOSE_PROFILES=$PERFILES
 ENV
 cat > "$INST/api.env" <<ENV
 ENVIRONMENT=production
@@ -58,19 +63,26 @@ ACCESS_TOKEN_EXPIRE_MINUTES=60
 CORS_ALLOWED_ORIGINS=https://$DOMINIO
 PUBLIC_URL=https://$DOMINIO
 WEBHOOK_SECRET=$WEBHOOK_SECRET
-FDEZNET_CONTROL_PLANE_MODE=client
-FDEZNET_CONTROL_URL=https://fdezpay.com/api
 ADMIN_BOOTSTRAP_USER=admin
 ADMIN_BOOTSTRAP_NAME=Super Administrador
 ADMIN_BOOTSTRAP_PASSWORD=$ADMIN_PASSWORD
 VPN_SUBNET_BASE=10.8.0
 VPN_SERVER_IP=${VPN_SERVER_IP:-}
+FDEZNET_LIMITE_CLIENTES=${LIMITE_CLIENTES:-}
+FDEZNET_LIMITE_ROUTERS=${LIMITE_ROUTERS:-}
 ENV
 
 # 3. Contenedores.
 docker compose -p "$ISP" --env-file "$INST/compose.env" -f "$DIR/compose.isp.yml" up -d
 
+# 4. Cuando la API ya creó al administrador, su contraseña sale del archivo.
+for intento in $(seq 1 100); do
+  [[ "$(docker inspect -f '{{.State.Health.Status}}' "$ISP-api-1" 2>/dev/null)" == healthy ]] && break
+  [[ "$intento" -lt 100 ]] || { echo "La API de $ISP no quedó lista en 5 minutos" >&2; exit 1; }
+  sleep 3
+done
+sed -i '/^ADMIN_BOOTSTRAP_PASSWORD=/d' "$INST/api.env"
+
 echo
 echo "Instancia $ISP creada: web en 127.0.0.1:$WEB_PORT, WireGuard UDP $WG_PORT"
-echo "Administrador inicial: admin / $ADMIN_PASSWORD"
-echo "Cuando entre por primera vez, quita ADMIN_BOOTSTRAP_PASSWORD de $INST/api.env"
+echo "ADMIN_PASSWORD=$ADMIN_PASSWORD"

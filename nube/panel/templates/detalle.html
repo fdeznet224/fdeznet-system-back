@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block titulo %}{{ isp.nombre }} · Panel FdezPay{% endblock %}
+{% block contenido %}
+<p><a href="/">‹ ISP</a></p>
+<h1>{{ isp.nombre }}</h1>
+
+<div class="lista">
+  <div class="fila"><span class="punto {{ estado.tono }}"></span><div class="crece {{ estado.tono }}">{{ estado.texto }}</div>
+    <div class="der">{{ isp.precio_mensual | dinero }} / mes</div></div>
+  <a class="fila" href="https://{{ isp.dominio }}" target="_blank" rel="noopener"><div class="crece">Dirección</div><div class="der">{{ isp.dominio }}</div></a>
+  <div class="fila"><div class="crece">Pagado hasta</div><div class="der">{{ isp.pagado_hasta | fecha }}</div></div>
+  <div class="fila"><div class="crece">Día de pago</div><div class="der">{{ isp.dia_pago }} de cada mes</div></div>
+  {% if isp.contacto or isp.telefono %}
+  <div class="fila"><div class="crece">Contacto</div><div class="der">{{ isp.contacto or '' }}{% if isp.telefono %} · <a href="tel:{{ isp.telefono }}">{{ isp.telefono }}</a>{% endif %}</div></div>
+  {% endif %}
+</div>
+
+<h2>Registrar pago</h2>
+<form method="post" action="/isp/{{ isp.id }}/pago">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="lista">
+    <label class="campo"><span>Monto</span><input name="monto" inputmode="decimal" required value="{{ isp.precio_mensual }}"></label>
+    <label class="campo"><span>Meses que paga</span><input name="meses" type="number" min="1" max="24" value="1" required></label>
+    <label class="campo"><span>Fecha del pago</span><input name="fecha" type="date" value="{{ hoy.isoformat() }}" required></label>
+    <label class="campo"><span>Nota</span><input name="nota" placeholder="Transferencia, efectivo…"></label>
+  </div>
+  <button class="boton">Registrar pago</button>
+</form>
+
+<h2>Pagos</h2>
+<div class="lista">
+  {% for p in pagos %}
+  <div class="fila">
+    <div class="crece"><div class="titulo">{{ p.monto | dinero }}</div>
+      <div class="sub">{{ p.fecha | fecha }} · {{ p.meses }} mes{{ 'es' if p.meses != 1 else '' }}{% if p.nota %} · {{ p.nota }}{% endif %}</div></div>
+    <div class="der">hasta {{ p.cubre_hasta | fecha }}
+      {% if loop.first %}
+      <form method="post" action="/isp/{{ isp.id }}/pago/{{ p.id }}/borrar" onsubmit="return confirm('¿Borrar este pago? La fecha regresa a la anterior.')">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="enlace rojo"><small>Borrar</small></button></form>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <div class="vacio">Sin pagos registrados</div>
+  {% endfor %}
+</div>
+
+<h2>Contenedores</h2>
+<div class="lista">
+  {% for s in servicios %}
+  <div class="fila"><span class="punto {{ 'verde' if s.estado.startswith('Up') else 'gris' }}"></span>
+    <div class="crece">{{ s.nombre }}<div class="sub">{{ s.estado }}</div></div>
+    <div class="der">{% if s.ram %}{{ '%.0f' % s.ram }} MB{% endif %}</div></div>
+  {% endfor %}
+  <div class="fila"><div class="crece">WireGuard</div><div class="der">UDP {{ isp.wg_port }}</div></div>
+</div>
+
+<h2>Sistema</h2>
+<form method="post" action="/isp/{{ isp.id }}/ajustes" onsubmit="return confirm('Se aplican los cambios y se reinicia lo necesario. ¿Continuar?')">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="lista">
+    <label class="campo"><span>Versión</span>
+      <select name="version">{% for v in versiones %}<option {{ 'selected' if v == isp.version else '' }}>{{ v }}</option>{% endfor %}</select></label>
+    <label class="campo"><span>Bot de WhatsApp</span><input name="whatsapp" type="checkbox" value="true" {{ 'checked' if isp.whatsapp else '' }}></label>
+    <label class="campo"><span>Límite de abonados</span><input name="limite_clientes" inputmode="numeric" placeholder="Sin límite" value="{{ isp.limite_clientes or '' }}"></label>
+    <label class="campo"><span>Límite de routers</span><input name="limite_routers" inputmode="numeric" placeholder="Sin límite" value="{{ isp.limite_routers or '' }}"></label>
+  </div>
+  <button class="boton secundario">Aplicar</button>
+</form>
+
+<h2>Datos del ISP</h2>
+<form method="post" action="/isp/{{ isp.id }}/datos">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="lista">
+    <label class="campo"><span>Nombre</span><input name="nombre" required value="{{ isp.nombre }}"></label>
+    <label class="campo"><span>Contacto</span><input name="contacto" value="{{ isp.contacto or '' }}"></label>
+    <label class="campo"><span>Teléfono</span><input name="telefono" inputmode="tel" value="{{ isp.telefono or '' }}"></label>
+    <label class="campo"><span>Plan</span><input name="plan" value="{{ isp.plan or '' }}"></label>
+    <label class="campo"><span>Precio mensual</span><input name="precio_mensual" inputmode="decimal" value="{{ isp.precio_mensual }}"></label>
+    <label class="campo"><span>Día de pago</span><input name="dia_pago" type="number" min="1" max="31" value="{{ isp.dia_pago }}"></label>
+    <label class="campo"><span>Pagado hasta</span><input name="pagado_hasta" type="date" value="{{ isp.pagado_hasta.isoformat() if isp.pagado_hasta else '' }}"></label>
+    <label class="campo"><span>Notas</span><textarea name="notas">{{ isp.notas or '' }}</textarea></label>
+  </div>
+  <p class="nota">"Pagado hasta" se mueve solo con cada pago; cámbialo a mano solo para corregir.</p>
+  <button class="boton secundario">Guardar datos</button>
+</form>
+
+<h2>Servicio</h2>
+{% if isp.suspendido %}
+<form method="post" action="/isp/{{ isp.id }}/reactivar">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><button class="boton">Reactivar ISP</button></form>
+{% else %}
+<form method="post" action="/isp/{{ isp.id }}/suspender" onsubmit="return confirm('El ISP no podrá entrar ni cobrar hasta reactivarlo. Sus datos se conservan. ¿Suspender?')">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><button class="boton peligro">Suspender ISP</button></form>
+{% endif %}
+
+<h2>Historial</h2>
+<div class="lista">
+  {% for b in bitacora %}
+  <div class="fila"><div class="crece"><div class="titulo">{{ b.accion | capitalize }}</div><div class="sub">{{ b.detalle or '' }}</div></div>
+    <div class="der"><small>{{ b.fecha.strftime('%d/%m/%Y %H:%M') }}</small></div></div>
+  {% else %}
+  <div class="vacio">Sin movimientos</div>
+  {% endfor %}
+</div>
+{% endblock %}

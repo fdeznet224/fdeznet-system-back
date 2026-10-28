@@ -1,0 +1,27 @@
+# Panel central (panel.<dominio>). Solo en localhost: el proxy de la VPS lo publica.
+#   docker compose -f compose.panel.yml --env-file secretos/panel.env up -d
+# Monta nube/ en la misma ruta que en la VPS para que los compose de cada ISP
+# resuelvan igual dentro y fuera del contenedor.
+name: fdezpay-panel
+
+services:
+  panel:
+    image: fdezpay-panel:${IMAGEN_VERSION:-local}
+    build:
+      context: ..
+      dockerfile: nube/panel.Dockerfile
+    restart: unless-stopped
+    env_file: secretos/panel.env
+    environment:
+      NUBE_DIR: ${NUBE_DIR}
+      PANEL_BASE: /data/panel.db
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${NUBE_DIR}:${NUBE_DIR}
+      - datos:/data
+    ports:
+      - "127.0.0.1:${PANEL_PORT:-18000}:8100"
+    mem_limit: 256m
+
+volumes:
+  datos:

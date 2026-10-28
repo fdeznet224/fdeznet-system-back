@@ -28,7 +28,7 @@ from src.infrastructure.whatsapp_client import whatsapp_queue
 
 from src.application.services.client_service import ClientService
 from src.application.services.cuenta_tecnico_service import resumen_cuenta
-from src.application.services.license_service import ensure_client_capacity
+from src.application.services.limites_service import ensure_client_capacity
 from src.application.services.access_control_service import (
     es_cliente_del_tecnico,
     filtro_clientes_del_tecnico,

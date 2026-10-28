@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>{% block titulo %}Panel FdezPay{% endblock %}</title>
+  <link rel="stylesheet" href="/static/panel.css">
+</head>
+<body>
+  {% if csrf %}
+  <header class="barra">
+    <a href="/"><b>FdezPay</b> · Panel</a>
+    <form method="post" action="/salir"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="enlace">Salir</button></form>
+  </header>
+  {% endif %}
+  <main>
+    {% if msg %}<div class="aviso {% if msg.startswith('Error') %}error{% endif %}">{{ msg }}</div>{% endif %}
+    {% if error %}<div class="aviso error">{{ error }}</div>{% endif %}
+    {% block contenido %}{% endblock %}
+  </main>
+</body>
+</html>
