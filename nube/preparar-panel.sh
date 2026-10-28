@@ -26,5 +26,7 @@ PANEL_RESPALDOS_LOCALES=7
 PANEL_RESPALDO_REMOTO=
 PANEL_RESPALDO_DIAS_REMOTO=30
 NUBE_DIR=$DIR
+# IP pública a la que se conectan los MikroTik de cada ISP (WireGuard).
+VPN_SERVER_IP=$(curl -fsS https://api.ipify.org || true)
 ENV
 echo "Listo: $DIR/secretos/panel.env"
