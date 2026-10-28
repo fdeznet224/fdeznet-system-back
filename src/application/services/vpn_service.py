@@ -11,7 +11,11 @@ import qrcode
 import io
 import base64
 
-MARCA_VIGILANTE = "fdeznet-vpn-watchdog"
+# En la nube todo lleva nombres propios para convivir en el MikroTik con la VPN
+# de otro sistema FdezPay (wg-fdeznet, 10.8.0.0/24) sin pisarla.
+MARCA_VIGILANTE = "wispay-vpn-watchdog"
+INTERFAZ_MIKROTIK = "wg-wispay"
+RED_VPN = "10.9.0"
 
 
 def construir_vigilante_mikrotik(endpoint: str, puerto: int, gateway: str) -> str:
@@ -25,10 +29,10 @@ def construir_vigilante_mikrotik(endpoint: str, puerto: int, gateway: str) -> st
     destino = f"{endpoint}:{puerto}"
     acciones = (
         f'/ip firewall connection remove [find where protocol=\\"udp\\" dst-address=\\"{destino}\\"]; '
-        '/interface wireguard peers disable [find where interface=\\"wg-fdeznet\\"]; '
+        f'/interface wireguard peers disable [find where interface=\\"{INTERFAZ_MIKROTIK}\\"]; '
         ':delay 2s; '
-        '/interface wireguard peers enable [find where interface=\\"wg-fdeznet\\"]; '
-        ':log warning \\"FdezNet VPN: tunel reiniciado por el vigilante\\"'
+        f'/interface wireguard peers enable [find where interface=\\"{INTERFAZ_MIKROTIK}\\"]; '
+        ':log warning \\"WisPay VPN: tunel reiniciado por el vigilante\\"'
     )
     return textwrap.dedent(f"""
         # --- Vigilante de reconexion VPN (se puede volver a pegar sin duplicar) ---
@@ -100,7 +104,7 @@ class VPNService:
         self.WG_BIN = os.getenv("WG_BIN", "/usr/bin/wg")
         self.WG_QUICK_BIN = os.getenv("WG_QUICK_BIN", "/usr/bin/wg-quick")
         self.SERVER_PORT = int(os.getenv("WG_PORT", 51820))
-        self.VPN_SUBNET_BASE = "10.8.0."
+        self.VPN_SUBNET_BASE = f"{RED_VPN}."
         
         # 1. AUTO-DETECCIÓN DE IP PÚBLICA (Si no está en el .env, la busca)
         self.SERVER_ENDPOINT = os.getenv("VPN_SERVER_IP") or self._obtener_ip_publica()
@@ -156,7 +160,7 @@ class VPNService:
         if not subredes_remotas or not subredes_remotas.strip():
             return []
         redes: list[str] = []
-        vpn_network = ipaddress.ip_network("10.8.0.0/24")
+        vpn_network = ipaddress.ip_network(f"{RED_VPN}.0/24")
         for value in subredes_remotas.replace("\n", ",").split(","):
             value = value.strip()
             if not value:
@@ -170,7 +174,7 @@ class VPNService:
             if network.prefixlen == 0:
                 raise ValueError("No se permite anunciar la ruta predeterminada 0.0.0.0/0")
             if network.overlaps(vpn_network):
-                raise ValueError("La subred remota no puede solaparse con la VPN 10.8.0.0/24")
+                raise ValueError(f"La subred remota no puede solaparse con la VPN {RED_VPN}.0/24")
             normalized = str(network)
             if normalized not in redes:
                 redes.append(normalized)
@@ -237,7 +241,7 @@ class VPNService:
                     continue
                 if network.version != 4 or network.prefixlen == 32:
                     continue
-                if network.overlaps(ipaddress.ip_network("10.8.0.0/24")):
+                if network.overlaps(ipaddress.ip_network(f"{RED_VPN}.0/24")):
                     continue
                 result.append({
                     "subred": str(network),
@@ -289,14 +293,12 @@ class VPNService:
 
         # 4. Construir el Script con los datos auto-detectados
         script_mikrotik = textwrap.dedent(f"""
-            # === FDEZNET VPN SCRIPT - {nombre.upper()} ===
-            /interface wireguard add listen-port=13231 name=wg-fdeznet private-key="{client_privkey}"
+            # === WISPAY VPN SCRIPT - {nombre.upper()} ===
+            /interface wireguard add listen-port=13232 name={INTERFAZ_MIKROTIK} private-key="{client_privkey}"
             /interface wireguard peers add allowed-address={self.VPN_SUBNET_BASE}0/24 \\
                 endpoint-address={self.SERVER_ENDPOINT} endpoint-port={self.SERVER_PORT} \\
-                interface=wg-fdeznet public-key="{self.SERVER_PUBKEY}" persistent-keepalive=25s
-            /ip address add address={client_ip}/24 interface=wg-fdeznet
-            /ip dns set servers=8.8.8.8,1.1.1.1
-            /system note set note="VPN vinculada al sistema de gestión ISP"
+                interface={INTERFAZ_MIKROTIK} public-key="{self.SERVER_PUBKEY}" persistent-keepalive=25s
+            /ip address add address={client_ip}/24 interface={INTERFAZ_MIKROTIK}
         """).strip()
         script_mikrotik += "\n\n" + construir_vigilante_mikrotik(
             self.SERVER_ENDPOINT, self.SERVER_PORT, f"{self.VPN_SUBNET_BASE}1"

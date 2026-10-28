@@ -15,7 +15,7 @@ if [[ ! -s "$WG_CONF" ]]; then
   wg pubkey < "$WG_DIR/server_private.key" > "$WG_DIR/server_public.key"
   cat > "$WG_CONF" <<CONF
 [Interface]
-Address = 10.8.0.1/24
+Address = 10.9.0.1/24
 ListenPort = ${WG_PORT}
 PrivateKey = $(cat "$WG_DIR/server_private.key")
 SaveConfig = true

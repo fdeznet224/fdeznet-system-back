@@ -1,3 +1,4 @@
+import os
 import pytest
 
 from src.application.services.vpn_service import VPNService
@@ -11,7 +12,7 @@ def test_normaliza_varias_subredes_remotas():
 
 @pytest.mark.parametrize(
     "value",
-    ["sin-cidr", "0.0.0.0/0", "10.8.0.0/25", "2001:db8::/64"],
+    ["sin-cidr", "0.0.0.0/0", "10.9.0.0/25", "2001:db8::/64"],
 )
 def test_rechaza_subredes_no_seguras_o_invalidas(value):
     with pytest.raises(ValueError):
@@ -74,3 +75,28 @@ def test_comandos_wireguard_sin_sudo_en_contenedor(monkeypatch):
 
     monkeypatch.setenv("SUDO_BIN", "/usr/bin/sudo")
     assert con_privilegios(["/usr/bin/wg", "show"]) == ["/usr/bin/sudo", "/usr/bin/wg", "show"]
+
+
+def test_nube_convive_con_la_vpn_de_otro_sistema_en_el_mikrotik():
+    """El script de la nube no debe pisar wg-fdeznet, su red 10.8.0.0/24 ni su vigilante."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.application.services import vpn_service
+
+    os.environ.update(VPN_SERVER_IP="203.0.113.10", VPN_SERVER_PUBKEY="srv=", WG_PORT="51821")
+    try:
+        servicio = vpn_service.VPNService(MagicMock(commit=AsyncMock(), refresh=AsyncMock()))
+    finally:
+        for clave in ("VPN_SERVER_IP", "VPN_SERVER_PUBKEY", "WG_PORT"):
+            os.environ.pop(clave)
+    servicio._ejecutar_comando = lambda *a, **k: "llave"
+    servicio.obtener_siguiente_ip = AsyncMock(return_value="10.9.0.2")
+    tunel = asyncio.run(servicio.crear_tunel("Torre"))
+    script = tunel.script_mikrotik
+
+    assert "name=wg-wispay" in script and "listen-port=13232" in script
+    assert "allowed-address=10.9.0.0/24" in script and "address=10.9.0.2/24 interface=wg-wispay" in script
+    assert "[/ping 10.9.0.1 " in script and 'name="wispay-vpn-watchdog"' in script
+    assert "wg-fdeznet" not in script and "fdeznet-vpn-watchdog" not in script and "10.8.0" not in script
+    assert "/ip dns set" not in script and "/system note" not in script
