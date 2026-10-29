@@ -16,6 +16,7 @@ from src.domain.schemas import WireguardConfigResponse
 from src.infrastructure.database import get_db
 from src.infrastructure.auth import role_required
 from src.application.services.pppoe_config_service import resolver_password_pppoe
+from src.application.services.importacion_service import crear_servicio_importado
 from src.infrastructure.models import (
     InventarioONUModel,
     RouterModel, 
@@ -579,6 +580,9 @@ async def procesar_importacion(
             )
             
             db.add(nuevo)
+            await db.flush()
+            # Ya está instalado: su servicio nace activo (sin orden ni prorrateo).
+            await crear_servicio_importado(db, nuevo)
             if ip: ips_existentes.add(ip)
             if user_ppp: users_existentes.add(user_ppp)
             count_ok += 1
