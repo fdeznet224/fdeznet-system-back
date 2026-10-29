@@ -32,7 +32,7 @@ DOCUMENTO = {"InternetGatewayDevice": {
 
 
 def test_pone_el_wifi_en_las_dos_bandas_de_su_red_y_el_pppoe_al_final():
-    nombres, indices, pppoe = valores_para(DOCUMENTO, "FdezNet-187B", "juan_perez", "clave-pppoe")
+    nombres, indices, pppoe = valores_para(DOCUMENTO, "Internet-187B", "juan_perez", "clave-pppoe")
     assert [r for r, _, _ in nombres] == [f"{LAN}.WLANConfiguration.1.SSID", f"{LAN}.WLANConfiguration.5.SSID"]
     # La red de fichas no se toca.
     assert indices == [1, 5]
@@ -41,7 +41,7 @@ def test_pone_el_wifi_en_las_dos_bandas_de_su_red_y_el_pppoe_al_final():
 
 
 def test_nombre_y_contrasena_del_wifi():
-    assert aprov.ssid_para("187B") == "FdezNet-187B"
+    assert aprov.ssid_para("187B") == "Internet-187B"
     clave = aprov.clave_wifi_nueva()
     assert len(clave) == 8 and clave.isdigit()
 
@@ -62,7 +62,7 @@ CLIENTE = SimpleNamespace(id=9, nombre="Juan Pérez", cedula="187B", telefono="9
 
 
 def registro(identificador, creado=None):
-    return SimpleNamespace(cliente_id=9, identificador=identificador, ssid="FdezNet-187B", clave_wifi="12345678",
+    return SimpleNamespace(cliente_id=9, identificador=identificador, ssid="Internet-187B", clave_wifi="12345678",
                            estado="pendiente", intentos=0, detalle=None, device_id=None,
                            creado_en=creado or datetime.now(), aplicado_en=None)
 
@@ -122,7 +122,7 @@ def test_gpon_se_reconoce_por_serial_se_configura_y_se_le_manda_su_wifi():
     cambio = next(t for _, nombre, t in tareas if nombre == "setParameterValues")
     assert [f"{WAN}.1.WANPPPConnection.1.Username", "juan_perez", "xsd:string"] in cambio["parameterValues"]
     # Su bienvenida sale ya con el WiFi puesto.
-    assert enviados == [("9931112222", ("FdezNet-187B", "12345678"))]
+    assert enviados == [("9931112222", ("Internet-187B", "12345678"))]
 
 
 def test_onu_de_reemplazo_se_configura_sin_mandar_bienvenida():
@@ -192,7 +192,7 @@ def programar(identificador, modelo=None):
 
 def test_huawei_queda_esperando_para_configurarse_sola():
     resultado, agregados = programar("HWTCF1C8D69E", "HG8145V5")
-    assert resultado["automatica"] is True and resultado["red"] == "FdezNet-187B"
+    assert resultado["automatica"] is True and resultado["red"] == "Internet-187B"
     assert agregados[0].estado == "pendiente"
 
 
@@ -211,7 +211,7 @@ def test_onu_de_reemplazo_lleva_el_wifi_que_ya_tenia():
 
 def test_si_no_se_sabe_su_wifi_va_uno_nuevo():
     resultado, _ = programar_con("HWTC22222222", cambio_onu=True)
-    assert resultado["red"] == "FdezNet-187B" and resultado["clave_nueva"] is True
+    assert resultado["red"] == "Internet-187B" and resultado["clave_nueva"] is True
 
 
 def test_si_la_onu_rechaza_un_campo_de_la_contrasena_prueba_el_otro():
@@ -227,7 +227,7 @@ def test_si_la_onu_rechaza_un_campo_de_la_contrasena_prueba_el_otro():
 
     srv = AprovisionamientoOnuService(BaseFalsa(CLIENTE), nbi="http://nbi")
     srv.red._tarea = tarea
-    nombres = [[f"{LAN}.WLANConfiguration.1.SSID", "FdezNet-187B", "xsd:string"]]
+    nombres = [[f"{LAN}.WLANConfiguration.1.SSID", "Internet-187B", "xsd:string"]]
     assert asyncio.run(srv.red.poner_con_clave_wifi(None, "dev", [1, 5], "12345678", nombres)) is True
     assert enviados[1] == [f"{LAN}.WLANConfiguration.1.SSID", f"{LAN}.WLANConfiguration.1.KeyPassphrase",
                            f"{LAN}.WLANConfiguration.5.KeyPassphrase"]
@@ -248,17 +248,17 @@ def test_toma_las_dos_bandas_aunque_ya_no_tengan_el_mismo_nombre():
 
     documento = copy.deepcopy(DOCUMENTO)
     wlan = documento["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
-    wlan["1"]["SSID"] = v("FdezNet-187B")
-    wlan["5"]["SSID"] = v("FdezNet-")
-    _, indices, _ = valores_para(documento, "FdezNet-187B", "juan_perez", "clave-pppoe")
+    wlan["1"]["SSID"] = v("Internet-187B")
+    wlan["5"]["SSID"] = v("Internet-")
+    _, indices, _ = valores_para(documento, "Internet-187B", "juan_perez", "clave-pppoe")
     assert indices == [1, 5]
 
 
 def test_el_wifi_conocido_sale_de_lo_que_puso_el_sistema_o_el_cliente():
     class UnRegistro:
         async def execute(self, _consulta):
-            registro = SimpleNamespace(ssid="FdezNet-187B", clave_wifi="11223344")
+            registro = SimpleNamespace(ssid="Internet-187B", clave_wifi="11223344")
             return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: registro))
 
     srv = AprovisionamientoOnuService(UnRegistro(), nbi="http://nbi")
-    assert asyncio.run(srv.wifi_conocido(9)) == {"red": "FdezNet-187B", "clave": "11223344"}
+    assert asyncio.run(srv.wifi_conocido(9)) == {"red": "Internet-187B", "clave": "11223344"}

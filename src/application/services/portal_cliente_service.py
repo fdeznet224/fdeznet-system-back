@@ -348,7 +348,7 @@ class PortalClienteService:
         )).scalar_one_or_none()
         self.db.add(FacturaConceptoModel(
             cliente_id=cliente.id, servicio_id=servicio_id, tipo="ficha_hotspot",
-            concepto=f"Ficha Zona FdezNet · {ficha['perfil']}"[:150],
+            concepto=f"Ficha de internet · {ficha['perfil']}"[:150],
             descripcion=f"Ficha {ficha['codigo']} · folio {ficha['folio']} · comprada en el portal"[:500],
             monto_original=ficha["precio"], saldo_pendiente=ficha["precio"], estado="pendiente",
             afecta_corte=False, fecha_cargo=date.today(),
@@ -360,9 +360,9 @@ class PortalClienteService:
         await self.db.commit()
         if cliente.telefono:
             await self._whatsapp(cliente.telefono, (
-                f"🎟️ *Tu ficha de Zona FdezNet*\n{ficha['perfil']}\nCódigo: *{ficha['codigo']}*"
+                f"🎟️ *Tu ficha de internet*\n{ficha['perfil']}\nCódigo: *{ficha['codigo']}*"
                 + (f"\nContraseña: *{ficha['clave']}*" if ficha.get("clave") and ficha["clave"] != ficha["codigo"] else "")
-                + f"\n\nConéctate a la red «Zona FdezNet» y escribe el código. Se suma ${ficha['precio']:.2f} a tu próxima factura."
+                + f"\n\nConéctate a la red de fichas y escribe el código. Se suma ${ficha['precio']:.2f} a tu próxima factura."
             ), "ficha_hotspot", cliente.id)
         return ficha
 

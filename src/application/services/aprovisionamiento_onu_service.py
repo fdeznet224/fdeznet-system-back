@@ -45,7 +45,7 @@ CON_WIFI_PUESTO = ("aplicado", "guardado", "manual")
 
 
 def prefijo_wifi() -> str:
-    return os.getenv("WIFI_PREFIJO", "FdezNet-")
+    return os.getenv("WIFI_PREFIJO", "Internet-")
 
 
 def ssid_para(contrato: str) -> str:

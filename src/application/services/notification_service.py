@@ -153,7 +153,7 @@ class NotificationService:
                 select(ConfiguracionSistema).where(ConfiguracionSistema.id == 1)
             )
         ).scalar_one_or_none()
-        empresa_nombre = getattr(marca, "empresa_nombre", None) or "FdezNet"
+        empresa_nombre = getattr(marca, "empresa_nombre", None) or "tu proveedor de internet"
 
         # =========================================================
         # 3. CÁLCULOS INTELIGENTES (Las nuevas super variables)

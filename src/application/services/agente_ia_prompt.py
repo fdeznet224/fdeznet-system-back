@@ -42,21 +42,21 @@ Cómo trabajar:
 
 Hoy es {hoy}."""
 
+PENDIENTE = "- PENDIENTE: el ISP todavía no escribe este dato. Si lo preguntan, dilo con amabilidad y usa `pasar_a_humano`."
+
+# Plantilla para un ISP nuevo: lo que dice PENDIENTE lo llena cada ISP en su panel
+# (Bot de WhatsApp → Conocimiento). Mientras tanto el agente pasa esas preguntas a un asesor.
 CONOCIMIENTO_INICIAL = """## Datos de pago
 - Usa la herramienta `datos_de_pago` para la cuenta y el titular.
 - En el concepto se escribe el NÚMERO DE CONTRATO del cliente (aparece en los avisos y recordatorios que le mandamos por WhatsApp y casi siempre en el nombre de su red WiFi), también si paga otra persona por él: así el pago se confirma solo.
 - Después de pagar, el cliente envía la foto del comprobante por este chat.
 
 ## Pago en efectivo (preguntar primero su zona o colonia)
-- Flores Magón: casa de Clari, barrio La Bomba, frente a la cafetería La Cabaña (por la carpintería y el templo La Hermosa).
-- Vicente Guerrero: por la salida a Ponciano, frente a la purificadora Fuente de Vida, casa color blanco.
-- Paraíso y las demás colonias: en Villa de Guadalupe, tienda de doña Yoli Sánchez; recibe ella o su hija Brenda Cantoral.
+{p}
 
 ## Cobros
-- Grupos de pago: día 1 (corte día 11) y día 15 (corte día 25).
-- Reconexión por corte de servicio: $30.
-- Si incumple una promesa: suspensión al día siguiente y cargo de "Reconexión y penalización por incumplir promesa de pago".
-- Los días que el servicio estuvo suspendido no se cobran; se descuentan de la factura.
+- Días de pago y de corte, costo de reconexión y penalización por promesa incumplida:
+{p}
 
 ## Promesa de pago
 - Hasta 25 días. Solo una activa. Si incumplió 2 en 90 días ya no se puede (pasar a humano).
@@ -68,16 +68,8 @@ CONOCIMIENTO_INICIAL = """## Datos de pago
 - Al cambiarla, todos sus equipos se desconectan y se conectan otra vez con la nueva.
 - Bloquear o quitarle el internet a un equipo NO se hace por WhatsApp: el cliente lo hace en su portal, sección Mi WiFi.
 
-## Fichas hotspot (red WiFi «Zona FdezNet»)
-- 1 día $10, 3 días $30, 7 días $70, 15 días $140, 1 mes $250.
-- Funcionan en todas las colonias donde está la red «Zona FdezNet»; la misma ficha sirve en cualquiera.
-- Cada ficha es para UN solo dispositivo.
-
-## Planes por zona
-- Vicente Guerrero y Flores Magón: Básico $220 (5 Mbps), Estándar $300 (10 Mbps), Plus $420 (15 Mbps).
-- Paraíso, Villa de Guadalupe y La Merced: Básico $270 (3 Mbps), Estándar $350 (6 Mbps), Plus $470 (10 Mbps).
-- Sagrado Corazón: plan de $250.
-- Instalación (incluye un mes gratis): Flores Magón, Vicente Guerrero y Sagrado Corazón $600; Paraíso, La Merced y Villa de Guadalupe $800. Primero pregunta la colonia.
+## Planes por zona y costo de instalación
+{p}
 
 ## Horario de atención
-- Lunes a sábado de 8:00 a 20:00. Domingo cerrado."""
+{p}""".format(p=PENDIENTE)

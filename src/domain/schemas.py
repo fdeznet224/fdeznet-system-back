@@ -238,7 +238,7 @@ class PppoePasswordConfig(BaseModel):
 
 class BrandingConfig(BaseModel):
     empresa_nombre: str = Field(default="Mi ISP", min_length=1, max_length=120)
-    sistema_nombre: str = Field(default="FdezPay", min_length=1, max_length=120)
+    sistema_nombre: str = Field(default="WisPay", min_length=1, max_length=120)
     logo_url: Optional[str] = Field(default=None, max_length=500)
     favicon_url: Optional[str] = Field(default=None, max_length=500)
     color_primario: str = Field(default="#2563eb", pattern=r"^#[0-9a-fA-F]{6}$")

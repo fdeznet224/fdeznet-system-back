@@ -1857,7 +1857,7 @@ class ConfiguracionSistema(Base):
 
     # --- IDENTIDAD / MARCA BLANCA ---
     empresa_nombre = Column(String(120), nullable=False, default="Mi ISP")
-    sistema_nombre = Column(String(120), nullable=False, default="FdezPay")
+    sistema_nombre = Column(String(120), nullable=False, default="WisPay")
     logo_url = Column(String(500), nullable=True)
     favicon_url = Column(String(500), nullable=True)
     color_primario = Column(String(7), nullable=False, default="#2563eb")

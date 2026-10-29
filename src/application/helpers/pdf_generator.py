@@ -109,7 +109,7 @@ async def generar_recibo_pdf(
     cargos_adicionales=None,
     total_factura=None,
     conceptos_pagados=None,
-    empresa_nombre="FdezNet",
+    empresa_nombre="Mi ISP",
     color_primario="#1e3a8a",
     color_secundario="#2563eb",
     pie_recibo=None,
