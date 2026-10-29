@@ -67,3 +67,8 @@ details.respaldo[open] .chevron::after { content: "⌄"; }
 .acciones { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 16px 12px; }
 .acciones form { display: flex; flex: 1; gap: 8px; min-width: 220px; margin: 0; }
 .acciones input { text-align: left; border: 1px solid var(--linea); border-radius: 8px; padding: 6px 10px; }
+
+/* Páginas públicas (privacidad, términos) */
+.lista.texto { padding: 4px 16px; line-height: 1.5; }
+.texto h2 { margin: 18px 0 4px; }
+.texto p, .texto ul { margin: 10px 0; }

@@ -716,6 +716,16 @@ def permitir_certificado(domain: str = ""):
     return {"ok": True}
 
 
+@app.get("/privacidad", response_class=HTMLResponse)
+def privacidad(request: Request):
+    return _render(request, "privacidad.html")
+
+
+@app.get("/terminos", response_class=HTMLResponse)
+def terminos(request: Request):
+    return _render(request, "terminos.html")
+
+
 @app.get("/salud")
 def salud():
     return {"status": "ok"}

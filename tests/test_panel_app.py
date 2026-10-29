@@ -331,3 +331,10 @@ def test_desconectar_drive(con_drive, tmp_path):
     assert cliente.get("/drive/estado", params=_firmado("estado")).json()["conectado"]
     estado = cliente.post("/drive/desconectar", params=_firmado("desconectar")).json()
     assert not estado["conectado"] and not (tmp_path / "drive" / "aaa.conf").exists()
+
+
+def test_privacidad_y_terminos_son_publicos(panel):
+    cliente, _ = panel
+    privacidad = cliente.get("/privacidad")
+    assert privacidad.status_code == 200 and "drive.file" in privacidad.text
+    assert cliente.get("/terminos").status_code == 200

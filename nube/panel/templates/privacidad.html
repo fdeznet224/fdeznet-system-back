@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block titulo %}Aviso de privacidad · WisPay{% endblock %}
+{% block contenido %}
+<h1>Aviso de privacidad</h1>
+<div class="lista texto">
+<p>WisPay es un sistema para administrar proveedores de internet (ISP): clientes, cobranza, red y
+mensajes. Cada ISP tiene su propia instalación aislada en {{ dominio_base }}.</p>
+
+<h2>Datos de los ISP y de sus clientes</h2>
+<p>Los datos que cada ISP captura (sus clientes, pagos, equipos y conversaciones) le pertenecen a ese
+ISP. WisPay los guarda en su servidor solo para dar el servicio, no los vende ni los comparte con
+terceros, y no los usa para publicidad.</p>
+
+<h2>Google Drive</h2>
+<p>Si un ISP conecta su cuenta de Google, WisPay pide únicamente:</p>
+<ul>
+  <li><b>Su correo electrónico</b>, para mostrarle con qué cuenta quedó conectado.</li>
+  <li><b>Permiso para los archivos que WisPay crea en su Drive</b> (<code>drive.file</code>). Con él
+    sube una copia de respaldo diaria, cifrada, a la carpeta «Respaldos WisPay», y borra los
+    respaldos de más de 30 días. WisPay no puede ver ni modificar ningún otro archivo de su Drive.</li>
+</ul>
+<p>La autorización de Google se guarda cifrada en el servidor de WisPay y se usa solo para subir,
+listar, bajar (para restaurar) y borrar esos respaldos. No se transfiere a nadie ni se usa para otro
+fin. El uso de la información recibida de las API de Google cumple con la
+<a href="https://developers.google.com/terms/api-services-user-data-policy">Política de Datos del
+Usuario de los Servicios de las API de Google</a>, incluidos los requisitos de uso limitado.</p>
+<p>El ISP puede desconectar su Drive en cualquier momento desde su panel (Configuración →
+Almacenamiento) o desde <a href="https://myaccount.google.com/permissions">su cuenta de Google</a>.
+Al desconectarlo, WisPay borra la autorización; los respaldos ya subidos se quedan en su Drive y
+puede borrarlos cuando quiera.</p>
+
+<h2>Contacto</h2>
+<p>Dudas o solicitudes sobre tus datos: <a href="mailto:ariseldev224@gmail.com">ariseldev224@gmail.com</a>.</p>
+</div>
+{% endblock %}
