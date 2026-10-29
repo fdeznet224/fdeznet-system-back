@@ -93,5 +93,16 @@ class Respaldo(Base):
     error: Mapped[str | None] = mapped_column(Text)
 
 
+class DriveIsp(Base):
+    """Cuenta de Google Drive que conectó un ISP; la llave vive en secretos/drive/<slug>.conf."""
+
+    __tablename__ = "drive"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    isp_id: Mapped[int] = mapped_column(ForeignKey("isps.id"), unique=True)
+    correo: Mapped[str] = mapped_column(String(255))
+    conectado: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 def crear_tablas() -> None:
     Base.metadata.create_all(engine)

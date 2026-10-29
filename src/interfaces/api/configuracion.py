@@ -45,6 +45,7 @@ from src.domain.schemas import (
     BotVisualFlowUpdate,
 )
 from src.application.services.pagos_captura import config_pagos
+from src.application.services import respaldo_drive_service
 from src.application.services.branding_service import get_or_create_system_config
 from src.infrastructure.auth import get_current_active_user
 from src.application.services.storage_service import (
@@ -345,6 +346,30 @@ async def subir_archivo_marca(
 async def obtener_almacenamiento(db: AsyncSession = Depends(get_db)):
     config = await _obtener_configuracion(db)
     return await storage_dashboard(db, config)
+
+
+@router.get("/respaldo-drive")
+async def estado_respaldo_drive():
+    return await respaldo_drive_service.estado()
+
+
+class ConectarDriveRequest(BaseModel):
+    correo: str = Field(default="", max_length=255)
+
+
+@router.post("/respaldo-drive/conectar")
+async def conectar_respaldo_drive(datos: ConectarDriveRequest):
+    return {"url": respaldo_drive_service.enlace_conectar(datos.correo.strip())}
+
+
+@router.post("/respaldo-drive/desconectar")
+async def desconectar_respaldo_drive():
+    return await respaldo_drive_service.desconectar()
+
+
+@router.post("/respaldo-drive/respaldar")
+async def respaldar_en_drive():
+    return await respaldo_drive_service.respaldar()
 
 
 @router.put("/almacenamiento/politica")

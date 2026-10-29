@@ -84,6 +84,37 @@ docker run --rm -it -v $PWD/secretos:/config/rclone rclone/rclone:1.68.2 config
 docker compose -f compose.panel.yml --env-file secretos/panel.env up -d
 ```
 
+### En el Google Drive de cada ISP
+
+Cada ISP puede conectar su propio Google Drive en *Configuración → Almacenamiento*.
+Desde entonces su respaldo diario se sube **cifrado** a la carpeta
+`PANEL_DRIVE_CARPETA` («Respaldos WisPay») de su Drive. Ahí se guardan
+`PANEL_DRIVE_DIAS` días (30) y en la VPS solo queda el último
+(`PANEL_RESPALDOS_LOCALES_CON_DRIVE=1`). El permiso que se pide es `drive.file`:
+el sistema solo ve los archivos que él mismo sube, nada más del Drive del ISP.
+
+1. En Google Cloud Console crea un proyecto. En *Pantalla de consentimiento
+   de OAuth* pon el nombre de la app y el correo de soporte, agrega los permisos
+   `openid`, `email` y `.../auth/drive.file`, y **publica la app** («En
+   producción»). En modo de prueba Google vence la conexión a los 7 días.
+2. Habilita la *Google Drive API*.
+3. *Credenciales → Crear ID de cliente de OAuth → Aplicación web*, con URI de
+   redireccionamiento `https://panel.<dominio>/drive/regreso`.
+4. En `secretos/panel.env`:
+   ```
+   PANEL_GOOGLE_CLIENT_ID=...apps.googleusercontent.com
+   PANEL_GOOGLE_CLIENT_SECRET=...
+   PANEL_RESPALDO_CLAVE=<openssl rand -base64 32>
+   ```
+   **Guarda `PANEL_RESPALDO_CLAVE` también fuera de la VPS**: sin ella los
+   respaldos de Drive no se pueden abrir.
+
+La llave de Google de cada ISP queda en `secretos/drive/<isp>.conf` (remoto de
+rclone `cifrado:`). La API de cada ISP le pide las cosas al panel firmadas con
+`NUBE_PANEL_SECRETO` (su `api.env`; el panel lo agrega al arrancar a los ISP
+que no lo tengan, y la API lo toma al recrearse). Para restaurar desde Drive:
+detalle del ISP → *En su Google Drive* → **Traer a la VPS**, y luego Restaurar.
+
 **Restaurar** (detalle del ISP → respaldo → escribir su subdominio) detiene sus
 contenedores, vacía su base y volúmenes, los carga del respaldo y lo vuelve a
 encender. Antes deja un respaldo del estado actual. A mano:

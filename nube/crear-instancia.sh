@@ -4,7 +4,8 @@
 #   nube/crear-instancia.sh <isp> <puerto_web> <puerto_wireguard> <dominio>
 # Ejemplo: nube/crear-instancia.sh prueba 18001 51821 prueba.fdezpay.com
 # Opcionales por entorno (los usa el panel central): LIMITE_CLIENTES,
-# LIMITE_ROUTERS, CON_WHATSAPP=0 e IMAGEN_VERSION.
+# LIMITE_ROUTERS, CON_WHATSAPP=0, IMAGEN_VERSION, y NUBE_PANEL_URL con
+# NUBE_PANEL_SECRETO para que el ISP conecte su Google Drive.
 set -Eeuo pipefail
 
 ISP="${1:?Falta el nombre del ISP (minúsculas, números y guiones)}"
@@ -70,6 +71,9 @@ VPN_SUBNET_BASE=10.9.0
 VPN_SERVER_IP=${VPN_SERVER_IP:-}
 FDEZNET_LIMITE_CLIENTES=${LIMITE_CLIENTES:-}
 FDEZNET_LIMITE_ROUTERS=${LIMITE_ROUTERS:-}
+NUBE_ISP=$ISP
+NUBE_PANEL_URL=${NUBE_PANEL_URL:-}
+NUBE_PANEL_SECRETO=${NUBE_PANEL_SECRETO:-}
 ENV
 
 # 3. Contenedores.

@@ -6,7 +6,8 @@
 # (los pasa el panel central):
 #   RESPALDOS_LOCALES=7       cuántos se quedan en la VPS
 #   RESPALDO_REMOTO=r2:fdezpay-respaldos   copia fuera de la VPS con rclone
-#                             (configurado en secretos/rclone.conf)
+#                             (configurado en secretos/rclone.conf o en RCLONE_CONFIG;
+#                             el panel pasa el Drive del ISP si lo conectó)
 #   RESPALDO_DIAS_REMOTO=30   cuántos días se guardan fuera
 set -Eeuo pipefail
 
@@ -67,7 +68,7 @@ if [[ -z "${RESPALDO_REMOTO:-}" ]]; then
 elif ! command -v rclone >/dev/null; then
   echo "REMOTO=error: rclone no está instalado"
 else
-  export RCLONE_CONFIG="$DIR/secretos/rclone.conf"
+  export RCLONE_CONFIG="${RCLONE_CONFIG:-$DIR/secretos/rclone.conf}"
   if error="$(rclone copy "$ARCHIVO" "$RESPALDO_REMOTO/$ISP/" 2>&1 \
        && rclone delete --min-age "${RESPALDO_DIAS_REMOTO:-30}d" "$RESPALDO_REMOTO/$ISP/" 2>&1)"; then
     echo "REMOTO=ok"

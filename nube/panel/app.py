@@ -8,6 +8,7 @@ import hmac
 import logging
 import os
 import secrets
+import subprocess
 import threading
 import time
 from collections import defaultdict, deque
@@ -15,16 +16,18 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import urlencode
 
+import httpx
 import jwt
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.hash import pbkdf2_sha256
 from sqlalchemy import select
 
-from nube.panel import docker_ops
+from nube.panel import docker_ops, drive
 from nube.panel.cuentas import (
     PRIMER_PUERTO_WEB,
     PRIMER_PUERTO_WG,
@@ -35,7 +38,7 @@ from nube.panel.cuentas import (
     segundos_hasta,
     siguiente_puerto,
 )
-from nube.panel.db import Bitacora, Isp, Pago, Respaldo, Sesion, crear_tablas
+from nube.panel.db import Bitacora, DriveIsp, Isp, Pago, Respaldo, Sesion, crear_tablas
 
 USUARIO = os.getenv("PANEL_USUARIO", "dueno")
 CLAVE_HASH = os.getenv("PANEL_CLAVE_HASH", "")
@@ -54,8 +57,29 @@ AQUI = Path(__file__).resolve().parent
 log = logging.getLogger("panel")
 
 
+URL_PANEL = f"https://panel.{DOMINIO_BASE}"
+REGRESO_DRIVE = f"{URL_PANEL}/drive/regreso"
+
+
+def _enlace(slug: str) -> dict[str, str]:
+    """Lo que la API de un ISP necesita para pedirle cosas al panel (su Drive)."""
+    return {"NUBE_PANEL_URL": URL_PANEL, "NUBE_PANEL_SECRETO": drive.secreto_isp(SECRETO, slug)}
+
+
+def _asegurar_enlaces() -> None:
+    with Sesion() as db:
+        slugs = list(db.scalars(select(Isp.slug)))
+    for slug in slugs:
+        try:
+            if docker_ops.asegurar_enlace(slug, {"NUBE_ISP": slug, **_enlace(slug)}):
+                log.warning("%s: api.env con enlace al panel; recrea su API para que lo tome", slug)
+        except OSError:
+            log.exception("No se pudo revisar el api.env de %s", slug)
+
+
 @asynccontextmanager
 async def ciclo_de_vida(_app: FastAPI):
+    _asegurar_enlaces()
     if HORA_RESPALDO:
         threading.Thread(target=_respaldos_diarios, daemon=True, name="respaldos").start()
     yield
@@ -260,7 +284,7 @@ def nuevo(
             clave = docker_ops.crear(
                 isp.slug, isp.web_port, isp.wg_port, isp.dominio,
                 limite_clientes=isp.limite_clientes, limite_routers=isp.limite_routers,
-                whatsapp=isp.whatsapp, version=isp.version,
+                whatsapp=isp.whatsapp, version=isp.version, enlace=_enlace(isp.slug),
             )
         except (docker_ops.ErrorDocker, OSError) as error:
             return _render(request, "nuevo.html", csrf, versiones=[version], error=str(error), previo=isp)
@@ -290,6 +314,13 @@ def detalle(request: Request, isp_id: int, msg: str = "", csrf: str = Depends(se
             select(Bitacora).where(Bitacora.isp_id == isp_id).order_by(Bitacora.fecha.desc()).limit(20)
         ).all()
         respaldo = _estado_respaldo(db, isp)
+        cuenta_drive = db.scalar(select(DriveIsp).where(DriveIsp.isp_id == isp_id))
+    try:
+        en_drive = drive.listar(isp.slug)
+        error_drive = None
+    except (docker_ops.ErrorDocker, OSError, ValueError) as fallo:
+        en_drive, error_drive = [], str(fallo)
+    locales = {r["nombre"] for r in docker_ops.listar_respaldos(isp.slug)}
     contenedores, memoria, error = _contenedores()
     try:
         versiones = docker_ops.versiones_disponibles()
@@ -307,7 +338,8 @@ def detalle(request: Request, isp_id: int, msg: str = "", csrf: str = Depends(se
         request, "detalle.html", csrf, isp=isp, estado=_estado(isp), pagos=pagos,
         bitacora=bitacora, servicios=servicios, versiones=versiones, msg=msg, error=error,
         hoy=date.today(), respaldo=respaldo, respaldos=docker_ops.listar_respaldos(isp.slug),
-        hora_respaldo=HORA_RESPALDO,
+        hora_respaldo=HORA_RESPALDO, cuenta_drive=cuenta_drive, error_drive=error_drive,
+        en_drive=[r for r in en_drive if r["nombre"] not in locales],
     )
 
 
@@ -478,7 +510,7 @@ def _respaldar(isp_id: int, slug: str) -> str | None:
             return "Ya hay un respaldo o restauración en curso"
         _ocupados.add(slug)
     try:
-        datos = docker_ops.respaldar(slug)
+        datos = docker_ops.respaldar(slug, drive.ajustes_respaldo(slug) if drive.conectado(slug) else None)
         error = None
     except Exception as fallo:  # noqa: BLE001 - cualquier falla se anota en el panel
         datos, error = {}, str(fallo)[-500:] or fallo.__class__.__name__
@@ -553,6 +585,125 @@ def restaurar_respaldo(isp_id: int, nombre: str, _csrf_ok: str = Depends(sesion)
         _bitacora(db, isp.id, "restaurado", f"{nombre} (antes se respaldó el estado previo)")
         db.commit()
     return _ir(f"/isp/{isp_id}", f"Restaurado desde {nombre}")
+
+
+@app.post("/isp/{isp_id}/drive/{nombre}/traer")
+def traer_de_drive(isp_id: int, nombre: str, _csrf_ok: str = Depends(sesion)):
+    with Sesion() as db:
+        isp = _isp(db, isp_id)
+    try:
+        drive.traer(isp.slug, nombre)
+    except (docker_ops.ErrorDocker, OSError, subprocess.TimeoutExpired) as error:
+        return _ir(f"/isp/{isp_id}", f"Error: {error}")
+    return _ir(f"/isp/{isp_id}", f"{nombre} ya está en la VPS; ahí se puede restaurar")
+
+
+# --- Google Drive del ISP (lo pide la API del ISP con firma) -------------------
+
+def _isp_firmado(db, isp: str, accion: str, vence: str, firma: str) -> Isp:
+    registro = db.scalar(select(Isp).where(Isp.slug == isp))
+    if not registro or not drive.firma_valida(SECRETO, isp, accion, vence, firma):
+        raise HTTPException(status_code=403, detail="Enlace vencido; vuelve a intentarlo desde tu panel")
+    return registro
+
+
+def _volver_al_isp(isp: Isp, resultado: str) -> RedirectResponse:
+    destino = f"https://{isp.dominio}/admin/configuracion/almacenamiento?{urlencode({'drive': resultado})}"
+    return RedirectResponse(destino, status_code=303)
+
+
+@app.get("/drive/conectar")
+def drive_conectar(isp: str = "", vence: str = "", firma: str = "", correo: str = ""):
+    with Sesion() as db:
+        registro = _isp_firmado(db, isp, "conectar", vence, firma)
+    if not drive.configurado():
+        return _volver_al_isp(registro, "El respaldo en Drive todavía no está disponible; avisa a soporte")
+    estado = jwt.encode({"isp": registro.slug, "exp": int(time.time()) + drive.VIGENCIA_ENLACE}, SECRETO, algorithm="HS256")
+    return RedirectResponse(drive.url_autorizar(REGRESO_DRIVE, estado, correo.strip()), status_code=303)
+
+
+@app.get("/drive/regreso")
+def drive_regreso(state: str = "", code: str = "", error: str = ""):
+    try:
+        slug = jwt.decode(state, SECRETO, algorithms=["HS256"])["isp"]
+    except (jwt.PyJWTError, KeyError):
+        raise HTTPException(status_code=400, detail="Enlace vencido; vuelve a conectar desde tu panel")
+    with Sesion() as db:
+        isp = db.scalar(select(Isp).where(Isp.slug == slug))
+        if not isp:
+            raise HTTPException(status_code=404)
+        if error or not code:
+            return _volver_al_isp(isp, "No se conectó: no se dio permiso en Google")
+        try:
+            token, correo = drive.canjear_codigo(code, REGRESO_DRIVE)
+            drive.guardar_conexion(slug, token)
+        except (drive.ErrorDrive, httpx.HTTPError, OSError, subprocess.TimeoutExpired) as fallo:
+            _bitacora(db, isp.id, "drive falló", str(fallo))
+            db.commit()
+            return _volver_al_isp(isp, f"No se conectó: {fallo}")
+        cuenta = db.scalar(select(DriveIsp).where(DriveIsp.isp_id == isp.id)) or DriveIsp(isp_id=isp.id)
+        cuenta.correo, cuenta.conectado = correo or "cuenta de Google", datetime.now()
+        db.add(cuenta)
+        _bitacora(db, isp.id, "drive conectado", cuenta.correo)
+        db.commit()
+    # Primer respaldo de una vez: así el ISP ve que ya quedó.
+    threading.Thread(target=_respaldar, args=(isp.id, slug), daemon=True).start()
+    return _volver_al_isp(isp, "ok")
+
+
+def _estado_drive(db, isp: Isp) -> dict:
+    cuenta = db.scalar(select(DriveIsp).where(DriveIsp.isp_id == isp.id))
+    ultimo = db.scalar(
+        select(Respaldo).where(Respaldo.isp_id == isp.id).order_by(Respaldo.id.desc()).limit(1)
+    )
+    return {
+        "disponible": drive.configurado(),
+        "conectado": bool(cuenta) and drive.conectado(isp.slug),
+        "correo": cuenta.correo if cuenta else None,
+        "conectado_desde": cuenta.conectado.isoformat() if cuenta else None,
+        "carpeta": drive.CARPETA,
+        "dias": int(drive.DIAS_EN_DRIVE),
+        "hora": HORA_RESPALDO or None,
+        "en_curso": isp.slug in _ocupados,
+        "ultimo": {
+            "fecha": ultimo.fecha.isoformat(),
+            "tamano": ultimo.tamano,
+            # REMOTO=ok cuando subió; si no, el error (de rclone o del respaldo mismo).
+            "subido": ultimo.remoto == "ok",
+            "error": ultimo.error or (ultimo.remoto if ultimo.remoto not in {"ok", "no", None} else None),
+        } if ultimo else None,
+    }
+
+
+@app.get("/drive/estado")
+def drive_estado(isp: str = "", vence: str = "", firma: str = ""):
+    with Sesion() as db:
+        return _estado_drive(db, _isp_firmado(db, isp, "estado", vence, firma))
+
+
+@app.post("/drive/desconectar")
+def drive_desconectar(isp: str = "", vence: str = "", firma: str = ""):
+    with Sesion() as db:
+        registro = _isp_firmado(db, isp, "desconectar", vence, firma)
+        drive.desconectar(registro.slug)
+        cuenta = db.scalar(select(DriveIsp).where(DriveIsp.isp_id == registro.id))
+        if cuenta:
+            db.delete(cuenta)
+            _bitacora(db, registro.id, "drive desconectado", cuenta.correo)
+        db.commit()
+        return _estado_drive(db, registro)
+
+
+@app.post("/drive/respaldar")
+def drive_respaldar(isp: str = "", vence: str = "", firma: str = ""):
+    with Sesion() as db:
+        registro = _isp_firmado(db, isp, "respaldar", vence, firma)
+    if registro.slug in _ocupados:
+        return JSONResponse({"detail": "Ya se está respaldando"}, status_code=409)
+    threading.Thread(target=_respaldar, args=(registro.id, registro.slug), daemon=True).start()
+    with Sesion() as db:
+        estado = _estado_drive(db, registro)
+    return {**estado, "en_curso": True}
 
 
 @app.get("/caddy/permitir")

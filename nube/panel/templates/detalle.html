@@ -74,7 +74,24 @@
   </details>
   {% endfor %}
 </div>
-<p class="nota">Se respalda solo cada día{% if hora_respaldo %} a las {{ hora_respaldo }}{% endif %}: base, WireGuard, archivos y sesión de WhatsApp.</p>
+<p class="nota">Se respalda solo cada día{% if hora_respaldo %} a las {{ hora_respaldo }}{% endif %}: base, WireGuard, archivos y sesión de WhatsApp.
+  {% if cuenta_drive %}Se sube cifrado al Google Drive del ISP ({{ cuenta_drive.correo }}).{% else %}El ISP no ha conectado su Google Drive.{% endif %}</p>
+{% if cuenta_drive %}
+<h2>En su Google Drive</h2>
+<div class="lista">
+  {% if error_drive %}<div class="fila"><span class="punto rojo"></span><div class="crece rojo">{{ error_drive }}</div></div>{% endif %}
+  {% for r in en_drive %}
+  <div class="fila"><div class="crece"><div class="titulo">{{ r.fecha.strftime('%d/%m/%Y %H:%M') }}</div>
+    <div class="sub">{{ r.tamano | tamano }}</div></div>
+    <form method="post" action="/isp/{{ isp.id }}/drive/{{ r.nombre }}/traer">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button class="boton chico secundario">Traer a la VPS</button></form>
+  </div>
+  {% else %}
+  {% if not error_drive %}<div class="fila"><div class="crece sub">Los que están en Drive también están arriba.</div></div>{% endif %}
+  {% endfor %}
+</div>
+<p class="nota">Para restaurar uno de Drive, primero tráelo a la VPS; aparece arriba con su botón Restaurar.</p>
+{% endif %}
 <form method="post" action="/isp/{{ isp.id }}/respaldar">
   <input type="hidden" name="csrf" value="{{ csrf }}"><button class="boton secundario">Respaldar ahora</button></form>
 

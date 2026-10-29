@@ -29,7 +29,7 @@ def panel(tmp_path, monkeypatch):
     monkeypatch.setattr(docker_ops, "versiones_disponibles", lambda: ["2.109.0"])
     monkeypatch.setattr(docker_ops, "puertos_en_uso", lambda: ([], []))
     monkeypatch.setattr(docker_ops, "restablecer_admin", lambda slug, usuario, clave: llamadas.append(("restablecer", slug, usuario, clave)))
-    monkeypatch.setattr(docker_ops, "respaldar", lambda slug: llamadas.append(("respaldar", slug)) or {
+    monkeypatch.setattr(docker_ops, "respaldar", lambda slug, destino=None: llamadas.append(("respaldar", slug)) or {
         "ARCHIVO": f"{slug}-20261028-030000.tar", "TAMANO": "2048", "REMOTO": "ok"})
     monkeypatch.setattr(docker_ops, "restaurar", lambda slug, nombre, **k: llamadas.append(("restaurar", slug, nombre, k)))
     monkeypatch.setattr(docker_ops, "listar_respaldos", lambda slug: [
@@ -147,7 +147,7 @@ def test_respaldo_fallido_se_marca_en_inicio(panel, monkeypatch):
     cliente, _ = panel
     from nube.panel import docker_ops
 
-    def falla(slug):
+    def falla(slug, destino=None):
         raise docker_ops.ErrorDocker("disco lleno")
 
     monkeypatch.setattr(docker_ops, "respaldar", falla)
@@ -208,3 +208,126 @@ def test_restablecer_contrasena_del_admin_se_muestra_una_vez(panel):
     assert clave in respuesta.text and "Contraseña nueva" in respuesta.text
     detalle = cliente.get("/isp/1").text
     assert clave not in detalle and "contraseña restablecida" in detalle.lower()
+
+
+# --- Google Drive del ISP ------------------------------------------------------
+
+def _firmado(accion, isp="aaa", vence=None, secreto_panel="s" * 64):
+    import time
+
+    from nube.panel import drive
+
+    vence = vence or int(time.time()) + 60
+    firma = drive.firmar(drive.secreto_isp(secreto_panel, isp), isp, accion, vence)
+    return {"isp": isp, "vence": str(vence), "firma": firma}
+
+
+@pytest.fixture
+def con_drive(panel, tmp_path, monkeypatch):
+    from nube.panel import drive
+
+    monkeypatch.setattr(drive, "CLIENTE_ID", "cliente.apps.googleusercontent.com")
+    monkeypatch.setattr(drive, "CLIENTE_SECRETO", "secreto")
+    monkeypatch.setattr(drive, "CLAVE_CIFRADO", "c" * 32)
+    monkeypatch.setattr(drive, "CONFIGS", tmp_path / "drive")
+    monkeypatch.setattr(drive, "listar", lambda slug: [])
+    monkeypatch.setattr(drive, "canjear_codigo", lambda codigo, regreso: ({"refresh_token": "r"}, "red@gmail.com"))
+    guardados = []
+
+    def guardar(slug, token):
+        (tmp_path / "drive").mkdir(exist_ok=True)
+        (tmp_path / "drive" / f"{slug}.conf").write_text("token = {}")
+        guardados.append((slug, token))
+
+    monkeypatch.setattr(drive, "guardar_conexion", guardar)
+    monkeypatch.setattr(drive, "desconectar", lambda slug: (tmp_path / "drive" / f"{slug}.conf").unlink())
+    cliente, llamadas = panel
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "A", "slug": "aaa"})
+    return cliente, llamadas, guardados
+
+
+def test_alta_le_pasa_al_isp_su_enlace_con_el_panel(panel):
+    cliente, llamadas = panel
+    from nube.panel import drive
+
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "A", "slug": "aaa"})
+    assert llamadas[0][3]["enlace"] == {
+        "NUBE_PANEL_URL": "https://panel.ejemplo.com",
+        "NUBE_PANEL_SECRETO": drive.secreto_isp("s" * 64, "aaa"),
+    }
+
+
+def test_drive_sin_firma_valida_se_rechaza(con_drive):
+    cliente, _, _ = con_drive
+    assert cliente.get("/drive/estado", params={**_firmado("estado"), "firma": "0" * 64}).status_code == 403
+    # Firma de otra acción u otro ISP no sirve.
+    assert cliente.get("/drive/estado", params=_firmado("desconectar")).status_code == 403
+    assert cliente.get("/drive/estado", params=_firmado("estado", isp="otro")).status_code == 403
+    vencida = _firmado("estado", vence=1_000_000_000)
+    assert cliente.get("/drive/estado", params=vencida).status_code == 403
+
+
+def test_conectar_drive_y_primer_respaldo(con_drive):
+    cliente, llamadas, guardados = con_drive
+    from urllib.parse import parse_qs, urlparse
+
+    estado = cliente.get("/drive/estado", params=_firmado("estado")).json()
+    assert estado["disponible"] and not estado["conectado"]
+
+    google = cliente.get("/drive/conectar", params={**_firmado("conectar"), "correo": "red@gmail.com"})
+    assert google.status_code == 303
+    consulta = parse_qs(urlparse(google.headers["location"]).query)
+    assert consulta["redirect_uri"] == ["https://panel.ejemplo.com/drive/regreso"]
+    assert "https://www.googleapis.com/auth/drive.file" in consulta["scope"][0]
+    assert consulta["login_hint"] == ["red@gmail.com"]
+
+    regreso = cliente.get("/drive/regreso", params={"state": consulta["state"][0], "code": "codigo"})
+    assert regreso.headers["location"] == "https://aaa.ejemplo.com/admin/configuracion/almacenamiento?drive=ok"
+    assert guardados == [("aaa", {"refresh_token": "r"})]
+    estado = cliente.get("/drive/estado", params=_firmado("estado")).json()
+    assert estado["conectado"] and estado["correo"] == "red@gmail.com"
+    assert "Drive conectado" in cliente.get("/isp/1").text
+
+
+def test_regreso_sin_permiso_vuelve_al_isp_con_el_motivo(con_drive):
+    cliente, _, guardados = con_drive
+    import jwt
+
+    estado = jwt.encode({"isp": "aaa", "exp": 9_999_999_999}, "s" * 64, algorithm="HS256")
+    regreso = cliente.get("/drive/regreso", params={"state": estado, "error": "access_denied"})
+    assert regreso.headers["location"].startswith("https://aaa.ejemplo.com/admin/configuracion/almacenamiento?drive=No+se")
+    assert guardados == []
+    assert cliente.get("/drive/regreso", params={"state": "falso", "code": "x"}).status_code == 400
+
+
+def test_respaldo_con_drive_va_a_su_drive(con_drive, tmp_path, monkeypatch):
+    cliente, _, _ = con_drive
+    from nube.panel import docker_ops, drive
+
+    destinos = []
+    monkeypatch.setattr(docker_ops, "respaldar", lambda slug, destino=None: destinos.append(destino) or {
+        "ARCHIVO": f"{slug}-20261029-030000.tar", "TAMANO": "10", "REMOTO": "ok"})
+    csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', cliente.get("/").text).group(1)
+    cliente.post("/isp/1/respaldar", data={"csrf": csrf})
+    (tmp_path / "drive").mkdir(exist_ok=True)
+    (tmp_path / "drive" / "aaa.conf").write_text("token = {}")
+    cliente.post("/isp/1/respaldar", data={"csrf": csrf})
+    assert destinos[0] is None
+    assert destinos[1] == drive.ajustes_respaldo("aaa")
+    assert destinos[1]["RESPALDO_REMOTO"] == "cifrado:"
+
+
+def test_desconectar_drive(con_drive, tmp_path):
+    cliente, _, _ = con_drive
+    (tmp_path / "drive").mkdir(exist_ok=True)
+    (tmp_path / "drive" / "aaa.conf").write_text("token = {}")
+    from nube.panel import db
+
+    with db.Sesion() as sesion:
+        sesion.add(db.DriveIsp(isp_id=1, correo="red@gmail.com"))
+        sesion.commit()
+    assert cliente.get("/drive/estado", params=_firmado("estado")).json()["conectado"]
+    estado = cliente.post("/drive/desconectar", params=_firmado("desconectar")).json()
+    assert not estado["conectado"] and not (tmp_path / "drive" / "aaa.conf").exists()

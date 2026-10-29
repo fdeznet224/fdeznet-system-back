@@ -13,7 +13,7 @@ COPY --from=docker /usr/local/libexec/docker/cli-plugins/docker-compose /usr/loc
 # Copia de los respaldos fuera de la VPS (Cloudflare R2, Backblaze B2, Drive…).
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
 RUN pip install fastapi==0.135.2 starlette==1.3.1 "uvicorn[standard]==0.47.0" Jinja2==3.1.6 \
-        python-multipart==0.0.32 SQLAlchemy==2.0.48 PyJWT==2.14.0 passlib==1.7.4
+        python-multipart==0.0.32 SQLAlchemy==2.0.48 PyJWT==2.14.0 passlib==1.7.4 httpx==0.28.1
 WORKDIR /opt/panel
 COPY nube/__init__.py nube/__init__.py
 COPY nube/panel nube/panel

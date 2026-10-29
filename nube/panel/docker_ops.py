@@ -51,7 +51,7 @@ def _compose(slug: str, *args: str, timeout: int = 300) -> str:
 
 
 def crear(slug: str, web_port: int, wg_port: int, dominio: str, *, limite_clientes: int | None,
-          limite_routers: int | None, whatsapp: bool, version: str) -> str:
+          limite_routers: int | None, whatsapp: bool, version: str, enlace: dict[str, str]) -> str:
     """Da de alta la instancia y devuelve la contraseña inicial del admin."""
     salida = _correr(
         [str(NUBE_DIR / "crear-instancia.sh"), slug, str(web_port), str(wg_port), dominio],
@@ -61,6 +61,7 @@ def crear(slug: str, web_port: int, wg_port: int, dominio: str, *, limite_client
             "LIMITE_ROUTERS": "" if limite_routers is None else str(limite_routers),
             "CON_WHATSAPP": "1" if whatsapp else "0",
             "IMAGEN_VERSION": version,
+            **enlace,
         },
     )
     coincide = re.search(r"^ADMIN_PASSWORD=(\S+)$", salida, re.MULTILINE)
@@ -109,6 +110,21 @@ def aplicar_ajustes(slug: str, *, version: str, whatsapp: bool, limite_clientes:
         except ErrorDocker:
             pass  # No tenía bot.
     _compose(slug, "up", "-d", "--remove-orphans", timeout=600)
+
+
+def asegurar_enlace(slug: str, enlace: dict[str, str]) -> bool:
+    """Agrega a un ISP ya creado lo que su API necesita para hablar con el panel.
+
+    Devuelve True si cambió el api.env (la API lo toma al recrearse).
+    """
+    archivo = _instancia(slug) / "api.env"
+    if not archivo.is_file():
+        return False
+    actual = archivo.read_text(encoding="utf-8")
+    faltan = {clave: valor for clave, valor in enlace.items() if f"\n{clave}={valor}\n" not in f"\n{actual}"}
+    if faltan:
+        _editar_env(archivo, faltan)
+    return bool(faltan)
 
 
 def detener(slug: str) -> None:
@@ -173,9 +189,15 @@ def _claves(salida: str) -> dict[str, str]:
     return dict(re.findall(r"^([A-Z]+)=(.*)$", salida, re.MULTILINE))
 
 
-def respaldar(slug: str) -> dict[str, str]:
-    """Respalda base, volúmenes y secretos; devuelve ARCHIVO, TAMANO y REMOTO."""
-    salida = _correr([str(NUBE_DIR / "respaldar-instancia.sh"), slug], timeout=1800, env=_ajustes_respaldo())
+def respaldar(slug: str, destino: dict[str, str] | None = None) -> dict[str, str]:
+    """Respalda base, volúmenes y secretos; devuelve ARCHIVO, TAMANO y REMOTO.
+
+    destino reemplaza la copia fuera de la VPS (el Drive del ISP).
+    """
+    salida = _correr(
+        [str(NUBE_DIR / "respaldar-instancia.sh"), slug], timeout=1800,
+        env={**_ajustes_respaldo(), **(destino or {})},
+    )
     datos = _claves(salida)
     if "ARCHIVO" not in datos:
         raise ErrorDocker("El respaldo terminó sin archivo")
