@@ -100,7 +100,10 @@ def canjear_codigo(codigo: str, regreso: str) -> tuple[dict, str]:
     if respuesta.status_code != 200 or not datos.get("refresh_token"):
         raise ErrorDrive(datos.get("error_description") or datos.get("error") or "Google no dio acceso")
     if "drive.file" not in datos.get("scope", ""):
-        raise ErrorDrive("No se dio permiso para guardar en Drive; vuelve a conectar y marca la casilla de Drive")
+        raise ErrorDrive(
+            "Google no dio permiso para Drive: vuelve a conectar y, en la pantalla de Google, "
+            "marca la casilla «Ver, editar, crear y borrar solo los archivos específicos de Google Drive»"
+        )
     vence = datetime.now(timezone.utc) + timedelta(seconds=int(datos.get("expires_in", 3600)))
     token = {
         "access_token": datos["access_token"],
