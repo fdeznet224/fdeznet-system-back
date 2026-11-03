@@ -6,6 +6,7 @@ from sqlalchemy import (
     String,
     Boolean,
     BigInteger,
+    LargeBinary,
     DateTime,
     Enum,
     ForeignKey,
@@ -896,6 +897,23 @@ class PushSuscripcionModel(Base):
     creado_en = Column(DateTime, nullable=False, default=datetime.now)
     ultimo_envio = Column(DateTime, nullable=True)
     fallos = Column(Integer, nullable=False, default=0, server_default="0")
+
+
+class CredencialAccesoModel(Base):
+    """Llave de acceso (passkey) de un usuario: entra con la huella o la cara de su celular.
+
+    La huella nunca sale del teléfono; aquí solo queda la llave pública.
+    """
+    __tablename__ = "credenciales_acceso"
+
+    id = Column(Integer, primary_key=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True)
+    credencial_id = Column(String(255), nullable=False, unique=True)  # base64url
+    llave_publica = Column(LargeBinary, nullable=False)
+    contador = Column(Integer, nullable=False, default=0, server_default="0")
+    nombre = Column(String(80), nullable=True)  # «Celular de Luis»
+    creado = Column(DateTime, nullable=False, default=func.now(), server_default=func.now())
+    ultimo_uso = Column(DateTime, nullable=True)
 
 
 class EquipoNombreModel(Base):

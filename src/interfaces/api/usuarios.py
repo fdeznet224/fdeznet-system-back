@@ -86,3 +86,17 @@ async def eliminar_usuario(
         return {"status": "success", "message": "Usuario eliminado correctamente"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{user_id}/huellas")
+async def huellas_de_usuario(user_id: int, db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
+    from src.application.services.huella_service import HuellaService
+
+    return {"celulares": len(await HuellaService(db).llaves(user_id))}
+
+
+@router.delete("/{user_id}/huellas")
+async def quitar_huellas_de_usuario(user_id: int, db: AsyncSession = Depends(get_db), current_user=Depends(role_required(["admin"]))):
+    """Si alguien perdió su celular: ya no puede entrar con esa huella (la contraseña sigue)."""
+    from src.application.services.huella_service import HuellaService
+
+    return {"quitadas": await HuellaService(db).quitar(user_id)}

@@ -24,6 +24,11 @@ class AuthService:
         ):
             raise ValueError("Usuario o contraseña incorrectos")
 
+        return self.sesion_para(user)
+
+    @staticmethod
+    def sesion_para(user) -> dict:
+        """La sesión de un usuario ya verificado (contraseña o huella)."""
         # 3. Generar Token
         minutos = minutos_de_sesion(user.rol)
         access_token = create_access_token(
