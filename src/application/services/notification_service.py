@@ -47,6 +47,13 @@ PLANTILLAS_OBLIGATORIAS = {
         "se incluirá en tu próxima factura del *{fecha_proxima_factura}*.\n\n"
         "Si ya pagaste, omite este mensaje."
     ),
+    "recordatorio_prorrateo": (
+        "⏰ Hola {nombre}, mañana *{fecha_proxima_factura}* tu saldo de prorrateo de "
+        "*{total_factura}* (del {periodo_desde} al {periodo_hasta}) se suma a tu factura.\n\n"
+        "Si quieres, puedes pagarlo hoy y mandarnos tu comprobante por aquí. "
+        "Este saldo *no corta tu servicio*.\n\n"
+        "Si ya pagaste, omite este mensaje."
+    ),
     "promesa_pago": (
         "✅ Hola {nombre}, registramos tu promesa de pago por "
         "{monto_promesa} con fecha límite {fecha_limite_promesa}. "

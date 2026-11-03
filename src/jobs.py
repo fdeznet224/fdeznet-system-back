@@ -636,6 +636,14 @@ async def tarea_cron_unificada():
                             origen="Recordatorios",
                             mensaje=f"Promesas que vencen hoy: {resultado_promesas}",
                         ))
+                    # El prorrateo sin pagar que mañana se suma a su factura.
+                    resultado_prorrateo = await billing_service.enviar_recordatorios_prorrateo()
+                    if resultado_prorrateo["recordatorios_prorrateo"]:
+                        db.add(LogCronjobModel(
+                            nivel="INFO",
+                            origen="Recordatorios",
+                            mensaje=f"Prorrateos que mañana se suman a su factura: {resultado_prorrateo}",
+                        ))
 
             # ------------------------------------------------------
             # C. MOTOR DE CORTES AUTOMÁTICOS (Fecha límite superada)

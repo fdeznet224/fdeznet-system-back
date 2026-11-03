@@ -1,4 +1,4 @@
-"""Plantilla del aviso de prorrateo (no corta; se suma a la próxima factura)
+"""Plantillas del prorrateo: aviso (pagará después) y recordatorio un día antes
 
 La deja en Plantillas Mensajes para que el ISP la edite; si ya existe, no se toca.
 
@@ -25,17 +25,31 @@ AVISO_PRORRATEO = (
     "Si ya pagaste, omite este mensaje."
 )
 
+RECORDATORIO_PRORRATEO = (
+    "⏰ Hola {nombre}, mañana *{fecha_proxima_factura}* tu saldo de prorrateo de "
+    "*{total_factura}* (del {periodo_desde} al {periodo_hasta}) se suma a tu factura.\n\n"
+    "Si quieres, puedes pagarlo hoy y mandarnos tu comprobante por aquí. "
+    "Este saldo *no corta tu servicio*.\n\n"
+    "Si ya pagaste, omite este mensaje."
+)
+
+
+PLANTILLAS = {"aviso_prorrateo": AVISO_PRORRATEO, "recordatorio_prorrateo": RECORDATORIO_PRORRATEO}
+
 
 def upgrade() -> None:
-    op.get_bind().execute(
-        sa.text(
-            "INSERT INTO plantillas_mensajes (tipo, texto, activo) "
-            "SELECT 'aviso_prorrateo', :texto, 1 FROM DUAL "
-            "WHERE NOT EXISTS (SELECT 1 FROM plantillas_mensajes WHERE tipo = 'aviso_prorrateo')"
-        ),
-        {"texto": AVISO_PRORRATEO},
-    )
+    for tipo, texto in PLANTILLAS.items():
+        op.get_bind().execute(
+            sa.text(
+                "INSERT INTO plantillas_mensajes (tipo, texto, activo) "
+                "SELECT :tipo, :texto, 1 FROM DUAL "
+                "WHERE NOT EXISTS (SELECT 1 FROM plantillas_mensajes WHERE tipo = :tipo)"
+            ),
+            {"tipo": tipo, "texto": texto},
+        )
 
 
 def downgrade() -> None:
-    op.get_bind().execute(sa.text("DELETE FROM plantillas_mensajes WHERE tipo = 'aviso_prorrateo'"))
+    op.get_bind().execute(
+        sa.text("DELETE FROM plantillas_mensajes WHERE tipo IN ('aviso_prorrateo', 'recordatorio_prorrateo')")
+    )

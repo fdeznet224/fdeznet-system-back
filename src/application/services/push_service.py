@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 TITULOS = {
     "nueva_factura": "Nueva factura",
     "aviso_prorrateo": "Saldo de prorrateo",
+    "recordatorio_prorrateo": "Tu prorrateo se suma mañana",
     "recordatorio_pago": "Recordatorio de pago",
     "pago_recibido": "Pago recibido",
     "abono_recibido": "Abono recibido",
