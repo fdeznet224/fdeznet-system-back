@@ -45,7 +45,7 @@ from src.domain.schemas import (
     BotVisualFlowUpdate,
 )
 from src.application.services.pagos_captura import config_pagos
-from src.application.services import respaldo_drive_service
+from src.application.services import cuenta_nube_service, respaldo_drive_service
 from src.application.services.branding_service import get_or_create_system_config
 from src.infrastructure.auth import get_current_active_user
 from src.application.services.storage_service import (
@@ -346,6 +346,12 @@ async def subir_archivo_marca(
 async def obtener_almacenamiento(db: AsyncSession = Depends(get_db)):
     config = await _obtener_configuracion(db)
     return await storage_dashboard(db, config)
+
+
+@router.get("/cuenta-nube")
+async def aviso_cuenta_nube():
+    """Aviso de la mensualidad de WisPay para el admin; vacío fuera de la nube o al corriente."""
+    return {"aviso": await cuenta_nube_service.aviso()}
 
 
 @router.get("/respaldo-drive")

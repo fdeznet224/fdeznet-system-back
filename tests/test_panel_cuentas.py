@@ -1,6 +1,7 @@
 from datetime import date, datetime
 
 from nube.panel.cuentas import (
+    aviso_al_isp,
     debe_suspenderse,
     dia_de_corte,
     estado_cuenta,
@@ -84,3 +85,25 @@ def test_debe_suspenderse():
     assert not debe_suspenderse(pagado, False, False, None, date(2026, 11, 16), 5)  # corte desactivado
     assert not debe_suspenderse(pagado, False, True, date(2026, 11, 18), date(2026, 11, 18), 5)
     assert not debe_suspenderse(None, False, True, None, date(2026, 11, 16), 5)  # sin pagos
+
+
+def test_aviso_al_isp_antes_y_despues_de_vencer():
+    hoy = date(2026, 11, 2)
+    assert aviso_al_isp(date(2026, 11, 20), False, date(2026, 11, 26), hoy) is None  # lejos
+    assert aviso_al_isp(None, False, None, hoy) is None  # sin pagos
+    assert aviso_al_isp(date(2026, 11, 1), True, None, hoy) is None  # ya suspendido
+
+    por_vencer = aviso_al_isp(date(2026, 11, 5), False, date(2026, 11, 11), hoy, "09:00", contacto="WhatsApp 55 1234")
+    assert por_vencer["tono"] == "ambar"
+    assert por_vencer["mensaje"] == ("Tu mensualidad de WisPay vence el 5 de noviembre. Si no se registra tu pago, "
+                                     "el sistema se suspende el 11 de noviembre. Para pagar: WhatsApp 55 1234.")
+    assert "vence mañana" in aviso_al_isp(date(2026, 11, 3), False, None, hoy)["mensaje"]
+
+    vencido = aviso_al_isp(date(2026, 10, 28), False, date(2026, 11, 3), hoy, "09:00")
+    assert vencido["tono"] == "rojo"
+    assert vencido["mensaje"] == ("Tu mensualidad de WisPay venció el 28 de octubre. "
+                                  "El sistema se suspende mañana si no se registra tu pago.")
+    hoy_corte = aviso_al_isp(date(2026, 10, 27), False, date(2026, 11, 2), hoy, "09:00")
+    assert "se suspende hoy a las 09:00" in hoy_corte["mensaje"]
+    sin_corte = aviso_al_isp(date(2026, 10, 1), False, None, hoy)
+    assert "Regulariza tu pago" in sin_corte["mensaje"]

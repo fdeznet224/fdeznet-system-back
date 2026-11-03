@@ -67,6 +67,12 @@ Si lo reactivas a mano mientras todavía debe, pide una prórroga (por defecto
 se apaga por ISP en *Datos del ISP → Corte automático*; los ISP sin pagos
 registrados nunca se cortan solos.
 
+**Aviso al ISP.** Desde `PANEL_DIAS_AVISO` (5) días antes de vencer, el
+administrador del ISP ve arriba en su sistema una franja ámbar con la fecha de
+vencimiento y la del corte; ya vencido, la franja es roja. Si pones
+`PANEL_CONTACTO_PAGO` (por ejemplo «WhatsApp 55 1234 5678») se agrega al aviso.
+La API del ISP lo consulta firmado en `/cuenta/estado` y lo guarda 10 minutos.
+
 ## Respaldos
 
 El panel respalda a cada ISP todos los días a `PANEL_HORA_RESPALDO` (03:00) y

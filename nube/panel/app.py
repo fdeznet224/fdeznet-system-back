@@ -33,6 +33,7 @@ from nube.panel.cuentas import (
     PRIMER_PUERTO_WEB,
     PRIMER_PUERTO_WG,
     SLUG,
+    aviso_al_isp,
     debe_suspenderse,
     dia_de_corte,
     estado_cuenta,
@@ -54,6 +55,8 @@ COOKIE_SEGURA = os.getenv("PANEL_COOKIE_SEGURA", "1") == "1"
 HORA_RESPALDO = os.getenv("PANEL_HORA_RESPALDO", "03:00")  # vacío: sin respaldo diario
 HORA_CORTE = os.getenv("PANEL_HORA_CORTE", "09:00")  # vacío: sin corte automático
 DIAS_PRORROGA = int(os.getenv("PANEL_DIAS_PRORROGA", "3"))
+DIAS_AVISO = int(os.getenv("PANEL_DIAS_AVISO", "5"))  # cuántos días antes de vencer se le avisa al ISP
+CONTACTO_PAGO = os.getenv("PANEL_CONTACTO_PAGO", "").strip()  # p. ej. "WhatsApp 55 1234 5678"
 
 if not CLAVE_HASH or len(SECRETO) < 32:
     raise RuntimeError("Configura PANEL_CLAVE_HASH y PANEL_SECRETO (32+ caracteres)")
@@ -770,6 +773,16 @@ def _isp_firmado(db, isp: str, accion: str, vence: str, firma: str) -> Isp:
     if not registro or not drive.firma_valida(SECRETO, isp, accion, vence, firma):
         raise HTTPException(status_code=403, detail="Enlace vencido; vuelve a intentarlo desde tu panel")
     return registro
+
+
+@app.get("/cuenta/estado")
+def cuenta_estado(isp: str = "", vence: str = "", firma: str = ""):
+    """El admin del ISP pregunta si tiene que mostrar el aviso de pago."""
+    with Sesion() as db:
+        registro = _isp_firmado(db, isp, "cuenta", vence, firma)
+        aviso = aviso_al_isp(registro.pagado_hasta, registro.suspendido, _corte(registro), date.today(),
+                             HORA_CORTE, DIAS_AVISO, CONTACTO_PAGO)
+    return {"aviso": aviso}
 
 
 def _volver_al_isp(isp: Isp, resultado: str) -> RedirectResponse:

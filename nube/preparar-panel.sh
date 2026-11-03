@@ -21,6 +21,9 @@ PANEL_DIAS_GRACIA=5
 # Corte automático tras la gracia (vacío: ninguno) y días de prórroga al reactivar a un moroso.
 PANEL_HORA_CORTE=09:00
 PANEL_DIAS_PRORROGA=3
+# Aviso en el admin del ISP: cuántos días antes de vencer y a quién pagarle (p. ej. "WhatsApp 55 1234 5678").
+PANEL_DIAS_AVISO=5
+PANEL_CONTACTO_PAGO=
 # Respaldo diario de cada ISP (vacío: ninguno) y cuántos se quedan en la VPS.
 PANEL_HORA_RESPALDO=03:00
 PANEL_RESPALDOS_LOCALES=7

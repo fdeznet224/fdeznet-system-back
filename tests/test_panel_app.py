@@ -440,3 +440,26 @@ def test_inicio_filtra_y_muestra_lo_pendiente(panel):
     assert "Requiere atención" in inicio and "en gracia" in inicio
     assert "Moroso" in cliente.get("/?ver=cobrar").text
     assert "Ninguno en esta lista" in cliente.get("/?ver=suspendidos").text
+
+
+def test_el_isp_consulta_su_aviso_de_pago_firmado(panel):
+    import time
+    from datetime import timedelta
+
+    from nube.panel import drive
+    from nube.panel.db import Isp, Sesion
+
+    cliente, _ = panel
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "Colega", "slug": "colega"})
+    vence = int(time.time()) + 60
+    firma = drive.firmar(drive.secreto_isp("s" * 64, "colega"), "colega", "cuenta", vence)
+    pedir = lambda f: cliente.get("/cuenta/estado", params={"isp": "colega", "vence": vence, "firma": f})
+    assert pedir("mala").status_code == 403
+    assert pedir(firma).json() == {"aviso": None}  # sin pagos registrados
+
+    with Sesion() as db:
+        db.get(Isp, 1).pagado_hasta = date.today() - timedelta(days=1)
+        db.commit()
+    aviso = pedir(firma).json()["aviso"]
+    assert aviso["tono"] == "rojo" and "se suspende" in aviso["mensaje"]
