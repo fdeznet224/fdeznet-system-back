@@ -160,3 +160,23 @@ details p { margin: 0 0 16px; color: var(--suave); }
   .vista-lista em { display: none; }
   .vista-cifra b { font-size: 22px; }
 }
+
+/* WisPay Fichas */
+.fichas { padding: 88px 0; color: #e8eefc;
+  background: radial-gradient(800px 420px at 90% 0%, rgb(52 196 255 / .22), transparent 70%), linear-gradient(160deg, #0b1630, #071022); }
+.fichas-interior { display: grid; grid-template-columns: 1.2fr .8fr; gap: 48px; align-items: center; }
+.etiqueta.clara { color: #7cc4ff; background: rgb(124 196 255 / .14); }
+.fichas h2 { font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; letter-spacing: -.03em; margin: 14px 0 12px; color: #fff; }
+.fichas-entrada { color: #b5c3dd; font-size: 18px; margin: 0 0 26px; max-width: 580px; }
+.fichas-lista { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 16px 22px; }
+.fichas-lista li { display: flex; flex-direction: column; padding-left: 28px; position: relative; }
+.fichas-lista li::before { content: "✓"; position: absolute; left: 0; top: 1px; color: #34d399; font-weight: 700; }
+.fichas-lista b { color: #fff; }
+.fichas-lista span { color: #9fb0cc; font-size: 15px; }
+.fichas-tarjeta { color: var(--texto); }
+.fichas-tarjeta h3 { margin: 0 0 4px; font-size: 22px; letter-spacing: -.02em; }
+@media (max-width: 900px) {
+  .fichas { padding: 64px 0; }
+  .fichas-interior { grid-template-columns: 1fr; gap: 32px; }
+  .fichas-lista { grid-template-columns: 1fr; }
+}

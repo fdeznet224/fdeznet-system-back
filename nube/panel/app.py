@@ -335,6 +335,14 @@ def inicio(request: Request, msg: str = "", ver: str = "todos", csrf: str = Depe
              "isp_id": b.isp_id}
             for b in db.scalars(select(Bitacora).order_by(Bitacora.id.desc()).limit(8))
         ]
+        por_contactar = [
+            {"fecha": b.fecha, "accion": b.accion, "detalle": b.detalle,
+             "telefono": (re.search(r"\b52\d{10}\b", b.detalle or "") or [None])[0]}
+            for b in db.scalars(
+                select(Bitacora).where(Bitacora.accion.in_(ACCIONES_POR_CONTACTAR),
+                                       Bitacora.fecha >= datetime.now() - timedelta(days=30))
+                .order_by(Bitacora.id.desc()).limit(8))
+        ]
     contenedores, memoria, error = _contenedores()
     filas = []
     for isp in isps:
@@ -363,7 +371,7 @@ def inicio(request: Request, msg: str = "", ver: str = "todos", csrf: str = Depe
     return _render(
         request, "inicio.html", csrf, filas=[f for f in filas if FILTROS[ver](f)], resumen=resumen,
         pendientes=_pendientes(filas, hoy), vps=_recursos_vps(), actividad=actividad, ver=ver,
-        whatsapp_ventas=whatsapp.estado(), demos_max=DEMOS_MAX, demo_dias=DEMO_DIAS,
+        whatsapp_ventas=whatsapp.estado(), demos_max=DEMOS_MAX, demo_dias=DEMO_DIAS, por_contactar=por_contactar,
         hoy=hoy, hora_corte=HORA_CORTE, dias_gracia=DIAS_GRACIA, msg=msg, error=error,
     )
 
@@ -908,6 +916,47 @@ async def registro(request: Request):
     threading.Thread(target=_crear_demo, args=(isp_id, nombre.split(" ")[0]), daemon=True).start()
     return {"ok": True, "direccion": direccion,
             "mensaje": "¡Listo! En unos minutos te llega por WhatsApp tu acceso."}
+
+
+_interes_ip: dict[str, deque] = defaultdict(deque)
+# Lo que dejan los interesados y conviene que el dueño vea para llamarles.
+ACCIONES_POR_CONTACTAR = ("interesado en fichas", "registro en espera", "demo no se pudo crear")
+
+
+@app.post("/api/interes")
+async def interes(request: Request):
+    """Formulario público de WisPay Fichas (hotspot): no crea nada, deja el contacto."""
+    try:
+        datos = await request.json()
+    except ValueError:
+        datos = None
+    if not isinstance(datos, dict):
+        return JSONResponse({"ok": False, "error": "Formulario inválido"}, status_code=400)
+    if str(datos.get("sitio_web") or "").strip():
+        return {"ok": True, "mensaje": "Recibido"}
+    empresa = limpiar_texto(str(datos.get("empresa") or ""), 60)
+    nombre = limpiar_texto(str(datos.get("nombre") or ""), 60)
+    telefono = telefono_mx(str(datos.get("telefono") or ""))
+    if len(empresa) < 2 or len(nombre) < 2:
+        return JSONResponse({"ok": False, "error": "Escribe el nombre de tu empresa y el tuyo"}, status_code=400)
+    if not telefono:
+        return JSONResponse({"ok": False, "error": "Escribe tu WhatsApp a 10 dígitos"}, status_code=400)
+    ip = request.client.host if request.client else "?"
+    cola = _interes_ip[ip]
+    while cola and cola[0] < time.monotonic() - 86400:
+        cola.popleft()
+    if len(cola) >= 5:
+        return JSONResponse({"ok": False, "error": "Ya recibimos tus datos; te escribimos pronto"}, status_code=429)
+    cola.append(time.monotonic())
+    with Sesion() as db:
+        _bitacora(db, None, "interesado en fichas", f"{empresa} · {nombre} · {telefono}")
+        db.commit()
+    try:
+        whatsapp.enviar(telefono, f"Hola {nombre.split(' ')[0]} 👋, gracias por tu interés en *WisPay Fichas* para "
+                                  f"*{empresa}*. En breve te escribimos con tu cotización.")
+    except whatsapp.ErrorWhatsApp:
+        pass  # queda en el panel para llamarle
+    return {"ok": True, "mensaje": "¡Gracias! Te escribimos por WhatsApp con tu cotización."}
 
 
 @app.post("/isp/{isp_id}/demo")

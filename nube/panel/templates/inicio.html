@@ -95,6 +95,22 @@
       </a>
     </div>
 
+    {% if por_contactar %}
+    <h2>Por contactar</h2>
+    <div class="lista">
+      {% for c in por_contactar %}
+      <a class="fila actividad" {% if c.telefono %}href="https://wa.me/{{ c.telefono }}" target="_blank" rel="noopener"{% endif %}>
+        <div class="crece">
+          <div class="titulo">{{ 'WisPay Fichas' if c.accion == 'interesado en fichas' else 'Demo en espera' if c.accion == 'registro en espera' else 'Demo que falló' }}</div>
+          <div class="sub">{{ c.detalle }}</div>
+        </div>
+        <small class="gris">{{ c.fecha.strftime('%d/%m') }}</small>
+      </a>
+      {% endfor %}
+    </div>
+    <p class="nota">Toca uno para abrir su WhatsApp. Se quedan aquí 30 días.</p>
+    {% endif %}
+
     <h2>Servidor</h2>
     <div class="lista recursos">
       {% set ram_pct = (vps.ram_usada / vps.ram_total * 100) if vps.ram_total else 0 %}

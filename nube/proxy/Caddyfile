@@ -21,7 +21,8 @@ panel.{$DOMINIO} {
 {$DOMINIO} {
 	import seguro
 	encode gzip
-	handle /api/registro {
+	@formularios path /api/registro /api/interes
+	handle @formularios {
 		reverse_proxy fdezpay-panel-panel-1:8100
 	}
 	handle {

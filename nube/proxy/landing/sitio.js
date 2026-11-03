@@ -1,14 +1,19 @@
-// Registro de demos: manda el formulario al panel (/api/registro, mismo dominio).
+// Formularios de la página: demo de WisPay (/api/registro) y cotización de
+// WisPay Fichas (/api/interes). Los atiende el panel en este mismo dominio.
 document.addEventListener('DOMContentLoaded', () => {
   const anio = document.getElementById('anio');
   if (anio) anio.textContent = String(new Date().getFullYear());
 
-  const formulario = document.getElementById('formulario');
-  const listo = document.getElementById('listo');
+  conectar('formulario', '/api/registro', document.getElementById('listo'), 'Crear mi demo gratis', 'Creando tu demo…');
+  const fichas = document.getElementById('formulario-fichas');
+  if (fichas) conectar('formulario-fichas', '/api/interes', fichas.nextElementSibling, 'Quiero mi cotización', 'Enviando…');
+});
+
+function conectar(id, url, listo, textoBoton, textoEnviando) {
+  const formulario = document.getElementById(id);
   if (!formulario || !listo) return;
   const error = formulario.querySelector('.error');
   const boton = formulario.querySelector('button[type="submit"]');
-
   const mostrarError = (texto) => {
     error.textContent = texto;
     error.hidden = false;
@@ -22,9 +27,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (datos.telefono.replace(/\D/g, '').length < 10) return mostrarError('Escribe tu WhatsApp a 10 dígitos.');
 
     boton.disabled = true;
-    boton.textContent = 'Creando tu demo…';
+    boton.textContent = textoEnviando;
     try {
-      const respuesta = await fetch('/api/registro', {
+      const respuesta = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(datos),
@@ -34,16 +39,17 @@ document.addEventListener('DOMContentLoaded', () => {
       formulario.hidden = true;
       listo.hidden = false;
       listo.querySelector('.listo-texto').textContent = resultado.mensaje;
-      if (resultado.direccion) {
-        const enlace = listo.querySelector('.listo-direccion a');
+      const direccion = listo.querySelector('.listo-direccion');
+      if (direccion && resultado.direccion) {
+        const enlace = direccion.querySelector('a');
         enlace.href = resultado.direccion;
         enlace.textContent = resultado.direccion.replace('https://', '');
-        listo.querySelector('.listo-direccion').hidden = false;
+        direccion.hidden = false;
       }
     } catch (fallo) {
       mostrarError(fallo.message || 'No se pudo enviar; intenta de nuevo.');
       boton.disabled = false;
-      boton.textContent = 'Crear mi demo gratis';
+      boton.textContent = textoBoton;
     }
   });
-});
+}

@@ -618,3 +618,16 @@ def test_subdominio_reservado_no_se_da_de_alta(panel):
     csrf = _entrar(cliente)
     assert cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "X", "slug": "panel"}).status_code == 400
     assert llamadas == []
+
+
+def test_interesado_en_fichas_queda_para_contactarlo(registro):
+    cliente, llamadas = registro
+    assert cliente.post("/api/interes", json={"empresa": "Ciber Luna", "nombre": "Juan", "telefono": "12"}).status_code == 400
+    respuesta = cliente.post("/api/interes", json={"empresa": "Ciber Luna", "nombre": "Juan Pérez", "telefono": "9611112233"})
+    assert respuesta.json()["ok"]
+    assert not any(c[0] == "crear" for c in llamadas)
+    _, numero, mensaje = next(c for c in llamadas if c[0] == "whatsapp")
+    assert numero == "529611112233" and "WisPay Fichas" in mensaje
+    _entrar(cliente)
+    inicio = cliente.get("/").text
+    assert "Por contactar" in inicio and "Ciber Luna" in inicio and "wa.me/529611112233" in inicio

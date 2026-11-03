@@ -24,6 +24,7 @@
         <a href="#funciones">Funciones</a>
         <a href="#como">Cómo funciona</a>
         <a href="#precios">Precios</a>
+        <a href="#fichas">Fichas WiFi</a>
         <a href="#preguntas">Preguntas</a>
       </nav>
       <a class="boton chico" href="#registro">Probar gratis</a>
@@ -158,6 +159,41 @@
             <ul><li>Clientes ilimitados</li><li>Todos los módulos</li><li>Tu marca completa</li><li>Soporte prioritario</li></ul>
             <a class="boton secundario" href="#registro">Probar gratis</a>
           </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="fichas" id="fichas">
+      <div class="contenedor fichas-interior">
+        <div>
+          <span class="etiqueta clara">Nuevo · WisPay Fichas</span>
+          <h2>¿También vendes fichas de WiFi?</h2>
+          <p class="fichas-entrada">Un sistema aparte para tu hotspot de MikroTik: vende fichas en tus puntos de venta, en una máquina de monedas o desde el portal, y lleva la cuenta de cada peso.</p>
+          <ul class="fichas-lista">
+            <li><b>RADIUS propio</b><span>Fichas por tiempo, controladas desde tu servidor.</span></li>
+            <li><b>App para vendedores</b><span>Cada punto de venta imprime o comparte la ficha desde su Android.</span></li>
+            <li><b>Máquina de monedas</b><span>Dispensador que entrega la ficha al echar la moneda.</span></li>
+            <li><b>Portal con tu marca</b><span>Página de acceso del hotspot con tu logo y temas de temporada.</span></li>
+            <li><b>Cuentas claras</b><span>Una ficha se cobra solo cuando MikroTik confirma que se creó.</span></li>
+            <li><b>Servidor dedicado</b><span>Corre en su propia VPS, aparte de tu sistema de clientes.</span></li>
+          </ul>
+        </div>
+        <div class="tarjeta-registro fichas-tarjeta">
+          <form id="formulario-fichas" novalidate>
+            <h3>Pide tu cotización</h3>
+            <p class="sub">Plan mensual con su VPS. Te escribimos por WhatsApp.</p>
+            <label>Nombre de tu negocio<input name="empresa" required maxlength="60" autocomplete="organization" placeholder="Ej. Ciber Luna"></label>
+            <label>Tu nombre<input name="nombre" required maxlength="60" autocomplete="name" placeholder="Ej. Juan Pérez"></label>
+            <label>Tu WhatsApp<input name="telefono" required inputmode="tel" autocomplete="tel-national" placeholder="10 dígitos" maxlength="20"></label>
+            <label class="trampa" aria-hidden="true">Sitio web<input name="sitio_web" tabindex="-1" autocomplete="off"></label>
+            <button class="boton" type="submit">Quiero mi cotización</button>
+            <p class="error" role="alert" hidden></p>
+          </form>
+          <div class="listo" hidden>
+            <div class="listo-icono" aria-hidden="true">✓</div>
+            <h3>¡Gracias!</h3>
+            <p class="listo-texto"></p>
+          </div>
         </div>
       </div>
     </section>
