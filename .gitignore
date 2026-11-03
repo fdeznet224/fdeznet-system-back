@@ -53,6 +53,7 @@ backups/
 
 # Nube: secretos e instancias de cada ISP
 nube/instancias/
+nube/migraciones/
 nube/secretos/
 nube/respaldos/
 nube/proxy/.env

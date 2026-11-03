@@ -12,10 +12,12 @@ import io
 import base64
 
 # En la nube todo lleva nombres propios para convivir en el MikroTik con la VPN
-# de otro sistema FdezPay (wg-fdeznet, 10.8.0.0/24) sin pisarla.
-MARCA_VIGILANTE = "wispay-vpn-watchdog"
-INTERFAZ_MIKROTIK = "wg-wispay"
-RED_VPN = "10.9.0"
+# de otro sistema FdezPay (wg-fdeznet, 10.8.0.0/24) sin pisarla. Un ISP que se
+# mudó desde su propia VPS conserva los de antes (nube/importar-vps.sh los pone
+# en su api.env) para que sus routers no cambien.
+MARCA_VIGILANTE = os.getenv("VPN_MARCA_VIGILANTE", "").strip() or "wispay-vpn-watchdog"
+INTERFAZ_MIKROTIK = os.getenv("VPN_INTERFAZ_MIKROTIK", "").strip() or "wg-wispay"
+RED_VPN = os.getenv("VPN_SUBNET_BASE", "").strip().rstrip(".") or "10.9.0"
 
 
 def construir_vigilante_mikrotik(endpoint: str, puerto: int, gateway: str) -> str:
