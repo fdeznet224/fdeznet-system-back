@@ -1,33 +1,124 @@
 {% extends "base.html" %}
+{% block clase %}ancho{% endblock %}
 {% block contenido %}
-<h1>ISP</h1>
-<div class="cifras">
-  <div class="cifra"><b>{{ resumen.total }}</b><span>ISP alojados</span></div>
-  <div class="cifra"><b>{{ resumen.mensual | dinero }}</b><span>Mensualidades activas</span></div>
-  <div class="cifra"><b class="{{ 'rojo' if resumen.atencion else '' }}">{{ resumen.atencion }}</b><span>Por cobrar o vencidos</span></div>
-  <div class="cifra"><b>{{ '%.1f' % (resumen.ram / 1024) }} GB</b><span>RAM en uso</span></div>
-  <div class="cifra"><b class="{{ 'rojo' if resumen.respaldos else '' }}">{{ resumen.respaldos }}</b><span>Respaldos por revisar</span></div>
+{% set meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'] %}
+<div class="encabezado">
+  <h1>Inicio</h1>
+  <span class="fecha-hoy">{{ hoy.day }} de {{ meses[hoy.month - 1] }} de {{ hoy.year }}</span>
 </div>
 
-<h2>Clientes de la nube</h2>
-<div class="lista">
-  {% for f in filas %}
-  <a class="fila" href="/isp/{{ f.isp.id }}">
-    <span class="punto {{ f.estado.tono }}" title="{{ f.estado.texto }}"></span>
-    <div class="crece">
-      <div class="titulo">{{ f.isp.nombre }}</div>
-      <div class="sub">{{ f.isp.dominio }} · <span class="{{ f.estado.tono }}">{{ f.estado.texto }}</span></div>
-      {% if f.respaldo.tono in ('rojo', 'ambar') %}<div class="sub {{ f.respaldo.tono }}">Respaldo: {{ f.respaldo.texto }}</div>{% endif %}
-    </div>
-    <div class="der">
-      {{ f.isp.precio_mensual | dinero }}<br>
-      <small class="{{ 'verde' if f.en_linea else 'gris' }}">{{ 'En línea' if f.en_linea else 'Detenido' }}</small>
-    </div>
-    <span class="chevron"></span>
+<div class="cifras">
+  <div class="cifra">
+    <span class="etiqueta">ISP activos</span>
+    <b>{{ resumen.activos }}<small> de {{ resumen.total }}</small></b>
+    <span class="{{ 'verde' if resumen.en_linea == resumen.activos else 'rojo' }}">{{ resumen.en_linea }} en línea</span>
+  </div>
+  <div class="cifra">
+    <span class="etiqueta">Cobrado en {{ meses[hoy.month - 1] }}</span>
+    <b>{{ resumen.cobrado | dinero }}</b>
+    {% set avance = (resumen.cobrado / resumen.mensual * 100) if resumen.mensual else 0 %}
+    <div class="barra-avance"><i style="width: {{ [avance, 100] | min | round(0) }}%"></i></div>
+    <span>de {{ resumen.mensual | dinero }} al mes</span>
+  </div>
+  <a class="cifra" href="/?ver=cobrar">
+    <span class="etiqueta">Por cobrar</span>
+    <b class="{{ 'ambar' if resumen.por_cobrar else '' }}">{{ resumen.por_cobrar }}</b>
+    <span>por vencer o vencidos</span>
   </a>
-  {% else %}
-  <div class="vacio">Todavía no hay ISP. Da de alta el primero.</div>
-  {% endfor %}
+  <a class="cifra" href="/?ver=suspendidos">
+    <span class="etiqueta">Suspendidos</span>
+    <b class="{{ 'rojo' if resumen.suspendidos else '' }}">{{ resumen.suspendidos }}</b>
+    <span>{% if hora_corte %}corte solo a las {{ hora_corte }}{% else %}corte automático apagado{% endif %}</span>
+  </a>
 </div>
-<a class="boton" href="/isp/nuevo">Nuevo ISP</a>
+
+<div class="columnas">
+  <div class="col-principal">
+    <h2>Requiere atención</h2>
+    <div class="lista">
+      {% for a in pendientes %}
+      <a class="fila" href="{{ a.enlace }}">
+        <span class="icono-aviso {{ a.tono }}">!</span>
+        <div class="crece"><div class="titulo">{{ a.isp }}</div>{% for t in a.textos %}<div class="sub envuelve {{ a.tono if loop.first else '' }}">{{ t }}</div>{% endfor %}</div>
+        <span class="chevron"></span>
+      </a>
+      {% else %}
+      <div class="fila todo-bien"><span class="icono-aviso verde">✓</span>
+        <div class="crece"><div class="titulo">Todo en orden</div><div class="sub">Pagos al corriente, sistemas en línea y respaldos al día.</div></div></div>
+      {% endfor %}
+    </div>
+
+    <div class="titulo-lista">
+      <h2>ISP en la nube</h2>
+      <nav class="segmentos">
+        <a href="/" class="{{ 'activo' if ver == 'todos' else '' }}">Todos</a>
+        <a href="/?ver=cobrar" class="{{ 'activo' if ver == 'cobrar' else '' }}">Por cobrar</a>
+        <a href="/?ver=suspendidos" class="{{ 'activo' if ver == 'suspendidos' else '' }}">Suspendidos</a>
+      </nav>
+    </div>
+    <div class="lista">
+      {% for f in filas %}
+      <a class="fila isp" href="/isp/{{ f.isp.id }}">
+        <span class="avatar {{ f.estado.tono }}">{{ f.isp.nombre[:1] | upper }}</span>
+        <div class="crece">
+          <div class="titulo">{{ f.isp.nombre }}</div>
+          <div class="sub">{{ f.isp.dominio }}</div>
+          <div class="sub envuelve"><span class="{{ f.estado.tono }}">{{ f.estado.texto }}</span>{% if f.corte and f.estado.clave in ('por_vencer', 'gracia', 'vencido') %} · corte {{ f.corte.strftime('%d/%m') }}{% endif %}</div>
+        </div>
+        <div class="der">
+          <div>{{ f.isp.precio_mensual | dinero }}</div>
+          <span class="pastilla {{ 'gris' if f.isp.suspendido else 'verde' if f.en_linea else 'rojo' }}">{{ 'Suspendido' if f.isp.suspendido else 'En línea' if f.en_linea else 'Detenido' }}</span>
+          {% if f.ram %}<small>{{ '%.0f' % f.ram }} MB · v{{ f.isp.version }}</small>{% else %}<small>v{{ f.isp.version }}</small>{% endif %}
+        </div>
+        <span class="chevron"></span>
+      </a>
+      {% else %}
+      <div class="vacio">{% if ver == 'todos' %}Todavía no hay ISP. <a href="/isp/nuevo">Da de alta el primero.</a>{% else %}Ninguno en esta lista.{% endif %}</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <aside class="col-lateral">
+    <h2>Servidor</h2>
+    <div class="lista recursos">
+      {% set ram_pct = (vps.ram_usada / vps.ram_total * 100) if vps.ram_total else 0 %}
+      <div class="recurso">
+        <div class="recurso-titulo"><span>Memoria</span><b>{{ '%.1f' % vps.ram_usada }} / {{ '%.0f' % vps.ram_total }} GB</b></div>
+        <div class="barra-avance {{ 'rojo' if ram_pct > 85 else 'ambar' if ram_pct > 70 else '' }}"><i style="width: {{ ram_pct | round(0) }}%"></i></div>
+        <span class="sub">Los ISP usan {{ '%.1f' % resumen.ram_isp }} GB</span>
+      </div>
+      {% set disco_pct = (vps.disco_usado / vps.disco_total * 100) if vps.disco_total else 0 %}
+      <div class="recurso">
+        <div class="recurso-titulo"><span>Disco</span><b>{{ '%.0f' % vps.disco_usado }} / {{ '%.0f' % vps.disco_total }} GB</b></div>
+        <div class="barra-avance {{ 'rojo' if disco_pct > 85 else 'ambar' if disco_pct > 70 else '' }}"><i style="width: {{ disco_pct | round(0) }}%"></i></div>
+      </div>
+      {% if vps.carga is not none %}
+      {% set carga_pct = vps.carga / vps.nucleos * 100 %}
+      <div class="recurso">
+        <div class="recurso-titulo"><span>Procesador</span><b>{{ '%.2f' % vps.carga }} · {{ vps.nucleos }} núcleos</b></div>
+        <div class="barra-avance {{ 'rojo' if carga_pct > 85 else 'ambar' if carga_pct > 70 else '' }}"><i style="width: {{ [carga_pct, 100] | min | round(0) }}%"></i></div>
+      </div>
+      {% endif %}
+    </div>
+
+    <h2>Actividad reciente</h2>
+    <div class="lista">
+      {% for b in actividad %}
+      {% set contenido_actividad %}
+        <div class="crece">
+          <div class="titulo">{{ b.accion | capitalize }}</div>
+          {% if b.isp %}<div class="sub isp-nombre">{{ b.isp }}</div>{% endif %}
+          {% if b.detalle %}<div class="sub">{{ b.detalle }}</div>{% endif %}
+        </div>
+        <small class="gris">{{ b.fecha.strftime('%d/%m %H:%M') }}</small>
+      {% endset %}
+      {% if b.isp_id %}<a class="fila actividad" href="/isp/{{ b.isp_id }}">{{ contenido_actividad }}</a>
+      {% else %}<div class="fila actividad">{{ contenido_actividad }}</div>{% endif %}
+      {% else %}
+      <div class="vacio">Sin movimientos</div>
+      {% endfor %}
+    </div>
+    <p class="nota">Tras {{ dias_gracia }} días de gracia sin pago, el ISP se suspende solo{% if hora_corte %} a las {{ hora_corte }}{% endif %} y se reactiva al registrar su pago.</p>
+  </aside>
+</div>
 {% endblock %}

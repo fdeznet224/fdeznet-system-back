@@ -4,19 +4,27 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
   <title>{% block titulo %}Panel WisPay{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a84ff'/%3E%3Cpath d='M8 13a11 11 0 0 1 16 0M11 17a7 7 0 0 1 10 0' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='21.5' r='2.2' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/panel.css">
 </head>
-<body>
+<body class="{% block clase %}{% endblock %}">
   {% if csrf %}
   <header class="barra">
-    <a href="/"><b>WisPay</b> · Panel</a>
-    <form method="post" action="/salir"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="enlace">Salir</button></form>
+    <a class="marca" href="/">{% include "_logo.html" %}<span><b>WisPay</b> Panel</span></a>
+    <nav>
+      <a class="boton chico" href="/isp/nuevo">+ Nuevo ISP</a>
+      <form method="post" action="/salir"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="enlace">Salir</button></form>
+    </nav>
   </header>
   {% endif %}
   <main>
-    {% if msg %}<div class="aviso {% if msg.startswith('Error') %}error{% endif %}">{{ msg }}</div>{% endif %}
+    {% block avisos %}
+    {% if msg %}<div class="aviso {% if msg.startswith('Error') %}error{% else %}ok{% endif %}">{{ msg }}</div>{% endif %}
     {% if error %}<div class="aviso error">{{ error }}</div>{% endif %}
+    {% endblock %}
     {% block contenido %}{% endblock %}
   </main>
 </body>

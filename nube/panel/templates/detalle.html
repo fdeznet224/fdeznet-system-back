@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block titulo %}{{ isp.nombre }} · Panel WisPay{% endblock %}
 {% block contenido %}
-<p><a href="/">‹ ISP</a></p>
+<p><a href="/">‹ Inicio</a></p>
 <h1>{{ isp.nombre }}</h1>
 
 <div class="lista">
@@ -10,6 +10,13 @@
   <a class="fila" href="https://{{ isp.dominio }}" target="_blank" rel="noopener"><div class="crece">Dirección</div><div class="der">{{ isp.dominio }}</div></a>
   <div class="fila"><div class="crece">Pagado hasta</div><div class="der">{{ isp.pagado_hasta | fecha }}</div></div>
   <div class="fila"><div class="crece">Día de pago</div><div class="der">{{ isp.dia_pago }} de cada mes</div></div>
+  <div class="fila"><div class="crece">Corte automático</div><div class="der">
+    {% if isp.suspendido and isp.suspension_automatica %}<span class="rojo">Suspendido por falta de pago</span>
+    {% elif isp.suspendido %}Suspendido a mano
+    {% elif not isp.corte_automatico %}Desactivado
+    {% elif not hora_corte %}Apagado en el panel
+    {% elif corte %}{{ corte | fecha }} a las {{ hora_corte }}{% if isp.prorroga_hasta and isp.prorroga_hasta >= hoy %} (prórroga){% endif %}
+    {% else %}Sin pagos registrados: no se corta{% endif %}</div></div>
   {% if isp.contacto or isp.telefono %}
   <div class="fila"><div class="crece">Contacto</div><div class="der">{{ isp.contacto or '' }}{% if isp.telefono %} · <a href="tel:{{ isp.telefono }}">{{ isp.telefono }}</a>{% endif %}</div></div>
   {% endif %}
@@ -119,6 +126,7 @@
     <label class="campo"><span>Precio mensual</span><input name="precio_mensual" inputmode="decimal" value="{{ isp.precio_mensual }}"></label>
     <label class="campo"><span>Día de pago</span><input name="dia_pago" type="number" min="1" max="31" value="{{ isp.dia_pago }}"></label>
     <label class="campo"><span>Pagado hasta</span><input name="pagado_hasta" type="date" value="{{ isp.pagado_hasta.isoformat() if isp.pagado_hasta else '' }}"></label>
+    <label class="campo"><span>Corte automático</span><input name="corte_automatico" type="checkbox" value="true" {{ 'checked' if isp.corte_automatico else '' }}></label>
     <label class="campo"><span>Notas</span><textarea name="notas">{{ isp.notas or '' }}</textarea></label>
   </div>
   <p class="nota">"Pagado hasta" se mueve solo con cada pago; cámbialo a mano solo para corregir.</p>
@@ -136,7 +144,13 @@
 <h2>Servicio</h2>
 {% if isp.suspendido %}
 <form method="post" action="/isp/{{ isp.id }}/reactivar">
-  <input type="hidden" name="csrf" value="{{ csrf }}"><button class="boton">Reactivar ISP</button></form>
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if debe %}
+  <div class="lista"><label class="campo"><span>Prórroga hasta</span>
+    <input name="prorroga" type="date" min="{{ hoy.isoformat() }}" value="{{ prorroga.isoformat() }}" required></label></div>
+  <p class="nota">Todavía debe. Si no paga antes de esa fecha, se vuelve a suspender solo. Al registrar su pago se reactiva sin hacer nada más.</p>
+  {% endif %}
+  <button class="boton">Reactivar ISP</button></form>
 {% else %}
 <form method="post" action="/isp/{{ isp.id }}/suspender" onsubmit="return confirm('El ISP no podrá entrar ni cobrar hasta reactivarlo. Sus datos se conservan. ¿Suspender?')">
   <input type="hidden" name="csrf" value="{{ csrf }}"><button class="boton peligro">Suspender ISP</button></form>

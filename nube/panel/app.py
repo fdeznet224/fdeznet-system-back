@@ -8,6 +8,7 @@ import hmac
 import logging
 import os
 import secrets
+import shutil
 import subprocess
 import threading
 import time
@@ -25,13 +26,15 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.hash import pbkdf2_sha256
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from nube.panel import docker_ops, drive
 from nube.panel.cuentas import (
     PRIMER_PUERTO_WEB,
     PRIMER_PUERTO_WG,
     SLUG,
+    debe_suspenderse,
+    dia_de_corte,
     estado_cuenta,
     estado_respaldo,
     nuevo_vencimiento,
@@ -49,6 +52,8 @@ COOKIE = "panel_sesion"
 HORAS_SESION = 12
 COOKIE_SEGURA = os.getenv("PANEL_COOKIE_SEGURA", "1") == "1"
 HORA_RESPALDO = os.getenv("PANEL_HORA_RESPALDO", "03:00")  # vacío: sin respaldo diario
+HORA_CORTE = os.getenv("PANEL_HORA_CORTE", "09:00")  # vacío: sin corte automático
+DIAS_PRORROGA = int(os.getenv("PANEL_DIAS_PRORROGA", "3"))
 
 if not CLAVE_HASH or len(SECRETO) < 32:
     raise RuntimeError("Configura PANEL_CLAVE_HASH y PANEL_SECRETO (32+ caracteres)")
@@ -82,6 +87,8 @@ async def ciclo_de_vida(_app: FastAPI):
     _asegurar_enlaces()
     if HORA_RESPALDO:
         threading.Thread(target=_respaldos_diarios, daemon=True, name="respaldos").start()
+    if HORA_CORTE:
+        threading.Thread(target=_cortes_automaticos, daemon=True, name="cortes").start()
     yield
 
 
@@ -190,6 +197,13 @@ def _estado(isp: Isp):
     return estado_cuenta(isp.pagado_hasta, isp.suspendido, date.today(), dias_gracia=DIAS_GRACIA)
 
 
+def _corte(isp: Isp) -> date | None:
+    """Día en que el panel lo suspenderá solo; None si no aplica."""
+    if isp.suspendido or not isp.corte_automatico or not HORA_CORTE:
+        return None
+    return dia_de_corte(isp.pagado_hasta, DIAS_GRACIA, isp.prorroga_hasta)
+
+
 def _contenedores() -> tuple[dict, dict, str | None]:
     try:
         return docker_ops.estado_contenedores(), docker_ops.uso_memoria(), None
@@ -197,11 +211,81 @@ def _contenedores() -> tuple[dict, dict, str | None]:
         return {}, {}, f"No se pudo consultar Docker: {error}"
 
 
+def _recursos_vps() -> dict:
+    """RAM, disco y carga de la VPS (el panel ve el /proc y el disco del anfitrión)."""
+    datos = {"ram_total": 0.0, "ram_usada": 0.0, "disco_total": 0.0, "disco_usado": 0.0,
+             "carga": None, "nucleos": os.cpu_count() or 1}
+    try:
+        info = {}
+        for linea in Path("/proc/meminfo").read_text().splitlines():
+            clave, valor = linea.split(":", 1)
+            info[clave] = int(valor.split()[0]) / 1048576  # kB → GB
+        datos["ram_total"] = info["MemTotal"]
+        datos["ram_usada"] = info["MemTotal"] - info.get("MemAvailable", info.get("MemFree", 0))
+    except (OSError, KeyError, ValueError):
+        pass
+    try:
+        disco = shutil.disk_usage(docker_ops.NUBE_DIR)
+        datos["disco_total"], datos["disco_usado"] = disco.total / 1e9, disco.used / 1e9
+    except OSError:
+        pass
+    try:
+        datos["carga"] = os.getloadavg()[0]
+    except OSError:
+        pass
+    return datos
+
+
+def _pendientes(filas: list[dict], hoy: date) -> list[dict]:
+    """Lo que pide al dueño hacer algo, lo más urgente primero."""
+    avisos = []
+    for f in filas:
+        isp, estado, corte = f["isp"], f["estado"], f["corte"]
+        enlace = f"/isp/{isp.id}"
+        if isp.suspendido and isp.suspension_automatica:
+            avisos.append({"orden": 0, "tono": "rojo", "isp": isp.nombre, "enlace": enlace,
+                           "texto": "Suspendido por falta de pago; se reactiva solo al registrar su pago"})
+        elif estado.clave in {"gracia", "vencido"}:
+            cuando = "hoy" if corte and corte <= hoy else f"el {corte:%d/%m}" if corte else None
+            texto = f"{estado.texto}; se suspende {cuando}" if cuando else f"{estado.texto}; sin corte automático"
+            avisos.append({"orden": 1, "tono": "rojo", "isp": isp.nombre, "enlace": enlace, "texto": texto})
+        elif estado.clave in {"por_vencer", "sin_pago"}:
+            avisos.append({"orden": 2, "tono": "ambar", "isp": isp.nombre, "enlace": enlace, "texto": estado.texto})
+        if not isp.suspendido and not f["en_linea"]:
+            avisos.append({"orden": 1, "tono": "rojo", "isp": isp.nombre, "enlace": enlace,
+                           "texto": "Su sistema está detenido sin estar suspendido"})
+        if f["respaldo"].tono in {"rojo", "ambar"}:
+            avisos.append({"orden": 3, "tono": f["respaldo"].tono, "isp": isp.nombre, "enlace": enlace,
+                           "texto": f"Respaldo: {f['respaldo'].texto}"})
+    # Un renglón por ISP con todos sus avisos; el tono y el orden los pone el más urgente.
+    por_isp: dict[str, dict] = {}
+    for aviso in sorted(avisos, key=lambda a: a["orden"]):
+        grupo = por_isp.setdefault(aviso["enlace"], {**aviso, "textos": []})
+        grupo["textos"].append(aviso["texto"])
+    return list(por_isp.values())
+
+
+FILTROS = {
+    "todos": lambda f: True,
+    "cobrar": lambda f: f["estado"].clave in {"por_vencer", "gracia", "vencido", "sin_pago"},
+    "suspendidos": lambda f: f["isp"].suspendido,
+}
+
+
 @app.get("/", response_class=HTMLResponse)
-def inicio(request: Request, msg: str = "", csrf: str = Depends(sesion)):
+def inicio(request: Request, msg: str = "", ver: str = "todos", csrf: str = Depends(sesion)):
+    hoy = date.today()
+    inicio_mes = hoy.replace(day=1)
     with Sesion() as db:
         isps = db.scalars(select(Isp).order_by(Isp.nombre)).all()
         respaldos = {isp.id: _estado_respaldo(db, isp) for isp in isps}
+        cobrado = db.scalar(select(func.coalesce(func.sum(Pago.monto), 0)).where(Pago.fecha >= inicio_mes))
+        nombres = {isp.id: isp.nombre for isp in isps}
+        actividad = [
+            {"fecha": b.fecha, "accion": b.accion, "detalle": b.detalle, "isp": nombres.get(b.isp_id),
+             "isp_id": b.isp_id}
+            for b in db.scalars(select(Bitacora).order_by(Bitacora.id.desc()).limit(8))
+        ]
     contenedores, memoria, error = _contenedores()
     filas = []
     for isp in isps:
@@ -209,18 +293,28 @@ def inicio(request: Request, msg: str = "", csrf: str = Depends(sesion)):
         filas.append({
             "isp": isp,
             "estado": _estado(isp),
+            "corte": _corte(isp),
             "en_linea": servicios.get("api", "").startswith("Up"),
             "ram": sum(mb for nombre, mb in memoria.items() if nombre.startswith(f"{isp.slug}-")),
             "respaldo": respaldos[isp.id],
         })
+    activos = [isp for isp in isps if not isp.suspendido]
     resumen = {
         "total": len(isps),
-        "mensual": sum((isp.precio_mensual for isp in isps if not isp.suspendido), Decimal(0)),
-        "atencion": sum(1 for f in filas if f["estado"].clave in {"por_vencer", "gracia", "vencido", "sin_pago"}),
-        "ram": sum(memoria.values()),
-        "respaldos": sum(1 for r in respaldos.values() if r.tono in {"rojo", "ambar"}),
+        "activos": len(activos),
+        "suspendidos": len(isps) - len(activos),
+        "en_linea": sum(1 for f in filas if f["en_linea"]),
+        "mensual": sum((isp.precio_mensual for isp in activos), Decimal(0)),
+        "cobrado": Decimal(cobrado or 0),
+        "por_cobrar": sum(1 for f in filas if FILTROS["cobrar"](f)),
+        "ram_isp": sum(memoria.values()) / 1024,
     }
-    return _render(request, "inicio.html", csrf, filas=filas, resumen=resumen, msg=msg, error=error)
+    ver = ver if ver in FILTROS else "todos"
+    return _render(
+        request, "inicio.html", csrf, filas=[f for f in filas if FILTROS[ver](f)], resumen=resumen,
+        pendientes=_pendientes(filas, hoy), vps=_recursos_vps(), actividad=actividad, ver=ver,
+        hoy=hoy, hora_corte=HORA_CORTE, dias_gracia=DIAS_GRACIA, msg=msg, error=error,
+    )
 
 
 # --- Alta -----------------------------------------------------------------
@@ -335,7 +429,9 @@ def detalle(request: Request, isp_id: int, msg: str = "", csrf: str = Depends(se
         if clave != "bot" or isp.whatsapp
     ]
     return _render(
-        request, "detalle.html", csrf, isp=isp, estado=_estado(isp), pagos=pagos,
+        request, "detalle.html", csrf, isp=isp, estado=_estado(isp), pagos=pagos, corte=_corte(isp),
+        prorroga=date.today() + timedelta(days=DIAS_PRORROGA), hora_corte=HORA_CORTE,
+        debe=debe_suspenderse(isp.pagado_hasta, False, isp.corte_automatico, None, date.today(), DIAS_GRACIA),
         bitacora=bitacora, servicios=servicios, versiones=versiones, msg=msg, error=error,
         hoy=date.today(), respaldo=respaldo, respaldos=docker_ops.listar_respaldos(isp.slug),
         hora_respaldo=HORA_RESPALDO, cuenta_drive=cuenta_drive, error_drive=error_drive,
@@ -361,8 +457,20 @@ def registrar_pago(
                     cubre_hasta=cubre, nota=nota.strip() or None))
         isp.pagado_hasta = cubre
         _bitacora(db, isp.id, "pago", f"{meses} mes(es), {_dinero(monto)} · cubre hasta {cubre:%d/%m/%Y}")
+        reactivado = False
+        if isp.suspendido and isp.suspension_automatica and not debe_suspenderse(
+            cubre, False, True, isp.prorroga_hasta, date.today(), DIAS_GRACIA
+        ):
+            try:
+                docker_ops.encender(isp.slug)
+                isp.suspendido, isp.suspension_automatica, reactivado = False, False, True
+                _bitacora(db, isp.id, "reactivado por pago")
+            except (docker_ops.ErrorDocker, OSError) as error:
+                db.commit()
+                return _ir(f"/isp/{isp_id}", f"Error: pago registrado, pero no se pudo reactivar: {error}")
         db.commit()
-    return _ir(f"/isp/{isp_id}", f"Pago registrado: cubre hasta {cubre:%d/%m/%Y}")
+    mensaje = f"Pago registrado: cubre hasta {cubre:%d/%m/%Y}"
+    return _ir(f"/isp/{isp_id}", f"{mensaje}. ISP reactivado" if reactivado else mensaje)
 
 
 @app.post("/isp/{isp_id}/pago/{pago_id}/borrar")
@@ -393,6 +501,7 @@ def guardar_datos(
     dia_pago: int = Form(1),
     pagado_hasta: str = Form(""),
     notas: str = Form(""),
+    corte_automatico: bool = Form(False),
 ):
     with Sesion() as db:
         isp = _isp(db, isp_id)
@@ -407,6 +516,9 @@ def guardar_datos(
             _bitacora(db, isp.id, "fecha corregida", f"{isp.pagado_hasta} → {nueva}")
             isp.pagado_hasta = nueva
         isp.notas = notas.strip() or None
+        if corte_automatico != isp.corte_automatico:
+            _bitacora(db, isp.id, "corte automático", "activado" if corte_automatico else "desactivado")
+            isp.corte_automatico = corte_automatico
         db.commit()
     return _ir(f"/isp/{isp_id}", "Datos guardados")
 
@@ -465,24 +577,77 @@ def suspender(isp_id: int, _csrf_ok: str = Depends(sesion)):
             docker_ops.detener(isp.slug)
         except (docker_ops.ErrorDocker, OSError) as error:
             return _ir(f"/isp/{isp_id}", f"Error: {error}")
-        isp.suspendido = True
+        isp.suspendido, isp.suspension_automatica = True, False
         _bitacora(db, isp.id, "suspendido")
         db.commit()
     return _ir(f"/isp/{isp_id}", "ISP suspendido; sus datos se conservan")
 
 
 @app.post("/isp/{isp_id}/reactivar")
-def reactivar(isp_id: int, _csrf_ok: str = Depends(sesion)):
+def reactivar(isp_id: int, _csrf_ok: str = Depends(sesion), prorroga: str = Form("")):
+    hoy = date.today()
     with Sesion() as db:
         isp = _isp(db, isp_id)
+        # Si todavía debe, se le da una prórroga; si no, el corte lo volvería a suspender.
+        debe = debe_suspenderse(isp.pagado_hasta, False, isp.corte_automatico, None, hoy, DIAS_GRACIA)
+        hasta = None
+        if debe:
+            hasta = date.fromisoformat(prorroga) if prorroga else hoy + timedelta(days=DIAS_PRORROGA)
+            if hasta < hoy:
+                return _ir(f"/isp/{isp_id}", "Error: la prórroga no puede ser de una fecha pasada")
         try:
             docker_ops.encender(isp.slug)
         except (docker_ops.ErrorDocker, OSError) as error:
             return _ir(f"/isp/{isp_id}", f"Error: {error}")
-        isp.suspendido = False
-        _bitacora(db, isp.id, "reactivado")
+        isp.suspendido, isp.suspension_automatica = False, False
+        if hasta:
+            isp.prorroga_hasta = hasta
+        _bitacora(db, isp.id, "reactivado", f"Prórroga hasta {hasta:%d/%m/%Y}" if hasta else "")
         db.commit()
+    if hasta:
+        return _ir(f"/isp/{isp_id}", f"ISP reactivado con prórroga hasta {hasta:%d/%m/%Y}")
     return _ir(f"/isp/{isp_id}", "ISP reactivado")
+
+
+# --- Corte automático -----------------------------------------------------
+
+def _revisar_cortes(hoy: date) -> list[str]:
+    """Suspende a los ISP que pasaron la gracia sin pagar; devuelve sus slugs."""
+    suspendidos = []
+    with Sesion() as db:
+        for isp in db.scalars(select(Isp).where(Isp.suspendido.is_(False))):
+            if not debe_suspenderse(isp.pagado_hasta, isp.suspendido, isp.corte_automatico,
+                                    isp.prorroga_hasta, hoy, DIAS_GRACIA):
+                continue
+            try:
+                docker_ops.detener(isp.slug)
+            except (docker_ops.ErrorDocker, OSError) as error:
+                log.error("No se pudo suspender a %s: %s", isp.slug, error)
+                _bitacora(db, isp.id, "corte falló", str(error)[-300:])
+                continue
+            isp.suspendido, isp.suspension_automatica = True, True
+            _bitacora(db, isp.id, "suspendido automático",
+                      f"Pagado hasta {isp.pagado_hasta:%d/%m/%Y}; terminó la gracia de {DIAS_GRACIA} días")
+            suspendidos.append(isp.slug)
+        db.commit()
+    return suspendidos
+
+
+def _cortes_automaticos() -> None:
+    """Hilo del panel: cada 15 min, ya pasada la HORA_CORTE, suspende a los vencidos.
+
+    Revisar seguido (y no solo a la hora exacta) cubre los reinicios del panel.
+    """
+    horas, minutos = (int(parte) for parte in HORA_CORTE.split(":"))
+    while True:
+        ahora = datetime.now()
+        if (ahora.hour, ahora.minute) >= (horas, minutos):
+            try:
+                for slug in _revisar_cortes(ahora.date()):
+                    log.warning("%s suspendido por falta de pago", slug)
+            except Exception:  # noqa: BLE001 - el hilo no debe morir
+                log.exception("Falló la revisión de cortes")
+        time.sleep(15 * 60)
 
 
 # --- Respaldos ------------------------------------------------------------

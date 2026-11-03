@@ -18,6 +18,9 @@ PANEL_CLAVE_HASH='$HASH'
 PANEL_SECRETO=$(openssl rand -hex 32)
 PANEL_DOMINIO_BASE=$DOMINIO
 PANEL_DIAS_GRACIA=5
+# Corte automático tras la gracia (vacío: ninguno) y días de prórroga al reactivar a un moroso.
+PANEL_HORA_CORTE=09:00
+PANEL_DIAS_PRORROGA=3
 # Respaldo diario de cada ISP (vacío: ninguno) y cuántos se quedan en la VPS.
 PANEL_HORA_RESPALDO=03:00
 PANEL_RESPALDOS_LOCALES=7

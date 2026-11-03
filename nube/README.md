@@ -59,6 +59,14 @@ docker compose -p $ISP --env-file instancias/$ISP/compose.env -f compose.isp.yml
 Las licencias ya no existen en la nube: el panel suspende al ISP deteniendo sus
 contenedores y fija sus límites (`FDEZNET_LIMITE_CLIENTES`, `FDEZNET_LIMITE_ROUTERS`).
 
+**Corte automático.** Si un ISP no paga, al terminar `PANEL_DIAS_GRACIA` (5) días
+después de su "pagado hasta" el panel lo suspende solo, a partir de
+`PANEL_HORA_CORTE` (09:00). Al registrar su pago se reactiva sin hacer nada más.
+Si lo reactivas a mano mientras todavía debe, pide una prórroga (por defecto
+`PANEL_DIAS_PRORROGA`, 3 días) y se vuelve a suspender si no paga antes. El corte
+se apaga por ISP en *Datos del ISP → Corte automático*; los ISP sin pagos
+registrados nunca se cortan solos.
+
 ## Respaldos
 
 El panel respalda a cada ISP todos los días a `PANEL_HORA_RESPALDO` (03:00) y

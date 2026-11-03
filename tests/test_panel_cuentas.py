@@ -1,6 +1,8 @@
 from datetime import date, datetime
 
 from nube.panel.cuentas import (
+    debe_suspenderse,
+    dia_de_corte,
     estado_cuenta,
     estado_respaldo,
     nuevo_vencimiento,
@@ -65,3 +67,20 @@ def test_estado_del_respaldo():
     assert estado_respaldo(datetime(2026, 10, 28, 3), "disco lleno", None, creado, ahora).clave == "fallo"
     assert estado_respaldo(None, None, None, creado, ahora).clave == "sin_respaldo"
     assert estado_respaldo(None, None, None, datetime(2026, 10, 28, 9), ahora).clave == "pendiente"
+
+
+def test_dia_de_corte_despues_de_la_gracia_y_la_prorroga():
+    assert dia_de_corte(None, 5) is None
+    assert dia_de_corte(date(2026, 11, 10), 5) == date(2026, 11, 16)
+    assert dia_de_corte(date(2026, 11, 10), 5, date(2026, 11, 20)) == date(2026, 11, 21)
+    assert dia_de_corte(date(2026, 11, 10), 5, date(2026, 11, 1)) == date(2026, 11, 16)  # prórroga vieja
+
+
+def test_debe_suspenderse():
+    pagado = date(2026, 11, 10)
+    assert not debe_suspenderse(pagado, False, True, None, date(2026, 11, 15), 5)  # último día de gracia
+    assert debe_suspenderse(pagado, False, True, None, date(2026, 11, 16), 5)
+    assert not debe_suspenderse(pagado, True, True, None, date(2026, 11, 16), 5)  # ya suspendido
+    assert not debe_suspenderse(pagado, False, False, None, date(2026, 11, 16), 5)  # corte desactivado
+    assert not debe_suspenderse(pagado, False, True, date(2026, 11, 18), date(2026, 11, 18), 5)
+    assert not debe_suspenderse(None, False, True, None, date(2026, 11, 16), 5)  # sin pagos

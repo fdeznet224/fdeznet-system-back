@@ -53,6 +53,30 @@ def estado_cuenta(
     return Estado("vencido", f"Vencido hace {atraso} días", "rojo")
 
 
+def dia_de_corte(pagado_hasta: date | None, dias_gracia: int, prorroga_hasta: date | None = None) -> date | None:
+    """Primer día en que el ISP queda suspendido si no paga (después de la gracia y la prórroga)."""
+    if pagado_hasta is None:
+        return None  # sin pagos registrados (alta de prueba): no se corta solo
+    corte = pagado_hasta + timedelta(days=dias_gracia + 1)
+    if prorroga_hasta and prorroga_hasta >= corte:
+        corte = prorroga_hasta + timedelta(days=1)
+    return corte
+
+
+def debe_suspenderse(
+    pagado_hasta: date | None,
+    suspendido: bool,
+    corte_automatico: bool,
+    prorroga_hasta: date | None,
+    hoy: date,
+    dias_gracia: int = 5,
+) -> bool:
+    if suspendido or not corte_automatico:
+        return False
+    corte = dia_de_corte(pagado_hasta, dias_gracia, prorroga_hasta)
+    return corte is not None and hoy >= corte
+
+
 def siguiente_puerto(usados: list[int], primero: int) -> int:
     libres = set(usados)
     puerto = primero

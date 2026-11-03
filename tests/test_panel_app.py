@@ -338,3 +338,105 @@ def test_privacidad_y_terminos_son_publicos(panel):
     privacidad = cliente.get("/privacidad")
     assert privacidad.status_code == 200 and "drive.file" in privacidad.text
     assert cliente.get("/terminos").status_code == 200
+
+
+def _isp_vencido(cliente, csrf, dias_vencido: int):
+    from datetime import timedelta
+
+    from nube.panel.db import Isp, Sesion
+
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "Moroso", "slug": "moroso", "precio_mensual": "800"})
+    with Sesion() as db:
+        db.get(Isp, 1).pagado_hasta = date.today() - timedelta(days=dias_vencido)
+        db.commit()
+
+
+def test_corte_automatico_suspende_al_terminar_la_gracia(panel):
+    from nube.panel import app as app_mod
+    from nube.panel.db import Bitacora, Isp, Sesion
+
+    cliente, llamadas = panel
+    csrf = _entrar(cliente)
+    _isp_vencido(cliente, csrf, 5)  # último día de gracia
+    assert app_mod._revisar_cortes(date.today()) == []
+    assert "se suspende hoy" not in cliente.get("/").text
+
+    with Sesion() as db:
+        db.get(Isp, 1).pagado_hasta = date(2026, 1, 1)
+        db.commit()
+    assert app_mod._revisar_cortes(date.today()) == ["moroso"]
+    assert ("detener", "moroso") in llamadas
+    with Sesion() as db:
+        isp = db.get(Isp, 1)
+        assert isp.suspendido and isp.suspension_automatica
+        assert db.query(Bitacora).filter_by(accion="suspendido automático").count() == 1
+    assert app_mod._revisar_cortes(date.today()) == []  # no lo repite
+    inicio = cliente.get("/").text
+    assert "Suspendido por falta de pago" in inicio
+
+
+def test_pago_reactiva_lo_suspendido_por_el_corte(panel):
+    from nube.panel import app as app_mod
+    from nube.panel.db import Isp, Sesion
+
+    cliente, llamadas = panel
+    csrf = _entrar(cliente)
+    _isp_vencido(cliente, csrf, 30)
+    app_mod._revisar_cortes(date.today())
+    respuesta = cliente.post("/isp/1/pago", data={
+        "csrf": csrf, "monto": "800", "meses": "1", "fecha": date.today().isoformat()})
+    assert "reactivado" in respuesta.headers["location"]
+    assert ("encender", "moroso") in llamadas
+    with Sesion() as db:
+        assert not db.get(Isp, 1).suspendido
+
+
+def test_pago_no_reactiva_lo_suspendido_a_mano(panel):
+    cliente, llamadas = panel
+    csrf = _entrar(cliente)
+    _isp_vencido(cliente, csrf, 30)
+    cliente.post("/isp/1/suspender", data={"csrf": csrf})
+    cliente.post("/isp/1/pago", data={"csrf": csrf, "monto": "800", "meses": "1", "fecha": date.today().isoformat()})
+    assert ("encender", "moroso") not in llamadas
+
+
+def test_reactivar_a_un_moroso_le_da_prorroga(panel):
+    from datetime import timedelta
+
+    from nube.panel import app as app_mod
+    from nube.panel.db import Isp, Sesion
+
+    cliente, _ = panel
+    csrf = _entrar(cliente)
+    _isp_vencido(cliente, csrf, 30)
+    app_mod._revisar_cortes(date.today())
+    assert "Prórroga hasta" in cliente.get("/isp/1").text
+    hasta = date.today() + timedelta(days=2)
+    cliente.post("/isp/1/reactivar", data={"csrf": csrf, "prorroga": hasta.isoformat()})
+    with Sesion() as db:
+        isp = db.get(Isp, 1)
+        assert not isp.suspendido and isp.prorroga_hasta == hasta
+    assert app_mod._revisar_cortes(date.today()) == []
+    assert app_mod._revisar_cortes(hasta + timedelta(days=1)) == ["moroso"]
+
+
+def test_sin_corte_automatico_no_se_suspende(panel):
+    from nube.panel import app as app_mod
+
+    cliente, _ = panel
+    csrf = _entrar(cliente)
+    _isp_vencido(cliente, csrf, 30)
+    cliente.post("/isp/1/datos", data={"csrf": csrf, "nombre": "Moroso", "precio_mensual": "800", "dia_pago": "1",
+                                       "pagado_hasta": "2026-01-01"})
+    assert app_mod._revisar_cortes(date.today()) == []
+    assert "sin corte automático" in cliente.get("/").text
+
+
+def test_inicio_filtra_y_muestra_lo_pendiente(panel):
+    cliente, _ = panel
+    csrf = _entrar(cliente)
+    _isp_vencido(cliente, csrf, 2)
+    inicio = cliente.get("/").text
+    assert "Requiere atención" in inicio and "en gracia" in inicio
+    assert "Moroso" in cliente.get("/?ver=cobrar").text
+    assert "Ninguno en esta lista" in cliente.get("/?ver=suspendidos").text

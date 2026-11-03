@@ -1,10 +1,18 @@
 {% extends "base.html" %}
 {% block titulo %}Entrar · Panel WisPay{% endblock %}
+{% block clase %}pagina-entrar{% endblock %}
+{% block avisos %}{% endblock %}
 {% block contenido %}
-<h1>Panel WisPay</h1>
-<form class="lista" method="post" action="/entrar">
-  <label><span>Usuario</span><input name="usuario" autocomplete="username" required autofocus></label>
-  <label><span>Contraseña</span><input name="clave" type="password" autocomplete="current-password" required></label>
-  <button class="boton" style="border-radius:0;margin:0">Entrar</button>
-</form>
+<div class="entrar">
+  <div class="entrar-marca">{% include "_logo.html" %}</div>
+  <h1>WisPay</h1>
+  <p class="entrar-sub">Panel de administración de los ISP en la nube</p>
+  <form class="entrar-tarjeta" method="post" action="/entrar">
+    {% if error %}<div class="entrar-error" role="alert">{{ error }}</div>{% endif %}
+    <label><span>Usuario</span><input name="usuario" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></label>
+    <label><span>Contraseña</span><input name="clave" type="password" autocomplete="current-password" required></label>
+    <button class="boton">Entrar</button>
+  </form>
+  <p class="entrar-pie">Acceso solo para el administrador. Tras 5 intentos fallidos se bloquea 15 minutos.</p>
+</div>
 {% endblock %}

@@ -13,6 +13,8 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    inspect,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -42,6 +44,10 @@ class Isp(Base):
     limite_routers: Mapped[int | None] = mapped_column(Integer)
     whatsapp: Mapped[bool] = mapped_column(Boolean, default=True)
     suspendido: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Corte automático al terminar la gracia; lo suspendido así se reactiva solo al pagar.
+    corte_automatico: Mapped[bool] = mapped_column(Boolean, default=True)
+    suspension_automatica: Mapped[bool] = mapped_column(Boolean, default=False)
+    prorroga_hasta: Mapped[date | None] = mapped_column(Date)
     web_port: Mapped[int] = mapped_column(Integer, unique=True)
     wg_port: Mapped[int] = mapped_column(Integer, unique=True)
     version: Mapped[str] = mapped_column(String(30), default="local")
@@ -104,5 +110,21 @@ class DriveIsp(Base):
     conectado: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+# Columnas agregadas después de la primera versión: create_all no toca tablas existentes.
+_COLUMNAS_NUEVAS = {
+    "isps": {
+        "corte_automatico": "BOOLEAN NOT NULL DEFAULT 1",
+        "suspension_automatica": "BOOLEAN NOT NULL DEFAULT 0",
+        "prorroga_hasta": "DATE",
+    },
+}
+
+
 def crear_tablas() -> None:
     Base.metadata.create_all(engine)
+    with engine.begin() as conexion:
+        for tabla, columnas in _COLUMNAS_NUEVAS.items():
+            existentes = {c["name"] for c in inspect(conexion).get_columns(tabla)}
+            for nombre, tipo in columnas.items():
+                if nombre not in existentes:
+                    conexion.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {tipo}"))
