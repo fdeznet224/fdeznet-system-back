@@ -18,10 +18,17 @@ class ErrorWhatsApp(Exception):
     pass
 
 
+def _cabeceras() -> dict[str, str]:
+    # El bot solo obedece a quien conoce su secreto (el mismo de sus webhooks).
+    return {"X-Webhook-Secret": SECRETO}
+
+
 def estado() -> dict:
     """{conectado, iniciado, qr} — qr es el texto del código mientras no esté vinculado."""
     try:
-        datos = httpx.get(f"{BOT_URL}/status", timeout=5).json()
+        respuesta = httpx.get(f"{BOT_URL}/status", headers=_cabeceras(), timeout=5)
+        respuesta.raise_for_status()
+        datos = respuesta.json()
     except (httpx.HTTPError, ValueError):
         return {"disponible": False, "conectado": False, "iniciado": False, "qr": None}
     return {"disponible": True, "conectado": bool(datos.get("connected")),
@@ -37,7 +44,8 @@ def qr_svg(texto: str) -> str:
 
 def enviar(numero: str, mensaje: str) -> None:
     try:
-        respuesta = httpx.post(f"{BOT_URL}/enviar-mensaje", json={"numero": numero, "mensaje": mensaje}, timeout=60)
+        respuesta = httpx.post(f"{BOT_URL}/enviar-mensaje", json={"numero": numero, "mensaje": mensaje},
+                                headers=_cabeceras(), timeout=60)
     except httpx.HTTPError as error:
         raise ErrorWhatsApp(f"El WhatsApp de ventas no respondió: {error}") from error
     if respuesta.status_code >= 400:
@@ -51,7 +59,7 @@ def enviar(numero: str, mensaje: str) -> None:
 def cerrar_sesion() -> None:
     """Desvincula el número y deja el bot listo para mostrar un código nuevo."""
     try:
-        httpx.post(f"{BOT_URL}/logout", timeout=30)
-        httpx.post(f"{BOT_URL}/init", timeout=10)
+        httpx.post(f"{BOT_URL}/logout", headers=_cabeceras(), timeout=30).raise_for_status()
+        httpx.post(f"{BOT_URL}/init", headers=_cabeceras(), timeout=10).raise_for_status()
     except httpx.HTTPError as error:
         raise ErrorWhatsApp(f"El WhatsApp de ventas no respondió: {error}") from error
