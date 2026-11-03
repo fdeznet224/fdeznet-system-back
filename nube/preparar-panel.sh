@@ -27,7 +27,8 @@ PANEL_CONTACTO_PAGO=
 # WhatsApp de ventas (contenedor bot del panel) y demos de la página de registro.
 PANEL_BOT_VERSION=$(sed -n 's/^SYSTEM_VERSION *= *"\(.*\)"/\1/p' "$(dirname "$0")/../src/version.py")
 PANEL_BOT_SECRETO=$(openssl rand -hex 32)
-PANEL_DEMO_DIAS=30
+PANEL_DEMO_DIAS=15
+PANEL_DEMO_LIMITE_CLIENTES=25
 PANEL_DEMO_GRACIA=15
 PANEL_DEMOS_MAX=20
 # Respaldo diario de cada ISP (vacío: ninguno) y cuántos se quedan en la VPS.

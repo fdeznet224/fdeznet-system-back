@@ -499,7 +499,7 @@ def test_registro_crea_el_demo_y_manda_su_acceso(registro):
     respuesta = cliente.post("/api/registro", json=DATOS).json()
     assert respuesta["ok"] and respuesta["direccion"] == "https://red-rapida.ejemplo.com"
     _, slug, _, opciones = next(c for c in llamadas if c[0] == "crear")
-    assert slug == "red-rapida" and opciones["whatsapp"] is False and opciones["limite_clientes"] == 200
+    assert slug == "red-rapida" and opciones["whatsapp"] is False and opciones["limite_clientes"] == 25
     assert opciones["marca"] == {"MARCA_NOMBRE": "Red Rápida S.A.", "MARCA_TELEFONO": "9613632496",
                                  "MARCA_CORREO": "ana@red.mx"}
     _, numero, mensaje = next(c for c in llamadas if c[0] == "whatsapp")
@@ -508,7 +508,7 @@ def test_registro_crea_el_demo_y_manda_su_acceso(registro):
     with Sesion() as db:
         isp = db.query(Isp).one()
         assert isp.es_demo and isp.demo_pasos is None and isp.precio_mensual == 0
-        assert isp.demo_hasta == date.today() + __import__("datetime").timedelta(days=30)
+        assert isp.demo_hasta == date.today() + __import__("datetime").timedelta(days=15)
 
     otra_vez = cliente.post("/api/registro", json=DATOS).json()
     assert otra_vez.get("existente") and sum(1 for c in llamadas if c[0] == "crear") == 1

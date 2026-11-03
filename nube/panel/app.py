@@ -70,11 +70,11 @@ DIAS_PRORROGA = int(os.getenv("PANEL_DIAS_PRORROGA", "3"))
 DIAS_AVISO = int(os.getenv("PANEL_DIAS_AVISO", "5"))  # cuántos días antes de vencer se le avisa al ISP
 CONTACTO_PAGO = os.getenv("PANEL_CONTACTO_PAGO", "").strip()  # p. ej. "WhatsApp 55 1234 5678"
 # Demos que se piden solos en la página de registro (wispay.click).
-DEMO_DIAS = int(os.getenv("PANEL_DEMO_DIAS", "30"))
+DEMO_DIAS = int(os.getenv("PANEL_DEMO_DIAS", "15"))
 DEMO_GRACIA = int(os.getenv("PANEL_DEMO_GRACIA", "15"))  # días suspendido antes de borrarse
 DEMOS_MAX = int(os.getenv("PANEL_DEMOS_MAX", "20"))
 DEMO_RAM_MINIMA_GB = float(os.getenv("PANEL_DEMO_RAM_MINIMA_GB", "1.5"))
-DEMO_LIMITE_CLIENTES = int(os.getenv("PANEL_DEMO_LIMITE_CLIENTES", "200"))
+DEMO_LIMITE_CLIENTES = int(os.getenv("PANEL_DEMO_LIMITE_CLIENTES", "25"))
 DEMO_LIMITE_ROUTERS = int(os.getenv("PANEL_DEMO_LIMITE_ROUTERS", "3"))
 REGISTROS_POR_IP = int(os.getenv("PANEL_REGISTROS_POR_IP", "3"))  # por día
 
