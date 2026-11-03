@@ -174,7 +174,41 @@ class RedClienteService:
             "modelo": onu.modelo if onu else None,
             "marca": marca_de_onu(onu.identificador if onu else None, onu.modelo if onu else None),
             "ip": ip,
+            "_onu": onu,
         }
+
+    async def _marca_por_tr069(self, http: httpx.AsyncClient, device_id: Optional[str], equipo: Dict[str, Any]) -> None:
+        """Una ONU EPON se registra con su MAC, que no dice la marca: se le pregunta a ella.
+        Si es Huawei (o ZTE), su modelo queda guardado en el inventario para la próxima vez."""
+        if equipo["marca"] or not device_id:
+            return
+        respuesta = await http.get("/devices", params={
+            "query": json.dumps({"_id": device_id}),
+            "projection": "_deviceId,InternetGatewayDevice.DeviceInfo.Manufacturer,InternetGatewayDevice.DeviceInfo.ModelName",
+        })
+        respuesta.raise_for_status()
+        documento = (respuesta.json() or [{}])[0]
+        # _deviceId llega en cada reporte de la ONU; DeviceInfo solo si alguien lo pidió antes.
+        ident = documento.get("_deviceId") or {}
+        info = ((documento.get("InternetGatewayDevice") or {}).get("DeviceInfo") or {})
+        fabricante = str(ident.get("_Manufacturer") or _valor(info.get("Manufacturer")) or "").strip()
+        modelo = str(ident.get("_ProductClass") or _valor(info.get("ModelName")) or "").strip()
+        marca = marca_de_onu(None, f"{fabricante} {modelo}")
+        if not marca:
+            return
+        equipo["marca"] = marca
+        onu = equipo.get("_onu")
+        if onu is not None and not (onu.modelo or "").strip() and modelo:
+            onu.modelo = f"{'Huawei' if marca == 'huawei' else 'ZTE'} {modelo}"[:100]
+            equipo["modelo"] = onu.modelo
+            await self.db.commit()
+
+    async def _equipo_con_marca(self, cliente_id: int, servicio_id: Optional[int] = None) -> Dict[str, Any]:
+        equipo = await self._equipo(cliente_id, servicio_id)
+        if not equipo["marca"]:
+            async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
+                await self._marca_por_tr069(http, await self._id_tr069(http, equipo), equipo)
+        return equipo
 
     # ---------------------------------------------------------- GenieACS
     async def _id_tr069(self, http: httpx.AsyncClient, equipo: Dict[str, Any]) -> Optional[str]:
@@ -244,6 +278,7 @@ class RedClienteService:
         equipo = await self._equipo(cliente_id, servicio_id)
         async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
             device_id = await self._id_tr069(http, equipo)
+            await self._marca_por_tr069(http, device_id, equipo)
 
             async def tr069():
                 if not device_id:
@@ -310,12 +345,12 @@ class RedClienteService:
     async def bloqueados(self, cliente_id: int, servicio_id: Optional[int] = None) -> Dict[str, Any]:
         """Solo los filtros de la web de la ONU (unos segundos): para confirmar un bloqueo cuya
         respuesta no llegó porque la ONU reinició el WiFi y cortó al celular que lo pidió."""
-        return {"bloqueados": sorted(await self._bloqueadas(await self._equipo(cliente_id, servicio_id)))}
+        return {"bloqueados": sorted(await self._bloqueadas(await self._equipo_con_marca(cliente_id, servicio_id)))}
 
     async def bloquear(self, cliente_id: int, mac: str, bloquear: bool, usuario=None, servicio_id: Optional[int] = None,
                        solo_principal: bool = False) -> Dict[str, Any]:
         mac = normalizar_mac(mac)
-        equipo = await self._equipo(cliente_id, servicio_id)
+        equipo = await self._equipo_con_marca(cliente_id, servicio_id)
         if equipo["marca"] != "huawei" or not equipo["ip"]:
             raise ValueError("El bloqueo por MAC solo está hecho para ONU Huawei.")
         redes = await self._redes_del_equipo(equipo, mac, solo_principal) if bloquear else []
