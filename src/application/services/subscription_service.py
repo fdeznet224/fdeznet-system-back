@@ -542,7 +542,7 @@ class SubscriptionService:
         servicio.is_online = False
         servicio.ultimo_cambio_estado = datetime.now()
         from src.application.services.billing_service import BillingService
-        await BillingService(self.db).crear_prorrateo_inicial(
+        prorrateo = await BillingService(self.db).crear_prorrateo_inicial(
             servicio,
             servicio.cliente,
             plan,
@@ -554,6 +554,7 @@ class SubscriptionService:
         await self._sincronizar_estado_cliente(servicio.cliente_id)
         await self._sincronizar_legacy_si_principal(servicio)
         await self.db.commit()
+        await BillingService(self.db).avisar_prorrateo(prorrateo)
         await BillingService(
             self.db
         ).emitir_primera_factura_por_instalacion(servicio)

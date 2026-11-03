@@ -165,6 +165,36 @@ class BillingService:
         cliente.proxima_factura = periodo.siguiente_facturacion
         return factura
 
+    async def avisar_prorrateo(self, factura: FacturaModel | None) -> bool:
+        """Le avisa al cliente del prorrateo: no corta, pero se suma a su próxima factura.
+
+        Se llama ya guardada la activación, para no avisar de un cobro que no quedó.
+        """
+        if (
+            factura is None
+            or factura.tipo_factura != "prorrateo"
+            or (factura.saldo_pendiente or 0) <= 0
+        ):
+            return False
+        try:
+            return bool(await NotificationService(self.db).notificar(
+                "aviso_prorrateo",
+                factura.cliente_id,
+                variables_extra={
+                    **self._variables_detalle_factura(factura),
+                    "monto": f"${float(factura.total or 0):.2f}",
+                    "folio": str(factura.id),
+                    "fecha_proxima_factura": (
+                        factura.fecha_vencimiento.strftime("%d/%m/%Y")
+                        if factura.fecha_vencimiento else "N/A"
+                    ),
+                },
+                clave_dedupe=f"factura:{factura.id}:prorrateo",
+            ))
+        except Exception:
+            logger.exception("No se pudo avisar el prorrateo de la factura %s", factura.id)
+            return False
+
     async def _agregar_reconexion_a_factura(
         self,
         factura: FacturaModel,

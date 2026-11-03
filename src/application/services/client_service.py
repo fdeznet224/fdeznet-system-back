@@ -971,7 +971,7 @@ class ClientService:
             # G. Guardar cambios en la base de datos
             cliente.estado = 'activo'
             from src.application.services.billing_service import BillingService
-            await BillingService(self.db).crear_prorrateo_inicial(
+            prorrateo = await BillingService(self.db).crear_prorrateo_inicial(
                 servicio,
                 cliente,
                 cliente_rel.plan,
@@ -988,6 +988,8 @@ class ClientService:
                     print(f"✅ Notificación 'bienvenida' encolada para {cliente.nombre}")
                 except Exception as e_msg:
                     print(f"⚠️ Error al encolar bienvenida: {e_msg}")
+            if cliente.telefono:
+                await BillingService(self.db).avisar_prorrateo(prorrateo)
 
             await BillingService(
                 self.db

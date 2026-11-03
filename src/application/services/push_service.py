@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 # respuestas del bot no.
 TITULOS = {
     "nueva_factura": "Nueva factura",
+    "aviso_prorrateo": "Saldo de prorrateo",
     "recordatorio_pago": "Recordatorio de pago",
     "pago_recibido": "Pago recibido",
     "abono_recibido": "Abono recibido",
