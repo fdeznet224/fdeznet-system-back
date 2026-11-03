@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block titulo %}WhatsApp de ventas · Panel WisPay{% endblock %}
+{% block contenido %}
+<p><a href="/">‹ Inicio</a></p>
+<h1>WhatsApp de ventas</h1>
+<div class="lista">
+  <div class="fila"><span class="punto {{ 'verde' if estado.conectado else 'rojo' }}"></span>
+    <div class="crece"><div class="titulo">{{ 'Conectado' if estado.conectado else 'Sin vincular' if estado.disponible else 'El bot no responde' }}</div>
+      <div class="sub envuelve">Desde este número les llega a los interesados su acceso al demo y los avisos de su fin.</div></div></div>
+</div>
+{% if qr %}
+<h2>Vincular</h2>
+<div class="lista qr-caja">
+  <div class="qr">{{ qr | safe }}</div>
+  <p class="nota">En el celular del número de ventas: WhatsApp → Dispositivos vinculados → Vincular un dispositivo, y escanea el código. Esta página se actualiza sola.</p>
+</div>
+<meta http-equiv="refresh" content="8">
+{% elif not estado.conectado %}
+<p class="nota">{% if estado.disponible %}Preparando el código…{% else %}Revisa que el contenedor del bot del panel esté encendido.{% endif %}</p>
+<meta http-equiv="refresh" content="5">
+{% endif %}
+{% if estado.disponible %}
+<form method="post" action="/whatsapp/cerrar" onsubmit="return confirm('Se desvincula este número del panel. ¿Continuar?')">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><button class="boton peligro">{{ 'Desvincular número' if estado.conectado else 'Reiniciar vinculación' }}</button></form>
+{% endif %}
+<p class="nota">Lo que te contesten lo ves en el celular de ese número; el panel no guarda las conversaciones.</p>
+{% endblock %}

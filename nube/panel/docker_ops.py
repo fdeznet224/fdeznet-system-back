@@ -51,8 +51,13 @@ def _compose(slug: str, *args: str, timeout: int = 300) -> str:
 
 
 def crear(slug: str, web_port: int, wg_port: int, dominio: str, *, limite_clientes: int | None,
-          limite_routers: int | None, whatsapp: bool, version: str, enlace: dict[str, str]) -> str:
-    """Da de alta la instancia y devuelve la contraseña inicial del admin."""
+          limite_routers: int | None, whatsapp: bool, version: str, enlace: dict[str, str],
+          marca: dict[str, str] | None = None) -> str:
+    """Da de alta la instancia y devuelve la contraseña inicial del admin.
+
+    marca (MARCA_NOMBRE, MARCA_TELEFONO, MARCA_CORREO) es lo que el sistema
+    muestra la primera vez; después el ISP la cambia en Marca blanca.
+    """
     salida = _correr(
         [str(NUBE_DIR / "crear-instancia.sh"), slug, str(web_port), str(wg_port), dominio],
         timeout=900,
@@ -62,6 +67,7 @@ def crear(slug: str, web_port: int, wg_port: int, dominio: str, *, limite_client
             "CON_WHATSAPP": "1" if whatsapp else "0",
             "IMAGEN_VERSION": version,
             **enlace,
+            **(marca or {}),
         },
     )
     coincide = re.search(r"^ADMIN_PASSWORD=(\S+)$", salida, re.MULTILINE)
@@ -125,6 +131,13 @@ def asegurar_enlace(slug: str, enlace: dict[str, str]) -> bool:
     if faltan:
         _editar_env(archivo, faltan)
     return bool(faltan)
+
+
+def borrar(slug: str) -> None:
+    """Para siempre: contenedores, volúmenes, base y archivos del ISP."""
+    salida = _correr([str(NUBE_DIR / "borrar-instancia.sh"), slug], timeout=300)
+    if f"BORRADO={slug}" not in salida:
+        raise ErrorDocker("No se pudo confirmar el borrado")
 
 
 def detener(slug: str) -> None:

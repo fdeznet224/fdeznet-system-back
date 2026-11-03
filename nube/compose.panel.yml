@@ -26,8 +26,27 @@ services:
       - fdezpay-proxy
     mem_limit: 256m
 
+  # WhatsApp de ventas: el mismo bot de los ISP. Con él llegan los accesos a los
+  # demos que se piden en la página de registro. Se vincula en panel → WhatsApp.
+  bot:
+    image: fdezpay-bot:${PANEL_BOT_VERSION:?Falta PANEL_BOT_VERSION en secretos/panel.env}
+    restart: unless-stopped
+    environment:
+      API_BACKEND_URL: http://panel:8100
+      WEBHOOK_SECRET: ${PANEL_BOT_SECRETO:?Falta PANEL_BOT_SECRETO en secretos/panel.env}
+      BOT_REINICIO_DIARIO: "04:30"
+      TZ: America/Mexico_City
+    stop_grace_period: 30s
+    volumes:
+      - bot-sesion:/app/bot_whatsapp/.wwebjs_auth
+      - bot-archivos:/app/bot_whatsapp/uploads
+    mem_limit: 1200m
+    cpus: 1
+
 volumes:
   datos:
+  bot-sesion:
+  bot-archivos:
 
 networks:
   fdezpay-proxy:

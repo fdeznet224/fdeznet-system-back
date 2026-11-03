@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -28,19 +29,30 @@ from fastapi.templating import Jinja2Templates
 from passlib.hash import pbkdf2_sha256
 from sqlalchemy import func, select
 
-from nube.panel import docker_ops, drive
+from nube.panel import docker_ops, drive, whatsapp
 from nube.panel.cuentas import (
     PRIMER_PUERTO_WEB,
     PRIMER_PUERTO_WG,
+    RESERVADOS,
     SLUG,
     aviso_al_isp,
     debe_suspenderse,
     dia_de_corte,
     estado_cuenta,
+    estado_demo,
     estado_respaldo,
+    etapas_demo,
+    limpiar_texto,
+    mensaje_bienvenida,
+    mensaje_demo_por_terminar,
+    mensaje_demo_se_borra,
+    mensaje_demo_terminado,
     nuevo_vencimiento,
     segundos_hasta,
+    siguiente_paso_demo,
     siguiente_puerto,
+    slug_para,
+    telefono_mx,
 )
 from nube.panel.db import Bitacora, DriveIsp, Isp, Pago, Respaldo, Sesion, crear_tablas
 
@@ -57,6 +69,14 @@ HORA_CORTE = os.getenv("PANEL_HORA_CORTE", "09:00")  # vacío: sin corte automá
 DIAS_PRORROGA = int(os.getenv("PANEL_DIAS_PRORROGA", "3"))
 DIAS_AVISO = int(os.getenv("PANEL_DIAS_AVISO", "5"))  # cuántos días antes de vencer se le avisa al ISP
 CONTACTO_PAGO = os.getenv("PANEL_CONTACTO_PAGO", "").strip()  # p. ej. "WhatsApp 55 1234 5678"
+# Demos que se piden solos en la página de registro (wispay.click).
+DEMO_DIAS = int(os.getenv("PANEL_DEMO_DIAS", "30"))
+DEMO_GRACIA = int(os.getenv("PANEL_DEMO_GRACIA", "15"))  # días suspendido antes de borrarse
+DEMOS_MAX = int(os.getenv("PANEL_DEMOS_MAX", "20"))
+DEMO_RAM_MINIMA_GB = float(os.getenv("PANEL_DEMO_RAM_MINIMA_GB", "1.5"))
+DEMO_LIMITE_CLIENTES = int(os.getenv("PANEL_DEMO_LIMITE_CLIENTES", "200"))
+DEMO_LIMITE_ROUTERS = int(os.getenv("PANEL_DEMO_LIMITE_ROUTERS", "3"))
+REGISTROS_POR_IP = int(os.getenv("PANEL_REGISTROS_POR_IP", "3"))  # por día
 
 if not CLAVE_HASH or len(SECRETO) < 32:
     raise RuntimeError("Configura PANEL_CLAVE_HASH y PANEL_SECRETO (32+ caracteres)")
@@ -90,8 +110,7 @@ async def ciclo_de_vida(_app: FastAPI):
     _asegurar_enlaces()
     if HORA_RESPALDO:
         threading.Thread(target=_respaldos_diarios, daemon=True, name="respaldos").start()
-    if HORA_CORTE:
-        threading.Thread(target=_cortes_automaticos, daemon=True, name="cortes").start()
+    threading.Thread(target=_tareas_del_dia, daemon=True, name="cortes-y-demos").start()
     yield
 
 
@@ -197,7 +216,19 @@ def _bitacora(db, isp_id: int | None, accion: str, detalle: str = "") -> None:
 
 
 def _estado(isp: Isp):
+    if isp.es_demo and isp.demo_hasta:
+        return estado_demo(isp.demo_hasta, isp.suspendido, date.today(), DEMO_GRACIA)
     return estado_cuenta(isp.pagado_hasta, isp.suspendido, date.today(), dias_gracia=DIAS_GRACIA)
+
+
+def _pasos(isp: Isp) -> set[str]:
+    return set(filter(None, (isp.demo_pasos or "").split(",")))
+
+
+def _marcar_paso(isp: Isp, paso: str, hecho: bool = True) -> None:
+    pasos = _pasos(isp)
+    pasos.add(paso) if hecho else pasos.discard(paso)
+    isp.demo_pasos = ",".join(sorted(pasos)) or None
 
 
 def _corte(isp: Isp) -> date | None:
@@ -245,7 +276,21 @@ def _pendientes(filas: list[dict], hoy: date) -> list[dict]:
     for f in filas:
         isp, estado, corte = f["isp"], f["estado"], f["corte"]
         enlace = f"/isp/{isp.id}"
-        if isp.suspendido and isp.suspension_automatica:
+        pasos = _pasos(isp)
+        if "creando" in pasos:
+            avisos.append({"orden": 3, "tono": "gris", "isp": isp.nombre, "enlace": enlace,
+                           "texto": "Demo nuevo: preparando su sistema…"})
+            continue
+        if "sin_envio" in pasos:
+            avisos.append({"orden": 0, "tono": "rojo", "isp": isp.nombre, "enlace": enlace,
+                           "texto": "No se le pudo mandar su acceso por WhatsApp; usa Reenviar acceso"})
+        if isp.es_demo:
+            if estado.clave == "demo_por_vencer":
+                avisos.append({"orden": 2, "tono": "ambar", "isp": isp.nombre, "enlace": enlace,
+                               "texto": f"{estado.texto}; buen momento para llamarle ({isp.contacto or ''})"})
+            elif estado.clave == "demo_fin":
+                avisos.append({"orden": 3, "tono": "gris", "isp": isp.nombre, "enlace": enlace, "texto": estado.texto})
+        elif isp.suspendido and isp.suspension_automatica:
             avisos.append({"orden": 0, "tono": "rojo", "isp": isp.nombre, "enlace": enlace,
                            "texto": "Suspendido por falta de pago; se reactiva solo al registrar su pago"})
         elif estado.clave in {"gracia", "vencido"}:
@@ -272,6 +317,7 @@ FILTROS = {
     "todos": lambda f: True,
     "cobrar": lambda f: f["estado"].clave in {"por_vencer", "gracia", "vencido", "sin_pago"},
     "suspendidos": lambda f: f["isp"].suspendido,
+    "demos": lambda f: f["isp"].es_demo,
 }
 
 
@@ -301,12 +347,13 @@ def inicio(request: Request, msg: str = "", ver: str = "todos", csrf: str = Depe
             "ram": sum(mb for nombre, mb in memoria.items() if nombre.startswith(f"{isp.slug}-")),
             "respaldo": respaldos[isp.id],
         })
-    activos = [isp for isp in isps if not isp.suspendido]
+    activos = [isp for isp in isps if not isp.suspendido and not isp.es_demo]
     resumen = {
-        "total": len(isps),
+        "total": sum(1 for isp in isps if not isp.es_demo),
         "activos": len(activos),
-        "suspendidos": len(isps) - len(activos),
-        "en_linea": sum(1 for f in filas if f["en_linea"]),
+        "suspendidos": sum(1 for isp in isps if isp.suspendido and not isp.es_demo),
+        "demos": sum(1 for isp in isps if isp.es_demo and not isp.suspendido),
+        "en_linea": sum(1 for f in filas if f["en_linea"] and not f["isp"].es_demo),
         "mensual": sum((isp.precio_mensual for isp in activos), Decimal(0)),
         "cobrado": Decimal(cobrado or 0),
         "por_cobrar": sum(1 for f in filas if FILTROS["cobrar"](f)),
@@ -316,6 +363,7 @@ def inicio(request: Request, msg: str = "", ver: str = "todos", csrf: str = Depe
     return _render(
         request, "inicio.html", csrf, filas=[f for f in filas if FILTROS[ver](f)], resumen=resumen,
         pendientes=_pendientes(filas, hoy), vps=_recursos_vps(), actividad=actividad, ver=ver,
+        whatsapp_ventas=whatsapp.estado(), demos_max=DEMOS_MAX, demo_dias=DEMO_DIAS,
         hoy=hoy, hora_corte=HORA_CORTE, dias_gracia=DIAS_GRACIA, msg=msg, error=error,
     )
 
@@ -362,6 +410,8 @@ def nuevo(
     slug = slug.strip().lower()
     if not SLUG.fullmatch(slug):
         raise HTTPException(status_code=400, detail="Subdominio inválido: minúsculas, números y guiones")
+    if slug in RESERVADOS:
+        raise HTTPException(status_code=400, detail="Ese subdominio está reservado")
     with Sesion() as db:
         if db.scalar(select(Isp).where(Isp.slug == slug)):
             raise HTTPException(status_code=400, detail="Ese subdominio ya existe")
@@ -435,6 +485,8 @@ def detalle(request: Request, isp_id: int, msg: str = "", csrf: str = Depends(se
         request, "detalle.html", csrf, isp=isp, estado=_estado(isp), pagos=pagos, corte=_corte(isp),
         prorroga=date.today() + timedelta(days=DIAS_PRORROGA), hora_corte=HORA_CORTE,
         debe=debe_suspenderse(isp.pagado_hasta, False, isp.corte_automatico, None, date.today(), DIAS_GRACIA),
+        demo=etapas_demo(isp.demo_hasta, DEMO_GRACIA) if isp.es_demo and isp.demo_hasta else None,
+        pasos=_pasos(isp),
         bitacora=bitacora, servicios=servicios, versiones=versiones, msg=msg, error=error,
         hoy=date.today(), respaldo=respaldo, respaldos=docker_ops.listar_respaldos(isp.slug),
         hora_respaldo=HORA_RESPALDO, cuenta_drive=cuenta_drive, error_drive=error_drive,
@@ -460,6 +512,10 @@ def registrar_pago(
                     cubre_hasta=cubre, nota=nota.strip() or None))
         isp.pagado_hasta = cubre
         _bitacora(db, isp.id, "pago", f"{meses} mes(es), {_dinero(monto)} · cubre hasta {cubre:%d/%m/%Y}")
+        if isp.es_demo:
+            # Con su primer pago deja de ser demo: ya no se borra y entra al corte normal.
+            isp.es_demo, isp.demo_pasos = False, None
+            _bitacora(db, isp.id, "demo convertido en cliente")
         reactivado = False
         if isp.suspendido and isp.suspension_automatica and not debe_suspenderse(
             cubre, False, True, isp.prorroga_hasta, date.today(), DIAS_GRACIA
@@ -636,21 +692,297 @@ def _revisar_cortes(hoy: date) -> list[str]:
     return suspendidos
 
 
-def _cortes_automaticos() -> None:
-    """Hilo del panel: cada 15 min, ya pasada la HORA_CORTE, suspende a los vencidos.
+def _tareas_del_dia() -> None:
+    """Hilo del panel: cada 15 min, ya pasada la HORA_CORTE, suspende a los vencidos
+    y avanza los demos (avisos, fin, borrado).
 
     Revisar seguido (y no solo a la hora exacta) cubre los reinicios del panel.
     """
-    horas, minutos = (int(parte) for parte in HORA_CORTE.split(":"))
+    horas, minutos = (int(parte) for parte in (HORA_CORTE or "09:00").split(":"))
     while True:
         ahora = datetime.now()
         if (ahora.hour, ahora.minute) >= (horas, minutos):
             try:
-                for slug in _revisar_cortes(ahora.date()):
-                    log.warning("%s suspendido por falta de pago", slug)
+                if HORA_CORTE:
+                    for slug in _revisar_cortes(ahora.date()):
+                        log.warning("%s suspendido por falta de pago", slug)
+                _revisar_demos(ahora.date())
             except Exception:  # noqa: BLE001 - el hilo no debe morir
-                log.exception("Falló la revisión de cortes")
+                log.exception("Falló la revisión de cortes y demos")
         time.sleep(15 * 60)
+
+
+# --- Demos ------------------------------------------------------------------
+
+def _avisar(isp: Isp, mensaje: str) -> bool:
+    """Manda un WhatsApp a quien pidió el demo; si no se puede, lo deja en la bitácora."""
+    if not isp.telefono:
+        return False
+    try:
+        whatsapp.enviar(isp.telefono, mensaje)
+        return True
+    except whatsapp.ErrorWhatsApp as error:
+        log.warning("No se pudo avisar a %s: %s", isp.slug, error)
+        return False
+
+
+def _revisar_demos(hoy: date) -> list[tuple[str, str]]:
+    """Avanza cada demo un paso a la vez; devuelve (slug, paso) de lo que hizo."""
+    hechos = []
+    with Sesion() as db:
+        demos = db.scalars(select(Isp).where(Isp.es_demo.is_(True), Isp.demo_hasta.isnot(None))).all()
+        for isp in demos:
+            if "creando" in _pasos(isp):
+                continue
+            paso = siguiente_paso_demo(isp.demo_hasta, _pasos(isp), hoy, DEMO_GRACIA)
+            if not paso:
+                continue
+            fechas = etapas_demo(isp.demo_hasta, DEMO_GRACIA)
+            nombre, empresa = (isp.contacto or "").split(" ")[0] or "", isp.nombre
+            try:
+                if paso == "aviso":
+                    _avisar(isp, mensaje_demo_por_terminar(nombre, empresa, f"https://{isp.dominio}", isp.demo_hasta))
+                elif paso == "fin":
+                    if not isp.suspendido:
+                        docker_ops.detener(isp.slug)
+                        isp.suspendido, isp.suspension_automatica = True, True
+                    _avisar(isp, mensaje_demo_terminado(nombre, empresa, fechas["borrar"]))
+                    _bitacora(db, isp.id, "demo terminado", f"Se borra el {fechas['borrar']:%d/%m/%Y}")
+                elif paso == "aviso_borrar":
+                    _avisar(isp, mensaje_demo_se_borra(nombre, empresa, fechas["borrar"]))
+                elif paso == "borrar":
+                    docker_ops.borrar(isp.slug)
+                    _bitacora(db, None, "demo borrado",
+                              f"{isp.nombre} ({isp.dominio}) · {isp.contacto or ''} {isp.telefono or ''}".strip())
+                    db.delete(isp)
+                    db.commit()
+                    hechos.append((isp.slug, paso))
+                    continue
+            except (docker_ops.ErrorDocker, OSError) as error:
+                log.error("Demo %s, paso %s: %s", isp.slug, paso, error)
+                _bitacora(db, isp.id, f"demo: {paso} falló", str(error)[-300:])
+                db.commit()
+                continue
+            _marcar_paso(isp, paso)
+            db.commit()
+            hechos.append((isp.slug, paso))
+    return hechos
+
+
+_candado_demos = threading.Lock()
+_registros_ip: dict[str, deque] = defaultdict(deque)
+
+
+def _ram_libre_gb() -> float:
+    try:
+        for linea in Path("/proc/meminfo").read_text().splitlines():
+            if linea.startswith("MemAvailable:"):
+                return int(linea.split()[1]) / 1048576
+    except (OSError, ValueError):
+        pass
+    return 99.0  # sin /proc (pruebas): no se limita por RAM
+
+
+def _ultima_version() -> str:
+    try:
+        versiones = docker_ops.versiones_disponibles()
+    except (docker_ops.ErrorDocker, OSError):
+        versiones = []
+    if not versiones:
+        return "local"
+    return max(versiones, key=lambda v: tuple(int(x) if x.isdigit() else 0 for x in v.split(".")))
+
+
+def _crear_demo(isp_id: int, clave_nombre: str) -> None:
+    """Hilo: crea la instancia del demo y le manda su acceso por WhatsApp."""
+    with Sesion() as db:
+        isp = db.get(Isp, isp_id)
+        datos = dict(slug=isp.slug, web=isp.web_port, wg=isp.wg_port, dominio=isp.dominio, version=isp.version,
+                     nombre=isp.nombre, telefono=isp.telefono, correo=isp.correo or "")
+    try:
+        clave = docker_ops.crear(
+            datos["slug"], datos["web"], datos["wg"], datos["dominio"],
+            limite_clientes=DEMO_LIMITE_CLIENTES, limite_routers=DEMO_LIMITE_ROUTERS, whatsapp=False,
+            version=datos["version"], enlace=_enlace(datos["slug"]),
+            marca={"MARCA_NOMBRE": datos["nombre"], "MARCA_TELEFONO": datos["telefono"][2:],
+                   "MARCA_CORREO": datos["correo"]},
+        )
+    except (docker_ops.ErrorDocker, OSError) as error:
+        log.error("No se pudo crear el demo %s: %s", datos["slug"], error)
+        with Sesion() as db:
+            isp = db.get(Isp, isp_id)
+            _bitacora(db, None, "demo no se pudo crear",
+                      f"{isp.nombre} · {isp.contacto} {isp.telefono} · {str(error)[-200:]}")
+            db.delete(isp)
+            db.commit()
+        try:
+            docker_ops.borrar(datos["slug"])
+        except (docker_ops.ErrorDocker, OSError):
+            pass
+        try:
+            whatsapp.enviar(datos["telefono"], f"Hola {clave_nombre}, tuvimos un problema al preparar tu demo de "
+                            "WisPay. Ya nos avisaron y te escribimos en cuanto quede listo.")
+        except whatsapp.ErrorWhatsApp:
+            pass
+        return
+    with Sesion() as db:
+        isp = db.get(Isp, isp_id)
+        _marcar_paso(isp, "creando", False)
+        mensaje = mensaje_bienvenida(clave_nombre, isp.nombre, f"https://{isp.dominio}", "admin", clave, isp.demo_hasta)
+        if _avisar(isp, mensaje):
+            _bitacora(db, isp.id, "demo creado", f"Acceso enviado por WhatsApp a {isp.telefono}")
+        else:
+            # La contraseña no se guarda: con Restablecer contraseña se le manda otra.
+            _marcar_paso(isp, "sin_envio")
+            _bitacora(db, isp.id, "demo creado", "No se le pudo mandar su acceso por WhatsApp")
+        db.commit()
+
+
+@app.post("/api/registro")
+async def registro(request: Request):
+    """Formulario público de wispay.click: pide un demo gratis."""
+    try:
+        datos = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "Formulario inválido"}, status_code=400)
+    if not isinstance(datos, dict):
+        return JSONResponse({"ok": False, "error": "Formulario inválido"}, status_code=400)
+    if str(datos.get("sitio_web") or "").strip():  # campo trampa para robots
+        return {"ok": True, "mensaje": "Recibido"}
+    empresa = limpiar_texto(str(datos.get("empresa") or ""), 60)
+    nombre = limpiar_texto(str(datos.get("nombre") or ""), 60)
+    telefono = telefono_mx(str(datos.get("telefono") or ""))
+    correo = limpiar_texto(str(datos.get("correo") or ""), 120).replace(" ", "")
+    clientes = limpiar_texto(str(datos.get("clientes") or ""), 20)
+    if len(empresa) < 2 or len(nombre) < 2:
+        return JSONResponse({"ok": False, "error": "Escribe el nombre de tu empresa y el tuyo"}, status_code=400)
+    if not telefono:
+        return JSONResponse({"ok": False, "error": "Escribe tu WhatsApp a 10 dígitos"}, status_code=400)
+    if correo and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}", correo):
+        return JSONResponse({"ok": False, "error": "Revisa tu correo"}, status_code=400)
+
+    ip = request.client.host if request.client else "?"
+    cola = _registros_ip[ip]
+    while cola and cola[0] < time.monotonic() - 86400:
+        cola.popleft()
+    if len(cola) >= REGISTROS_POR_IP:
+        return JSONResponse({"ok": False, "error": "Ya pediste varios demos hoy; escríbenos por WhatsApp"}, status_code=429)
+
+    with _candado_demos:
+        with Sesion() as db:
+            previo = db.scalar(select(Isp).where(Isp.telefono == telefono, Isp.es_demo.is_(True)))
+            if previo:
+                return {"ok": True, "existente": True, "direccion": f"https://{previo.dominio}",
+                        "mensaje": "Ese WhatsApp ya tiene un demo. Si no encuentras tu contraseña, "
+                                   "responde al mensaje que te mandamos y te ayudamos."}
+            demos = db.scalar(select(func.count()).select_from(Isp).where(
+                Isp.es_demo.is_(True), Isp.suspendido.is_(False))) or 0
+            if demos >= DEMOS_MAX or _ram_libre_gb() < DEMO_RAM_MINIMA_GB or not whatsapp.estado()["conectado"]:
+                # Sin lugar (o sin WhatsApp para mandarle su acceso): queda anotado para llamarle.
+                _bitacora(db, None, "registro en espera",
+                          f"{empresa} · {nombre} · {telefono} {correo} · {clientes} clientes".strip())
+                db.commit()
+                return {"ok": True, "espera": True,
+                        "mensaje": "¡Gracias! En este momento estamos preparando lugar; te escribimos por "
+                                   "WhatsApp en cuanto tu demo esté listo."}
+            ocupados = set(db.scalars(select(Isp.slug)))
+            ocupados |= {p.name for p in (docker_ops.NUBE_DIR / "instancias").glob("*") if p.is_dir()}
+            usados = db.execute(select(Isp.web_port, Isp.wg_port)).all()
+            web_disco, wg_disco = docker_ops.puertos_en_uso()
+            slug = slug_para(empresa, ocupados)
+            isp = Isp(
+                nombre=empresa, slug=slug, dominio=f"{slug}.{DOMINIO_BASE}", contacto=nombre, telefono=telefono,
+                correo=correo or None, plan="Demo", precio_mensual=Decimal(0), es_demo=True,
+                demo_hasta=date.today() + timedelta(days=DEMO_DIAS), demo_pasos="creando", registro_ip=ip,
+                limite_clientes=DEMO_LIMITE_CLIENTES, limite_routers=DEMO_LIMITE_ROUTERS, whatsapp=False,
+                version=_ultima_version(), notas=f"Registro web · {clientes} clientes" if clientes else "Registro web",
+                web_port=siguiente_puerto([u.web_port for u in usados] + web_disco, PRIMER_PUERTO_WEB),
+                wg_port=siguiente_puerto([u.wg_port for u in usados] + wg_disco, PRIMER_PUERTO_WG),
+            )
+            db.add(isp)
+            db.flush()
+            _bitacora(db, isp.id, "registro web", f"{nombre} · {telefono} {correo}".strip())
+            db.commit()
+            isp_id, direccion = isp.id, f"https://{isp.dominio}"
+    cola.append(time.monotonic())
+    threading.Thread(target=_crear_demo, args=(isp_id, nombre.split(" ")[0]), daemon=True).start()
+    return {"ok": True, "direccion": direccion,
+            "mensaje": "¡Listo! En unos minutos te llega por WhatsApp tu acceso."}
+
+
+@app.post("/isp/{isp_id}/demo")
+def ajustar_demo(isp_id: int, _csrf_ok: str = Depends(sesion), demo_hasta: date = Form(...)):
+    """Alargar (o acortar) el demo; si ya estaba en pausa por el fin del demo, se reactiva."""
+    with Sesion() as db:
+        isp = _isp(db, isp_id)
+        if not isp.es_demo:
+            raise HTTPException(status_code=400, detail="No es un demo")
+        antes = isp.demo_hasta
+        isp.demo_hasta = demo_hasta
+        isp.demo_pasos = ",".join(sorted(_pasos(isp) & {"sin_envio"})) or None
+        if isp.suspendido and isp.suspension_automatica and demo_hasta >= date.today():
+            try:
+                docker_ops.encender(isp.slug)
+            except (docker_ops.ErrorDocker, OSError) as error:
+                return _ir(f"/isp/{isp_id}", f"Error: {error}")
+            isp.suspendido, isp.suspension_automatica = False, False
+        _bitacora(db, isp.id, "demo ajustado", f"{antes:%d/%m/%Y} → {demo_hasta:%d/%m/%Y}" if antes else "")
+        db.commit()
+    return _ir(f"/isp/{isp_id}", f"Demo hasta {demo_hasta:%d/%m/%Y}")
+
+
+@app.post("/isp/{isp_id}/demo/reenviar")
+def reenviar_acceso(isp_id: int, _csrf_ok: str = Depends(sesion)):
+    """Le pone una contraseña nueva al admin del demo y se la manda por WhatsApp."""
+    with Sesion() as db:
+        isp = _isp(db, isp_id)
+        if not isp.telefono:
+            return _ir(f"/isp/{isp_id}", "Error: no tiene WhatsApp registrado")
+        clave = secrets.token_urlsafe(9)
+        try:
+            docker_ops.restablecer_admin(isp.slug, "admin", clave)
+        except (docker_ops.ErrorDocker, OSError) as error:
+            return _ir(f"/isp/{isp_id}", f"Error: {error}")
+        hasta = isp.demo_hasta or date.today()
+        mensaje = mensaje_bienvenida((isp.contacto or "").split(" ")[0], isp.nombre, f"https://{isp.dominio}",
+                                     "admin", clave, hasta)
+        if not _avisar(isp, mensaje):
+            db.commit()
+            return _ir(f"/isp/{isp_id}", "Error: se cambió la contraseña pero no se pudo mandar por WhatsApp")
+        _marcar_paso(isp, "sin_envio", False)
+        _bitacora(db, isp.id, "acceso reenviado", f"Por WhatsApp a {isp.telefono}")
+        db.commit()
+    return _ir(f"/isp/{isp_id}", "Acceso nuevo enviado por WhatsApp")
+
+
+# --- WhatsApp de ventas -------------------------------------------------------
+
+@app.get("/whatsapp", response_class=HTMLResponse)
+def whatsapp_pagina(request: Request, msg: str = "", csrf: str = Depends(sesion)):
+    estado = whatsapp.estado()
+    qr = whatsapp.qr_svg(estado["qr"]) if estado["qr"] and not estado["conectado"] else None
+    return _render(request, "whatsapp.html", csrf, estado=estado, qr=qr, msg=msg)
+
+
+@app.post("/whatsapp/cerrar")
+def whatsapp_cerrar(_csrf_ok: str = Depends(sesion)):
+    try:
+        whatsapp.cerrar_sesion()
+    except whatsapp.ErrorWhatsApp as error:
+        return _ir("/whatsapp", f"Error: {error}")
+    with Sesion() as db:
+        _bitacora(db, None, "whatsapp de ventas desvinculado")
+        db.commit()
+    return _ir("/whatsapp", "Número desvinculado; escanea el código con el nuevo")
+
+
+@app.post("/whatsapp/webhook/{tipo}")
+async def whatsapp_webhook(tipo: str, request: Request):
+    """El bot avisa de mensajes y confirmaciones; el panel no los guarda (se ven en el celular)."""
+    recibido = request.headers.get("X-Webhook-Secret", "")
+    if not whatsapp.SECRETO or not hmac.compare_digest(recibido, whatsapp.SECRETO):
+        raise HTTPException(status_code=403)
+    return {"ok": True, "matched": True}
 
 
 # --- Respaldos ------------------------------------------------------------

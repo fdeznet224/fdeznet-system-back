@@ -17,9 +17,21 @@ panel.{$DOMINIO} {
 	reverse_proxy fdezpay-panel-panel-1:8100
 }
 
+# La página de WisPay con el registro de demos; el formulario lo atiende el panel.
 {$DOMINIO} {
 	import seguro
-	redir https://panel.{$DOMINIO}{uri}
+	encode gzip
+	handle /api/registro {
+		reverse_proxy fdezpay-panel-panel-1:8100
+	}
+	handle {
+		root * /srv/landing
+		file_server
+	}
+}
+
+www.{$DOMINIO} {
+	redir https://{$DOMINIO}{uri} permanent
 }
 
 # Cualquier otro subdominio: el contenedor web de ese ISP (<isp>-web-1), que

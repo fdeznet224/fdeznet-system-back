@@ -22,6 +22,26 @@
   {% endif %}
 </div>
 
+{% if isp.es_demo %}
+<h2>Demo</h2>
+<div class="lista">
+  {% if 'creando' in pasos %}<div class="fila"><span class="punto gris"></span><div class="crece">Preparando su sistema…</div></div>{% endif %}
+  {% if 'sin_envio' in pasos %}<div class="fila"><span class="punto rojo"></span><div class="crece rojo">No se le pudo mandar su acceso por WhatsApp</div></div>{% endif %}
+  <div class="fila"><div class="crece">Gratis hasta</div><div class="der">{{ isp.demo_hasta | fecha }}</div></div>
+  {% if demo %}<div class="fila"><div class="crece">Se pausa / se borra</div><div class="der">{{ demo.fin | fecha }} / {{ demo.borrar | fecha }}</div></div>{% endif %}
+  <div class="fila"><div class="crece">Pidió el demo</div><div class="der">{{ isp.contacto or '—' }}{% if isp.telefono %} · <a href="https://wa.me/{{ isp.telefono }}" target="_blank" rel="noopener">{{ isp.telefono[2:] }}</a>{% endif %}</div></div>
+  {% if isp.correo %}<div class="fila"><div class="crece">Correo</div><div class="der"><a href="mailto:{{ isp.correo }}">{{ isp.correo }}</a></div></div>{% endif %}
+</div>
+<form method="post" action="/isp/{{ isp.id }}/demo">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="lista"><label class="campo"><span>Alargar hasta</span><input name="demo_hasta" type="date" required value="{{ isp.demo_hasta.isoformat() if isp.demo_hasta else hoy.isoformat() }}"></label></div>
+  <button class="boton secundario">Cambiar fecha del demo</button>
+</form>
+<form method="post" action="/isp/{{ isp.id }}/demo/reenviar" onsubmit="return confirm('Se le pone una contraseña nueva al usuario admin y se le manda por WhatsApp. ¿Continuar?')">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><button class="boton secundario">Reenviar acceso por WhatsApp</button></form>
+<p class="nota">Avisos automáticos por WhatsApp 5 días antes del fin, al pausarse y 3 días antes de borrarse. Con su primer pago deja de ser demo.</p>
+{% endif %}
+
 <h2>Registrar pago</h2>
 <form method="post" action="/isp/{{ isp.id }}/pago">
   <input type="hidden" name="csrf" value="{{ csrf }}">

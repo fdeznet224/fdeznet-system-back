@@ -10,6 +10,7 @@ def test_identidad_inicial_proviene_de_la_instalacion(monkeypatch):
     monkeypatch.setenv("FDEZNET_BRAND_NAME", "ISP Montaña")
     monkeypatch.setenv("FDEZNET_BRAND_SYSTEM_NAME", "Portal Montaña")
     monkeypatch.setenv("FDEZNET_BRAND_EMAIL", "soporte@montana.test")
+    monkeypatch.setenv("FDEZNET_BRAND_PHONE", "9611234567")
 
     values = initial_branding_values()
 
@@ -17,6 +18,7 @@ def test_identidad_inicial_proviene_de_la_instalacion(monkeypatch):
         "empresa_nombre": "ISP Montaña",
         "sistema_nombre": "Portal Montaña",
         "empresa_email": "soporte@montana.test",
+        "empresa_telefono": "9611234567",
     }
 
 

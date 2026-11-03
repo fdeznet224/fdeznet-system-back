@@ -153,3 +153,8 @@ body.pagina-entrar main { width: 100%; max-width: 400px; padding: 32px 16px; }
 .entrar-pie { margin: 18px 8px 0; color: var(--suave); font-size: 12px; }
 body:not(.ancho) header.barra { padding-inline: max(16px, calc((100% - 728px) / 2)); }
 .fila.actividad .isp-nombre { color: var(--azul); }
+.azul { color: var(--azul); }
+.punto.azul, .avatar.azul { background: var(--azul); }
+.titulo .pastilla { vertical-align: 2px; margin-left: 4px; }
+.qr-caja { padding: 16px; text-align: center; }
+.qr svg { width: min(280px, 100%); height: auto; background: #fff; border-radius: 12px; padding: 8px; }

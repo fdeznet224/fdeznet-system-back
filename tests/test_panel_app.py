@@ -34,6 +34,10 @@ def panel(tmp_path, monkeypatch):
     monkeypatch.setattr(docker_ops, "restaurar", lambda slug, nombre, **k: llamadas.append(("restaurar", slug, nombre, k)))
     monkeypatch.setattr(docker_ops, "listar_respaldos", lambda slug: [
         {"nombre": f"{slug}-20261028-030000.tar", "tamano": 2048, "fecha": datetime(2026, 10, 28, 3)}])
+    monkeypatch.setattr(docker_ops, "borrar", lambda slug: llamadas.append(("borrar", slug)))
+    from nube.panel import whatsapp
+    monkeypatch.setattr(whatsapp, "estado", lambda: {"disponible": True, "conectado": True, "iniciado": True, "qr": None})
+    monkeypatch.setattr(whatsapp, "enviar", lambda numero, mensaje: llamadas.append(("whatsapp", numero, mensaje)))
     cliente = TestClient(app_mod.app, follow_redirects=False)
     return cliente, llamadas
 
@@ -126,7 +130,7 @@ def test_alta_salta_puertos_de_instancias_hechas_a_mano(panel, monkeypatch):
 
     monkeypatch.setattr(docker_ops, "puertos_en_uso", lambda: ([18001], [51821]))
     csrf = _entrar(cliente)
-    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "Demo", "slug": "demo"})
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "Colega", "slug": "colega"})
     assert llamadas[0][2][:2] == (18002, 51822)
 
 
@@ -463,3 +467,154 @@ def test_el_isp_consulta_su_aviso_de_pago_firmado(panel):
         db.commit()
     aviso = pedir(firma).json()["aviso"]
     assert aviso["tono"] == "rojo" and "se suspende" in aviso["mensaje"]
+
+
+# --- Demos desde la página de registro ---------------------------------------
+
+class _HiloInmediato:
+    def __init__(self, target, args=(), **_):
+        self.target, self.args = target, args
+
+    def start(self):
+        self.target(*self.args)
+
+
+@pytest.fixture
+def registro(panel, monkeypatch):
+    from nube.panel import app as app_mod
+
+    monkeypatch.setattr(app_mod.threading, "Thread", _HiloInmediato)
+    monkeypatch.setattr(app_mod, "_ram_libre_gb", lambda: 6.0)
+    return panel
+
+
+DATOS = {"empresa": "Red Rápida S.A.", "nombre": "Ana López", "telefono": "961 363 2496", "correo": "ana@red.mx",
+         "clientes": "150"}
+
+
+def test_registro_crea_el_demo_y_manda_su_acceso(registro):
+    from nube.panel.db import Isp, Sesion
+
+    cliente, llamadas = registro
+    respuesta = cliente.post("/api/registro", json=DATOS).json()
+    assert respuesta["ok"] and respuesta["direccion"] == "https://red-rapida.ejemplo.com"
+    _, slug, _, opciones = next(c for c in llamadas if c[0] == "crear")
+    assert slug == "red-rapida" and opciones["whatsapp"] is False and opciones["limite_clientes"] == 200
+    assert opciones["marca"] == {"MARCA_NOMBRE": "Red Rápida S.A.", "MARCA_TELEFONO": "9613632496",
+                                 "MARCA_CORREO": "ana@red.mx"}
+    _, numero, mensaje = next(c for c in llamadas if c[0] == "whatsapp")
+    assert numero == "529613632496"
+    assert "ClaveInicial123" in mensaje and "https://red-rapida.ejemplo.com" in mensaje and "Ana" in mensaje
+    with Sesion() as db:
+        isp = db.query(Isp).one()
+        assert isp.es_demo and isp.demo_pasos is None and isp.precio_mensual == 0
+        assert isp.demo_hasta == date.today() + __import__("datetime").timedelta(days=30)
+
+    otra_vez = cliente.post("/api/registro", json=DATOS).json()
+    assert otra_vez.get("existente") and sum(1 for c in llamadas if c[0] == "crear") == 1
+
+
+def test_registro_valida_y_frena_robots(registro):
+    cliente, llamadas = registro
+    assert cliente.post("/api/registro", json={**DATOS, "telefono": "12345"}).status_code == 400
+    assert cliente.post("/api/registro", json={**DATOS, "empresa": ""}).status_code == 400
+    assert cliente.post("/api/registro", json={**DATOS, "sitio_web": "spam"}).json()["ok"]
+    assert not any(c[0] == "crear" for c in llamadas)
+    for numero in ("9610000001", "9610000002", "9610000003"):
+        assert cliente.post("/api/registro", json={**DATOS, "telefono": numero}).status_code == 200
+    assert cliente.post("/api/registro", json={**DATOS, "telefono": "9610000004"}).status_code == 429
+
+
+def test_sin_whatsapp_el_registro_queda_en_espera(registro, monkeypatch):
+    from nube.panel import whatsapp
+    from nube.panel.db import Bitacora, Isp, Sesion
+
+    cliente, llamadas = registro
+    monkeypatch.setattr(whatsapp, "estado", lambda: {"disponible": True, "conectado": False, "iniciado": True, "qr": "x"})
+    assert cliente.post("/api/registro", json=DATOS).json()["espera"]
+    with Sesion() as db:
+        assert db.query(Isp).count() == 0
+        assert "Ana López" in db.query(Bitacora).filter_by(accion="registro en espera").one().detalle
+
+
+def test_ciclo_del_demo_avisa_pausa_y_borra(registro):
+    from datetime import timedelta
+
+    from nube.panel import app as app_mod
+    from nube.panel.db import Bitacora, Isp, Sesion
+
+    cliente, llamadas = registro
+    cliente.post("/api/registro", json=DATOS)
+    with Sesion() as db:
+        hasta = db.query(Isp).one().demo_hasta
+    llamadas.clear()
+    assert app_mod._revisar_demos(hasta - timedelta(days=10)) == []
+    assert app_mod._revisar_demos(hasta - timedelta(days=5)) == [("red-rapida", "aviso")]
+    assert app_mod._revisar_demos(hasta - timedelta(days=5)) == []  # no repite
+    assert app_mod._revisar_demos(hasta + timedelta(days=1)) == [("red-rapida", "fin")]
+    assert ("detener", "red-rapida") in llamadas
+    assert app_mod._revisar_demos(hasta + timedelta(days=13)) == [("red-rapida", "aviso_borrar")]
+    assert app_mod._revisar_demos(hasta + timedelta(days=16)) == [("red-rapida", "borrar")]
+    assert ("borrar", "red-rapida") in llamadas
+    mensajes = [c[2] for c in llamadas if c[0] == "whatsapp"]
+    assert len(mensajes) == 3
+    assert "termina el" in mensajes[0] and "quedó en pausa" in mensajes[1] and "se borran para siempre" in mensajes[2]
+    with Sesion() as db:
+        assert db.query(Isp).count() == 0
+        assert db.query(Bitacora).filter_by(accion="demo borrado").count() == 1
+
+
+def test_pago_convierte_el_demo_en_cliente_y_lo_reactiva(registro):
+    from datetime import timedelta
+
+    from nube.panel import app as app_mod
+    from nube.panel.db import Isp, Sesion
+
+    cliente, llamadas = registro
+    csrf = _entrar(cliente)
+    cliente.post("/api/registro", json=DATOS)
+    with Sesion() as db:
+        hasta = db.query(Isp).one().demo_hasta
+    app_mod._revisar_demos(hasta + timedelta(days=1))  # se pausa
+    cliente.post("/isp/1/pago", data={"csrf": csrf, "monto": "500", "meses": "1", "fecha": date.today().isoformat()})
+    assert ("encender", "red-rapida") in llamadas
+    with Sesion() as db:
+        isp = db.get(Isp, 1)
+        assert not isp.es_demo and not isp.suspendido
+    assert app_mod._revisar_demos(hasta + timedelta(days=20)) == []
+
+
+def test_alargar_demo_y_reenviar_acceso(registro):
+    from datetime import timedelta
+
+    from nube.panel.db import Isp, Sesion
+
+    cliente, llamadas = registro
+    csrf = _entrar(cliente)
+    cliente.post("/api/registro", json=DATOS)
+    nueva = date.today() + timedelta(days=45)
+    cliente.post("/isp/1/demo", data={"csrf": csrf, "demo_hasta": nueva.isoformat()})
+    with Sesion() as db:
+        assert db.get(Isp, 1).demo_hasta == nueva
+    cliente.post("/isp/1/demo/reenviar", data={"csrf": csrf})
+    assert any(c[0] == "restablecer" for c in llamadas)
+    assert sum(1 for c in llamadas if c[0] == "whatsapp") == 2
+    pagina = cliente.get("/?ver=demos").text
+    assert "Red Rápida" in pagina and "Demo" in pagina
+    assert "Ninguno en esta lista" in cliente.get("/?ver=cobrar").text
+
+
+def test_webhook_del_bot_pide_su_secreto(panel, monkeypatch):
+    from nube.panel import whatsapp
+
+    cliente, _ = panel
+    monkeypatch.setattr(whatsapp, "SECRETO", "secreto-del-bot")
+    assert cliente.post("/whatsapp/webhook/recibir", json={}).status_code == 403
+    assert cliente.post("/whatsapp/webhook/recibir", json={}, headers={"X-Webhook-Secret": "secreto-del-bot"}).json()["ok"]
+
+
+def test_subdominio_reservado_no_se_da_de_alta(panel):
+    cliente, llamadas = panel
+    csrf = _entrar(cliente)
+    assert cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "X", "slug": "panel"}).status_code == 400
+    assert llamadas == []

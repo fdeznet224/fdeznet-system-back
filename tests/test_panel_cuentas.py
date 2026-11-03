@@ -1,6 +1,11 @@
 from datetime import date, datetime
 
 from nube.panel.cuentas import (
+    estado_demo,
+    limpiar_texto,
+    siguiente_paso_demo,
+    slug_para,
+    telefono_mx,
     aviso_al_isp,
     debe_suspenderse,
     dia_de_corte,
@@ -107,3 +112,30 @@ def test_aviso_al_isp_antes_y_despues_de_vencer():
     assert "se suspende hoy a las 09:00" in hoy_corte["mensaje"]
     sin_corte = aviso_al_isp(date(2026, 10, 1), False, None, hoy)
     assert "Regulariza tu pago" in sin_corte["mensaje"]
+
+
+def test_slug_desde_el_nombre_de_la_empresa():
+    assert slug_para("Red Rápida S.A. de C.V.", set()) == "red-rapida"
+    assert slug_para("Red Rápida", {"red-rapida"}) == "red-rapida-2"
+    assert slug_para("Panel", set()) == "panel-2"  # reservado
+    assert slug_para("2000 Net", set()) == "isp-2000-net"
+
+
+def test_telefono_de_mexico():
+    assert telefono_mx("961 363 2496") == telefono_mx("+52 1 961-363-2496") == "529613632496"
+    assert telefono_mx("12345") is None and telefono_mx("0123456789") is None
+
+
+def test_texto_publico_sin_lo_que_rompe_un_env():
+    assert limpiar_texto('Red "$(x)" `y`\nNet') == "Red (x) y Net"
+
+
+def test_pasos_del_demo():
+    hasta = date(2026, 12, 2)
+    assert siguiente_paso_demo(hasta, set(), date(2026, 11, 20), 15) is None
+    assert siguiente_paso_demo(hasta, set(), date(2026, 11, 27), 15) == "aviso"
+    assert siguiente_paso_demo(hasta, {"aviso"}, date(2026, 12, 2), 15) is None  # último día gratis
+    assert siguiente_paso_demo(hasta, {"aviso"}, date(2026, 12, 3), 15) == "fin"
+    assert siguiente_paso_demo(hasta, set(), date(2026, 12, 18), 15) == "borrar"  # se saltó días: borra
+    assert estado_demo(hasta, False, date(2026, 11, 2), 15).texto == "Demo gratis hasta 02/12/2026"
+    assert estado_demo(hasta, True, date(2026, 12, 5), 15).clave == "demo_fin"

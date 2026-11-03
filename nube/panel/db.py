@@ -48,6 +48,12 @@ class Isp(Base):
     corte_automatico: Mapped[bool] = mapped_column(Boolean, default=True)
     suspension_automatica: Mapped[bool] = mapped_column(Boolean, default=False)
     prorroga_hasta: Mapped[date | None] = mapped_column(Date)
+    # Demo gratis pedido en la página de registro: se suspende y luego se borra solo.
+    es_demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    demo_hasta: Mapped[date | None] = mapped_column(Date)
+    demo_pasos: Mapped[str | None] = mapped_column(String(120))  # avisos ya hechos: aviso,fin,…
+    correo: Mapped[str | None] = mapped_column(String(255))
+    registro_ip: Mapped[str | None] = mapped_column(String(64))
     web_port: Mapped[int] = mapped_column(Integer, unique=True)
     wg_port: Mapped[int] = mapped_column(Integer, unique=True)
     version: Mapped[str] = mapped_column(String(30), default="local")
@@ -116,6 +122,11 @@ _COLUMNAS_NUEVAS = {
         "corte_automatico": "BOOLEAN NOT NULL DEFAULT 1",
         "suspension_automatica": "BOOLEAN NOT NULL DEFAULT 0",
         "prorroga_hasta": "DATE",
+        "es_demo": "BOOLEAN NOT NULL DEFAULT 0",
+        "demo_hasta": "DATE",
+        "demo_pasos": "VARCHAR(120)",
+        "correo": "VARCHAR(255)",
+        "registro_ip": "VARCHAR(64)",
     },
 }
 

@@ -25,6 +25,11 @@
     <b class="{{ 'ambar' if resumen.por_cobrar else '' }}">{{ resumen.por_cobrar }}</b>
     <span>por vencer o vencidos</span>
   </a>
+  <a class="cifra" href="/?ver=demos">
+    <span class="etiqueta">Demos</span>
+    <b class="{{ 'azul' if resumen.demos else '' }}">{{ resumen.demos }}<small> de {{ demos_max }}</small></b>
+    <span>{{ demo_dias }} días gratis desde {{ dominio_base }}</span>
+  </a>
   <a class="cifra" href="/?ver=suspendidos">
     <span class="etiqueta">Suspendidos</span>
     <b class="{{ 'rojo' if resumen.suspendidos else '' }}">{{ resumen.suspendidos }}</b>
@@ -53,6 +58,7 @@
       <nav class="segmentos">
         <a href="/" class="{{ 'activo' if ver == 'todos' else '' }}">Todos</a>
         <a href="/?ver=cobrar" class="{{ 'activo' if ver == 'cobrar' else '' }}">Por cobrar</a>
+        <a href="/?ver=demos" class="{{ 'activo' if ver == 'demos' else '' }}">Demos</a>
         <a href="/?ver=suspendidos" class="{{ 'activo' if ver == 'suspendidos' else '' }}">Suspendidos</a>
       </nav>
     </div>
@@ -61,12 +67,12 @@
       <a class="fila isp" href="/isp/{{ f.isp.id }}">
         <span class="avatar {{ f.estado.tono }}">{{ f.isp.nombre[:1] | upper }}</span>
         <div class="crece">
-          <div class="titulo">{{ f.isp.nombre }}</div>
+          <div class="titulo">{{ f.isp.nombre }}{% if f.isp.es_demo %} <span class="pastilla azul">Demo</span>{% endif %}</div>
           <div class="sub">{{ f.isp.dominio }}</div>
           <div class="sub envuelve"><span class="{{ f.estado.tono }}">{{ f.estado.texto }}</span>{% if f.corte and f.estado.clave in ('por_vencer', 'gracia', 'vencido') %} · corte {{ f.corte.strftime('%d/%m') }}{% endif %}</div>
         </div>
         <div class="der">
-          <div>{{ f.isp.precio_mensual | dinero }}</div>
+          <div>{% if f.isp.es_demo %}{{ f.isp.contacto or '' }}{% else %}{{ f.isp.precio_mensual | dinero }}{% endif %}</div>
           <span class="pastilla {{ 'gris' if f.isp.suspendido else 'verde' if f.en_linea else 'rojo' }}">{{ 'Suspendido' if f.isp.suspendido else 'En línea' if f.en_linea else 'Detenido' }}</span>
           {% if f.ram %}<small>{{ '%.0f' % f.ram }} MB · v{{ f.isp.version }}</small>{% else %}<small>v{{ f.isp.version }}</small>{% endif %}
         </div>
@@ -79,6 +85,16 @@
   </div>
 
   <aside class="col-lateral">
+    <h2>WhatsApp de ventas</h2>
+    <div class="lista">
+      <a class="fila" href="/whatsapp">
+        <span class="punto {{ 'verde' if whatsapp_ventas.conectado else 'rojo' }}"></span>
+        <div class="crece"><div class="titulo">{{ 'Conectado' if whatsapp_ventas.conectado else 'Sin vincular' if whatsapp_ventas.disponible else 'No responde' }}</div>
+          <div class="sub envuelve">{{ 'Los demos llegan por aquí' if whatsapp_ventas.conectado else 'Sin él, los registros quedan en espera' }}</div></div>
+        <span class="chevron"></span>
+      </a>
+    </div>
+
     <h2>Servidor</h2>
     <div class="lista recursos">
       {% set ram_pct = (vps.ram_usada / vps.ram_total * 100) if vps.ram_total else 0 %}

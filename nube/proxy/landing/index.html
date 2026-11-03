@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WisPay · Sistema para ISP y WISP en la nube</title>
+  <meta name="description" content="Clientes, cobranza, MikroTik, fibra y WhatsApp en un solo sistema. Pruébalo gratis 30 días: tu acceso te llega por WhatsApp en minutos.">
+  <meta name="theme-color" content="#0a84ff">
+  <meta property="og:title" content="WisPay · Sistema para ISP y WISP">
+  <meta property="og:description" content="Pruébalo gratis 30 días. Sin instalar nada: tu sistema en tu propio subdominio.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a84ff'/%3E%3Cpath d='M8 13a11 11 0 0 1 16 0M11 17a7 7 0 0 1 10 0' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='21.5' r='2.2' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/sitio.css">
+  <script src="/sitio.js" defer></script>
+</head>
+<body>
+  <header class="barra">
+    <div class="contenedor barra-interior">
+      <a class="marca" href="#inicio" aria-label="WisPay, inicio">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M8 13a11 11 0 0 1 16 0M11 17a7 7 0 0 1 10 0" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round"/><circle cx="16" cy="21.5" r="2.2" fill="#fff"/></svg>
+        WisPay
+      </a>
+      <nav class="menu" aria-label="Secciones">
+        <a href="#funciones">Funciones</a>
+        <a href="#como">Cómo funciona</a>
+        <a href="#precios">Precios</a>
+        <a href="#preguntas">Preguntas</a>
+      </nav>
+      <a class="boton chico" href="#registro">Probar gratis</a>
+    </div>
+  </header>
+
+  <main id="inicio">
+    <section class="portada">
+      <div class="contenedor portada-interior">
+        <div class="portada-texto">
+          <span class="etiqueta">Para ISP y WISP · 30 días gratis</span>
+          <h1>Tu ISP en orden.<br><span class="resalta">Cobra, conecta y atiende</span> desde un solo lugar.</h1>
+          <p class="entrada">Clientes, facturación, cortes y reconexiones en tu MikroTik, fibra y ONU, técnicos y un bot de WhatsApp. Sin instalar nada: tu sistema queda en tu propio subdominio y el acceso te llega por WhatsApp.</p>
+          <ul class="sellos">
+            <li>Sin tarjeta</li>
+            <li>Sin servidor propio</li>
+            <li>Tu marca y tu logo</li>
+            <li>Importa tus clientes de Excel</li>
+          </ul>
+        </div>
+
+        <div class="tarjeta-registro" id="registro">
+          <form id="formulario" novalidate>
+            <h2>Crea tu demo gratis</h2>
+            <p class="sub">En unos minutos te llega por WhatsApp tu dirección, tu usuario y tu contraseña.</p>
+            <label>Nombre de tu empresa<input name="empresa" required maxlength="60" autocomplete="organization" placeholder="Ej. Red Rápida Internet"></label>
+            <label>Tu nombre<input name="nombre" required maxlength="60" autocomplete="name" placeholder="Ej. Ana López"></label>
+            <label>Tu WhatsApp<input name="telefono" required inputmode="tel" autocomplete="tel-national" placeholder="10 dígitos" maxlength="20"></label>
+            <div class="dos">
+              <label>Correo <small>(opcional)</small><input name="correo" type="email" maxlength="120" autocomplete="email" placeholder="tu@correo.com"></label>
+              <label>¿Cuántos clientes tienes?
+                <select name="clientes">
+                  <option value="">Elige…</option>
+                  <option>Menos de 100</option>
+                  <option>100 a 300</option>
+                  <option>300 a 800</option>
+                  <option>Más de 800</option>
+                </select>
+              </label>
+            </div>
+            <label class="trampa" aria-hidden="true">Sitio web<input name="sitio_web" tabindex="-1" autocomplete="off"></label>
+            <button class="boton" type="submit">Crear mi demo gratis</button>
+            <p class="error" role="alert" hidden></p>
+            <p class="legal">Al registrarte aceptas los <a href="https://panel.wispay.click/terminos" target="_blank" rel="noopener">términos</a> y el <a href="https://panel.wispay.click/privacidad" target="_blank" rel="noopener">aviso de privacidad</a>. Usamos tu WhatsApp solo para tu demo.</p>
+          </form>
+          <div class="listo" id="listo" hidden>
+            <div class="listo-icono" aria-hidden="true">✓</div>
+            <h2>¡Listo!</h2>
+            <p class="listo-texto"></p>
+            <p class="listo-direccion" hidden>Tu sistema: <a target="_blank" rel="noopener"></a></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="contenedor">
+        <div class="vista" aria-hidden="true">
+          <div class="vista-barra"><i></i><i></i><i></i><span>tuempresa.wispay.click</span></div>
+          <div class="vista-cuerpo">
+            <div class="vista-cifra"><span>Clientes activos</span><b>1,284</b><small class="verde">+32 este mes</small></div>
+            <div class="vista-cifra"><span>Cobrado este mes</span><b>$428,650</b><small class="verde">92% recuperado</small></div>
+            <div class="vista-cifra"><span>Routers en línea</span><b>12 / 12</b><small>WireGuard estable</small></div>
+            <div class="vista-cifra"><span>ONU con luz baja</span><b class="ambar">3</b><small>Revisión técnica</small></div>
+            <div class="vista-lista">
+              <div><span class="punto verde"></span><span>Pago aplicado por comprobante · <b>María G.</b></span><em>reconectada</em></div>
+              <div><span class="punto ambar"></span><span>Promesa de pago hasta el viernes · <b>José R.</b></span><em>registrada por el bot</em></div>
+              <div><span class="punto azul"></span><span>Instalación en camino · <b>Técnico Luis</b></span><em>aviso enviado</em></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="seccion" id="funciones">
+      <div class="contenedor">
+        <span class="etiqueta">Todo en uno</span>
+        <h2 class="titulo-seccion">Del alta del cliente a la reconexión, sin hojas de cálculo.</h2>
+        <div class="rejilla">
+          <article><span class="icono">$</span><h3>Cobranza automática</h3><p>Facturas por ciclo, prorrateo y promesas. Corta a quien no pagó y reconecta en cuanto paga.</p></article>
+          <article><span class="icono">✓</span><h3>Pagos por comprobante</h3><p>El cliente manda la captura por WhatsApp y el pago se aplica solo. Lo dudoso va a revisión.</p></article>
+          <article><span class="icono">✧</span><h3>Bot de WhatsApp con IA</h3><p>Atiende 24 horas desde tu número: saldo, fallas, comprobantes, promesas y nuevas instalaciones.</p></article>
+          <article><span class="icono">⌁</span><h3>MikroTik y PPPoE</h3><p>Velocidades, suspensión y activación por VPN WireGuard. Estado y consumo de cada cliente en vivo.</p></article>
+          <article><span class="icono">◉</span><h3>OLT y ONU</h3><p>Potencia óptica, ONU sin registrar, motivo de la última caída y reinicio desde el panel.</p></article>
+          <article><span class="icono">⌖</span><h3>Mapa y cajas NAP</h3><p>Cajas con coordenadas, puertos ocupados y cada servicio ligado a su caja, OLT y ONU.</p></article>
+          <article><span class="icono">⚒</span><h3>App del técnico</h3><p>Agenda, aviso de "en camino", activación con escaneo de ONU y retiros. Funciona con poca señal.</p></article>
+          <article><span class="icono">▣</span><h3>Portal del cliente</h3><p>Tus abonados ven sus facturas, su saldo y reportan fallas desde el celular.</p></article>
+          <article><span class="icono">✦</span><h3>Tu marca</h3><p>Logo, colores, datos de pago y mensajes propios. Tus clientes nunca ven nuestra marca.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="seccion alterna" id="como">
+      <div class="contenedor como">
+        <div>
+          <span class="etiqueta">Cómo funciona</span>
+          <h2 class="titulo-seccion">Operando el mismo día.</h2>
+          <ol class="pasos">
+            <li><b>Regístrate</b><span>Nombre de tu empresa y tu WhatsApp. Nada más.</span></li>
+            <li><b>Recibe tu acceso por WhatsApp</b><span>Tu sistema queda en <i>tuempresa.wispay.click</i>, con tu nombre ya puesto.</span></li>
+            <li><b>Conecta tu MikroTik</b><span>Copias un script en la terminal y tu router queda unido por VPN segura.</span></li>
+            <li><b>Carga tus clientes</b><span>Uno por uno o todos de golpe desde Excel, con su plan y su PPPoE.</span></li>
+          </ol>
+        </div>
+        <div class="telefono" aria-hidden="true">
+          <div class="telefono-barra"><span class="avatar">W</span><div><b>WisPay</b><small>en línea</small></div></div>
+          <div class="burbuja">¡Hola Ana! 👋<br><br>Tu sistema WisPay para <b>Red Rápida</b> ya está listo:<br><br>🌐 red-rapida.wispay.click<br>👤 Usuario: <b>admin</b><br>🔑 Contraseña: <b>••••••••</b><br><br>Lo puedes usar gratis hasta el <b>2 de diciembre</b>.<small>9:41 ✓✓</small></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="seccion" id="precios">
+      <div class="contenedor">
+        <span class="etiqueta">Precios</span>
+        <h2 class="titulo-seccion">Paga por el tamaño de tu operación.</h2>
+        <p class="entrada centro">El servidor, los respaldos diarios y las actualizaciones van incluidos. Precios mensuales en dólares, antes de impuestos.</p>
+        <div class="planes">
+          <article class="plan">
+            <h3>Básico</h3><p class="precio">$25 <small>USD / mes</small></p>
+            <p>Para proveedores que comienzan.</p>
+            <ul><li>Hasta 200 clientes</li><li>Sistema completo</li><li>Bot y pagos por comprobante</li><li>Tu marca</li></ul>
+            <a class="boton secundario" href="#registro">Probar gratis</a>
+          </article>
+          <article class="plan destacado">
+            <span class="cinta">Más elegido</span>
+            <h3>Crecimiento</h3><p class="precio">$55 <small>USD / mes</small></p>
+            <p>Para una base amplia de abonados.</p>
+            <ul><li>Hasta 800 clientes</li><li>Todo lo de Básico</li><li>Bot visual de WhatsApp</li><li>Soporte prioritario</li></ul>
+            <a class="boton" href="#registro">Probar gratis</a>
+          </article>
+          <article class="plan">
+            <h3>Ilimitado</h3><p class="precio">$85 <small>USD / mes</small></p>
+            <p>Para crecer sin límites.</p>
+            <ul><li>Clientes ilimitados</li><li>Todos los módulos</li><li>Tu marca completa</li><li>Soporte prioritario</li></ul>
+            <a class="boton secundario" href="#registro">Probar gratis</a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="seccion alterna" id="preguntas">
+      <div class="contenedor angosto">
+        <span class="etiqueta">Preguntas</span>
+        <h2 class="titulo-seccion">Antes de empezar.</h2>
+        <details><summary>¿Necesito un servidor o instalar algo?</summary><p>No. Tu sistema vive en nuestra nube, en tu propio subdominio. Solo necesitas un navegador; también se instala como app en el celular.</p></details>
+        <details><summary>¿Qué pasa al terminar los 30 días?</summary><p>Si quieres seguir, lo activas y continúas exactamente donde te quedaste. Si no, el sistema se pausa y tus datos se guardan 15 días más antes de borrarse. Te avisamos por WhatsApp antes de cada paso.</p></details>
+        <details><summary>¿Mis datos están separados de los de otros ISP?</summary><p>Sí. Cada ISP tiene su propio sistema, su propia base de datos y su propia VPN. Las contraseñas de tus routers y OLT se guardan cifradas.</p></details>
+        <details><summary>¿Funciona con mi MikroTik?</summary><p>Con RouterOS v7, que trae WireGuard. El sistema te da el script para pegarlo en la terminal del router.</p></details>
+        <details><summary>¿Puedo pasar mis clientes desde otro sistema?</summary><p>Sí, desde un Excel con sus nombres, planes y usuarios PPPoE. El demo admite hasta 200 clientes.</p></details>
+        <details><summary>¿El bot usa mi número de WhatsApp?</summary><p>Sí. Vinculas el WhatsApp de tu empresa con un código QR y el bot contesta desde tu número.</p></details>
+      </div>
+    </section>
+
+    <section class="cierre">
+      <div class="contenedor">
+        <h2>Pruébalo con tus propios clientes.</h2>
+        <p>30 días gratis. Tu acceso llega por WhatsApp en minutos.</p>
+        <a class="boton claro" href="#registro">Crear mi demo gratis</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="pie">
+    <div class="contenedor pie-interior">
+      <span>© <span id="anio">2026</span> WisPay</span>
+      <nav><a href="https://panel.wispay.click/privacidad">Privacidad</a><a href="https://panel.wispay.click/terminos">Términos</a></nav>
+    </div>
+  </footer>
+</body>
+</html>

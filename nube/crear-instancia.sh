@@ -5,7 +5,8 @@
 # Ejemplo: nube/crear-instancia.sh prueba 18001 51821 prueba.fdezpay.com
 # Opcionales por entorno (los usa el panel central): LIMITE_CLIENTES,
 # LIMITE_ROUTERS, CON_WHATSAPP=0, IMAGEN_VERSION, y NUBE_PANEL_URL con
-# NUBE_PANEL_SECRETO para que el ISP conecte su Google Drive.
+# NUBE_PANEL_SECRETO para que el ISP conecte su Google Drive, y MARCA_NOMBRE,
+# MARCA_TELEFONO y MARCA_CORREO para la marca inicial (demos del registro).
 set -Eeuo pipefail
 
 ISP="${1:?Falta el nombre del ISP (minúsculas, números y guiones)}"
@@ -74,6 +75,9 @@ FDEZNET_LIMITE_ROUTERS=${LIMITE_ROUTERS:-}
 NUBE_ISP=$ISP
 NUBE_PANEL_URL=${NUBE_PANEL_URL:-}
 NUBE_PANEL_SECRETO=${NUBE_PANEL_SECRETO:-}
+FDEZNET_BRAND_NAME=${MARCA_NOMBRE:-}
+FDEZNET_BRAND_PHONE=${MARCA_TELEFONO:-}
+FDEZNET_BRAND_EMAIL=${MARCA_CORREO:-}
 ENV
 
 # 3. Contenedores.

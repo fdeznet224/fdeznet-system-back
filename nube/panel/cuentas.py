@@ -1,10 +1,16 @@
 """Mensualidad de cada ISP: fechas, pagos y estado. Sin Docker ni base de datos."""
 import calendar
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 SLUG = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
+# Subdominios que no puede tomar un ISP: son del panel, del sitio o se prestan a engaños.
+RESERVADOS = frozenset({
+    "panel", "www", "api", "admin", "app", "demo", "registro", "mail", "correo", "smtp", "ftp",
+    "soporte", "ayuda", "estado", "status", "static", "cdn", "wispay", "fdezpay", "fdeznet",
+})
 PRIMER_PUERTO_WEB = 18001
 PRIMER_PUERTO_WG = 51821
 
@@ -130,6 +136,74 @@ def aviso_al_isp(
     }
 
 
+# --- Demos desde la página de registro ----------------------------------------
+
+def limpiar_texto(valor: str, largo: int = 80) -> str:
+    """Texto de un formulario público: una línea, sin caracteres de control ni $ ` \\ " (van a archivos .env)."""
+    texto = "".join(" " if unicodedata.category(c)[0] == "C" else c for c in (valor or ""))
+    texto = re.sub(r'[$`\\"<>]', "", texto)
+    return re.sub(r"\s+", " ", texto).strip()[:largo]
+
+
+def telefono_mx(valor: str) -> str | None:
+    """10 dígitos de México (con o sin +52 / 521) → 52XXXXXXXXXX; None si no es válido."""
+    digitos = re.sub(r"\D", "", valor or "")
+    if len(digitos) == 13 and digitos.startswith("521"):
+        digitos = digitos[3:]
+    elif len(digitos) == 12 and digitos.startswith("52"):
+        digitos = digitos[2:]
+    if len(digitos) != 10 or digitos[0] in "01":
+        return None
+    return f"52{digitos}"
+
+
+def slug_para(empresa: str, ocupados: set[str]) -> str:
+    """Subdominio a partir del nombre de la empresa: "Red Rápida S.A." → red-rapida."""
+    base = unicodedata.normalize("NFKD", empresa).encode("ascii", "ignore").decode().lower()
+    base = re.sub(r"\b(s\.?\s?a\.?|de|c\.?v\.?|s\.?\s?de\s?r\.?l\.?|internet|telecom)\b", " ", base)
+    base = re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:20].strip("-")
+    if not base or not base[0].isalpha():
+        base = f"isp-{base}".strip("-")
+    if len(base) < 3:
+        base = f"{base}-red"
+    candidato, numero = base, 2
+    while candidato in ocupados or candidato in RESERVADOS:
+        candidato = f"{base}-{numero}"
+        numero += 1
+    return candidato
+
+
+def etapas_demo(demo_hasta: date, dias_gracia: int, dias_aviso: int = 5) -> dict[str, date]:
+    """Fechas del ciclo de un demo: aviso, fin (se suspende), aviso de borrado y borrado."""
+    borrar = demo_hasta + timedelta(days=dias_gracia + 1)
+    return {
+        "aviso": demo_hasta - timedelta(days=dias_aviso),
+        "fin": demo_hasta + timedelta(days=1),
+        "aviso_borrar": borrar - timedelta(days=3),
+        "borrar": borrar,
+    }
+
+
+def siguiente_paso_demo(demo_hasta: date, hechos: set[str], hoy: date, dias_gracia: int) -> str | None:
+    """Lo que toca hacer hoy con un demo (uno a la vez, del más avanzado al más temprano)."""
+    fechas = etapas_demo(demo_hasta, dias_gracia)
+    for paso in ("borrar", "aviso_borrar", "fin", "aviso"):
+        if hoy >= fechas[paso]:
+            return None if paso in hechos else paso
+    return None
+
+
+def estado_demo(demo_hasta: date, suspendido: bool, hoy: date, dias_gracia: int) -> Estado:
+    fechas = etapas_demo(demo_hasta, dias_gracia)
+    if suspendido or hoy >= fechas["fin"]:
+        return Estado("demo_fin", f"Demo terminado; se borra el {fechas['borrar']:%d/%m/%Y}", "gris")
+    dias = (demo_hasta - hoy).days
+    if dias <= 5:
+        cuando = "hoy" if dias == 0 else f"en {dias} día{'s' if dias != 1 else ''}"
+        return Estado("demo_por_vencer", f"Demo: termina {cuando}", "ambar")
+    return Estado("demo", f"Demo gratis hasta {demo_hasta:%d/%m/%Y}", "azul")
+
+
 def siguiente_puerto(usados: list[int], primero: int) -> int:
     libres = set(usados)
     puerto = primero
@@ -179,3 +253,47 @@ def estado_respaldo(
         return Estado("solo_local", f"Solo en la VPS; la copia externa falló ({remoto[7:].strip()})", "ambar")
     donde = " y fuera de la VPS" if remoto == "ok" else " (solo en la VPS)"
     return Estado("ok", f"Respaldado el {fecha:%d/%m %H:%M}{donde}", "verde")
+
+
+# --- Mensajes de WhatsApp a quien pidió un demo ------------------------------
+
+def _fecha_larga(fecha: date) -> str:
+    return f"{fecha.day} de {MESES[fecha.month - 1]}"
+
+
+def mensaje_bienvenida(nombre: str, empresa: str, url: str, usuario: str, clave: str, hasta: date) -> str:
+    return (
+        f"¡Hola {nombre}! 👋\n\n"
+        f"Tu sistema WisPay para *{empresa}* ya está listo:\n\n"
+        f"🌐 {url}\n"
+        f"👤 Usuario: *{usuario}*\n"
+        f"🔑 Contraseña: *{clave}*\n\n"
+        f"Lo puedes usar gratis hasta el *{_fecha_larga(hasta)}*. Al entrar, cambia la contraseña "
+        "en Configuración → Usuarios Sistema.\n\n"
+        "Para empezar: conecta tu MikroTik en Configuración → Túneles VPN y luego carga tus planes y "
+        "clientes (o impórtalos desde Excel en Configuración → Importar Datos).\n\n"
+        "¿Dudas? Responde a este mensaje."
+    )
+
+
+def mensaje_demo_por_terminar(nombre: str, empresa: str, url: str, hasta: date) -> str:
+    return (
+        f"Hola {nombre}, tu demo de WisPay para *{empresa}* termina el *{_fecha_larga(hasta)}*.\n\n"
+        f"Si quieres seguir usándolo con todo lo que ya cargaste ({url}), responde a este mensaje "
+        "y te decimos cómo activarlo."
+    )
+
+
+def mensaje_demo_terminado(nombre: str, empresa: str, borrar: date) -> str:
+    return (
+        f"Hola {nombre}, terminó tu demo de WisPay para *{empresa}* y el sistema quedó en pausa.\n\n"
+        f"Tus datos se guardan hasta el *{_fecha_larga(borrar)}*. Si lo activas antes, sigues "
+        "exactamente donde te quedaste. Responde a este mensaje para activarlo."
+    )
+
+
+def mensaje_demo_se_borra(nombre: str, empresa: str, borrar: date) -> str:
+    return (
+        f"Hola {nombre}, el *{_fecha_larga(borrar)}* se borran para siempre los datos del demo de "
+        f"*{empresa}*. Si quieres conservarlos, responde a este mensaje antes de esa fecha."
+    )

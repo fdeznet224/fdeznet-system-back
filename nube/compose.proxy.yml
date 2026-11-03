@@ -18,6 +18,7 @@ services:
     volumes:
       - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./proxy/no-disponible:/srv/no-disponible:ro
+      - ./proxy/landing:/srv/landing:ro
       - datos:/data
       - config:/config
     networks:

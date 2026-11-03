@@ -9,10 +9,12 @@ def initial_branding_values() -> dict[str, str | None]:
     company_name = os.getenv("FDEZNET_BRAND_NAME", "").strip() or "Mi ISP"
     system_name = os.getenv("FDEZNET_BRAND_SYSTEM_NAME", "").strip() or company_name
     company_email = os.getenv("FDEZNET_BRAND_EMAIL", "").strip()
+    company_phone = os.getenv("FDEZNET_BRAND_PHONE", "").strip()
     return {
         "empresa_nombre": company_name,
         "sistema_nombre": system_name,
         "empresa_email": company_email or None,
+        "empresa_telefono": company_phone or None,
     }
 
 
