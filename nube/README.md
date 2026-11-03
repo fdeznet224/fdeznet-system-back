@@ -73,6 +73,39 @@ vencimiento y la del corte; ya vencido, la franja es roja. Si pones
 `PANEL_CONTACTO_PAGO` (por ejemplo «WhatsApp 55 1234 5678») se agrega al aviso.
 La API del ISP lo consulta firmado en `/cuenta/estado` y lo guarda 10 minutos.
 
+## Mudar a la nube un ISP que tenía su propia VPS
+
+Para un ISP instalado con `install.sh`. Se conservan sus datos, sus usuarios y
+contraseñas, su marca y su VPN: la llave del servidor WireGuard, su red
+(10.8.0.x) y el `SECRET_KEY` que cifra las contraseñas de routers y OLT. En sus
+MikroTik solo cambia a dónde apunta el túnel. El sistema queda apagado mientras
+dura la mudanza (unos minutos).
+
+1. **Panel → Nuevo ISP** con su subdominio, precio, versión y bot. La versión
+   tiene que ser igual o más nueva que la de su VPS.
+2. **En su VPS** (como root): copia `nube/exportar-vps.sh` y córrelo. Detiene
+   su sistema y deja `/root/wispay-exportacion-….tar`.
+   `--sin-whatsapp` si prefieres escanear el código otra vez en la nube.
+3. Pasa el archivo a `nube/migraciones/` en la VPS de nube (nunca se sube a git) y:
+   ```bash
+   nube/importar-vps.sh <isp> migraciones/wispay-exportacion-….tar
+   ```
+   Respalda la instancia vacía, carga todo, la enciende e imprime lo que hay
+   que **pegar en la terminal de cada MikroTik** (el endpoint nuevo y el
+   vigilante de la VPN).
+4. Comprueba en `https://<isp>.<dominio>` que entra, que sus routers aparecen en
+   línea y que WhatsApp quedó vinculado.
+5. **En su VPS**: `exportar-vps.sh --retirar <isp>.<dominio>` apaga para
+   siempre su sistema (sin borrar datos) y manda su dirección vieja a la nueva.
+
+Si algo sale mal antes del paso 5: `exportar-vps.sh --regresar` en su VPS lo
+vuelve a encender, y en los MikroTik se regresa el endpoint a la IP de su VPS.
+
+Para ensayar con una copia sin apagar nada: `exportar-vps.sh --sin-detener
+--sin-whatsapp` y `PRUEBA=1 nube/importar-vps.sh …` en una instancia de
+ensayo. La copia no puede tomar los túneles: se le quitan las direcciones de
+los MikroTik.
+
 ## Respaldos
 
 El panel respalda a cada ISP todos los días a `PANEL_HORA_RESPALDO` (03:00) y
