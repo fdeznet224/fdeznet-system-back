@@ -24,7 +24,13 @@ ARCHIVO="$DESTINO/$ISP-$SELLO.tar"
 umask 077
 install -d -m 0700 "$DIR/respaldos" "$DESTINO"
 TMP="$(mktemp -d "$DESTINO/.armando-XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+BOT="${ISP}-bot-1"
+BOT_PAUSADO=""
+limpiar() {
+  [[ -n "$BOT_PAUSADO" ]] && docker unpause "$BOT" >/dev/null 2>&1
+  rm -rf "$TMP"
+}
+trap limpiar EXIT
 
 # 1. Base: --single-transaction da una foto consistente sin detener la API.
 docker compose -f "$DIR/compose.mysql.yml" exec -T mysql sh -c \
@@ -39,10 +45,22 @@ for volumen in wireguard static uploads whatsapp-uploads whatsapp-sesion estado;
     montajes+=(-v "${ISP}_$volumen:/datos/$volumen:ro")
   fi
 done
+# Chrome del bot escribe su sesión todo el tiempo; se congela mientras se copia
+# (docker pause no corta la conexión de WhatsApp) para que quede completa.
+if [[ "$(docker inspect -f '{{.State.Running}} {{.State.Paused}}' "$BOT" 2>/dev/null)" == "true false" ]]; then
+  docker pause "$BOT" >/dev/null && BOT_PAUSADO=1
+fi
+# tar sale con 1 si un archivo cambió mientras lo leía (un recibo que se está
+# subiendo): la copia sirve igual. Solo 2 o más es un error de verdad.
+estado_tar=0
 docker run --rm --network none "${montajes[@]}" -v "$TMP:/salida" --entrypoint tar mysql:8.4 \
-  czf /salida/volumenes.tar.gz -C /datos \
+  czf /salida/volumenes.tar.gz -C /datos --warning=no-file-changed --warning=no-file-removed \
   --exclude='Cache' --exclude='Code Cache' --exclude='GPUCache' --exclude='CacheStorage' \
-  --exclude='ScriptCache' --exclude='Singleton*' .
+  --exclude='ScriptCache' --exclude='Singleton*' . || estado_tar=$?
+if [[ -n "$BOT_PAUSADO" ]]; then
+  docker unpause "$BOT" >/dev/null && BOT_PAUSADO=""
+fi
+(( estado_tar <= 1 )) || { echo "Falló la copia de los volúmenes (tar $estado_tar)" >&2; exit "$estado_tar"; }
 
 # 3. Secretos de la instancia (para llevarla a otra VPS) y una ficha legible.
 cp "$INST/compose.env" "$INST/api.env" "$TMP/"
