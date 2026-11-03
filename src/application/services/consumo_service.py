@@ -6,6 +6,8 @@ se suma al día en consumo_diario. Cuando un cliente dice que no tuvo servicio,
 la ficha muestra día por día cuántos datos usó y cuánto tiempo estuvo en línea.
 
 Del lado del MikroTik, tx-byte es lo que bajó el cliente y rx-byte lo que subió.
+Lo que usa estando suspendido (el corte deja solo WhatsApp) se anota también
+aparte, para que en el calendario no parezca consumo normal.
 """
 
 import asyncio
@@ -118,7 +120,8 @@ def resumen_mes(filas, anio: int, mes: int) -> dict:
     """Los días del mes con lo que usó cada uno (todos sus servicios juntos)."""
     dias_mes = monthrange(anio, mes)[1]
     por_dia = {
-        date(anio, mes, d): {"fecha": date(anio, mes, d).isoformat(), "bajada": 0, "subida": 0, "minutos": 0}
+        date(anio, mes, d): {"fecha": date(anio, mes, d).isoformat(), "bajada": 0, "subida": 0, "minutos": 0,
+                             "suspendido": 0}
         for d in range(1, dias_mes + 1)
     }
     for fila in filas:
@@ -128,12 +131,14 @@ def resumen_mes(filas, anio: int, mes: int) -> dict:
         dia["bajada"] += int(fila.bajada_bytes or 0)
         dia["subida"] += int(fila.subida_bytes or 0)
         dia["minutos"] = min(dia["minutos"] + int(fila.minutos_en_linea or 0), 24 * 60)
+        dia["suspendido"] += int(getattr(fila, "suspendido_bytes", 0) or 0)
     dias = list(por_dia.values())
     return {
         "mes": f"{anio:04d}-{mes:02d}",
         "dias": dias,
         "total_bajada": sum(d["bajada"] for d in dias),
         "total_subida": sum(d["subida"] for d in dias),
+        "total_suspendido": sum(d["suspendido"] for d in dias),
         "dias_con_uso": sum(1 for d in dias if d["bajada"] + d["subida"] > 0),
     }
 
@@ -198,12 +203,14 @@ class ConsumoService:
                 if fila is None:
                     fila = ConsumoDiarioModel(
                         servicio_id=servicio.id, cliente_id=servicio.cliente_id, fecha=hoy,
-                        bajada_bytes=0, subida_bytes=0, minutos_en_linea=0,
+                        bajada_bytes=0, subida_bytes=0, minutos_en_linea=0, suspendido_bytes=0,
                     )
                     self.db.add(fila)
                 fila.bajada_bytes = (fila.bajada_bytes or 0) + bajada
                 fila.subida_bytes = (fila.subida_bytes or 0) + subida
                 fila.minutos_en_linea = min((fila.minutos_en_linea or 0) + minutos, 24 * 60)
+                if servicio.estado == "suspendido":
+                    fila.suspendido_bytes = (fila.suspendido_bytes or 0) + bajada + subida
                 fila.sesion_mk = muestra.sesion
                 fila.ultimo_rx = muestra.rx
                 fila.ultimo_tx = muestra.tx

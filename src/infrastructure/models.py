@@ -853,6 +853,8 @@ class ConsumoDiarioModel(Base):
     bajada_bytes = Column(BigInteger, nullable=False, default=0, server_default="0")
     subida_bytes = Column(BigInteger, nullable=False, default=0, server_default="0")
     minutos_en_linea = Column(Integer, nullable=False, default=0, server_default="0")
+    # De lo anterior, lo que usó estando suspendido (modo solo WhatsApp).
+    suspendido_bytes = Column(BigInteger, nullable=False, default=0, server_default="0")
     # Última muestra: con ella se calcula cuánto creció el contador en la siguiente.
     sesion_mk = Column(String(30), nullable=True)
     ultimo_rx = Column(BigInteger, nullable=True)
