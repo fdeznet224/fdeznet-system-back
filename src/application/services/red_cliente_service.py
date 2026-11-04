@@ -358,7 +358,10 @@ class RedClienteService:
 
     async def _bloquear_zte(self, equipo: Dict[str, Any], mac: str, bloquear: bool, redes: List[int]) -> set:
         """Bloquear: la MAC va a la lista de cada red indicada y esa lista queda en modo Ban.
-        Desbloquear: se quita de todas; una lista que queda vacía vuelve a Disabled."""
+        Desbloquear: se quita de todas; una lista que queda vacía vuelve a Disabled.
+
+        Primero se preparan los lugares en cada banda y luego todo va en una sola orden:
+        quedan bloqueadas la 2.4 y la 5 GHz juntas, nunca una sola."""
         wlans = f"{LAN}.WLANConfiguration"
         async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
             device_id = await self._id_tr069(http, equipo)
@@ -369,24 +372,30 @@ class RedClienteService:
             prefijo = prefijo_zte(lan.get("WLANConfiguration"))
             if not prefijo:
                 raise ValueError("La ONU no trae la lista de bloqueo de ZTE.")
+            valores = []
             for indice, wlan in _instancias(lan.get("WLANConfiguration")):
                 lista = f"{wlans}.{indice}.{prefijo}_AccessControl"
                 modo = f"{wlans}.{indice}.{prefijo}_AccessControlMode"
                 entradas = _instancias(wlan.get(f"{prefijo}_AccessControl"))
-                suyas = [n for n, e in entradas if _mac_o_none(_valor(e.get("MACAddress"))) == mac]
+                macs = {n: _mac_o_none(_valor(e.get("MACAddress"))) for n, e in entradas}
+                suyas = [n for n, m in macs.items() if m == mac]
                 if bloquear:
                     if indice not in redes:
                         continue
-                    valores = [] if suyas else [
-                        [f"{lista}.{await self.agregar_instancia(http, device_id, lista)}.MACAddress", mac, "xsd:string"]]
+                    if not suyas:
+                        # Un lugar vacío que haya quedado de antes, o uno nuevo.
+                        lugar = next((n for n, m in macs.items() if m is None), None)
+                        if lugar is None:
+                            lugar = await self.agregar_instancia(http, device_id, lista)
+                        valores.append([f"{lista}.{lugar}.MACAddress", mac, "xsd:string"])
                     valores.append([modo, "Ban", "xsd:string"])
-                    await self._obligada(http, device_id, {"name": "setParameterValues", "parameterValues": valores})
                 else:
                     for n in suyas:
                         await self._obligada(http, device_id, {"name": "deleteObject", "objectName": f"{lista}.{n}"})
-                    if suyas and len(suyas) == len(entradas):
-                        await self._obligada(http, device_id, {"name": "setParameterValues",
-                                                               "parameterValues": [[modo, "Disabled", "xsd:string"]]})
+                    if suyas and all(m in (None, mac) for m in macs.values()):
+                        valores.append([modo, "Disabled", "xsd:string"])
+            if valores:
+                await self._obligada(http, device_id, {"name": "setParameterValues", "parameterValues": valores})
             await self._obligada(http, device_id, {"name": "refreshObject", "objectName": wlans})
             return bloqueadas_zte(await self._lan(http, device_id))
 

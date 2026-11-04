@@ -206,6 +206,30 @@ def test_prefijo_banda_y_bloqueados_de_la_zte():
     assert bloqueadas_zte(lan) == {"aa:bb:cc:dd:ee:01"}
 
 
+def test_si_la_onu_no_contesta_ninguna_banda_queda_a_medias():
+    acs = AcsFalso(zte(), lambda t: t["name"] == "setParameterValues")
+    servicio = RedClienteService(None, nbi="http://nbi")
+    original = httpx.AsyncClient
+
+    async def probar():
+        async def id_tr069(_http, _equipo):
+            return "dev"
+
+        servicio._id_tr069 = id_tr069
+        httpx.AsyncClient = lambda **kw: original(**{**kw, "transport": httpx.MockTransport(acs)})
+        try:
+            try:
+                await servicio._bloquear_zte({"marca": "zte"}, "aa:bb:cc:dd:ee:01", True, [1, 5])
+            except ValueError:
+                pass
+        finally:
+            httpx.AsyncClient = original
+
+    asyncio.run(probar())
+    redes = acs.doc[IGD]["LANDevice"]["1"]["WLANConfiguration"]
+    assert redes["1"]["X_TELMEX_COM_AccessControlMode"]["_value"] == redes["5"]["X_TELMEX_COM_AccessControlMode"]["_value"] == "Disabled"
+
+
 def test_bloquear_y_desbloquear_en_la_zte_por_tr069():
     acs = AcsFalso(zte())
     servicio = RedClienteService(None, nbi="http://nbi")
@@ -222,6 +246,10 @@ def test_bloquear_y_desbloquear_en_la_zte_por_tr069():
             bloqueadas = await servicio._bloquear_zte(equipo, "aa:bb:cc:dd:ee:01", True, [1, 5])
             redes = acs.doc[IGD]["LANDevice"]["1"]["WLANConfiguration"]
             assert bloqueadas == {"aa:bb:cc:dd:ee:01"}
+            # Las dos bandas van en la misma orden: nunca queda bloqueada una sola.
+            cambios = [t for t in acs.tareas if t["name"] == "setParameterValues"]
+            assert len(cambios) == 1 and {r.split("WLANConfiguration.")[1].split(".")[0]
+                                          for r, _, _ in cambios[0]["parameterValues"]} == {"1", "5"}
             for i in ("1", "5"):
                 assert redes[i]["X_TELMEX_COM_AccessControlMode"]["_value"] == "Ban"
                 assert redes[i]["X_TELMEX_COM_AccessControl"]["1"]["MACAddress"]["_value"] == "aa:bb:cc:dd:ee:01"
