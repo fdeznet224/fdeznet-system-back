@@ -83,7 +83,9 @@ def genieacs(dispositivos, mac_epon=None):
             return httpx.Response(200, json=[])
         consulta = json.loads(request.url.params.get("query", "{}"))
         if "_deviceId._SerialNumber" in consulta:
-            return httpx.Response(200, json=[{"_id": i} for i, s in dispositivos.items() if s == consulta["_deviceId._SerialNumber"]])
+            buscados = consulta["_deviceId._SerialNumber"]
+            buscados = buscados["$in"] if isinstance(buscados, dict) else [buscados]
+            return httpx.Response(200, json=[{"_id": i} for i, s in dispositivos.items() if s in buscados])
         if any(k.endswith("MACAddress._value") for k in consulta):
             ids = [i for i in preguntada if mac_epon and i == mac_epon[0]]
             if "_id" in consulta:
@@ -179,10 +181,11 @@ class ConsultasFalsas:
         pass
 
 
-def programar_con(identificador, modelo=None, **opciones):
+def programar_con(identificador, modelo=None, en_el_acs=(), **opciones):
     onu = SimpleNamespace(identificador=identificador, modelo=modelo)
     db = ConsultasFalsas(SimpleNamespace(**vars(CLIENTE), onu_asignada=onu))
-    resultado = asyncio.run(AprovisionamientoOnuService(db, nbi="http://nbi").programar(9, **opciones))
+    transporte, _ = genieacs({f"44F436-F670L-{s}": s for s in en_el_acs})
+    resultado = asyncio.run(AprovisionamientoOnuService(db, nbi="http://nbi", transporte=transporte).programar(9, **opciones))
     return resultado, db.agregados
 
 
@@ -196,11 +199,37 @@ def test_huawei_queda_esperando_para_configurarse_sola():
     assert agregados[0].estado == "pendiente"
 
 
-def test_zte_no_acepta_el_acs_y_el_tecnico_pone_el_wifi_a_mano():
+def test_zte_que_no_entro_al_acs_la_configura_el_tecnico_a_mano():
     resultado, agregados = programar("ZTEG00000001", "F660")
     assert resultado["automatica"] is False and len(resultado["clave"]) == 8
     # No se espera a GenieACS: queda anotado para consultarlo en Mi red.
     assert agregados[0].estado == "manual"
+
+
+def test_zte_que_ya_esta_en_el_acs_se_configura_sola():
+    resultado, agregados = programar_con("ZTEG24284C96", "F670L", en_el_acs=("ZTEG24284C96",))
+    assert resultado["automatica"] is True and agregados[0].estado == "pendiente"
+
+
+ZTE = {"InternetGatewayDevice": {
+    "LANDevice": {"1": {"WLANConfiguration": {
+        "1": {"SSID": v("INFINITUM6156_2.4"), "Enable": v(True), "X_ZTE-COM_OperatingFrequencyBand": v("2.4GHz")},
+        "2": {"SSID": v("Zona FdezNet"), "Enable": v(True), "X_ZTE-COM_OperatingFrequencyBand": v("2.4GHz")},
+        "5": {"SSID": v("INFINITUM6156_5"), "Enable": v(True), "X_ZTE-COM_OperatingFrequencyBand": v("5GHz")},
+        "6": {"SSID": v("Zona FdezNet"), "Enable": v(True), "X_ZTE-COM_OperatingFrequencyBand": v("5GHz")},
+        "7": {"SSID": v("SSID7"), "Enable": v(False), "X_ZTE-COM_OperatingFrequencyBand": v("5GHz")},
+    }}},
+    "WANDevice": {"1": {"WANConnectionDevice": {"1": {
+        "WANPPPConnection": {"2": {"X_ZTE-COM_ServiceList": v("INTERNET_TR069"), "ConnectionType": v("IP_Routed")}},
+        "WANIPConnection": {"1": {"X_ZTE-COM_ServiceList": v("INTERNET"), "ConnectionType": v("IP_Bridged")}},
+    }}}},
+}}
+
+
+def test_zte_renombra_sus_dos_bandas_aunque_se_llamen_distinto_y_no_la_de_fichas():
+    nombres, indices, pppoe = valores_para(ZTE, "FdezNet-187B", "juan_perez", "clave-pppoe")
+    assert indices == [1, 5]
+    assert pppoe[0][0] == f"{WAN}.1.WANPPPConnection.2.Username"
 
 
 def test_onu_de_reemplazo_lleva_el_wifi_que_ya_tenia():
@@ -262,3 +291,10 @@ def test_el_wifi_conocido_sale_de_lo_que_puso_el_sistema_o_el_cliente():
 
     srv = AprovisionamientoOnuService(UnRegistro(), nbi="http://nbi")
     assert asyncio.run(srv.wifi_conocido(9)) == {"red": "FdezNet-187B", "clave": "11223344"}
+
+
+def test_la_zte_se_reconoce_por_su_serial_tal_cual():
+    transporte, _ = genieacs({"44F436-F670L-ZTEG24284C96": "ZTEG24284C96"})
+    reg = registro("ZTEG24284C96")
+    assert correr(servicio(transporte, []), reg) is True
+    assert reg.device_id == "44F436-F670L-ZTEG24284C96"

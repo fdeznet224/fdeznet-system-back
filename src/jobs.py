@@ -32,6 +32,7 @@ from src.application.services.comprobante_service import ComprobanteService
 from src.application.services.descripcion_onu_service import DescripcionOnuService
 from src.application.services.antena_service import AntenaService
 from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
+from src.application.services.plantilla_zte_service import PlantillaZteService
 from src.application.services.consumo_service import ConsumoService
 from src.application.services.acceso_remoto_service import AccesoRemotoService
 from src.application.services.senal_optica_service import SenalOpticaService, mensaje_alerta
@@ -186,6 +187,12 @@ async def tarea_aprovisionar_onus():
     """Configura la ONU de los clientes recién activados en cuanto se reporta en GenieACS."""
     async with SessionLocal() as db:
         await AprovisionamientoOnuService(db).procesar()
+
+
+async def tarea_plantilla_zte():
+    """Deja cada ZTE del ACS con la WAN y la red de fichas, como sale la Huawei del almacén."""
+    async with SessionLocal() as db:
+        await PlantillaZteService(db).revisar()
 
 
 async def tarea_aplicar_pagos_adelantados():

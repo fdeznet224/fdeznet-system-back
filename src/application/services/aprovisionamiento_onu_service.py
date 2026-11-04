@@ -10,8 +10,10 @@ su mensaje de bienvenida por WhatsApp.
 Lo mismo con la ONU de reemplazo de una reparación, pero con el WiFi que ya
 tenía el cliente (para que sus equipos se conecten solos) y sin bienvenida.
 
-Las ZTE vienen con firmware de otra compañía y no aceptan el ACS: para ellas
-el WiFi se genera igual, pero lo configura el técnico a mano (estado "manual").
+La ZTE se configura sola igual que la Huawei si ya entró al ACS (se reporta
+con su serial tal cual, "ZTEG…"). Si al activarla todavía no se ha reportado,
+puede traer un firmware que no acepta el ACS: el WiFi se genera igual y lo
+pone el técnico a mano (estado "manual").
 """
 
 import json
@@ -29,7 +31,8 @@ from sqlalchemy.orm import selectinload
 from src.application.services.acceso_onu_config import marca_de_onu
 from src.application.services.onu_web_huawei import normalizar_mac
 from src.application.services.red_cliente_service import (
-    LAN, RedClienteService, _instancias, _valor, indices_principales, redes_wifi, serial_tr069,
+    LAN, PREFIJOS_ZTE, RedClienteService, _instancias, _valor, indices_principales, prefijo_zte, redes_wifi,
+    serial_tr069,
 )
 from src.infrastructure.models import AprovisionamientoOnuModel, ClienteModel
 
@@ -64,25 +67,47 @@ def mac_epon(identificador: str) -> Optional[str]:
         return None
 
 
+CAMPOS_SERVICIO = ["X_HW_SERVICELIST"] + [f"{p}_ServiceList" for p in PREFIJOS_ZTE]
+# La WAN que también lleva el ACS: Huawei la llama TR069_INTERNET y ZTE INTERNET_TR069.
+CON_ACS = ("TR069_INTERNET", "INTERNET_TR069")
+
+
+def servicio_de(conexion: Dict[str, Any]) -> str:
+    return next((str(_valor(conexion.get(c))) for c in CAMPOS_SERVICIO if _valor(conexion.get(c))), "")
+
+
+def serie_tal_cual(identificador: str) -> Optional[str]:
+    """La ZTE se reporta con su serial como está escrito ("ZTEG24284C96"), no en hexadecimal."""
+    texto = "".join(c for c in (identificador or "") if c.isalnum()).upper()
+    return texto if serial_tr069(texto) else None
+
+
 def wan_de_internet(wan: Dict[str, Any]) -> Optional[str]:
-    """La WAN PPPoE del internet del cliente (TR069_INTERNET o INTERNET)."""
+    """La WAN PPPoE del internet del cliente (la que lleva el ACS o INTERNET)."""
     candidatas = []
     for i, dispositivo in _instancias(wan):
         for j, ppp in _instancias(dispositivo.get("WANPPPConnection")):
-            servicio = str(_valor(ppp.get("X_HW_SERVICELIST")) or "")
-            if "INTERNET" in servicio:
-                candidatas.append((servicio != "TR069_INTERNET", f"{WAN}.{i}.WANPPPConnection.{j}"))
+            servicio = servicio_de(ppp)
+            tipo = str(_valor(ppp.get("ConnectionType")) or "")
+            if "INTERNET" in servicio and "Bridged" not in tipo:
+                candidatas.append((servicio not in CON_ACS, f"{WAN}.{i}.WANPPPConnection.{j}"))
     return min(candidatas)[1] if candidatas else None
 
 
-def valores_para(documento: Dict[str, Any], ssid: str, usuario_pppoe: str, clave_pppoe: str) -> tuple:
+def valores_para(documento: Dict[str, Any], ssid: str, usuario_pppoe: str, clave_pppoe: str,
+                 red_fichas: str = "Zona FdezNet") -> tuple:
     """(nombre de red, redes donde va la contraseña, PPPoE): la contraseña la pone `poner_con_clave_wifi`."""
     igd = documento.get("InternetGatewayDevice") or {}
     lan = (igd.get("LANDevice") or {}).get("1") or {}
     redes = redes_wifi(lan)
     # Su red (la WLAN 1 y sus otras bandas) y las que traen el nombre de la plantilla ("FdezNet-"),
     # aunque las bandas ya no coincidan; la de fichas ("Zona FdezNet") no empieza así.
-    indices = sorted(indices_principales(redes) | {r["indice"] for r in redes if r["ssid"].startswith(prefijo_wifi())})
+    indices = indices_principales(redes) | {r["indice"] for r in redes if r["ssid"].startswith(prefijo_wifi())}
+    if prefijo_zte(lan):
+        # La ZTE llega con las bandas con nombres distintos ("INFINITUM_2.4" y "INFINITUM_5"):
+        # son suyas todas las encendidas menos la de fichas.
+        indices |= {r["indice"] for r in redes if r["activa"] and r["ssid"] != red_fichas}
+    indices = sorted(indices)
     if not indices:
         raise ValueError("La ONU no reporta su WiFi.")
     ppp = wan_de_internet((igd.get("WANDevice") or {}).get("1", {}).get("WANConnectionDevice") or {})
@@ -116,7 +141,8 @@ class AprovisionamientoOnuService:
             return None
         if not (serial_tr069(identificador) or mac_epon(identificador)):
             return None
-        automatica = marca_de_onu(identificador, cliente.onu_asignada.modelo) != "zte"
+        automatica = (marca_de_onu(identificador, cliente.onu_asignada.modelo) != "zte"
+                      or await self._zte_en_el_acs(identificador))
         anteriores = (await self.db.execute(
             select(AprovisionamientoOnuModel).where(AprovisionamientoOnuModel.cliente_id == cliente_id,
                                                     AprovisionamientoOnuModel.estado == "pendiente")
@@ -129,6 +155,17 @@ class AprovisionamientoOnuService:
         self.db.add(registro)
         await self.db.commit()
         return {"red": registro.ssid, "clave": registro.clave_wifi, "automatica": automatica, "clave_nueva": not clave}
+
+    async def _zte_en_el_acs(self, identificador: str) -> bool:
+        """La ZTE que ya se reporta en GenieACS se configura sola; si no (o no hay ACS), a mano."""
+        serie = serie_tal_cual(identificador)
+        if not serie:
+            return False
+        try:
+            async with httpx.AsyncClient(base_url=self.red.nbi, timeout=10, transport=self.transporte) as http:
+                return bool(await self._primero(http, {"_deviceId._SerialNumber": serie}))
+        except httpx.HTTPError:
+            return False
 
     async def wifi_conocido(self, cliente_id: int) -> Dict[str, Optional[str]]:
         """El WiFi que tiene hoy el cliente, para ponérselo a la ONU de reemplazo.
@@ -234,7 +271,9 @@ class AprovisionamientoOnuService:
     async def _buscar(self, http: httpx.AsyncClient, registro: AprovisionamientoOnuModel) -> Optional[str]:
         serial = serial_tr069(registro.identificador)
         if serial:
-            return await self._primero(http, {"_deviceId._SerialNumber": serial})
+            # Huawei en hexadecimal ("48575443…"), ZTE tal cual ("ZTEG…").
+            return await self._primero(http, {"_deviceId._SerialNumber": {
+                "$in": sorted({serial, serie_tal_cual(registro.identificador)} - {None})}})
         mac = mac_epon(registro.identificador)
         if not mac:
             return None
