@@ -297,6 +297,10 @@ class RedClienteService:
         if falla:
             await http.delete(f"/tasks/{tarea_id}")
             await http.delete(f"/faults/{falla['_id']}")
+            if falla.get("code") == "session_terminated":
+                # La ZTE aplica el cambio de PPPoE y corta la sesión sin contestar (el ACS va por
+                # esa misma WAN): no es un rechazo, es "enviado" y se ve en su próximo reporte.
+                return False
             detalle = (falla.get("detail") or {}).get("faultString") or falla.get("message") or falla.get("code")
             raise ValueError(f"La ONU rechazó el cambio: {detalle}")
         return False

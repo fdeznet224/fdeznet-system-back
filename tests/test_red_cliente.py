@@ -206,6 +206,26 @@ def test_tarea_rechazada_se_quita_de_la_cola():
     assert ("DELETE", "/tasks/t1") in llamadas and ("DELETE", "/faults/dev-x:task_t1") in llamadas
 
 
+def test_si_la_onu_corta_la_sesion_al_cambiar_el_pppoe_no_es_rechazo():
+    # La ZTE aplica el PPPoE nuevo y se reconecta sin contestar: GenieACS lo marca session_terminated.
+    def respuestas(request):
+        if request.url.path.endswith("/tasks"):
+            return httpx.Response(202, json={"_id": "t1"})
+        if request.url.path == "/faults":
+            return httpx.Response(200, json=[{"_id": "dev-x:task_t1", "channel": "task_t1", "code": "session_terminated",
+                                              "message": "The TR-069 session was unsuccessfully terminated"}])
+        return httpx.Response(200)
+
+    async def probar():
+        http, llamadas = nbi(respuestas)
+        resultado = await RedClienteService(None, nbi="http://nbi")._tarea(http, "dev-x", {"name": "setParameterValues"})
+        return resultado, llamadas
+
+    resultado, llamadas = asyncio.run(probar())
+    assert resultado is False
+    assert ("DELETE", "/tasks/t1") in llamadas and ("DELETE", "/faults/dev-x:task_t1") in llamadas
+
+
 def test_tarea_sin_respuesta_queda_en_cola():
     def respuestas(request):
         if request.url.path.endswith("/tasks"):
