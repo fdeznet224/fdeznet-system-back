@@ -352,3 +352,58 @@ def test_bloqueados_salen_del_filtro_del_firewall_encendido():
     assert bloqueadas_zte(lan, documento[IGD]["Firewall"]) == set()  # Apagado no bloquea.
     filtro["Enable"] = v(True)
     assert bloqueadas_zte(lan, documento[IGD]["Firewall"]) == {SAMSUNG}
+
+
+def test_bloquear_en_el_firewall_son_cuatro_ordenes_sin_releer_el_wifi():
+    # La app espera 25 s; releer el WiFi de la ZTE tarda ~12 s. Bloquear: leer el filtro,
+    # crear la regla, tipo/protocolo/nombre, MAC con el filtro encendido.
+    acs = AcsFalso(con_host(zte(), SAMSUNG, 1))
+
+    async def prueba(servicio):
+        await servicio._bloquear_zte(EQUIPO, SAMSUNG, True)
+
+    con_acs_falso(acs, prueba)
+    assert [t["name"] for t in acs.tareas] == ["refreshObject", "addObject", "setParameterValues", "setParameterValues"]
+    assert acs.tareas[0]["objectName"].endswith("X_TELMEX_COM_MacFilterService")
+
+
+def test_la_confirmacion_del_portal_espera_al_bloqueo_en_curso():
+    # Dos sesiones a la vez con la ZTE: no contesta la segunda y GenieACS la da por desconectada.
+    acs = AcsFalso(con_host(zte(), SAMSUNG, 1))
+    en_curso, maximo = 0, 0
+
+    async def lenta(request):
+        nonlocal en_curso, maximo
+        if request.method == "POST":
+            en_curso += 1
+            maximo = max(maximo, en_curso)
+            await asyncio.sleep(0.01)
+            en_curso -= 1
+        return acs(request)
+
+    servicio = RedClienteService(None, nbi="http://nbi")
+    original = httpx.AsyncClient
+
+    async def probar():
+        async def id_tr069(_http, _equipo):
+            return "dev"
+
+        servicio._id_tr069 = id_tr069
+        httpx.AsyncClient = lambda **kw: original(**{**kw, "transport": httpx.MockTransport(lenta)})
+        try:
+            return await asyncio.gather(servicio._bloquear_zte(EQUIPO, SAMSUNG, True), servicio._bloqueadas_zte(EQUIPO))
+        finally:
+            httpx.AsyncClient = original
+
+    (bloqueadas, _), confirmadas = asyncio.run(probar())
+    assert maximo == 1
+    assert bloqueadas == confirmadas == {SAMSUNG}
+
+
+def test_modelo_del_modem_para_el_portal():
+    from src.application.services.red_cliente_service import modelo_tr069
+    documento = {IGD: {"DeviceInfo": {"ModelName": v("F670L")}}}
+    assert modelo_tr069(documento, "zte") == "ZTE F670L"
+    assert modelo_tr069({IGD: {"DeviceInfo": {"ModelName": v("HG8145V5")}}}, "huawei") == "Huawei HG8145V5"
+    assert modelo_tr069({IGD: {"DeviceInfo": {"ModelName": v("ZTE F670L")}}}, "zte") == "ZTE F670L"
+    assert modelo_tr069({}, "zte") is None
