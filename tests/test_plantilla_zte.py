@@ -407,3 +407,29 @@ def test_modelo_del_modem_para_el_portal():
     assert modelo_tr069({IGD: {"DeviceInfo": {"ModelName": v("HG8145V5")}}}, "huawei") == "Huawei HG8145V5"
     assert modelo_tr069({IGD: {"DeviceInfo": {"ModelName": v("ZTE F670L")}}}, "zte") == "ZTE F670L"
     assert modelo_tr069({}, "zte") is None
+
+
+def test_el_relleno_del_alta_no_es_modelo_y_se_cambia_por_el_que_reporta_la_onu():
+    # El técnico da de alta la ONU sin modelo: queda "Registrada por el técnico" y el portal
+    # lo mostraba como nombre del módem.
+    from types import SimpleNamespace
+    from src.application.services.acceso_onu_config import modelo_real
+
+    assert modelo_real("Registrada por el técnico") is None and modelo_real(" ") is None
+    assert modelo_real("ZTE F670L") == "ZTE F670L"
+
+    onu = SimpleNamespace(modelo="Registrada por el técnico")
+    equipo = {"marca": "zte", "modelo": modelo_real(onu.modelo), "_onu": onu}
+    documento = {"_deviceId": {"_Manufacturer": "ZTE", "_ProductClass": "F670L"}}
+
+    class Db:
+        async def commit(self):
+            pass
+
+    async def probar():
+        transporte = httpx.MockTransport(lambda r: httpx.Response(200, json=[documento]))
+        async with httpx.AsyncClient(base_url="http://nbi", transport=transporte) as http:
+            await RedClienteService(Db(), nbi="http://nbi")._marca_por_tr069(http, "dev", equipo)
+
+    asyncio.run(probar())
+    assert onu.modelo == equipo["modelo"] == "ZTE F670L"

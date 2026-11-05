@@ -20,6 +20,7 @@ from sqlalchemy import func, or_, select
 from src.application.services.client_service import ClientService
 from src.application.services.inventario_service import InventarioService
 from src.application.services.orden_service import ESTADOS_TERMINALES, OrdenService
+from src.application.services.acceso_onu_config import MODELO_DEL_TECNICO
 from src.application.services.resumen_cobro import Prorrateo, resumen_cobro
 from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.utils.mikrotik import normalizar_mac
@@ -490,7 +491,7 @@ class ActivacionService:
             reactivada = await InventarioService(self.db).registrar_equipo(
                 identificador=existente.identificador,
                 tecnologia=(olt.tecnologia or existente.tecnologia or "GPON").upper(),
-                modelo=existente.modelo or "Registrada por el técnico",
+                modelo=existente.modelo or MODELO_DEL_TECNICO,
                 usuario_id=usuario.id,
             )
             return reactivada.id
@@ -511,7 +512,7 @@ class ActivacionService:
         nueva = await InventarioService(self.db).registrar_equipo(
             identificador=identificador,
             tecnologia=tecnologia,
-            modelo="Registrada por el técnico",
+            modelo=MODELO_DEL_TECNICO,
             usuario_id=usuario.id,
         )
         return nueva.id

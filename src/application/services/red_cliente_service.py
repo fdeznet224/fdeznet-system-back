@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.application.services.acceso_onu_config import cuentas_de, marca_de_onu, obtener_acceso_onu
+from src.application.services.acceso_onu_config import cuentas_de, marca_de_onu, modelo_real, obtener_acceso_onu
 from src.application.services.onu_web_huawei import FiltroMacHuawei, normalizar_mac
 from src.infrastructure.models import (
     AprovisionamientoOnuModel, ClienteModel, EquipoNombreModel, LogActividadModel, ServicioModel,
@@ -264,7 +264,7 @@ class RedClienteService:
             raise ValueError("El cliente no tiene ONU ni IP registrada.")
         return {
             "identificador": onu.identificador if onu else None,
-            "modelo": onu.modelo if onu else None,
+            "modelo": modelo_real(onu.modelo) if onu else None,
             "marca": marca_de_onu(onu.identificador if onu else None, onu.modelo if onu else None),
             "ip": ip,
             "_onu": onu,
@@ -272,8 +272,9 @@ class RedClienteService:
 
     async def _marca_por_tr069(self, http: httpx.AsyncClient, device_id: Optional[str], equipo: Dict[str, Any]) -> None:
         """Una ONU EPON se registra con su MAC, que no dice la marca: se le pregunta a ella.
-        Si es Huawei (o ZTE), su modelo queda guardado en el inventario para la próxima vez."""
-        if equipo["marca"] or not device_id:
+        Si es Huawei (o ZTE), su modelo queda guardado en el inventario para la próxima vez; también
+        reemplaza el "Registrada por el técnico" que queda cuando la dio de alta sin modelo."""
+        if (equipo["marca"] and equipo["modelo"]) or not device_id:
             return
         respuesta = await http.get("/devices", params={
             "query": json.dumps({"_id": device_id}),
@@ -289,10 +290,11 @@ class RedClienteService:
         marca = marca_de_onu(None, f"{fabricante} {modelo}")
         if not marca:
             return
-        equipo["marca"] = marca
+        equipo["marca"] = equipo["marca"] or marca
         onu = equipo.get("_onu")
-        if onu is not None and not (onu.modelo or "").strip() and modelo:
-            onu.modelo = f"{'Huawei' if marca == 'huawei' else 'ZTE'} {modelo}"[:100]
+        if onu is not None and not modelo_real(onu.modelo) and modelo:
+            nombre = "Huawei" if marca == "huawei" else "ZTE"
+            onu.modelo = (modelo if modelo.lower().startswith(nombre.lower()) else f"{nombre} {modelo}")[:100]
             equipo["modelo"] = onu.modelo
             await self.db.commit()
 
