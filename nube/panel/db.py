@@ -116,6 +116,17 @@ class DriveIsp(Base):
     conectado: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+class Liberacion(Base):
+    """Versión que el dueño ofrece a los ISP; la más reciente es la que ven en Mi cuenta."""
+
+    __tablename__ = "liberaciones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[str] = mapped_column(String(30))
+    fecha: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    novedades: Mapped[str | None] = mapped_column(Text)
+
+
 # Columnas agregadas después de la primera versión: create_all no toca tablas existentes.
 _COLUMNAS_NUEVAS = {
     "isps": {

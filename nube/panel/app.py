@@ -54,7 +54,7 @@ from nube.panel.cuentas import (
     slug_para,
     telefono_mx,
 )
-from nube.panel.db import Bitacora, DriveIsp, Isp, Pago, Respaldo, Sesion, crear_tablas
+from nube.panel.db import Bitacora, DriveIsp, Isp, Liberacion, Pago, Respaldo, Sesion, crear_tablas
 
 USUARIO = os.getenv("PANEL_USUARIO", "dueno")
 CLAVE_HASH = os.getenv("PANEL_CLAVE_HASH", "")
@@ -791,14 +791,28 @@ def _ram_libre_gb() -> float:
     return 99.0  # sin /proc (pruebas): no se limita por RAM
 
 
+def _orden_version(version: str | None) -> tuple:
+    return tuple(int(x) if x.isdigit() else -1 for x in (version or "").split("."))
+
+
+def _liberada(db) -> Liberacion | None:
+    """La versión que se les ofrece hoy a los ISP (la última liberada)."""
+    return db.scalar(select(Liberacion).order_by(Liberacion.id.desc()).limit(1))
+
+
 def _ultima_version() -> str:
+    """Con la que nacen los demos: la liberada; si nunca se ha liberado, la más nueva construida."""
     try:
         versiones = docker_ops.versiones_disponibles()
     except (docker_ops.ErrorDocker, OSError):
         versiones = []
+    with Sesion() as db:
+        liberada = _liberada(db)
+    if liberada and liberada.version in versiones:
+        return liberada.version
     if not versiones:
         return "local"
-    return max(versiones, key=lambda v: tuple(int(x) if x.isdigit() else 0 for x in v.split(".")))
+    return max(versiones, key=_orden_version)
 
 
 def _crear_demo(isp_id: int, clave_nombre: str) -> None:
@@ -1006,6 +1020,38 @@ def reenviar_acceso(isp_id: int, _csrf_ok: str = Depends(sesion)):
 
 # --- WhatsApp de ventas -------------------------------------------------------
 
+@app.get("/versiones", response_class=HTMLResponse)
+def versiones_pagina(request: Request, msg: str = "", csrf: str = Depends(sesion)):
+    try:
+        construidas = docker_ops.versiones_disponibles()
+    except (docker_ops.ErrorDocker, OSError):
+        construidas = []
+    with Sesion() as db:
+        liberada = _liberada(db)
+        historial = db.scalars(select(Liberacion).order_by(Liberacion.id.desc()).limit(10)).all()
+        isps = db.scalars(select(Isp).order_by(Isp.nombre)).all()
+    actual = liberada.version if liberada else None
+    pendientes = [i for i in isps if actual and _orden_version(i.version) < _orden_version(actual)]
+    return _render(request, "versiones.html", csrf, construidas=construidas, liberada=liberada,
+                   historial=historial, isps=isps, pendientes=pendientes, actualizando=_actualizando,
+                   orden=_orden_version, msg=msg)
+
+
+@app.post("/versiones/liberar")
+def versiones_liberar(_csrf_ok: str = Depends(sesion), version: str = Form(...), novedades: str = Form("")):
+    try:
+        construidas = docker_ops.versiones_disponibles()
+    except (docker_ops.ErrorDocker, OSError):
+        construidas = []
+    if version not in construidas:
+        return _ir("/versiones", "Error: esa versión no está construida en la VPS")
+    with Sesion() as db:
+        db.add(Liberacion(version=version, novedades=novedades.strip()[:2000] or None))
+        _bitacora(db, None, "versión liberada", f"v{version}")
+        db.commit()
+    return _ir("/versiones", f"v{version} liberada: cada ISP la verá en Configuración → Mi cuenta")
+
+
 @app.get("/whatsapp", response_class=HTMLResponse)
 def whatsapp_pagina(request: Request, msg: str = "", csrf: str = Depends(sesion)):
     estado = whatsapp.estado()
@@ -1159,11 +1205,84 @@ def _isp_firmado(db, isp: str, accion: str, vence: str, firma: str) -> Isp:
 @app.get("/cuenta/estado")
 def cuenta_estado(isp: str = "", vence: str = "", firma: str = ""):
     """El admin del ISP pregunta si tiene que mostrar el aviso de pago."""
+    hoy = date.today()
     with Sesion() as db:
         registro = _isp_firmado(db, isp, "cuenta", vence, firma)
-        aviso = aviso_al_isp(registro.pagado_hasta, registro.suspendido, _corte(registro), date.today(),
+        corte = _corte(registro)
+        aviso = aviso_al_isp(registro.pagado_hasta, registro.suspendido, corte, hoy,
                              HORA_CORTE, DIAS_AVISO, CONTACTO_PAGO)
-    return {"aviso": aviso}
+        liberada = _liberada(db)
+    vigente_hasta = registro.demo_hasta if registro.es_demo else registro.pagado_hasta
+    nueva = liberada and _orden_version(liberada.version) > _orden_version(registro.version)
+    return {
+        "aviso": aviso,
+        "cuenta": {
+            "plan": registro.plan,
+            "es_demo": registro.es_demo,
+            "precio_mensual": str(registro.precio_mensual or 0),
+            "vigente_hasta": vigente_hasta.isoformat() if vigente_hasta else None,
+            "dias_restantes": (vigente_hasta - hoy).days if vigente_hasta else None,
+            "corte": corte.isoformat() if corte else None,
+            "contacto_pago": CONTACTO_PAGO or None,
+        },
+        "version": {
+            "instalada": registro.version,
+            "disponible": liberada.version if nueva else None,
+            "novedades": liberada.novedades if nueva else None,
+            "fecha": liberada.fecha.date().isoformat() if nueva else None,
+            "actualizando": registro.slug in _actualizando,
+        },
+    }
+
+
+_actualizando: set[str] = set()
+
+
+def _actualizar_isp(isp_id: int, version: str, quien: str) -> None:
+    """Hilo: pasa al ISP a la versión dada sin tocar su bot ni sus límites."""
+    with Sesion() as db:
+        isp = db.get(Isp, isp_id)
+        slug, antes = isp.slug, isp.version
+        try:
+            docker_ops.aplicar_ajustes(
+                slug, version=version, whatsapp=isp.whatsapp, limite_clientes=isp.limite_clientes,
+                limite_routers=isp.limite_routers, encendido=not isp.suspendido,
+            )
+        except (docker_ops.ErrorDocker, OSError) as error:
+            log.error("No se pudo actualizar %s a %s: %s", slug, version, error)
+            _bitacora(db, isp.id, "actualización falló", f"v{antes} → v{version} ({quien}): {str(error)[-300:]}")
+        else:
+            isp.version = version
+            _bitacora(db, isp.id, "actualizado", f"v{antes} → v{version} ({quien})")
+        finally:
+            db.commit()
+            _actualizando.discard(slug)
+
+
+@app.post("/cuenta/actualizar")
+def cuenta_actualizar(isp: str = "", vence: str = "", firma: str = ""):
+    """El admin del ISP pidió pasarse a la versión liberada."""
+    with Sesion() as db:
+        registro = _isp_firmado(db, isp, "actualizar", vence, firma)
+        liberada = _liberada(db)
+        if registro.suspendido:
+            raise HTTPException(status_code=409, detail="El sistema está suspendido")
+        if not liberada or _orden_version(liberada.version) <= _orden_version(registro.version):
+            raise HTTPException(status_code=409, detail="Ya tienes la versión más reciente")
+        if registro.slug in _actualizando:
+            return {"ok": True, "version": liberada.version}
+        try:
+            construidas = docker_ops.versiones_disponibles()
+        except (docker_ops.ErrorDocker, OSError):
+            construidas = []
+        if liberada.version not in construidas:
+            raise HTTPException(status_code=409, detail="La actualización no está disponible ahora; intenta más tarde")
+        _actualizando.add(registro.slug)
+        _bitacora(db, registro.id, "actualización pedida", f"v{registro.version} → v{liberada.version}")
+        db.commit()
+        isp_id, version = registro.id, liberada.version
+    threading.Thread(target=_actualizar_isp, args=(isp_id, version, "lo pidió el ISP"), daemon=True).start()
+    return {"ok": True, "version": version}
 
 
 def _volver_al_isp(isp: Isp, resultado: str) -> RedirectResponse:

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block titulo %}Versiones · Panel WisPay{% endblock %}
+{% block contenido %}
+<p><a href="/">‹ Inicio</a></p>
+<h1>Versiones</h1>
+
+<div class="lista">
+  <div class="fila"><span class="punto {{ 'verde' if liberada else 'rojo' }}"></span>
+    <div class="crece">
+      <div class="titulo">{% if liberada %}Liberada: v{{ liberada.version }}{% else %}Todavía no se libera ninguna{% endif %}</div>
+      <div class="sub envuelve">{% if liberada %}Desde el {{ liberada.fecha.strftime('%d/%m/%Y') }}. {{ pendientes | length }} de {{ isps | length }} ISP sin actualizar.{% else %}Los demos nacen con la más nueva construida.{% endif %}</div>
+    </div></div>
+</div>
+
+<h2>Liberar una versión</h2>
+{% set nuevas = construidas | reject('equalto', liberada.version if liberada else '') | list %}
+{% if nuevas %}
+<form class="lista" method="post" action="/versiones/liberar" onsubmit="return confirm('Cada ISP verá la nueva versión en Configuración → Mi cuenta y decidirá cuándo actualizar. ¿Liberar?')">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label><span>Versión</span>
+    <select name="version">{% for v in nuevas %}<option>{{ v }}</option>{% endfor %}</select></label>
+  <label><span>Novedades</span>
+    <textarea name="novedades" maxlength="2000" placeholder="Lo que verá el ISP, una línea por cambio"></textarea></label>
+  <button class="boton">Liberar</button>
+</form>
+{% else %}
+<p class="nota">No hay versiones construidas sin liberar. Constrúyela con nube/construir-version.sh.</p>
+{% endif %}
+
+<h2>ISP</h2>
+<div class="lista">
+  {% for i in isps %}
+  <a class="fila" href="/isp/{{ i.id }}">
+    <span class="punto {{ 'azul' if i.slug in actualizando else 'verde' if i not in pendientes else 'ambar' }}"></span>
+    <div class="crece"><div class="titulo">{{ i.nombre }}{% if i.es_demo %} <span class="pastilla">demo</span>{% endif %}</div>
+      <div class="sub">v{{ i.version }} · {% if i.slug in actualizando %}actualizando…{% elif i in pendientes %}sin actualizar{% else %}al día{% endif %}</div></div>
+    <span class="chevron"></span>
+  </a>
+  {% else %}
+  <div class="fila"><div class="crece sub">Sin ISP dados de alta.</div></div>
+  {% endfor %}
+</div>
+<p class="nota">El ISP actualiza desde su sistema cuando quiera. Si hace falta, se le puede cambiar la versión desde su ficha → Sistema.</p>
+
+{% if historial %}
+<h2>Historial</h2>
+<div class="lista">
+  {% for l in historial %}
+  <div class="fila"><div class="crece"><div class="titulo">v{{ l.version }} <span class="sub">· {{ l.fecha.strftime('%d/%m/%Y %H:%M') }}</span></div>
+    {% if l.novedades %}<div class="sub envuelve">{{ l.novedades }}</div>{% endif %}</div></div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

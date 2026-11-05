@@ -46,6 +46,7 @@ from src.domain.schemas import (
 )
 from src.application.services.pagos_captura import config_pagos
 from src.application.services import cuenta_nube_service, respaldo_drive_service
+from src.version import SYSTEM_VERSION
 from src.application.services.branding_service import get_or_create_system_config
 from src.infrastructure.auth import get_current_active_user
 from src.application.services.storage_service import (
@@ -352,6 +353,21 @@ async def obtener_almacenamiento(db: AsyncSession = Depends(get_db)):
 async def aviso_cuenta_nube():
     """Aviso de la mensualidad de WisPay para el admin; vacío fuera de la nube o al corriente."""
     return {"aviso": await cuenta_nube_service.aviso()}
+
+
+@router.get("/mi-cuenta")
+async def mi_cuenta():
+    """Plan, días que le quedan, versión en uso y la liberada; {"en_la_nube": False} fuera de la nube."""
+    if not cuenta_nube_service.en_la_nube():
+        return {"en_la_nube": False, "version_en_uso": SYSTEM_VERSION}
+    datos = await cuenta_nube_service.estado(fresco=True) or {}
+    return {"en_la_nube": True, "version_en_uso": SYSTEM_VERSION, "disponible": bool(datos),
+            "cuenta": datos.get("cuenta"), "version": datos.get("version"), "aviso": datos.get("aviso")}
+
+
+@router.post("/mi-cuenta/actualizar")
+async def actualizar_mi_cuenta():
+    return await cuenta_nube_service.actualizar()
 
 
 @router.get("/respaldo-drive")

@@ -460,7 +460,7 @@ def test_el_isp_consulta_su_aviso_de_pago_firmado(panel):
     firma = drive.firmar(drive.secreto_isp("s" * 64, "colega"), "colega", "cuenta", vence)
     pedir = lambda f: cliente.get("/cuenta/estado", params={"isp": "colega", "vence": vence, "firma": f})
     assert pedir("mala").status_code == 403
-    assert pedir(firma).json() == {"aviso": None}  # sin pagos registrados
+    assert pedir(firma).json()["aviso"] is None  # sin pagos registrados
 
     with Sesion() as db:
         db.get(Isp, 1).pagado_hasta = date.today() - timedelta(days=1)
@@ -631,3 +631,61 @@ def test_interesado_en_fichas_queda_para_contactarlo(registro):
     _entrar(cliente)
     inicio = cliente.get("/").text
     assert "Por contactar" in inicio and "Ciber Luna" in inicio and "wa.me/529611112233" in inicio
+
+
+# --- Versiones liberadas y actualización desde el ISP -------------------------
+
+def test_liberar_version_y_el_isp_actualiza(panel, monkeypatch):
+    import time
+    from nube.panel import app as app_mod, docker_ops, drive
+    from nube.panel.db import Isp, Sesion
+
+    cliente, llamadas = panel
+    monkeypatch.setattr(app_mod.threading, "Thread", _HiloInmediato)
+    monkeypatch.setattr(docker_ops, "versiones_disponibles", lambda: ["2.115.0", "2.110.1"])
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "Colega", "slug": "colega", "version": "2.110.1"})
+    vence = int(time.time()) + 60
+    firma = lambda accion: drive.firmar(drive.secreto_isp("s" * 64, "colega"), "colega", accion, vence)
+    estado = lambda: cliente.get("/cuenta/estado", params={"isp": "colega", "vence": vence, "firma": firma("cuenta")}).json()
+    actualizar = lambda f: cliente.post("/cuenta/actualizar", params={"isp": "colega", "vence": vence, "firma": f})
+
+    assert estado()["version"] == {"instalada": "2.110.1", "disponible": None, "novedades": None,
+                                   "fecha": None, "actualizando": False}
+    assert actualizar(firma("actualizar")).status_code == 409  # nada liberado
+    assert actualizar(firma("cuenta")).status_code == 403  # la firma es por acción
+
+    assert "construida" in cliente.post("/versiones/liberar", data={"csrf": csrf, "version": "9.9.9"}).headers["location"]
+    cliente.post("/versiones/liberar", data={"csrf": csrf, "version": "2.115.0", "novedades": "Entrar con huella"})
+    pagina = cliente.get("/versiones").text
+    assert "v2.115.0" in pagina and "sin actualizar" in pagina
+    version = estado()["version"]
+    assert version["disponible"] == "2.115.0" and version["novedades"] == "Entrar con huella"
+
+    llamadas.clear()
+    assert actualizar(firma("actualizar")).json() == {"ok": True, "version": "2.115.0"}
+    assert llamadas == [("ajustes", "colega", {"version": "2.115.0", "whatsapp": False, "limite_clientes": None,
+                                                "limite_routers": None, "encendido": True})]
+    with Sesion() as db:
+        assert db.get(Isp, 1).version == "2.115.0"
+    assert estado()["version"]["disponible"] is None
+    assert actualizar(firma("actualizar")).status_code == 409
+
+
+def test_cuenta_estado_dias_restantes(panel):
+    import time
+    from datetime import timedelta
+    from nube.panel import drive
+    from nube.panel.db import Isp, Sesion
+
+    cliente, _ = panel
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "Colega", "slug": "colega", "plan": "800"})
+    with Sesion() as db:
+        db.get(Isp, 1).pagado_hasta = date.today() + timedelta(days=12)
+        db.commit()
+    vence = int(time.time()) + 60
+    firma = drive.firmar(drive.secreto_isp("s" * 64, "colega"), "colega", "cuenta", vence)
+    cuenta = cliente.get("/cuenta/estado", params={"isp": "colega", "vence": vence, "firma": firma}).json()["cuenta"]
+    assert cuenta["dias_restantes"] == 12 and cuenta["es_demo"] is False
+    assert cuenta["vigente_hasta"] == (date.today() + timedelta(days=12)).isoformat()
