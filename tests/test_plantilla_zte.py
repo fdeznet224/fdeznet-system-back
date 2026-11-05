@@ -40,6 +40,7 @@ def zte(prefijo="X_TELMEX_COM", fichas=True, puente_pppoe=False):
         "WANDevice": {"1": {"WANConnectionDevice": {"1": {"WANPPPConnection": ppp, "WANIPConnection": {}},
                                                     "_timestamp": "2026-11-04T07:41:00.000Z"}}},
         "LANDevice": {"1": {"WLANConfiguration": redes}},
+        "Firewall": {f"{prefijo}_MacFilterService": {"Enable": v(False), "Mode": v("Black List"), "Filter": {}}},
         f"{prefijo}_PortBinding": {},
     }, "_lastBoot": "2026-11-04T07:37:50.985Z"}
 
@@ -66,6 +67,8 @@ class AcsFalso:
             n = max([int(k) for k in objeto if k.isdigit()] + [0]) + 1
             objeto[str(n)] = ({"WANInterface": v(""), "LANInterface": v("")} if "PortBinding" in tarea["objectName"]
                               else {"MACAddress": v("00:00:00:00:00:00")} if "AccessControl" in tarea["objectName"]
+                              else {"Name": v("FWMACF1"), "Type": v("Bridge"), "Protocol": v("IP"),
+                                    "SourceMACAddress": v("00:00:00:00:00:00")} if "MacFilter" in tarea["objectName"]
                               else {"ConnectionType": v("Unconfigured"), "Enable": v(False)})
         elif tarea["name"] == "deleteObject":
             padre, _, hijo = tarea["objectName"].rpartition(".")
@@ -80,11 +83,23 @@ class AcsFalso:
                     if isinstance(ip, dict) and ip.get("Enable", {}).get("_value"):
                         ip["ConnectionStatus"] = v("Connected")
 
+    def mac_de_filtro_invalida(self, tarea):
+        """La F670L rechaza la MAC de una regla del firewall que sigue en Bridge o que ya está en otra."""
+        for ruta, valor, _ in tarea.get("parameterValues") or []:
+            if "MacFilterService.Filter." in ruta and ruta.endswith(".SourceMACAddress"):
+                filtro, _, _ = ruta.rpartition(".")
+                reglas, _, n = filtro.rpartition(".")
+                if self._nodo(filtro)["Type"]["_value"] != "Routing":
+                    return True
+                if any(k != n and r["SourceMACAddress"]["_value"] == valor for k, r in self._nodo(reglas).items()):
+                    return True
+        return False
+
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path.endswith("/tasks"):
             tarea = json.loads(request.content)
             self.tareas.append(tarea)
-            if self.rechaza(tarea):
+            if self.rechaza(tarea) or self.mac_de_filtro_invalida(tarea):
                 self.fallas.append({"_id": "dev:task_t", "channel": "task_t", "detail": {"faultString": "Invalid arguments"}})
                 return httpx.Response(202, json={"_id": "t"})
             self.aplicar(tarea)
@@ -206,8 +221,8 @@ def test_prefijo_banda_y_bloqueados_de_la_zte():
     assert bloqueadas_zte(lan) == {"aa:bb:cc:dd:ee:01"}
 
 
-def test_si_la_onu_no_contesta_ninguna_banda_queda_a_medias():
-    acs = AcsFalso(zte(), lambda t: t["name"] == "setParameterValues")
+def con_acs_falso(acs, prueba):
+    """Corre `prueba(servicio)` con el RedClienteService hablando con el GenieACS falso."""
     servicio = RedClienteService(None, nbi="http://nbi")
     original = httpx.AsyncClient
 
@@ -218,49 +233,122 @@ def test_si_la_onu_no_contesta_ninguna_banda_queda_a_medias():
         servicio._id_tr069 = id_tr069
         httpx.AsyncClient = lambda **kw: original(**{**kw, "transport": httpx.MockTransport(acs)})
         try:
-            try:
-                await servicio._bloquear_zte({"marca": "zte"}, "aa:bb:cc:dd:ee:01", True, [1, 5])
-            except ValueError:
-                pass
+            return await prueba(servicio)
         finally:
             httpx.AsyncClient = original
 
-    asyncio.run(probar())
+    return asyncio.run(probar())
+
+
+EQUIPO = {"identificador": "ZTEG25520366", "ip": "10.10.10.251", "marca": "zte"}
+SAMSUNG = "be:d6:86:40:9f:c2"
+
+
+def con_host(documento, mac, wlan):
+    documento[IGD]["LANDevice"]["1"]["Hosts"] = {"Host": {"1": {
+        "MACAddress": v(mac), "HostName": v("Galaxy-A56-5G"), "Active": v(True), "InterfaceType": v("802.11"),
+        "Layer2Interface": v(f"{IGD}.LANDevice.1.WLANConfiguration.{wlan}")}}}
+    return documento
+
+
+def test_bloquea_en_el_filtro_del_firewall_y_no_en_la_lista_del_wifi():
+    # La lista del WiFi rechaza al Samsung al conectarse y estrena otra MAC; el filtro del
+    # firewall lo deja conectado con su misma MAC y sin internet.
+    acs = AcsFalso(con_host(zte(), SAMSUNG, 1))
+    filtro = acs.doc[IGD]["Firewall"]["X_TELMEX_COM_MacFilterService"]
     redes = acs.doc[IGD]["LANDevice"]["1"]["WLANConfiguration"]
-    assert redes["1"]["X_TELMEX_COM_AccessControlMode"]["_value"] == redes["5"]["X_TELMEX_COM_AccessControlMode"]["_value"] == "Disabled"
+
+    async def prueba(servicio):
+        bloqueadas, por_wifi = await servicio._bloquear_zte(EQUIPO, SAMSUNG, True, solo_principal=True)
+        assert bloqueadas == {SAMSUNG} and por_wifi == []
+        regla = filtro["Filter"]["1"]
+        assert {k: regla[k]["_value"] for k in ("Type", "Protocol", "SourceMACAddress")} == {
+            "Type": "Routing", "Protocol": "Any", "SourceMACAddress": SAMSUNG}
+        assert filtro["Enable"]["_value"] is True and filtro["Mode"]["_value"] == "Black List"
+        assert all(redes[i]["X_TELMEX_COM_AccessControlMode"]["_value"] == "Disabled" for i in redes)
+        # Otra vez no la duplica (la ZTE rechazaría la MAC repetida).
+        await servicio._bloquear_zte(EQUIPO, SAMSUNG, True)
+        assert len(filtro["Filter"]) == 1
+        assert (await servicio._bloquear_zte(EQUIPO, SAMSUNG, False))[0] == set()
+        assert filtro["Filter"] == {}
+
+    con_acs_falso(acs, prueba)
 
 
-def test_bloquear_y_desbloquear_en_la_zte_por_tr069():
-    acs = AcsFalso(zte())
-    servicio = RedClienteService(None, nbi="http://nbi")
-    original = httpx.AsyncClient
+def test_la_regla_que_no_acepta_la_mac_no_se_queda():
+    acs = AcsFalso(con_host(zte(), SAMSUNG, 1),
+                   lambda t: any(r.endswith("SourceMACAddress") for r, _, _ in t.get("parameterValues") or []))
+    filtro = acs.doc[IGD]["Firewall"]["X_TELMEX_COM_MacFilterService"]
 
-    async def probar():
-        async def id_tr069(_http, _equipo):
-            return "dev"
-
-        servicio._id_tr069 = id_tr069
-        httpx.AsyncClient = lambda **kw: original(**{**kw, "transport": httpx.MockTransport(acs)})
+    async def prueba(servicio):
         try:
-            equipo = {"identificador": "ZTEG24284C96", "ip": "10.10.10.251", "marca": "zte"}
-            bloqueadas = await servicio._bloquear_zte(equipo, "aa:bb:cc:dd:ee:01", True, [1, 5])
-            redes = acs.doc[IGD]["LANDevice"]["1"]["WLANConfiguration"]
-            assert bloqueadas == {"aa:bb:cc:dd:ee:01"}
-            # Las dos bandas van en la misma orden: nunca queda bloqueada una sola.
-            cambios = [t for t in acs.tareas if t["name"] == "setParameterValues"]
-            assert len(cambios) == 1 and {r.split("WLANConfiguration.")[1].split(".")[0]
-                                          for r, _, _ in cambios[0]["parameterValues"]} == {"1", "5"}
-            for i in ("1", "5"):
-                assert redes[i]["X_TELMEX_COM_AccessControlMode"]["_value"] == "Ban"
-                assert redes[i]["X_TELMEX_COM_AccessControl"]["1"]["MACAddress"]["_value"] == "aa:bb:cc:dd:ee:01"
-            assert redes["2"]["X_TELMEX_COM_AccessControlMode"]["_value"] == "Disabled"
-            # Otra vez no la duplica.
-            await servicio._bloquear_zte(equipo, "aa:bb:cc:dd:ee:01", True, [1, 5])
-            assert len(redes["1"]["X_TELMEX_COM_AccessControl"]) == 1
-            assert await servicio._bloquear_zte(equipo, "aa:bb:cc:dd:ee:01", False, []) == set()
-            assert redes["1"]["X_TELMEX_COM_AccessControl"] == {}
-            assert redes["1"]["X_TELMEX_COM_AccessControlMode"]["_value"] == "Disabled"
-        finally:
-            httpx.AsyncClient = original
+            await servicio._bloquear_zte(EQUIPO, SAMSUNG, True)
+        except ValueError:
+            return
+        raise AssertionError("debió avisar que la ONU rechazó el cambio")
 
-    asyncio.run(probar())
+    con_acs_falso(acs, prueba)
+    assert filtro["Filter"] == {} and filtro["Enable"]["_value"] is False
+
+
+def test_no_cambia_un_filtro_en_lista_blanca():
+    documento = con_host(zte(), SAMSUNG, 1)
+    documento[IGD]["Firewall"]["X_TELMEX_COM_MacFilterService"].update(Enable=v(True), Mode=v("White List"))
+    acs = AcsFalso(documento)
+
+    async def prueba(servicio):
+        try:
+            await servicio._bloquear_zte(EQUIPO, SAMSUNG, True)
+        except ValueError as error:
+            assert "lista blanca" in str(error)
+            return
+        raise AssertionError("no debió tocar la lista blanca")
+
+    con_acs_falso(acs, prueba)
+    assert acs.doc[IGD]["Firewall"]["X_TELMEX_COM_MacFilterService"]["Filter"] == {}
+
+
+def test_equipo_de_la_red_de_fichas_va_en_la_lista_del_wifi_de_las_dos_bandas():
+    # La red de fichas va en puente: el firewall no la ve. Las dos bandas en una sola orden.
+    acs = AcsFalso(con_host(zte(), SAMSUNG, 2))
+    redes = acs.doc[IGD]["LANDevice"]["1"]["WLANConfiguration"]
+
+    async def prueba(servicio):
+        bloqueadas, por_wifi = await servicio._bloquear_zte(EQUIPO, SAMSUNG, True)
+        assert bloqueadas == {SAMSUNG} and por_wifi == [2, 6]
+        cambios = [t for t in acs.tareas if t["name"] == "setParameterValues"]
+        assert len(cambios) == 1
+        for i in ("2", "6"):
+            assert redes[i]["X_TELMEX_COM_AccessControlMode"]["_value"] == "Ban"
+        assert acs.doc[IGD]["Firewall"]["X_TELMEX_COM_MacFilterService"]["Filter"] == {}
+        assert (await servicio._bloquear_zte(EQUIPO, SAMSUNG, False))[0] == set()
+        assert redes["2"]["X_TELMEX_COM_AccessControlMode"]["_value"] == "Disabled"
+
+    con_acs_falso(acs, prueba)
+
+
+def test_bloquear_en_el_firewall_quita_el_bloqueo_de_antes_en_el_wifi():
+    documento = con_host(zte(), SAMSUNG, 1)
+    for i in ("1", "5"):
+        documento[IGD]["LANDevice"]["1"]["WLANConfiguration"][i].update(
+            X_TELMEX_COM_AccessControlMode=v("Ban"), X_TELMEX_COM_AccessControl={"1": {"MACAddress": v(SAMSUNG)}})
+    acs = AcsFalso(documento)
+    redes = acs.doc[IGD]["LANDevice"]["1"]["WLANConfiguration"]
+
+    async def prueba(servicio):
+        assert (await servicio._bloquear_zte(EQUIPO, SAMSUNG, True))[0] == {SAMSUNG}
+
+    con_acs_falso(acs, prueba)
+    for i in ("1", "5"):
+        assert redes[i]["X_TELMEX_COM_AccessControl"] == {}
+        assert redes[i]["X_TELMEX_COM_AccessControlMode"]["_value"] == "Disabled"
+
+
+def test_bloqueados_salen_del_filtro_del_firewall_encendido():
+    documento = zte()
+    filtro = documento[IGD]["Firewall"]["X_TELMEX_COM_MacFilterService"]
+    filtro["Filter"] = {"1": {"SourceMACAddress": v(SAMSUNG), "Type": v("Routing")}}
+    lan = documento[IGD]["LANDevice"]["1"]
+    assert bloqueadas_zte(lan, documento[IGD]["Firewall"]) == set()  # Apagado no bloquea.
+    filtro["Enable"] = v(True)
+    assert bloqueadas_zte(lan, documento[IGD]["Firewall"]) == {SAMSUNG}
