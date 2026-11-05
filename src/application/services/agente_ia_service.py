@@ -13,6 +13,7 @@ usar; las reglas de dinero y de identidad se aplican aquí, en código:
 import asyncio
 import json
 import logging
+import os
 import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -189,6 +190,13 @@ HERRAMIENTAS = [
                  {"motivo": {"type": "string"}}, ["motivo"]),
 ]
 
+
+
+
+def _url_portal() -> str:
+    """Donde entra el cliente a su portal; sin PUBLIC_URL, el agente pide que se la den."""
+    base = os.getenv("PUBLIC_URL", "").strip().rstrip("/")
+    return f"{base}/cliente" if base else "la dirección que le da un asesor (usa `pasar_a_humano` si la pide)"
 
 class AgenteIAService:
     def __init__(self, db: AsyncSession, http: httpx.AsyncClient | None = None, enviar=None):
@@ -371,7 +379,7 @@ class AgenteIAService:
         marca = await self.db.get(ConfiguracionSistema, 1)
         empresa = getattr(marca, "empresa_nombre", None) or "tu proveedor de internet"
         return (
-            INSTRUCCIONES.format(empresa=empresa, hoy=date.today().strftime("%A %d/%m/%Y"))
+            INSTRUCCIONES.format(empresa=empresa, hoy=date.today().strftime("%A %d/%m/%Y"), portal=_url_portal())
             + "\n\n# CONOCIMIENTO DEL ISP\n\n"
             + (config.agente_conocimiento or CONOCIMIENTO_INICIAL)
         )

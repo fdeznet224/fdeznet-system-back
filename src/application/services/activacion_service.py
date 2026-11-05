@@ -20,6 +20,7 @@ from sqlalchemy import func, or_, select
 from src.application.services.client_service import ClientService
 from src.application.services.inventario_service import InventarioService
 from src.application.services.orden_service import ESTADOS_TERMINALES, OrdenService
+from src.application.services.acceso_onu_config import MODELO_DEL_TECNICO
 from src.application.services.resumen_cobro import Prorrateo, resumen_cobro
 from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.utils.mikrotik import normalizar_mac
@@ -32,6 +33,7 @@ from src.infrastructure.models import (
     OLTModel,
     OrdenServicioModel,
     PlanModel,
+    PagoModel,
     PlantillaFacturacionModel,
     RedModel,
     RouterModel,
@@ -396,6 +398,82 @@ class ActivacionService:
             ),
         )
 
+    # ------------------------------------------------------ prorrateo al terminar
+    async def _factura_prorrateo(self, orden_id: int, usuario: UsuarioModel) -> Optional[FacturaModel]:
+        orden = await OrdenService(self.db).obtener(orden_id, usuario)
+        if orden.tipo != "instalacion" or not orden.servicio_id:
+            raise ValueError("La orden no es una instalación activada")
+        return (
+            await self.db.execute(
+                select(FacturaModel)
+                .where(
+                    FacturaModel.servicio_id == orden.servicio_id,
+                    FacturaModel.tipo_factura == "prorrateo",
+                    FacturaModel.estado != "anulada",
+                )
+                .order_by(FacturaModel.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+
+    async def prorrateo(self, orden_id: int, usuario: UsuarioModel) -> dict:
+        """Si la instalación dejó prorrateo y si ya se pagó (para que el técnico se lo muestre)."""
+        factura = await self._factura_prorrateo(orden_id, usuario)
+        if not factura:
+            return {"hay": False}
+        pagado = (factura.saldo_pendiente or 0) <= 0
+        pago = None
+        if pagado:
+            pago = (
+                await self.db.execute(
+                    select(PagoModel, UsuarioModel.nombre)
+                    .outerjoin(UsuarioModel, UsuarioModel.id == PagoModel.usuario_id)
+                    .where(PagoModel.factura_id == factura.id, PagoModel.estado == "aplicado")
+                    .order_by(PagoModel.id.desc())
+                    .limit(1)
+                )
+            ).first()
+        return {
+            "hay": True,
+            "factura_id": factura.id,
+            "total": float(factura.total or 0),
+            "saldo": float(factura.saldo_pendiente or 0),
+            "pagado": pagado,
+            "desde": factura.periodo_desde.isoformat() if factura.periodo_desde else None,
+            "hasta": factura.periodo_hasta.isoformat() if factura.periodo_hasta else None,
+            "se_suma_el": factura.fecha_vencimiento.isoformat() if factura.fecha_vencimiento else None,
+            "metodo": pago[0].metodo_pago if pago else None,
+            "cobrado_por": pago[1] if pago else None,
+        }
+
+    async def decidir_prorrateo(self, orden_id: int, accion: str, usuario: UsuarioModel,
+                                clave: Optional[str] = None) -> dict:
+        """efectivo: lo cobra el técnico (queda a su nombre). despues: se le avisa por WhatsApp
+        que no corta y que un día antes se le recuerda. Por transferencia no hace falta nada
+        aquí: manda su comprobante al WhatsApp, el agente lo aplica y esto sale pagado."""
+        from src.application.services.billing_service import BillingService
+
+        factura = await self._factura_prorrateo(orden_id, usuario)
+        if not factura:
+            raise ValueError("Esta instalación no tiene prorrateo")
+        if (factura.saldo_pendiente or 0) <= 0:
+            return await self.prorrateo(orden_id, usuario)
+        if accion == "efectivo":
+            await BillingService(self.db).registrar_pago_completo(
+                factura_id=factura.id,
+                usuario_operador=usuario,
+                metodo_pago="efectivo",
+                monto=factura.saldo_pendiente,
+                referencia=f"Prorrateo cobrado al instalar (orden {orden_id})",
+                clave_idempotencia=(clave or f"prorrateo-orden-{orden_id}")[:100],
+            )
+        elif accion == "despues":
+            await BillingService(self.db).avisar_prorrateo(factura)
+            await self.db.commit()
+        else:
+            raise ValueError("Elige si lo paga ahora en efectivo o después")
+        return await self.prorrateo(orden_id, usuario)
+
     async def _onu_nueva(self, identificador: str, olt: OLTModel, usuario: UsuarioModel) -> int:
         """ONU que el técnico trae en mano y nadie registró en Inventario."""
         compacto = _compacto(identificador)
@@ -413,7 +491,7 @@ class ActivacionService:
             reactivada = await InventarioService(self.db).registrar_equipo(
                 identificador=existente.identificador,
                 tecnologia=(olt.tecnologia or existente.tecnologia or "GPON").upper(),
-                modelo=existente.modelo or "Registrada por el técnico",
+                modelo=existente.modelo or MODELO_DEL_TECNICO,
                 usuario_id=usuario.id,
             )
             return reactivada.id
@@ -434,7 +512,7 @@ class ActivacionService:
         nueva = await InventarioService(self.db).registrar_equipo(
             identificador=identificador,
             tecnologia=tecnologia,
-            modelo="Registrada por el técnico",
+            modelo=MODELO_DEL_TECNICO,
             usuario_id=usuario.id,
         )
         return nueva.id

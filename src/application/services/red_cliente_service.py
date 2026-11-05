@@ -1,7 +1,11 @@
 """La red de la casa del cliente: equipos conectados, WiFi y bloqueos.
 
-Equipos y WiFi salen de la ONU por TR-069 (GenieACS). El bloqueo por MAC va
-por la web de la ONU porque el HG8145V5 no publica su filtro MAC en TR-069.
+Equipos y WiFi salen de la ONU por TR-069 (GenieACS). En la Huawei el bloqueo
+por MAC va por su web porque el HG8145V5 no publica su filtro MAC en TR-069;
+la ZTE sí lo publica y va por TR-069: el filtro MAC de su firewall (deja al equipo
+conectado y sin internet, como la Huawei). La lista de bloqueo del WiFi lo rechaza al
+conectarse y algunos celulares (Samsung) estrenan otra MAC aleatoria y vuelven a entrar;
+esa lista solo se usa para equipos de la red de fichas, que va en puente y el firewall no ve.
 El nombre de la red (SSID) no se cambia desde aquí: va en el contrato.
 """
 
@@ -17,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.application.services.acceso_onu_config import cuentas_de, marca_de_onu, obtener_acceso_onu
+from src.application.services.acceso_onu_config import cuentas_de, marca_de_onu, modelo_real, obtener_acceso_onu
 from src.application.services.onu_web_huawei import FiltroMacHuawei, normalizar_mac
 from src.infrastructure.models import (
     AprovisionamientoOnuModel, ClienteModel, EquipoNombreModel, LogActividadModel, ServicioModel,
@@ -27,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 NBI_PREDETERMINADO = "http://127.0.0.1:7557"
 LAN = "InternetGatewayDevice.LANDevice.1"
+FIREWALL = "InternetGatewayDevice.Firewall"
 # Lo que espera el admin a que la ONU conteste el aviso; si no, se muestra lo último guardado.
 ESPERA_ONU_MS = 15000
 RE_CLAVE_WIFI = re.compile(r"^[\x20-\x7e]{8,63}$")
@@ -34,6 +39,18 @@ RE_CLAVE_WIFI = re.compile(r"^[\x20-\x7e]{8,63}$")
 # PreSharedKey.1.KeyPassphrase; si una ONU rechaza el primero, se prueba el otro.
 CAMPOS_CLAVE_WIFI = ("PreSharedKey.1.KeyPassphrase", "KeyPassphrase")
 MAX_APODO = 40
+# Los parámetros propios de la ZTE llevan el prefijo de su firmware: X_ZTE-COM_ (el de
+# fábrica) o X_TELMEX_COM_ (el de Telmex). La misma ONU pasa de uno a otro si le cambian
+# el firmware, así que se averigua en cada lectura y nunca se guarda por modelo.
+PREFIJOS_ZTE = ("X_ZTE-COM", "X_TELMEX_COM")
+MAC_VACIA = "00:00:00:00:00:00"
+# Una sola sesión a la vez con cada ONU: si el bloqueo y la confirmación del portal le hablan
+# juntos, la ZTE no contesta el segundo aviso y GenieACS la da por desconectada.
+_CANDADOS: Dict[str, asyncio.Lock] = {}
+
+
+def _candado(device_id: str) -> asyncio.Lock:
+    return _CANDADOS.setdefault(device_id, asyncio.Lock())
 
 
 def url_nbi() -> str:
@@ -59,6 +76,82 @@ def _instancias(nodo: Any) -> List[tuple]:
     return sorted(((int(k), v) for k, v in nodo.items() if k.isdigit() and isinstance(v, dict)), key=lambda p: p[0])
 
 
+def prefijo_zte(nodo: Any, profundidad: int = 8) -> Optional[str]:
+    """"X_ZTE-COM" o "X_TELMEX_COM" según los parámetros que trae la ONU; None si no es ZTE."""
+    if not isinstance(nodo, dict) or profundidad < 0:
+        return None
+    for clave in nodo:
+        for prefijo in PREFIJOS_ZTE:
+            if clave.startswith(prefijo + "_"):
+                return prefijo
+    for clave, hijo in nodo.items():
+        if not clave.startswith("_"):
+            encontrado = prefijo_zte(hijo, profundidad - 1)
+            if encontrado:
+                return encontrado
+    return None
+
+
+def _mac_o_none(valor: Any) -> Optional[str]:
+    try:
+        mac = normalizar_mac(str(valor or ""))
+    except ValueError:
+        return None
+    return None if mac == MAC_VACIA else mac
+
+
+def _banda(wlan: Dict[str, Any]) -> str:
+    """Huawei: X_HW_RFBand; ZTE: <prefijo>_OperatingFrequencyBand."""
+    for campo in ["X_HW_RFBand"] + [f"{p}_OperatingFrequencyBand" for p in PREFIJOS_ZTE]:
+        if _valor(wlan.get(campo)):
+            return str(_valor(wlan.get(campo)))
+    return ""
+
+
+def filtro_mac_zte(firewall: Dict[str, Any]) -> tuple:
+    """(prefijo, nodo <prefijo>_MacFilterService) del firewall de la ZTE; (None, None) si no lo trae."""
+    for prefijo in PREFIJOS_ZTE:
+        nodo = (firewall or {}).get(f"{prefijo}_MacFilterService")
+        if isinstance(nodo, dict):
+            return prefijo, nodo
+    return None, None
+
+
+def bloqueadas_zte(lan: Dict[str, Any], firewall: Optional[Dict[str, Any]] = None) -> set:
+    """Las MAC del filtro MAC del firewall (encendido en lista negra) y las de la lista de
+    bloqueo (modo Ban) de cada WiFi de la ZTE."""
+    macs = set()
+    _, filtro = filtro_mac_zte(firewall or {})
+    if filtro and _valor(filtro.get("Enable")) in (True, "true", "1", 1) \
+            and str(_valor(filtro.get("Mode")) or "") == "Black List":
+        for _, regla in _instancias(filtro.get("Filter")):
+            mac = _mac_o_none(_valor(regla.get("SourceMACAddress")))
+            if mac:
+                macs.add(mac)
+    wlans = lan.get("WLANConfiguration")
+    prefijo = prefijo_zte(wlans)
+    if not prefijo:
+        return macs
+    for _, wlan in _instancias(wlans):
+        if str(_valor(wlan.get(f"{prefijo}_AccessControlMode")) or "") != "Ban":
+            continue
+        for _, entrada in _instancias(wlan.get(f"{prefijo}_AccessControl")):
+            mac = _mac_o_none(_valor(entrada.get("MACAddress")))
+            if mac:
+                macs.add(mac)
+    return macs
+
+
+def modelo_tr069(documento: Optional[Dict[str, Any]], marca: Optional[str]) -> Optional[str]:
+    """"ZTE F670L" con el ModelName que reporta la ONU; None si no lo trae."""
+    info = ((documento or {}).get("InternetGatewayDevice") or {}).get("DeviceInfo") or {}
+    modelo = str(_valor(info.get("ModelName")) or "").strip()
+    if not modelo:
+        return None
+    nombre = {"zte": "ZTE", "huawei": "Huawei"}.get(marca or "")
+    return f"{nombre} {modelo}" if nombre and not modelo.lower().startswith(nombre.lower()) else modelo
+
+
 def redes_wifi(lan: Dict[str, Any]) -> List[Dict[str, Any]]:
     redes = []
     for indice, wlan in _instancias(lan.get("WLANConfiguration")):
@@ -69,7 +162,7 @@ def redes_wifi(lan: Dict[str, Any]) -> List[Dict[str, Any]]:
         redes.append({
             "indice": indice,
             "ssid": ssid,
-            "banda": _valor(wlan.get("X_HW_RFBand")) or "",
+            "banda": _banda(wlan),
             "activa": str(_valor(wlan.get("Enable"))).lower() in ("true", "1"),
             "clave": clave or None,
             "macs": [normalizar_mac(_valor(d.get("AssociatedDeviceMACAddress")))
@@ -171,10 +264,46 @@ class RedClienteService:
             raise ValueError("El cliente no tiene ONU ni IP registrada.")
         return {
             "identificador": onu.identificador if onu else None,
-            "modelo": onu.modelo if onu else None,
+            "modelo": modelo_real(onu.modelo) if onu else None,
             "marca": marca_de_onu(onu.identificador if onu else None, onu.modelo if onu else None),
             "ip": ip,
+            "_onu": onu,
         }
+
+    async def _marca_por_tr069(self, http: httpx.AsyncClient, device_id: Optional[str], equipo: Dict[str, Any]) -> None:
+        """Una ONU EPON se registra con su MAC, que no dice la marca: se le pregunta a ella.
+        Si es Huawei (o ZTE), su modelo queda guardado en el inventario para la próxima vez; también
+        reemplaza el "Registrada por el técnico" que queda cuando la dio de alta sin modelo."""
+        if (equipo["marca"] and equipo["modelo"]) or not device_id:
+            return
+        respuesta = await http.get("/devices", params={
+            "query": json.dumps({"_id": device_id}),
+            "projection": "_deviceId,InternetGatewayDevice.DeviceInfo.Manufacturer,InternetGatewayDevice.DeviceInfo.ModelName",
+        })
+        respuesta.raise_for_status()
+        documento = (respuesta.json() or [{}])[0]
+        # _deviceId llega en cada reporte de la ONU; DeviceInfo solo si alguien lo pidió antes.
+        ident = documento.get("_deviceId") or {}
+        info = ((documento.get("InternetGatewayDevice") or {}).get("DeviceInfo") or {})
+        fabricante = str(ident.get("_Manufacturer") or _valor(info.get("Manufacturer")) or "").strip()
+        modelo = str(ident.get("_ProductClass") or _valor(info.get("ModelName")) or "").strip()
+        marca = marca_de_onu(None, f"{fabricante} {modelo}")
+        if not marca:
+            return
+        equipo["marca"] = equipo["marca"] or marca
+        onu = equipo.get("_onu")
+        if onu is not None and not modelo_real(onu.modelo) and modelo:
+            nombre = "Huawei" if marca == "huawei" else "ZTE"
+            onu.modelo = (modelo if modelo.lower().startswith(nombre.lower()) else f"{nombre} {modelo}")[:100]
+            equipo["modelo"] = onu.modelo
+            await self.db.commit()
+
+    async def _equipo_con_marca(self, cliente_id: int, servicio_id: Optional[int] = None) -> Dict[str, Any]:
+        equipo = await self._equipo(cliente_id, servicio_id)
+        if not equipo["marca"]:
+            async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
+                await self._marca_por_tr069(http, await self._id_tr069(http, equipo), equipo)
+        return equipo
 
     # ---------------------------------------------------------- GenieACS
     async def _id_tr069(self, http: httpx.AsyncClient, equipo: Dict[str, Any]) -> Optional[str]:
@@ -208,6 +337,10 @@ class RedClienteService:
         if falla:
             await http.delete(f"/tasks/{tarea_id}")
             await http.delete(f"/faults/{falla['_id']}")
+            if falla.get("code") == "session_terminated":
+                # La ZTE aplica el cambio de PPPoE y corta la sesión sin contestar (el ACS va por
+                # esa misma WAN): no es un rechazo, es "enviado" y se ve en su próximo reporte.
+                return False
             detalle = (falla.get("detail") or {}).get("faultString") or falla.get("message") or falla.get("code")
             raise ValueError(f"La ONU rechazó el cambio: {detalle}")
         return False
@@ -215,7 +348,8 @@ class RedClienteService:
     async def _leer_lan(self, http: httpx.AsyncClient, device_id: str) -> Dict[str, Any]:
         respuesta = await http.get("/devices", params={
             "query": json.dumps({"_id": device_id}),
-            "projection": f"_lastInform,InternetGatewayDevice.DeviceInfo.ModelName,{LAN}.Hosts,{LAN}.WLANConfiguration",
+            "projection": f"_lastInform,InternetGatewayDevice.DeviceInfo.ModelName,{LAN}.Hosts,{LAN}.WLANConfiguration,"
+                          + ",".join(f"{FIREWALL}.{p}_MacFilterService" for p in PREFIJOS_ZTE),
         })
         respuesta.raise_for_status()
         return (respuesta.json() or [{}])[0]
@@ -225,9 +359,175 @@ class RedClienteService:
         config = await obtener_acceso_onu(self.db)
         return [(c["usuario"], c["clave"]) for c in cuentas_de(config["huawei"]["cuentas"])]
 
+    async def _lan(self, http: httpx.AsyncClient, device_id: str) -> Dict[str, Any]:
+        return ((await self._leer_lan(http, device_id)).get("InternetGatewayDevice") or {}).get("LANDevice", {}).get("1", {})
+
+    async def _obligada(self, http: httpx.AsyncClient, device_id: str, tarea: Dict[str, Any]) -> None:
+        """Una orden que tiene que hacerse ya; si la ONU no contesta se quita de la cola y se avisa."""
+        if await self._tarea(http, device_id, tarea):
+            return
+        pendientes = (await http.get("/tasks", params={"query": json.dumps({"device": device_id})})).json()
+        for pendiente in pendientes:
+            await http.delete(f"/tasks/{pendiente['_id']}")
+        raise ValueError("La ONU no contestó; intenta de nuevo en un momento.")
+
+    async def agregar_instancia(self, http: httpx.AsyncClient, device_id: str, objeto: str) -> int:
+        """addObject y el número de la instancia nueva (GenieACS no lo devuelve: se compara antes y después)."""
+        async def instancias() -> set:
+            respuesta = await http.get("/devices", params={"query": json.dumps({"_id": device_id}), "projection": objeto})
+            respuesta.raise_for_status()
+            nodo = (respuesta.json() or [{}])[0]
+            for parte in objeto.split("."):
+                nodo = (nodo or {}).get(parte) or {}
+            return {int(k) for k in nodo if k.isdigit()}
+
+        antes = await instancias()
+        await self._obligada(http, device_id, {"name": "addObject", "objectName": objeto})
+        nuevas = await instancias() - antes
+        if not nuevas:
+            # GenieACS suele anotar la instancia nueva al crearla; si no, se le pregunta a la ONU.
+            await self._obligada(http, device_id, {"name": "refreshObject", "objectName": objeto})
+            nuevas = await instancias() - antes
+        if not nuevas:
+            raise ValueError(f"La ONU no creó {objeto.rsplit('.', 1)[-1]}.")
+        return max(nuevas)
+
+    async def _documento_zte(self, http: httpx.AsyncClient, device_id: str, wifi: bool = False) -> tuple:
+        """(lan, firewall) de la ONU con su filtro MAC recién leído (unos 2 s). El WiFi tarda
+        ~12 s en contestar: se relee solo con `wifi` o si no se tiene; si no, va lo guardado."""
+        def partes(documento):
+            igd = documento.get("InternetGatewayDevice") or {}
+            return (igd.get("LANDevice") or {}).get("1") or {}, igd.get("Firewall") or {}
+
+        lan, firewall = partes(await self._leer_lan(http, device_id))
+        if wifi or not redes_wifi(lan):
+            await self._obligada(http, device_id, {"name": "refreshObject", "objectName": f"{LAN}.WLANConfiguration"})
+        prefijo = filtro_mac_zte(firewall)[0] or prefijo_zte(lan.get("WLANConfiguration"))
+        await self._obligada(http, device_id, {"name": "refreshObject",
+                                               "objectName": f"{FIREWALL}.{prefijo}_MacFilterService" if prefijo else FIREWALL})
+        return partes(await self._leer_lan(http, device_id))
+
+    async def _bloqueadas_zte(self, equipo: Dict[str, Any]) -> set:
+        async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
+            device_id = await self._id_tr069(http, equipo)
+            if not device_id:
+                raise ValueError("La ONU del cliente todavía no se reporta por TR-069.")
+            # Si hay un bloqueo en curso en esta ONU se espera a que termine: dos sesiones a la
+            # vez con la ZTE hacen que GenieACS la dé por desconectada.
+            async with _candado(device_id):
+                return bloqueadas_zte(*await self._documento_zte(http, device_id))
+
+    async def _lista_wifi_zte(self, http: httpx.AsyncClient, device_id: str, lan: Dict[str, Any], mac: str,
+                              bloquear: bool, redes: List[int]) -> None:
+        """La lista de bloqueo del WiFi. Bloquear: la MAC va a la lista de cada red indicada y esa
+        lista queda en modo Ban, todo en una sola orden (la 2.4 y la 5 GHz juntas, nunca una sola).
+        Desbloquear: se quita de todas; una lista que queda vacía vuelve a Disabled."""
+        wlans = f"{LAN}.WLANConfiguration"
+        prefijo = prefijo_zte(lan.get("WLANConfiguration"))
+        if not prefijo:
+            raise ValueError("La ONU no trae la lista de bloqueo de ZTE.")
+        valores = []
+        for indice, wlan in _instancias(lan.get("WLANConfiguration")):
+            lista = f"{wlans}.{indice}.{prefijo}_AccessControl"
+            modo = f"{wlans}.{indice}.{prefijo}_AccessControlMode"
+            entradas = _instancias(wlan.get(f"{prefijo}_AccessControl"))
+            macs = {n: _mac_o_none(_valor(e.get("MACAddress"))) for n, e in entradas}
+            suyas = [n for n, m in macs.items() if m == mac]
+            if bloquear:
+                if indice not in redes:
+                    continue
+                if not suyas:
+                    # Un lugar vacío que haya quedado de antes, o uno nuevo.
+                    lugar = next((n for n, m in macs.items() if m is None), None)
+                    if lugar is None:
+                        lugar = await self.agregar_instancia(http, device_id, lista)
+                    valores.append([f"{lista}.{lugar}.MACAddress", mac, "xsd:string"])
+                valores.append([modo, "Ban", "xsd:string"])
+            else:
+                for n in suyas:
+                    await self._obligada(http, device_id, {"name": "deleteObject", "objectName": f"{lista}.{n}"})
+                if suyas and all(m in (None, mac) for m in macs.values()):
+                    valores.append([modo, "Disabled", "xsd:string"])
+        if valores:
+            await self._obligada(http, device_id, {"name": "setParameterValues", "parameterValues": valores})
+
+    async def _filtro_firewall_zte(self, http: httpx.AsyncClient, device_id: str, firewall: Dict[str, Any],
+                                   mac: str, bloquear: bool) -> None:
+        """El filtro MAC del firewall: el equipo sigue conectado a su WiFi, con su misma MAC, y
+        sin internet. La ZTE solo acepta la MAC si la regla ya es de tipo Routing (en Bridge,
+        como las crea, la rechaza) y rechaza una MAC que ya está en otra regla."""
+        prefijo, filtro = filtro_mac_zte(firewall)
+        if not filtro:
+            raise ValueError("La ONU no trae el filtro MAC de ZTE.")
+        servicio = f"{FIREWALL}.{prefijo}_MacFilterService"
+        reglas = {n: _mac_o_none(_valor(r.get("SourceMACAddress"))) for n, r in _instancias(filtro.get("Filter"))}
+        suyas = [n for n, m in reglas.items() if m == mac]
+        if not bloquear:
+            for n in suyas:
+                await self._obligada(http, device_id, {"name": "deleteObject", "objectName": f"{servicio}.Filter.{n}"})
+            return
+        encendido = _valor(filtro.get("Enable")) in (True, "true", "1", 1)
+        modo = str(_valor(filtro.get("Mode")) or "")
+        if encendido and modo != "Black List":
+            raise ValueError("El filtro MAC de la ONU está en lista blanca; ponlo en lista negra para bloquear equipos.")
+        encender = [] if encendido and modo == "Black List" else [
+            [f"{servicio}.Mode", "Black List", "xsd:string"], [f"{servicio}.Enable", True, "xsd:boolean"]]
+        if not suyas:
+            lugar = next((n for n, m in reglas.items() if m is None), None)
+            nueva = lugar is None
+            if nueva:
+                lugar = await self.agregar_instancia(http, device_id, f"{servicio}.Filter")
+            regla = f"{servicio}.Filter.{lugar}"
+            try:
+                await self._obligada(http, device_id, {"name": "setParameterValues", "parameterValues": [
+                    [f"{regla}.Type", "Routing", "xsd:string"],
+                    [f"{regla}.Protocol", "Any", "xsd:string"],
+                    [f"{regla}.Name", "FdezPay-" + mac.replace(":", "")[-4:], "xsd:string"]]})
+                # La MAC va después del tipo (en Bridge la rechaza) y con el filtro encendido en la misma orden.
+                await self._obligada(http, device_id, {"name": "setParameterValues", "parameterValues": [
+                    [f"{regla}.SourceMACAddress", mac, "xsd:string"]] + encender})
+            except ValueError:
+                if nueva:
+                    await self._tarea(http, device_id, {"name": "deleteObject", "objectName": regla})
+                raise
+        elif encender:
+            await self._obligada(http, device_id, {"name": "setParameterValues", "parameterValues": encender})
+
+    async def _bloquear_zte(self, equipo: Dict[str, Any], mac: str, bloquear: bool, solo_principal: bool = False) -> tuple:
+        """Bloquea o desbloquea en la ZTE. Devuelve (bloqueadas, redes WiFi usadas o [] si fue el firewall).
+
+        En la red de la casa va el filtro MAC del firewall. Un equipo de otra red (la de fichas,
+        en puente) va en la lista de bloqueo de sus WiFi. Desbloquear lo quita de los dos lados,
+        y bloquear en el firewall lo quita de la lista del WiFi (bloqueos de antes)."""
+        async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
+            device_id = await self._id_tr069(http, equipo)
+            if not device_id:
+                raise ValueError("La ONU del cliente todavía no se reporta por TR-069.")
+            async with _candado(device_id):
+                lan, firewall = await self._documento_zte(http, device_id)
+                redes = redes_para_bloquear(lan, mac, solo_principal) if bloquear else []
+                principales = indices_principales(redes_wifi(lan))
+                otra_red = bool(redes and principales) and not set(redes) & principales
+                if bloquear and otra_red:
+                    # Para escribir en la lista del WiFi hay que tenerla al día (rechaza una MAC repetida).
+                    lan, firewall = await self._documento_zte(http, device_id, wifi=True)
+                    await self._lista_wifi_zte(http, device_id, lan, mac, True, redes)
+                else:
+                    await self._filtro_firewall_zte(http, device_id, firewall, mac, bloquear)
+                    if mac in bloqueadas_zte(lan):
+                        # Un bloqueo de antes en la lista del WiFi: se quita (hace que el celular estrene MAC).
+                        lan, firewall = await self._documento_zte(http, device_id, wifi=True)
+                        await self._lista_wifi_zte(http, device_id, lan, mac, False, [])
+                    redes = []
+                # GenieACS anota en su copia lo que la ONU aceptó: no hace falta volver a preguntarle.
+                igd = (await self._leer_lan(http, device_id)).get("InternetGatewayDevice") or {}
+                return bloqueadas_zte((igd.get("LANDevice") or {}).get("1") or {}, igd.get("Firewall") or {}), redes
+
     async def _bloqueadas(self, equipo: Dict[str, Any]) -> set:
+        if equipo["marca"] == "zte":
+            return await self._bloqueadas_zte(equipo)
         if equipo["marca"] != "huawei" or not equipo["ip"]:
-            raise ValueError("El bloqueo por MAC solo está hecho para ONU Huawei.")
+            raise ValueError("El bloqueo de equipos solo está hecho para ONU Huawei y ZTE.")
         cuentas = await self._cuentas_huawei()
         for intento in range(2):
             try:
@@ -244,6 +544,7 @@ class RedClienteService:
         equipo = await self._equipo(cliente_id, servicio_id)
         async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
             device_id = await self._id_tr069(http, equipo)
+            await self._marca_por_tr069(http, device_id, equipo)
 
             async def tr069():
                 if not device_id:
@@ -256,9 +557,16 @@ class RedClienteService:
                 if al_dia and not redes_wifi(lan):
                     await self._tarea(http, device_id, {"name": "refreshObject", "objectName": f"{LAN}.WLANConfiguration"})
                     documento = await self._leer_lan(http, device_id)
+                firewall = (documento.get("InternetGatewayDevice") or {}).get("Firewall") or {}
+                if al_dia and equipo["marca"] == "zte" and filtro_mac_zte(firewall)[1] is None:
+                    # Su filtro MAC (donde van los bloqueos) se lee una vez; luego lo mantiene al día el bloqueo.
+                    await self._tarea(http, device_id, {"name": "refreshObject", "objectName": FIREWALL})
+                    documento = await self._leer_lan(http, device_id)
                 return documento, al_dia
 
             async def web():
+                if equipo["marca"] == "zte":
+                    return None, None  # Su lista de bloqueo viene en la misma lectura de TR-069.
                 try:
                     return await self._bloqueadas(equipo), None
                 except (ValueError, httpx.HTTPError) as error:
@@ -266,6 +574,10 @@ class RedClienteService:
 
             (documento, al_dia), (bloqueadas, error_web) = await asyncio.gather(tr069(), web())
         lan = ((documento or {}).get("InternetGatewayDevice") or {}).get("LANDevice", {}).get("1", {})
+        if equipo["marca"] == "zte":
+            bloqueadas = bloqueadas_zte(lan, ((documento or {}).get("InternetGatewayDevice") or {}).get("Firewall")) \
+                if device_id else None
+            error_web = None if device_id else "La ONU no se reporta por TR-069."
         redes = redes_wifi(lan)
         lista = equipos(lan, redes, bloqueadas, await self.apodos(cliente_id))
         if solo_principal:
@@ -273,7 +585,9 @@ class RedClienteService:
         return {
             "ip": equipo["ip"],
             "onu": equipo["identificador"],
-            "modelo": equipo["modelo"],
+            # El del inventario; si no lo tiene, el que reporta la ONU por TR-069.
+            "modelo": equipo["modelo"] or modelo_tr069(documento, equipo["marca"]),
+            "marca": equipo["marca"],
             "tr069": bool(device_id),
             "al_dia": al_dia,
             "ultimo_reporte": (documento or {}).get("_lastInform"),
@@ -310,14 +624,21 @@ class RedClienteService:
     async def bloqueados(self, cliente_id: int, servicio_id: Optional[int] = None) -> Dict[str, Any]:
         """Solo los filtros de la web de la ONU (unos segundos): para confirmar un bloqueo cuya
         respuesta no llegó porque la ONU reinició el WiFi y cortó al celular que lo pidió."""
-        return {"bloqueados": sorted(await self._bloqueadas(await self._equipo(cliente_id, servicio_id)))}
+        return {"bloqueados": sorted(await self._bloqueadas(await self._equipo_con_marca(cliente_id, servicio_id)))}
 
     async def bloquear(self, cliente_id: int, mac: str, bloquear: bool, usuario=None, servicio_id: Optional[int] = None,
                        solo_principal: bool = False) -> Dict[str, Any]:
         mac = normalizar_mac(mac)
-        equipo = await self._equipo(cliente_id, servicio_id)
+        equipo = await self._equipo_con_marca(cliente_id, servicio_id)
+        if equipo["marca"] == "zte":
+            bloqueadas, redes = await self._bloquear_zte(equipo, mac, bloquear, solo_principal)
+            await self._bitacora(usuario, "Bloquear equipo" if bloquear else "Desbloquear equipo", cliente_id,
+                                 f"Cliente {cliente_id} · ONU {equipo['identificador'] or equipo['ip']} · {mac}"
+                                 + (f" · WiFi {', '.join(map(str, redes))}" if redes else
+                                    " · filtro MAC" if bloquear else "") + " · TR-069")
+            return {"bloqueados": sorted(bloqueadas)}
         if equipo["marca"] != "huawei" or not equipo["ip"]:
-            raise ValueError("El bloqueo por MAC solo está hecho para ONU Huawei.")
+            raise ValueError("El bloqueo de equipos solo está hecho para ONU Huawei y ZTE.")
         redes = await self._redes_del_equipo(equipo, mac, solo_principal) if bloquear else []
         cuentas = await self._cuentas_huawei()
         for intento in range(2):

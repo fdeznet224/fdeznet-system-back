@@ -76,7 +76,8 @@ def test_el_mes_trae_todos_los_dias_y_junta_los_servicios():
     ]
     resumen = resumen_mes(filas, 2026, 8)
     assert len(resumen["dias"]) == 31
-    assert resumen["dias"][14] == {"fecha": "2026-08-15", "bajada": 1500, "subida": 150, "minutos": 1440}
+    assert resumen["dias"][14] == {"fecha": "2026-08-15", "bajada": 1500, "subida": 150, "minutos": 1440,
+                                   "suspendido": 0}
     assert (resumen["total_bajada"], resumen["dias_con_uso"]) == (1510, 2)
 
 
@@ -112,8 +113,8 @@ class _Db:
 def test_registrar_suma_al_dia_y_crea_la_fila_del_dia_nuevo():
     router = SimpleNamespace(id=3, nombre="Paraiso")
     servicios = [
-        SimpleNamespace(id=11, cliente_id=11, user_pppoe="Francisca"),
-        SimpleNamespace(id=12, cliente_id=12, user_pppoe="Desconectado"),
+        SimpleNamespace(id=11, cliente_id=11, user_pppoe="Francisca", estado="activo"),
+        SimpleNamespace(id=12, cliente_id=12, user_pppoe="Desconectado", estado="activo"),
     ]
     ayer = ConsumoDiarioModel(
         servicio_id=11, cliente_id=11, fecha=date(2026, 10, 18), bajada_bytes=7, subida_bytes=1,
@@ -143,3 +144,24 @@ def test_router_que_no_contesta_queda_en_el_reporte():
 
     reporte = asyncio.run(ConsumoService(db, lector=lector).registrar(AHORA))
     assert reporte == {"servicios": 0, "routers_con_error": ["Vicente Guerrero"]}
+
+
+def test_lo_que_usa_suspendido_se_anota_aparte():
+    router = SimpleNamespace(id=2, nombre="Vicente Guerrero")
+    servicios = [SimpleNamespace(id=264, cliente_id=293, user_pppoe="Sergio", estado="suspendido")]
+    previa = ConsumoDiarioModel(
+        servicio_id=264, cliente_id=293, fecha=date(2026, 11, 3), bajada_bytes=100, subida_bytes=50,
+        minutos_en_linea=60, suspendido_bytes=0, sesion_mk="*A", ultimo_rx=50, ultimo_tx=100,
+        ultima_lectura=datetime(2026, 11, 3, 10, 0),
+    )
+    db = _Db([router], servicios, [previa])
+
+    async def lector(_router):
+        return [{".id": "*A", "name": "<pppoe-Sergio>", "rx-byte": "80", "tx-byte": "400",
+                 "last-link-up-time": "2026-11-02 20:00:00"}]
+
+    asyncio.run(ConsumoService(db, lector=lector).registrar(datetime(2026, 11, 3, 10, 5)))
+    assert (previa.bajada_bytes, previa.subida_bytes, previa.suspendido_bytes) == (400, 80, 330)
+
+    resumen = resumen_mes([previa], 2026, 11)
+    assert resumen["dias"][2]["suspendido"] == 330 and resumen["total_suspendido"] == 330

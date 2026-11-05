@@ -35,6 +35,16 @@ def _clave(marca: str, campo: str) -> str:
     return f"onu_acceso_{marca}_{campo}"
 
 
+# Lo que queda como modelo cuando el técnico da de alta una ONU que no estaba en el almacén.
+MODELO_DEL_TECNICO = "Registrada por el técnico"
+
+
+def modelo_real(modelo: Optional[str]) -> Optional[str]:
+    """El modelo del inventario si es de verdad ("Huawei HG8145V5"); None si está vacío o es el relleno del alta."""
+    texto = (modelo or "").strip()
+    return None if not texto or texto.lower() == MODELO_DEL_TECNICO.lower() else texto
+
+
 def marca_de_onu(identificador: Optional[str], modelo: Optional[str] = None) -> Optional[str]:
     """HWTC… / HG8145 → huawei; ZTEG… / F670L → zte; una MAC EPON no dice la marca."""
     serie = (identificador or "").upper()

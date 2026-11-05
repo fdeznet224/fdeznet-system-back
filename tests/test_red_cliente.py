@@ -206,6 +206,26 @@ def test_tarea_rechazada_se_quita_de_la_cola():
     assert ("DELETE", "/tasks/t1") in llamadas and ("DELETE", "/faults/dev-x:task_t1") in llamadas
 
 
+def test_si_la_onu_corta_la_sesion_al_cambiar_el_pppoe_no_es_rechazo():
+    # La ZTE aplica el PPPoE nuevo y se reconecta sin contestar: GenieACS lo marca session_terminated.
+    def respuestas(request):
+        if request.url.path.endswith("/tasks"):
+            return httpx.Response(202, json={"_id": "t1"})
+        if request.url.path == "/faults":
+            return httpx.Response(200, json=[{"_id": "dev-x:task_t1", "channel": "task_t1", "code": "session_terminated",
+                                              "message": "The TR-069 session was unsuccessfully terminated"}])
+        return httpx.Response(200)
+
+    async def probar():
+        http, llamadas = nbi(respuestas)
+        resultado = await RedClienteService(None, nbi="http://nbi")._tarea(http, "dev-x", {"name": "setParameterValues"})
+        return resultado, llamadas
+
+    resultado, llamadas = asyncio.run(probar())
+    assert resultado is False
+    assert ("DELETE", "/tasks/t1") in llamadas and ("DELETE", "/faults/dev-x:task_t1") in llamadas
+
+
 def test_tarea_sin_respuesta_queda_en_cola():
     def respuestas(request):
         if request.url.path.endswith("/tasks"):
@@ -347,3 +367,43 @@ def test_cliente_sin_instalacion_por_el_sistema_queda_con_su_contrasena_guardada
     db = _UltimoRegistro(None)
     asyncio.run(RedClienteService(db, nbi="http://nbi")._recordar_wifi(9, "HWTC1", "Casa Lopez", "lopez2024"))
     assert [(r.estado, r.ssid, r.clave_wifi) for r in db.agregados] == [("guardado", "Casa Lopez", "lopez2024")]
+
+
+def test_onu_epon_registrada_con_su_mac_se_reconoce_huawei_por_tr069():
+    def respuestas(request):
+        # Así llega una EPON en producción: DeviceInfo vacío, los datos en _deviceId.
+        return httpx.Response(200, json=[{"_deviceId": {"_Manufacturer": "Huawei Technologies Co., Ltd",
+                                                        "_ProductClass": "HG8145V5V3"},
+                                          "InternetGatewayDevice": {"DeviceInfo": {}}}])
+
+    class _Db:
+        commits = 0
+
+        async def commit(self):
+            self.commits += 1
+
+    onu = SimpleNamespace(identificador="E0:24:7F:AA:BB:CC", modelo=None)
+    equipo = {"identificador": onu.identificador, "modelo": None, "marca": None, "ip": "10.10.10.80", "_onu": onu}
+    db = _Db()
+
+    async def probar():
+        http, _ = nbi(respuestas)
+        await RedClienteService(db, nbi="http://nbi")._marca_por_tr069(http, "dev-epon", equipo)
+
+    asyncio.run(probar())
+    assert equipo["marca"] == "huawei"
+    assert onu.modelo == "Huawei HG8145V5V3" and db.commits == 1  # queda guardado en el inventario
+
+
+def test_si_ya_se_sabe_la_marca_no_se_pregunta_a_la_onu():
+    def respuestas(request):
+        raise AssertionError("no debía consultar")
+
+    equipo = {"identificador": "HWTC1", "modelo": "HG8145V5", "marca": "huawei", "ip": "10.0.0.1", "_onu": None}
+
+    async def probar():
+        http, llamadas = nbi(respuestas)
+        await RedClienteService(None, nbi="http://nbi")._marca_por_tr069(http, "dev", equipo)
+        return llamadas
+
+    assert asyncio.run(probar()) == []

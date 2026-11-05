@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from uuid import uuid4
 
 from fastapi import (
@@ -573,6 +573,41 @@ async def activar_solicitud(
     """Solo el técnico da de alta: crea el cliente desde la solicitud, lo activa y cierra la orden."""
     try:
         return await ActivacionService(db).activar(orden_id, datos, current_user)
+    except (ValueError, PermissionError, RuntimeError) as error:
+        await db.rollback()
+        manejar_error(error)
+
+
+class DecisionProrrateo(BaseModel):
+    accion: Literal["efectivo", "despues"]
+    clave_idempotencia: Optional[str] = Field(default=None, max_length=80)
+
+
+@router.get("/{orden_id}/prorrateo")
+async def prorrateo_de_instalacion(
+    orden_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """El prorrateo que dejó la instalación y si ya está pagado."""
+    try:
+        return await ActivacionService(db).prorrateo(orden_id, current_user)
+    except (ValueError, PermissionError, RuntimeError) as error:
+        manejar_error(error)
+
+
+@router.post("/{orden_id}/prorrateo")
+async def decidir_prorrateo(
+    orden_id: int,
+    datos: DecisionProrrateo,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["tecnico"])),
+):
+    """Al terminar la instalación: lo cobra en efectivo el técnico o el cliente lo paga después."""
+    try:
+        return await ActivacionService(db).decidir_prorrateo(
+            orden_id, datos.accion, current_user, datos.clave_idempotencia
+        )
     except (ValueError, PermissionError, RuntimeError) as error:
         await db.rollback()
         manejar_error(error)

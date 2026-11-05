@@ -165,6 +165,76 @@ class BillingService:
         cliente.proxima_factura = periodo.siguiente_facturacion
         return factura
 
+    async def avisar_prorrateo(self, factura: FacturaModel | None) -> bool:
+        """Le avisa al cliente del prorrateo: no corta, pero se suma a su próxima factura.
+
+        Se llama ya guardada la activación, para no avisar de un cobro que no quedó.
+        """
+        if (
+            factura is None
+            or factura.tipo_factura != "prorrateo"
+            or (factura.saldo_pendiente or 0) <= 0
+        ):
+            return False
+        try:
+            return bool(await NotificationService(self.db).notificar(
+                "aviso_prorrateo",
+                factura.cliente_id,
+                variables_extra=self._variables_prorrateo(factura),
+                clave_dedupe=f"factura:{factura.id}:prorrateo",
+            ))
+        except Exception:
+            logger.exception("No se pudo avisar el prorrateo de la factura %s", factura.id)
+            return False
+
+    def _variables_prorrateo(self, factura: FacturaModel) -> dict:
+        return {
+            **self._variables_detalle_factura(factura),
+            "monto": f"${float(factura.total or 0):.2f}",
+            "folio": str(factura.id),
+            "fecha_proxima_factura": (
+                factura.fecha_vencimiento.strftime("%d/%m/%Y")
+                if factura.fecha_vencimiento else "N/A"
+            ),
+        }
+
+    async def enviar_recordatorios_prorrateo(self, hoy: date | None = None) -> dict:
+        """Un día antes de que el prorrateo sin pagar se sume a su factura, se le recuerda.
+
+        No corta el servicio: es para que el cliente que dijo «pago al final del
+        prorrateo» sepa que puede pagarlo ya o que se le junta con la mensualidad.
+        """
+        hoy = hoy or date.today()
+        facturas = (
+            await self.db.execute(
+                select(FacturaModel)
+                .options(joinedload(FacturaModel.cliente))
+                .where(
+                    FacturaModel.tipo_factura == "prorrateo",
+                    FacturaModel.fecha_vencimiento == hoy + timedelta(days=1),
+                    FacturaModel.saldo_pendiente > 0,
+                    FacturaModel.estado.notin_(("pagada", "anulada", "consolidada")),
+                )
+            )
+        ).scalars().unique().all()
+        notificador = NotificationService(self.db)
+        enviados = 0
+        for factura in facturas:
+            if not factura.cliente or not factura.cliente.telefono:
+                continue
+            try:
+                if await notificador.notificar(
+                    "recordatorio_prorrateo",
+                    factura.cliente_id,
+                    variables_extra=self._variables_prorrateo(factura),
+                    clave_dedupe=f"factura:{factura.id}:prorrateo-recordatorio",
+                ):
+                    enviados += 1
+            except Exception as e:
+                logger.warning("No se pudo recordar el prorrateo de la factura %s: %s", factura.id, e)
+        await self.db.commit()
+        return {"recordatorios_prorrateo": enviados}
+
     async def _agregar_reconexion_a_factura(
         self,
         factura: FacturaModel,
