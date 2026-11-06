@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import quote
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -326,7 +327,9 @@ class RedClienteService:
     async def _tarea(self, http: httpx.AsyncClient, device_id: str, tarea: Dict[str, Any]) -> bool:
         """True si la ONU la hizo ya; False si no contestó (queda en cola para su próximo reporte).
         Si la ONU la rechaza, se borra de la cola y se avisa."""
-        respuesta = await http.post(f"/devices/{device_id}/tasks",
+        # El id puede traer "%2D" (la HG8145X6-10 lo reporta así): va codificado otra vez en la ruta
+        # o GenieACS lo lee como "-" y contesta 404.
+        respuesta = await http.post(f"/devices/{quote(device_id, safe='')}/tasks",
                                     params={"timeout": ESPERA_ONU_MS, "connection_request": ""}, json=tarea)
         if respuesta.status_code == 200:
             return True
@@ -336,7 +339,7 @@ class RedClienteService:
         falla = next((f for f in fallas if f.get("channel") == f"task_{tarea_id}"), None)
         if falla:
             await http.delete(f"/tasks/{tarea_id}")
-            await http.delete(f"/faults/{falla['_id']}")
+            await http.delete(f"/faults/{quote(falla['_id'], safe='')}")
             if falla.get("code") == "session_terminated":
                 # La ZTE aplica el cambio de PPPoE y corta la sesión sin contestar (el ACS va por
                 # esa misma WAN): no es un rechazo, es "enviado" y se ve en su próximo reporte.

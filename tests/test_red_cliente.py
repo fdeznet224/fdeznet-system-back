@@ -407,3 +407,20 @@ def test_si_ya_se_sabe_la_marca_no_se_pregunta_a_la_onu():
         return llamadas
 
     assert asyncio.run(probar()) == []
+
+
+def test_la_x6_10_con_por_ciento_en_su_id_recibe_la_tarea():
+    """GenieACS guarda la HG8145X6-10 como "...HG8145X6%2D10-..."; sin codificar la ruta contesta 404."""
+    rutas = []
+
+    def responder(peticion):
+        rutas.append(peticion.url.raw_path.decode())
+        return httpx.Response(200, json={})
+
+    async def correr():
+        async with httpx.AsyncClient(base_url="http://nbi", transport=httpx.MockTransport(responder)) as http:
+            return await RedClienteService(None, nbi="http://nbi")._tarea(
+                http, "00259E-HG8145X6%2D10-48575443AEBB13AD", {"name": "refreshObject", "objectName": "X"})
+
+    assert asyncio.run(correr()) is True
+    assert rutas[0].startswith("/devices/00259E-HG8145X6%252D10-48575443AEBB13AD/tasks?")
