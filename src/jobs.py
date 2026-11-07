@@ -34,6 +34,7 @@ from src.application.services.antena_service import AntenaService
 from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
 from src.application.services.plantilla_zte_service import PlantillaZteService
 from src.application.services.plantilla_tr069_service import PlantillaTr069Service
+from src.application.services.despertar_tr069_service import DespertarTr069Service
 from src.application.services.consumo_service import ConsumoService
 from src.application.services.acceso_remoto_service import AccesoRemotoService
 from src.application.services.senal_optica_service import SenalOpticaService, mensaje_alerta
@@ -197,6 +198,12 @@ async def tarea_plantilla_zte():
         if any(p.marca in ("zte", "todas") for p in await PlantillaTr069Service(db).plantillas(solo_automaticas=True)):
             return
         await PlantillaZteService(db).revisar()
+
+
+async def tarea_despertar_tr069():
+    """Llama a la ONU de un cliente activo que lleva más de 1 h sin reportarse al ACS."""
+    async with SessionLocal() as db:
+        await DespertarTr069Service(db).revisar()
 
 
 async def tarea_plantillas_tr069():
