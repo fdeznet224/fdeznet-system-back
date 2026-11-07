@@ -194,7 +194,7 @@ async def tarea_plantilla_zte():
     """Deja cada ZTE del ACS con la WAN y la red de fichas, como sale la Huawei del almacén.
     Si ya hay una plantilla TR-069 automática para ZTE, la hace ella (tarea_plantillas_tr069)."""
     async with SessionLocal() as db:
-        if any(p.marca == "zte" for p in await PlantillaTr069Service(db).plantillas(solo_automaticas=True)):
+        if any(p.marca in ("zte", "todas") for p in await PlantillaTr069Service(db).plantillas(solo_automaticas=True)):
             return
         await PlantillaZteService(db).revisar()
 

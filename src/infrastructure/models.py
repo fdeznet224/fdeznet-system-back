@@ -2405,7 +2405,7 @@ class PlantillaTr069Model(Base):
 
     id = Column(Integer, primary_key=True)
     nombre = Column(String(80), nullable=False)
-    marca = Column(String(20), nullable=False)  # huawei | zte
+    marca = Column(String(20), nullable=False)  # todas (cualquier equipo) | huawei | zte
     # Modelos separados por coma ("HG8145V5,HG8145X6"); vacío = todos los de la marca.
     modelos = Column(String(255), nullable=False, default="", server_default="")
     automatica = Column(Boolean, nullable=False, default=False, server_default="0")

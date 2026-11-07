@@ -216,15 +216,15 @@ async def reiniciar(device_id: str, db: AsyncSession = Depends(get_db)):
 # ------------------------------------------------------------------ plantillas
 class PlantillaRequest(BaseModel):
     nombre: str
-    marca: str
+    marca: str = "todas"
     modelos: str = ""
     automatica: bool = False
     definicion: dict
 
 
 def _plantilla_valida(datos: PlantillaRequest) -> dict:
-    if datos.marca not in ("huawei", "zte"):
-        raise HTTPException(status_code=422, detail="La marca es Huawei o ZTE.")
+    if datos.marca not in ("todas", "huawei", "zte"):
+        raise HTTPException(status_code=422, detail="La plantilla es para todas las marcas, Huawei o ZTE.")
     if not datos.nombre.strip():
         raise HTTPException(status_code=422, detail="Ponle nombre a la plantilla.")
     try:
@@ -277,7 +277,7 @@ async def plantilla_desde_equipo(device_id: str, db: AsyncSession = Depends(get_
     """Lo que tiene ese equipo, como plantilla para copiarla a los de su modelo."""
     config_equipo = await _hacer(ConfigOnuService(db).leer(device_id))
     ficha = (await _fichas(db, {"_id": device_id}) or [{}])[0]
-    return {"marca": config_equipo["marca"], "modelos": (ficha.get("modelo") or "").replace("%2D", "-"),
+    return {"marca": "todas", "modelos": "", "modelo_origen": (ficha.get("modelo") or "").replace("%2D", "-"),
             "definicion": desde_config(config_equipo)}
 
 

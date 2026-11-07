@@ -122,8 +122,30 @@ def test_elige_la_de_su_modelo_y_si_no_la_general_de_su_marca():
     assert pl.elegir(plantillas, "huawei", "HG8145V5") is general
     assert pl.elegir(plantillas, "zte", "F670L") is zte
     assert pl.elegir([x6], "huawei", "HG8145V5") is None
+    todas = SimpleNamespace(marca="todas", modelos="", nombre="Todas")
+    assert pl.elegir([todas], "zte", "F670L") is todas and pl.elegir([todas], "huawei", "HG8145V5") is todas
+    assert pl.elegir([todas, x6], "huawei", "HG8145X6%2D10") is x6
+
+
+def test_la_misma_plantilla_general_deja_bien_una_huawei_y_una_zte():
+    """Copiada de la Huawei del dueño, también sirve para la ZTE (el sistema la traduce)."""
+    definicion = definicion_de(huawei())
+    assert pl.lo_que_falta(configuracion(zte_completa()), definicion, None) == []
 
 
 def test_marca_por_el_primer_aviso():
     assert pl.marca_del_documento({"_deviceId": {"_Manufacturer": "ZTE", "_SerialNumber": "ZTEG24146156"}}) == "zte"
     assert pl.marca_del_documento({"_deviceId": {"_Manufacturer": "Huawei Technologies Co., Ltd"}}) == "huawei"
+
+
+def test_zte_restablecida_queda_bien_con_la_plantilla_general_copiada_de_la_huawei():
+    from test_plantilla_zte import zte
+    acs, resultado = aplicar(zte(), definicion_de(huawei()), cliente=None)
+    assert resultado["faltan"] == [], resultado
+    c = configuracion(acs.doc)
+    zona = next(w for w in c["wans"] if w["modo"] == "puente")
+    assert zona["vlan"] == 4 and zona["puertos"] == ["LAN4", "SSID2", "SSID6"]
+    internet = next(w for w in c["wans"] if w["tr069"])
+    assert internet["puertos"] == ["LAN1", "LAN2", "LAN3", "SSID1", "SSID5"]
+    vlan = acs.doc[IGD]["WANDevice"]["1"]["WANConnectionDevice"]["1"]["WANIPConnection"]["1"]
+    assert vlan["X_TELMEX_COM_VLANID"]["_value"] == 4  # traducida al prefijo de esa ZTE

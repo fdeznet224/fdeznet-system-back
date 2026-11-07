@@ -146,14 +146,24 @@ def desde_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def elegir(plantillas: List[Any], marca: str, modelo: str) -> Optional[Any]:
-    """La de su marca que nombra su modelo; si no hay, la de su marca sin modelos."""
+    """La general ("todas") sirve para cualquier equipo: el sistema la traduce a Huawei o ZTE.
+    Si hay una de su marca que nombra su modelo, o una de su marca, esa va primero."""
     modelo = (modelo or "").upper().replace("%2D", "-")
-    candidatas = [p for p in plantillas if p.marca == marca]
-    for plantilla in candidatas:
-        modelos = [m.strip().upper() for m in (plantilla.modelos or "").split(",") if m.strip()]
-        if modelos and any(m in modelo for m in modelos):
+
+    def modelos(p) -> List[str]:
+        return [m.strip().upper() for m in (p.modelos or "").split(",") if m.strip()]
+
+    de_marca = [p for p in plantillas if p.marca == marca]
+    generales = [p for p in plantillas if p.marca == "todas"]
+    for grupo in (de_marca, generales):
+        for plantilla in grupo:
+            if modelos(plantilla) and any(m in modelo for m in modelos(plantilla)):
+                return plantilla
+    for grupo in (de_marca, generales):
+        plantilla = next((p for p in grupo if not modelos(p)), None)
+        if plantilla:
             return plantilla
-    return next((p for p in candidatas if not (p.modelos or "").strip()), None)
+    return None
 
 
 # ------------------------------------------------------------------ comparar
