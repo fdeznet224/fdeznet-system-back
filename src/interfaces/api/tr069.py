@@ -1,7 +1,6 @@
 """Infraestructura → TR-069: todos los equipos del ACS y la configuración de cada uno."""
 
 import json
-import re
 from typing import Any, Dict, Optional
 
 import httpx
@@ -10,11 +9,14 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.application.services.config_onu_service import ConfigOnuService, ficha_equipo, serial_reportado
-from src.application.services.red_cliente_service import serial_tr069, url_nbi
+from src.application.services.config_onu_service import ConfigOnuService, ficha_equipo
+from src.application.services.plantilla_tr069_service import (
+    PlantillaTr069Service, cliente_de, clientes_por_equipo, desde_config, estado_dict, plantilla_dict, validar,
+)
+from src.application.services.red_cliente_service import url_nbi
 from src.infrastructure.auth import role_required
 from src.infrastructure.database import get_db
-from src.infrastructure.models import ClienteModel, InventarioONUModel, ServicioModel
+from src.infrastructure.models import EstadoEquipoTr069Model, PlantillaTr069Model
 
 router = APIRouter(prefix="/tr069", tags=["TR-069"], dependencies=[Depends(role_required(["admin"]))])
 
@@ -33,30 +35,6 @@ def _error(error: Exception) -> HTTPException:
     return HTTPException(status_code=502, detail="No se pudo hablar con el ACS (GenieACS).")
 
 
-async def _clientes_por_equipo(db: AsyncSession) -> tuple:
-    """({serie: cliente}, {ip: cliente}) para ligar cada equipo del ACS con su cliente."""
-    por_serie: Dict[str, Dict[str, Any]] = {}
-    por_ip: Dict[str, Dict[str, Any]] = {}
-    filas = (await db.execute(
-        select(ClienteModel.id, ClienteModel.nombre, ClienteModel.ip_asignada, InventarioONUModel.identificador)
-        .outerjoin(InventarioONUModel, InventarioONUModel.id == ClienteModel.onu_id)
-    )).all()
-    filas += (await db.execute(
-        select(ClienteModel.id, ClienteModel.nombre, ServicioModel.ip_asignada, InventarioONUModel.identificador)
-        .join(ServicioModel, ServicioModel.cliente_id == ClienteModel.id)
-        .outerjoin(InventarioONUModel, InventarioONUModel.id == ServicioModel.onu_id)
-    )).all()
-    for cliente_id, nombre, ip, identificador in filas:
-        cliente = {"id": cliente_id, "nombre": nombre}
-        if identificador:
-            limpio = re.sub(r"[^0-9A-Za-z]", "", identificador).upper()
-            for serie in filter(None, {limpio, serial_tr069(identificador)}):
-                por_serie.setdefault(serie, cliente)
-        if ip:
-            por_ip.setdefault(ip.strip(), cliente)
-    return por_serie, por_ip
-
-
 async def _fichas(db: AsyncSession, consulta: Optional[dict] = None) -> list:
     params = {"projection": PROYECCION}
     if consulta:
@@ -68,11 +46,15 @@ async def _fichas(db: AsyncSession, consulta: Optional[dict] = None) -> list:
             documentos = respuesta.json()
     except httpx.HTTPError as error:
         raise _error(error) from error
-    por_serie, por_ip = await _clientes_por_equipo(db)
+    mapas = await clientes_por_equipo(db)
+    estados = {e.device_id: e for e in (await db.execute(select(EstadoEquipoTr069Model))).scalars().all()}
+    plantillas = {p.id: p for p in (await db.execute(select(PlantillaTr069Model))).scalars().all()}
     salida = []
     for documento in documentos:
         ficha = ficha_equipo(documento)
-        ficha["cliente"] = por_serie.get(serial_reportado(documento)) or por_ip.get(ficha["ip"] or "")
+        ficha["cliente"] = cliente_de(documento, mapas)
+        estado = estados.get(documento.get("_id"))
+        ficha["plantilla"] = estado_dict(estado, plantillas.get(estado.plantilla_id) if estado else None)
         salida.append(ficha)
     salida.sort(key=lambda e: e["ultimo_reporte"] or "", reverse=True)
     return salida
@@ -229,3 +211,82 @@ async def reiniciar(device_id: str, db: AsyncSession = Depends(get_db)):
         return {"ok": True}
 
     return await _hacer(trabajo())
+
+
+# ------------------------------------------------------------------ plantillas
+class PlantillaRequest(BaseModel):
+    nombre: str
+    marca: str
+    modelos: str = ""
+    automatica: bool = False
+    definicion: dict
+
+
+def _plantilla_valida(datos: PlantillaRequest) -> dict:
+    if datos.marca not in ("huawei", "zte"):
+        raise HTTPException(status_code=422, detail="La marca es Huawei o ZTE.")
+    if not datos.nombre.strip():
+        raise HTTPException(status_code=422, detail="Ponle nombre a la plantilla.")
+    try:
+        definicion = validar(datos.definicion)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    modelos = ",".join(m.strip().upper() for m in datos.modelos.split(",") if m.strip())
+    return {"nombre": datos.nombre.strip()[:80], "marca": datos.marca, "modelos": modelos[:255],
+            "automatica": datos.automatica, "definicion": json.dumps(definicion, ensure_ascii=False)}
+
+
+@router.get("/plantillas")
+async def plantillas(db: AsyncSession = Depends(get_db)):
+    return [plantilla_dict(p) for p in await PlantillaTr069Service(db).plantillas()]
+
+
+@router.post("/plantillas")
+async def crear_plantilla(datos: PlantillaRequest, db: AsyncSession = Depends(get_db)):
+    plantilla = PlantillaTr069Model(**_plantilla_valida(datos))
+    db.add(plantilla)
+    await db.commit()
+    await db.refresh(plantilla)
+    return plantilla_dict(plantilla)
+
+
+@router.put("/plantillas/{plantilla_id}")
+async def editar_plantilla(plantilla_id: int, datos: PlantillaRequest, db: AsyncSession = Depends(get_db)):
+    plantilla = await db.get(PlantillaTr069Model, plantilla_id)
+    if not plantilla:
+        raise HTTPException(status_code=404, detail="Plantilla no encontrada.")
+    for campo, valor in _plantilla_valida(datos).items():
+        setattr(plantilla, campo, valor)
+    await db.commit()
+    await db.refresh(plantilla)
+    return plantilla_dict(plantilla)
+
+
+@router.delete("/plantillas/{plantilla_id}")
+async def borrar_plantilla(plantilla_id: int, db: AsyncSession = Depends(get_db)):
+    plantilla = await db.get(PlantillaTr069Model, plantilla_id)
+    if not plantilla:
+        raise HTTPException(status_code=404, detail="Plantilla no encontrada.")
+    await db.delete(plantilla)
+    await db.commit()
+    return {"ok": True}
+
+
+@router.get("/plantillas/desde-equipo/{device_id}")
+async def plantilla_desde_equipo(device_id: str, db: AsyncSession = Depends(get_db)):
+    """Lo que tiene ese equipo, como plantilla para copiarla a los de su modelo."""
+    config_equipo = await _hacer(ConfigOnuService(db).leer(device_id))
+    ficha = (await _fichas(db, {"_id": device_id}) or [{}])[0]
+    return {"marca": config_equipo["marca"], "modelos": (ficha.get("modelo") or "").replace("%2D", "-"),
+            "definicion": desde_config(config_equipo)}
+
+
+@router.post("/equipos/{device_id}/plantilla/revisar")
+async def revisar_plantilla(device_id: str, db: AsyncSession = Depends(get_db)):
+    return await _hacer(PlantillaTr069Service(db).revisar_equipo(device_id))
+
+
+@router.post("/equipos/{device_id}/plantilla/aplicar")
+async def aplicar_plantilla(device_id: str, db: AsyncSession = Depends(get_db),
+                            usuario=Depends(role_required(["admin"]))):
+    return await _hacer(PlantillaTr069Service(db).aplicar_equipo(device_id, usuario))

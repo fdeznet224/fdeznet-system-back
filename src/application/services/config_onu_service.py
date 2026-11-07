@@ -206,7 +206,8 @@ def wans(igd: Dict[str, Any], marca: str, prefijo: Optional[str], ip_gestion: Op
             "direccionamiento": None if ppp else (_texto(conexion, "AddressingType") or "DHCP"),
             "vlan": _vlan_de(conexion, marca, prefijo),
             "servicio": servicio,
-            "habilitada": _si(conexion, "Enable"),
+            # Sin el dato (GenieACS solo guardó parte del equipo) se toma como encendida.
+            "habilitada": _si(conexion, "Enable") if "Enable" in conexion else True,
             "estado": _texto(conexion, "ConnectionStatus"),
             "ip": _texto(conexion, "ExternalIPAddress") if _texto(conexion, "ExternalIPAddress") not in ("", "0.0.0.0") else None,
             "mascara": None if ppp else _texto(conexion, "SubnetMask") or None,
@@ -641,38 +642,50 @@ class ConfigOnuService:
             raise ValueError("Una WAN PPPoE en ruta necesita usuario y contraseña.")
 
         async def trabajo(http, device_id, documento):
-            igd = documento.get(IGD) or {}
-            marca, prefijo = marca_de(igd)
-            objeto = "WANPPPConnection" if tipo == "pppoe" else "WANIPConnection"
-            if marca == "huawei":
-                dispositivo = await self.red.agregar_instancia(http, device_id, CONEXIONES)
-            else:
-                dispositivo = next((i for i, _ in _instancias(_nodo(igd, CONEXIONES))), None)
-                if dispositivo is None:
-                    raise ValueError("El módem no tiene dónde crear la WAN.")
-            try:
-                n = await self.red.agregar_instancia(http, device_id, f"{CONEXIONES}.{dispositivo}.{objeto}")
-            except ValueError:
-                if marca == "huawei":
-                    await self._borrar_silencioso(http, device_id, f"{CONEXIONES}.{dispositivo}")
-                raise
-            ruta = f"{CONEXIONES}.{dispositivo}.{objeto}.{n}"
-            completos = {"modo": "ruta", "servicio": "INTERNET", **datos, "habilitada": True}
-            if tipo == "ip" and completos["modo"] == "ruta":
-                completos.setdefault("direccionamiento", "DHCP")
-            completos.pop("tipo", None)
+            completos = dict(datos)
             puertos = completos.pop("puertos", None)
-            try:
-                await self._aplicar(http, device_id, valores_wan({}, ruta, completos, marca, prefijo, False, nueva=True))
-            except ValueError:
-                await self._borrar_silencioso(http, device_id, ruta if marca == "zte" else f"{CONEXIONES}.{dispositivo}")
-                raise
+            ruta = await self.crear_wan(http, device_id, documento.get(IGD) or {}, completos)
             if puertos:
                 igd = (await self._releer(http, device_id, ["wan"])).get(IGD) or {}
                 await self._poner_enlaces(http, device_id, igd, ruta, list(puertos))
-            return f"WAN nueva {tipo} {completos['modo']} VLAN {completos.get('vlan')} ({ruta})"
+            return f"WAN nueva {tipo} {datos.get('modo', 'ruta')} VLAN {datos.get('vlan')} ({ruta})"
 
         return await self._con_onu(device_id, usuario, "Agregar WAN", ["wan"], trabajo)
+
+    async def crear_wan(self, http, device_id: str, igd: Dict[str, Any], datos: Dict[str, Any]) -> str:
+        """Crea la conexión y le pone sus valores por partes (la ZTE rechaza todo junto); si la ONU
+        rechaza algo, se borra lo creado. Devuelve la ruta de la WAN nueva."""
+        tipo = datos.get("tipo")
+        marca, prefijo = marca_de(igd)
+        objeto = "WANPPPConnection" if tipo == "pppoe" else "WANIPConnection"
+        if marca == "huawei":
+            dispositivo = await self.red.agregar_instancia(http, device_id, CONEXIONES)
+        else:
+            dispositivo = next((i for i, _ in _instancias(_nodo(igd, CONEXIONES))), None)
+            if dispositivo is None:
+                raise ValueError("El módem no tiene dónde crear la WAN.")
+        try:
+            n = await self.red.agregar_instancia(http, device_id, f"{CONEXIONES}.{dispositivo}.{objeto}")
+        except ValueError:
+            if marca == "huawei":
+                await self._borrar_silencioso(http, device_id, f"{CONEXIONES}.{dispositivo}")
+            raise
+        ruta = f"{CONEXIONES}.{dispositivo}.{objeto}.{n}"
+        completos = {"modo": "ruta", "servicio": "INTERNET", **datos, "habilitada": True}
+        if tipo == "ip" and completos["modo"] == "ruta":
+            completos.setdefault("direccionamiento", "DHCP")
+        completos.pop("tipo", None)
+        valores = valores_wan({}, ruta, completos, marca, prefijo, False, nueva=True)
+        de_vlan = [v for v in valores if re.search(r"(VLAN|SERVICELIST|ServiceList)", v[0].rsplit(".", 1)[-1])]
+        encender = [v for v in valores if v[0].endswith(".Enable")]
+        resto = [v for v in valores if v not in de_vlan and v not in encender]
+        try:
+            for grupo in (resto, de_vlan, encender):
+                await self._aplicar(http, device_id, grupo)
+        except ValueError:
+            await self._borrar_silencioso(http, device_id, ruta if marca == "zte" else f"{CONEXIONES}.{dispositivo}")
+            raise
+        return ruta
 
     async def borrar_wan(self, device_id: str, ruta: str, usuario=None) -> Dict[str, Any]:
         if not RE_RUTA_WAN.match(ruta or ""):

@@ -33,6 +33,7 @@ from src.application.services.descripcion_onu_service import DescripcionOnuServi
 from src.application.services.antena_service import AntenaService
 from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
 from src.application.services.plantilla_zte_service import PlantillaZteService
+from src.application.services.plantilla_tr069_service import PlantillaTr069Service
 from src.application.services.consumo_service import ConsumoService
 from src.application.services.acceso_remoto_service import AccesoRemotoService
 from src.application.services.senal_optica_service import SenalOpticaService, mensaje_alerta
@@ -190,9 +191,18 @@ async def tarea_aprovisionar_onus():
 
 
 async def tarea_plantilla_zte():
-    """Deja cada ZTE del ACS con la WAN y la red de fichas, como sale la Huawei del almacén."""
+    """Deja cada ZTE del ACS con la WAN y la red de fichas, como sale la Huawei del almacén.
+    Si ya hay una plantilla TR-069 automática para ZTE, la hace ella (tarea_plantillas_tr069)."""
     async with SessionLocal() as db:
+        if any(p.marca == "zte" for p in await PlantillaTr069Service(db).plantillas(solo_automaticas=True)):
+            return
         await PlantillaZteService(db).revisar()
+
+
+async def tarea_plantillas_tr069():
+    """Al equipo que arrancó o entró al ACS hace poco se le pone lo que le falte de su plantilla."""
+    async with SessionLocal() as db:
+        await PlantillaTr069Service(db).revisar_recientes()
 
 
 async def tarea_aplicar_pagos_adelantados():

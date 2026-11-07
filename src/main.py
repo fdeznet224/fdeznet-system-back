@@ -23,6 +23,7 @@ from src.jobs import (
     tarea_revisar_antenas,
     tarea_aprovisionar_onus,
     tarea_plantilla_zte,
+    tarea_plantillas_tr069,
     tarea_baja_automatica,
     tarea_monitoreo_routers,
     tarea_reactivar_servicios_pagados,
@@ -285,6 +286,14 @@ async def lifespan(app: FastAPI):
         "interval",
         minutes=2,
         id="plantilla_zte",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        tarea_plantillas_tr069,
+        "interval",
+        minutes=2,
+        id="plantillas_tr069",
         coalesce=True,
         max_instances=1,
     )
