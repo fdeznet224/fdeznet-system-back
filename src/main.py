@@ -68,6 +68,7 @@ from src.interfaces.api import (
     servicios,
     support,
     sync,
+    tr069,
     usuarios,
     vpn,
     whatsapp,
@@ -385,6 +386,7 @@ app.include_router(whatsapp.router, dependencies=licensed)
 app.include_router(agente_ia.router, dependencies=licensed)
 app.include_router(naps.router, dependencies=licensed)
 app.include_router(vpn.router, dependencies=licensed_admin)
+app.include_router(tr069.router, dependencies=licensed_admin)
 app.include_router(olts.router, dependencies=licensed)
 app.include_router(inventario.router, dependencies=licensed)
 app.include_router(auditoria.router, dependencies=licensed_audit)
