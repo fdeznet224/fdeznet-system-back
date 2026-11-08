@@ -56,7 +56,7 @@ def _preparar(monkeypatch, tipo="reparacion", estado="en_camino", **cliente):
     async def wifi_conocido(_self, cliente_id):
         return {"red": "FdezNet-187B", "clave": "11223344"}
 
-    async def programar(_self, cliente_id, ssid=None, clave=None, cambio_onu=False):
+    async def programar(_self, cliente_id, ssid=None, clave=None, cambio_onu=False, anterior=None):
         db.programadas.append((cliente_id, ssid, clave, cambio_onu))
         return {"red": ssid, "clave": clave, "automatica": True, "clave_nueva": not clave}
 

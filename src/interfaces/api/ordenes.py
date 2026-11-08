@@ -695,6 +695,21 @@ async def wifi_para_reemplazo(
         manejar_error(error)
 
 
+@router.get("/{orden_id}/configuracion-onu")
+async def configuracion_onu_de_la_orden(
+    orden_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """Si la ONU del cliente ya quedó con su WiFi y su PPPoE (o sigue esperando, o falló)."""
+    from src.application.services.reparacion_campo_service import ReparacionCampoService
+
+    try:
+        return await ReparacionCampoService(db).configuracion_onu(orden_id, current_user)
+    except (ValueError, PermissionError, RuntimeError) as error:
+        manejar_error(error)
+
+
 
 class ExtensorRango(BaseModel):
     detalle: str = Field(min_length=3, max_length=200)

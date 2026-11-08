@@ -23,6 +23,8 @@ from src.jobs import (
     tarea_revisar_antenas,
     tarea_aprovisionar_onus,
     tarea_plantilla_zte,
+    tarea_plantillas_tr069,
+    tarea_despertar_tr069,
     tarea_baja_automatica,
     tarea_monitoreo_routers,
     tarea_reactivar_servicios_pagados,
@@ -65,6 +67,7 @@ from src.interfaces.api import (
     servicios,
     support,
     sync,
+    tr069,
     usuarios,
     vpn,
     whatsapp,
@@ -276,6 +279,22 @@ async def lifespan(app: FastAPI):
         max_instances=1,
     )
     scheduler.add_job(
+        tarea_plantillas_tr069,
+        "interval",
+        minutes=2,
+        id="plantillas_tr069",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        tarea_despertar_tr069,
+        "interval",
+        minutes=15,
+        id="despertar_tr069",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
         tarea_limpiar_bitacora,
         "cron",
         hour=3,
@@ -360,6 +379,7 @@ app.include_router(whatsapp.router, dependencies=authenticated)
 app.include_router(agente_ia.router, dependencies=authenticated)
 app.include_router(naps.router, dependencies=authenticated)
 app.include_router(vpn.router, dependencies=admin_only)
+app.include_router(tr069.router, dependencies=admin_only)
 app.include_router(olts.router, dependencies=authenticated)
 app.include_router(inventario.router, dependencies=authenticated)
 app.include_router(auditoria.router, dependencies=audit)

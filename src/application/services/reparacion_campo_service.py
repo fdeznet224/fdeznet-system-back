@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 
 from src.application.services.acceso_onu_config import acceso_para_tecnico, marca_de_onu
 from src.application.services.activacion_service import ActivacionService
-from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
+from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService, ssid_para
 from src.application.services.client_service import ClientService
 from src.application.services.ftth_service import FTTHService
 from src.application.services.orden_service import ESTADOS_TERMINALES, OrdenService
@@ -174,14 +174,20 @@ class ReparacionCampoService:
         )
         await self.db.commit()
         wifi = await aprovisionamiento.programar(
-            cliente.id, wifi_red or conocido["red"], wifi_clave or conocido["clave"], cambio_onu=True,
+            cliente.id, wifi_red or conocido["red"], wifi_clave or conocido["clave"], cambio_onu=True, anterior=conocido,
         )
         return {"onu": nueva.identificador, "onu_anterior": anterior.identificador if anterior else None, "wifi": wifi}
 
     async def wifi_del_cliente(self, orden_id: int, usuario: UsuarioModel) -> dict:
         """Lo que se le pondrá a la ONU de reemplazo; el técnico lo corrige si el cliente lo sabe distinto."""
         _, cliente = await self._orden_y_cliente(orden_id, usuario)
-        return await AprovisionamientoOnuService(self.db).wifi_conocido(cliente.id)
+        conocido = await AprovisionamientoOnuService(self.db).wifi_conocido(cliente.id)
+        # El nombre que llevaría si no se sabe (el prefijo cambia por ISP: WIFI_PREFIJO).
+        return {**conocido, "nueva": ssid_para(cliente.cedula or "")}
+
+    async def configuracion_onu(self, orden_id: int, usuario: UsuarioModel) -> Optional[dict]:
+        _, cliente = await self._orden_y_cliente(orden_id, usuario)
+        return await AprovisionamientoOnuService(self.db).del_cliente(cliente.id)
 
     async def revision(self, orden_id: int, usuario: UsuarioModel) -> dict:
         """Lo que no se lee en vivo: potencia de antes del reporte, vecinos de su

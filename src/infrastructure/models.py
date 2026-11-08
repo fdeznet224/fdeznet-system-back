@@ -942,6 +942,8 @@ class AprovisionamientoOnuModel(Base):
     estado = Column(String(20), nullable=False, default="pendiente", server_default="pendiente", index=True)
     # La ONU de reemplazo de una reparación: lleva el WiFi que ya tenía el cliente y no se le manda bienvenida.
     cambio_onu = Column(Boolean, nullable=False, default=False, server_default="0")
+    # Cambio de ONU con un WiFi distinto al que tenía (o que no se sabía): se le manda por WhatsApp al quedar.
+    wifi_nuevo = Column(Boolean, nullable=False, default=False, server_default="0")
     intentos = Column(Integer, nullable=False, default=0, server_default="0")
     detalle = Column(String(255), nullable=True)
     device_id = Column(String(120), nullable=True)
@@ -2396,3 +2398,33 @@ class CierreAlmacenamientoModel(Base):
     cerrado_en = Column(DateTime, nullable=False, server_default=func.now())
 
     cerrado_por = relationship("UsuarioModel", foreign_keys=[cerrado_por_id])
+
+
+class PlantillaTr069Model(Base):
+    """Cómo debe quedar un módem de esa marca/modelo: WAN, redes WiFi, enlaces y LAN.
+    Se aplica sola (automática) al reportarse el equipo al ACS, o desde Infraestructura → TR-069."""
+    __tablename__ = "plantillas_tr069"
+
+    id = Column(Integer, primary_key=True)
+    nombre = Column(String(80), nullable=False)
+    marca = Column(String(20), nullable=False)  # todas (cualquier equipo) | huawei | zte
+    # Modelos separados por coma ("HG8145V5,HG8145X6"); vacío = todos los de la marca.
+    modelos = Column(String(255), nullable=False, default="", server_default="")
+    automatica = Column(Boolean, nullable=False, default=False, server_default="0")
+    definicion = Column(Text, nullable=False)  # JSON
+    creada_en = Column(DateTime, nullable=False, server_default=func.now())
+    actualizada_en = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class EstadoEquipoTr069Model(Base):
+    """Lo último que se revisó de un equipo del ACS contra su plantilla."""
+    __tablename__ = "equipos_tr069_estado"
+
+    device_id = Column(String(160), primary_key=True)
+    plantilla_id = Column(Integer, ForeignKey("plantillas_tr069.id", ondelete="SET NULL"), nullable=True)
+    conforme = Column(Boolean, nullable=False, default=False, server_default="0")
+    faltan = Column(Text, nullable=True)  # JSON: lista de textos
+    hecho = Column(Text, nullable=True)   # JSON: lo que se le puso en la última aplicación
+    error = Column(String(255), nullable=True)
+    revisado_en = Column(DateTime, nullable=True)
+    aplicado_en = Column(DateTime, nullable=True)
