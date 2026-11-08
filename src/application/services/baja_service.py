@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from src.application.services.aviso_tecnico_service import avisar_asignacion
 from src.application.services.billing_calendar_service import BillingCalendarService
 from src.application.services.ftth_service import FTTHService
+from src.application.services import acceso_red
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.infrastructure.models import (
     BajaServicioModel,
@@ -650,10 +651,8 @@ class BajaService:
             if objetivo.router_id
             else None
         )
-        modo = getattr(
-            getattr(router, "tipo_seguridad", None), "value", None
-        ) or getattr(router, "tipo_seguridad", "")
-        es_dhcp = str(modo).lower() == "dhcp"
+        modo = acceso_red.modo_acceso(objetivo, router)
+        es_dhcp = modo == "dhcp"
         if not router or not objetivo.ip_asignada:
             baja.mikrotik_estado = "no_aplica"
             baja.mikrotik_error = None
@@ -667,7 +666,26 @@ class BajaService:
                 router.pass_api,
                 router.port_api,
             )
-            if es_dhcp:
+            if modo == "estatica":
+                # IP fija: su cola de velocidad y la lista de corte.
+                if activar:
+                    plan = (
+                        await self.db.get(PlanModel, objetivo.plan_id)
+                        if objetivo.plan_id
+                        else None
+                    )
+                    if not plan:
+                        raise ValueError("Falta el plan para reactivar la IP fija")
+                    acceso_red.aplicar(
+                        mk, modo, objetivo, plan,
+                        f"{cliente.nombre} | Servicio:{servicio.id if servicio else 'legacy'}",
+                    )
+                    mk.gestionar_corte_cliente(objetivo.ip_asignada, suspender=False)
+                    baja.mikrotik_estado = "reactivado"
+                else:
+                    cortado = mk.gestionar_corte_cliente(objetivo.ip_asignada, suspender=True)
+                    baja.mikrotik_estado = "deshabilitado" if cortado is True else "no_encontrado"
+            elif es_dhcp:
                 mac = normalizar_mac(objetivo.mac_address)
                 if not mac:
                     raise ValueError(

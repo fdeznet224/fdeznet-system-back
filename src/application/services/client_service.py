@@ -56,6 +56,8 @@ from src.application.services.access_control_service import (
     verificar_instalacion_asignada,
 )
 from src.application.services.pppoe_config_service import resolver_password_pppoe
+from src.application.services import acceso_red
+from src.application.services.acceso_red import modo_acceso
 from src.utils.mikrotik import (
     debe_bloquear_acceso,
     formatear_rate_limit_dhcp,
@@ -252,12 +254,11 @@ class ClientService:
         )
         if datos.router_id and not router:
             raise ValueError("Router no encontrado")
-        router_mode = getattr(
-            router.tipo_seguridad, "value", router.tipo_seguridad
-        ) if router else "pppoe"
+        # El modo (PPPoE, DHCP o IP fija) es el del router.
+        router_mode = modo_acceso(datos, router)
 
-        # A. Generar credenciales únicamente para nodos PPPoE.
-        if str(router_mode).lower() == "pppoe":
+        # A. Generar credenciales únicamente para clientes PPPoE.
+        if router_mode == "pppoe":
             if not datos.user_pppoe and datos.nombre:
                 base = datos.nombre.lower().replace(" ", "")[:8]
                 rand = random.randint(100, 999)
@@ -897,16 +898,8 @@ class ClientService:
         cliente.proxima_factura = fechas_servicio.proxima_facturacion
 
 
-        tipo_seguridad_router = None
-
-        if cliente_rel.router:
-            tipo_seguridad_router = getattr(
-                cliente_rel.router.tipo_seguridad,
-                "value",
-                cliente_rel.router.tipo_seguridad,
-            )
-
-        is_dhcp = str(tipo_seguridad_router).lower() == "dhcp"
+        modo = modo_acceso(cliente, cliente_rel.router)
+        is_dhcp = modo == "dhcp"
         if not ip_para_mikrotik:
             raise ValueError(
                 "Debes seleccionar una IP libre antes de activar "
@@ -937,6 +930,12 @@ class ClientService:
             servicio.mac_address = cliente.mac_address
             servicio.user_pppoe = None
             servicio.pass_pppoe = None
+        elif modo == "estatica":
+            # IP puesta en su equipo: ni usuario ni MAC obligatoria.
+            cliente.mac_address = normalizar_mac(cliente.mac_address)
+            cliente.user_pppoe = cliente.pass_pppoe = None
+            servicio.mac_address = cliente.mac_address
+            servicio.user_pppoe = servicio.pass_pppoe = None
         elif not cliente.user_pppoe or not cliente.pass_pppoe:
             raise ValueError("El acceso PPPoE necesita usuario y contraseña")
 
@@ -952,21 +951,8 @@ class ClientService:
             cedula_str = cliente.cedula if cliente.cedula else "S/A"
             comentario_estandar = f"{cliente.nombre} | ID:{cedula_str}"
 
-            if is_dhcp:
-                mk.crear_actualizar_lease_dhcp(
-                    cliente.mac_address,
-                    ip_para_mikrotik,
-                    formatear_rate_limit_dhcp(cliente_rel.plan),
-                    comentario_estandar,
-                )
-            else:
-                mk.crear_actualizar_pppoe(
-                    user=cliente.user_pppoe,
-                    password=cliente.pass_pppoe,
-                    profile=cliente_rel.plan.nombre,
-                    remote_address=ip_para_mikrotik,
-                    comment=comentario_estandar,
-                )
+            servicio.ip_asignada = ip_para_mikrotik
+            acceso_red.aplicar(mk, modo, servicio, cliente_rel.plan, comentario_estandar)
             
             # G. Guardar cambios en la base de datos
             cliente.estado = 'activo'
@@ -1181,7 +1167,11 @@ class ClientService:
             update_data.pop("puerto_nap", None)
 
         # 🔥 4. LÓGICA DE VINCULACIÓN DE HARDWARE BLINDADA 🔥
-        sn_texto = update_data.get("identificador_onu") or update_data.get("mac_address")
+        # En un cliente de antena la MAC es la de la antena, no una ONU.
+        es_antena = update_data.get("tipo_conexion", cliente_db.tipo_conexion) == "radio"
+        sn_texto = update_data.get("identificador_onu") or (
+            None if es_antena else update_data.get("mac_address")
+        )
     
         if sn_texto and sn_texto.strip() != "":
             sn_limpio = sn_texto.strip().upper()
@@ -1243,7 +1233,7 @@ class ClientService:
         # 5. APLICAR CAMBIOS AL MODELO
         for var, value in update_data.items():
             setattr(cliente_db, var, value)
-                
+
         try:
             await self.db.commit()
         except Exception as e:
@@ -1307,12 +1297,8 @@ class ClientService:
 
             modo_corte = await obtener_modo_corte(self.db)
             try:
-                modo = getattr(
-                    cliente.router.tipo_seguridad,
-                    "value",
-                    cliente.router.tipo_seguridad,
-                )
-                es_dhcp = str(modo).lower() == "dhcp"
+                modo = modo_acceso(cliente, cliente.router)
+                es_dhcp = modo == "dhcp"
                 if estado_limpio in ["suspendido", "retirado", "cortado"]:
                     # "retirado" siempre corta total; los morosos pueden
                     # conservar WhatsApp si el modo está activo.
@@ -1347,6 +1333,11 @@ class ClientService:
                             mac, blocked=False
                         )
                         mk.gestionar_corte_cliente(
+                            cliente.ip_asignada, suspender=False
+                        )
+                    elif modo == "estatica":
+                        # Sin usuario que encender: basta sacar la IP del corte.
+                        resultado = mk.gestionar_corte_cliente(
                             cliente.ip_asignada, suspender=False
                         )
                     else:
@@ -1422,7 +1413,7 @@ class ClientService:
                 print(f"📦 ONU {onu.identificador} regresada a DISPONIBLE.")
 
         # 2. Eliminar el acceso administrado del MikroTik si existe.
-        if cliente.router_id and (cliente.user_pppoe or cliente.mac_address):
+        if cliente.router_id and (cliente.user_pppoe or cliente.mac_address or cliente.ip_asignada):
             try:
                 router = await self.db.get(RouterModel, cliente.router_id)
                 if router:
@@ -1432,14 +1423,12 @@ class ClientService:
                         router.pass_api,
                         router.port_api,
                     )
-                    mode = getattr(
-                        router.tipo_seguridad,
-                        "value",
-                        router.tipo_seguridad,
-                    )
-                    if str(mode).lower() == "dhcp" and cliente.mac_address:
+                    mode = modo_acceso(cliente, router)
+                    if mode == "dhcp" and cliente.mac_address:
                         mk.eliminar_lease_dhcp(cliente.mac_address)
-                    elif cliente.user_pppoe:
+                    elif mode == "estatica" and cliente.ip_asignada:
+                        mk.eliminar_cola_estatica(cliente.ip_asignada)
+                    elif mode == "pppoe" and cliente.user_pppoe:
                         mk.eliminar_pppoe_user(cliente.user_pppoe)
             except Exception as e:
                 print(f"⚠️ No se pudo eliminar el acceso en MikroTik: {e}")
@@ -1638,27 +1627,10 @@ class ClientService:
         mk = MikroTikService(cliente.router.ip_vpn, cliente.router.user_api, cliente.router.pass_api, cliente.router.port_api)
         
         cedula_str = cliente.cedula if cliente.cedula else "S/A"
-        modo = getattr(
-            cliente.router.tipo_seguridad,
-            "value",
-            cliente.router.tipo_seguridad,
-        )
-        if str(modo).lower() == "dhcp":
-            mac = normalizar_mac(cliente.mac_address)
-            if not mac or not cliente.ip_asignada:
-                return
-            mk.crear_actualizar_lease_dhcp(
-                mac=mac,
-                address=cliente.ip_asignada,
-                rate_limit=formatear_rate_limit_dhcp(cliente.plan),
-                comment=f"{cliente.nombre} | ID:{cedula_str}",
-            )
-        elif cliente.user_pppoe:
-            mk.crear_actualizar_pppoe(
-                user=cliente.user_pppoe, password=cliente.pass_pppoe,
-                profile=cliente.plan.nombre, remote_address=cliente.ip_asignada,
-                comment=f"{cliente.nombre} | ID:{cedula_str}"
-            )
+        modo = modo_acceso(cliente, cliente.router)
+        if acceso_red.faltantes(modo, cliente):
+            return
+        acceso_red.aplicar(mk, modo, cliente, cliente.plan, f"{cliente.nombre} | ID:{cedula_str}")
     # 🔥 NUEVA FUNCIÓN: SWAP DE ONU POR FALLA 🔥
     async def procesar_cambio_onu(
         self,

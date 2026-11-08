@@ -104,15 +104,15 @@ async def editar_router(
     )
     modo_nuevo_valor = getattr(modo_nuevo, "value", modo_nuevo)
     if modo_nuevo_valor and modo_nuevo_valor != modo_actual:
-        servicio_existente = await db.execute(
-            select(ServicioModel.id)
-            .where(
-                ServicioModel.router_id == router_id,
-                ServicioModel.estado != "cancelado",
+        servicios_vigentes = (
+            await db.execute(
+                select(ServicioModel).where(
+                    ServicioModel.router_id == router_id,
+                    ServicioModel.estado != "cancelado",
+                )
             )
-            .limit(1)
-        )
-        if servicio_existente.scalar_one_or_none():
+        ).scalars().all()
+        if servicios_vigentes:
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -258,6 +258,27 @@ async def conciliar_estados_mikrotik(
 # ==========================================
 # 2. GESTIÓN DE REDES (IPAM)
 # ==========================================
+
+@router.get("/routers/{router_id}/lease-dhcp")
+async def ip_del_lease_dhcp(
+    router_id: int,
+    mac: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
+):
+    """La IP que el cliente ya tomó por DHCP con esa MAC, para dejársela fija."""
+    from src.application.services.acceso_red import ip_del_lease
+
+    router_db = await db.get(RouterModel, router_id)
+    if not router_db:
+        raise HTTPException(status_code=404, detail="Router no encontrado")
+    try:
+        return await ip_del_lease(db, router_db, mac)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(status_code=502, detail=f"No se pudo consultar el MikroTik {router_db.nombre}")
+
 
 @router.get("/redes/", response_model=List[RedResponse])
 @cache(expire=300) # 🔥 Catálogo de Redes en caché

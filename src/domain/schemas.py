@@ -20,6 +20,7 @@ from src.utils.mikrotik import normalizar_mac
 class TipoSeguridadEnum(str, Enum):
     pppoe = "pppoe"
     dhcp = "dhcp"
+    estatica = "estatica"
 
 class TipoControlEnum(str, Enum):
     colas_dinamicas = "colas_dinamicas"

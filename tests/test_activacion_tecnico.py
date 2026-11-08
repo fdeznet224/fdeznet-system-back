@@ -283,3 +283,42 @@ def test_onu_nueva_reactiva_una_dada_de_baja(monkeypatch):
 
     assert asyncio.run(ActivacionService(_DBInventario(baja))._onu_nueva("HWTC05450CB6", olt, TECNICO)) == 160
     assert registradas == [("HWTC05450CB6", "GPON")]
+
+
+def _router_de(monkeypatch, modo):
+    original = ActivacionService._infraestructura
+
+    async def infra(self, zona):
+        datos = await original(self, zona)
+        datos["router"].tipo_seguridad = modo
+        return datos
+    monkeypatch.setattr(ActivacionService, "_infraestructura", infra)
+
+
+def test_antena_en_router_de_ip_fija(monkeypatch):
+    db, _orden, llamadas = _escenario(monkeypatch)
+    _router_de(monkeypatch, "estatica")
+
+    with pytest.raises(ValueError, match="IP de administración de la antena"):
+        asyncio.run(ActivacionService(db).activar(40, _datos(tipo_conexion="radio"), TECNICO))
+
+    resultado = asyncio.run(ActivacionService(db).activar(40, _datos(
+        tipo_conexion="radio", ip_antena="192.168.1.20", mac_address="AA:BB:CC:DD:EE:01"), TECNICO))
+    datos, _ = llamadas["registro"]
+    # Sin PPPoE, sin ONU ni OLT; la MAC es la de la WAN de la antena.
+    assert datos.user_pppoe is None and datos.onu_id is None and datos.olt_id is None
+    assert (datos.tipo_conexion, datos.ip_antena) == ("radio", "192.168.1.20")
+    assert datos.mac_address == "AA:BB:CC:DD:EE:01"
+    _cliente, activacion, _ = llamadas["activacion"]
+    assert activacion.onu_id is None and activacion.olt_id is None
+    # Una antena no se configura sola por TR-069.
+    assert "onu_automatica" not in llamadas and resultado["wifi"] is None
+    assert resultado["modo"] == "estatica" and resultado["tipo_conexion"] == "radio"
+
+
+def test_dhcp_con_antena_pide_la_mac_de_su_wan(monkeypatch):
+    db, _orden, _llamadas = _escenario(monkeypatch)
+    _router_de(monkeypatch, "dhcp")
+    with pytest.raises(ValueError, match="MAC de la WAN de la antena"):
+        asyncio.run(ActivacionService(db).activar(40, _datos(
+            tipo_conexion="radio", ip_antena="192.168.1.20"), TECNICO))

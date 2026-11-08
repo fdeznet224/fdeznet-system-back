@@ -31,6 +31,8 @@ from .encrypted_field import EncryptedText
 class TipoSeguridad(str, enum.Enum):
     pppoe = "pppoe"
     dhcp = "dhcp"
+    # IP puesta en el equipo del cliente; solo cola simple con la velocidad.
+    estatica = "estatica"
 
 class TipoControl(str, enum.Enum):
     colas_dinamicas = "colas_dinamicas"

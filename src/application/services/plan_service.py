@@ -12,6 +12,7 @@ from src.domain.schemas import PlanCreate
 from src.application.services.corte_whatsapp_service import (
     obtener_modo_corte,
 )
+from src.application.services import acceso_red
 from src.infrastructure.mikrotik_service import MikroTikService
 from src.utils.mikrotik import (
     debe_bloquear_acceso,
@@ -114,8 +115,8 @@ class PlanService:
         router = await self.db.get(RouterModel, plan.router_id)
         if not router: return
         
-        tipo_seguridad = str(router.tipo_seguridad).lower()
-        if "pppoe" in tipo_seguridad:
+        # Perfil PPPoE solo en routers PPPoE.
+        if acceso_red.modo_router(router) == "pppoe":
             try:
                 mk = MikroTikService(router.ip_vpn, router.user_api, router.pass_api, router.port_api)
                 rate_limit_completo = self._formatear_velocidad_completa(plan)
@@ -157,7 +158,8 @@ class PlanService:
 
             except Exception as e:
                 print(f"⚠️ Error Sincronización MK ({accion}): {e}")
-        elif "dhcp" in tipo_seguridad and accion == "editar":
+        # DHCP e IP fija llevan la velocidad en cada cliente (lease o cola).
+        if accion == "editar" and acceso_red.modo_router(router) != "pppoe":
             modo_corte = await obtener_modo_corte(self.db)
             try:
                 mk = MikroTikService(
@@ -176,26 +178,24 @@ class PlanService:
                         )
                     )
                 ).scalars().all()
-                rate_limit = formatear_rate_limit_dhcp(plan)
                 for servicio in servicios:
-                    mac = normalizar_mac(servicio.mac_address)
-                    if not mac or not servicio.ip_asignada:
+                    modo = acceso_red.modo_acceso(servicio, router)
+                    if modo == "pppoe" or acceso_red.faltantes(modo, servicio):
                         continue
-                    mk.crear_actualizar_lease_dhcp(
-                        mac=mac,
-                        address=servicio.ip_asignada,
-                        rate_limit=rate_limit,
-                        comment=f"Servicio:{servicio.id} {servicio.alias}",
-                    )
-                    mk.activar_desactivar_dhcp(
-                        mac,
-                        blocked=debe_bloquear_acceso(
-                            servicio.estado == "suspendido",
-                            modo_corte.solo_whatsapp,
-                        ),
-                    )
+                    try:
+                        acceso_red.aplicar(mk, modo, servicio, plan, f"Servicio:{servicio.id} {servicio.alias}")
+                        acceso_red.bloquear(
+                            mk, modo, servicio,
+                            debe_bloquear_acceso(
+                                servicio.estado == "suspendido",
+                                modo_corte.solo_whatsapp,
+                            ),
+                        )
+                    except Exception as e:
+                        # El conciliador lo vuelve a intentar.
+                        print(f"⚠️ No se aplicó la velocidad al servicio {servicio.id}: {e}")
             except Exception as e:
-                print(f"⚠️ Error Sincronización DHCP ({accion}): {e}")
+                print(f"⚠️ Error Sincronización DHCP/IP fija ({accion}): {e}")
 
     # ==========================================
     # FORMATEADOR AVANZADO

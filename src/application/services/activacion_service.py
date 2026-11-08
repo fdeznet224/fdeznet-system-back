@@ -8,15 +8,17 @@ Lo que el técnico cambie respecto a la solicitud queda anotado en la orden.
 """
 
 import asyncio
+import ipaddress
 import logging
 import re
 import unicodedata
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import BackgroundTasks
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select
 
+from src.application.services import acceso_red
 from src.application.services.client_service import ClientService
 from src.application.services.inventario_service import InventarioService
 from src.application.services.orden_service import ESTADOS_TERMINALES, OrdenService
@@ -65,6 +67,21 @@ class ActivacionTecnicoRequest(BaseModel):
     longitud: float = Field(ge=-180, le=180)
     mac_address: Optional[str] = Field(default=None, max_length=30)
     potencia_optica_dbm: Optional[float] = Field(default=None, ge=-50, le=10)
+    # Antena (radioenlace) en vez de fibra: sin ONU; IP de administración de la
+    # antena y la MAC de su WAN (en mac_address).
+    tipo_conexion: Literal["fibra", "radio"] = "fibra"
+    ip_antena: Optional[str] = Field(default=None, max_length=45)
+
+    @field_validator("ip_antena")
+    @classmethod
+    def _ip_antena(cls, valor):
+        texto = (valor or "").strip()
+        if not texto:
+            return None
+        try:
+            return str(ipaddress.IPv4Address(texto))
+        except ValueError as exc:
+            raise ValueError("La IP de la antena no es válida (ej. 192.168.1.20)") from exc
     # Igual que en el alta del panel: 1 = instalación nueva con mes gratis,
     # 0 = cambio de compañía, cobra desde la activación.
     meses_gratis: int = Field(default=0, ge=0, le=12)
@@ -84,8 +101,8 @@ def _compacto(valor: str) -> str:
 
 
 def _modo(router: Optional[RouterModel]) -> str:
-    modo = getattr(router, "tipo_seguridad", None) if router else None
-    return str(getattr(modo, "value", modo) or "pppoe").lower()
+    """El del router: pppoe, dhcp o estatica (IP fija)."""
+    return acceso_red.modo_router(router)
 
 
 class ActivacionService:
@@ -223,12 +240,21 @@ class ActivacionService:
             raise ValueError("El plan no pertenece al MikroTik de la zona")
         plantilla_id = datos.plantilla_id or zona.plantilla_id
         modo = _modo(router)
+        antena = datos.tipo_conexion == "radio"
         if modo == "dhcp" and not (datos.mac_address or "").strip():
-            raise ValueError("Falta la MAC WAN/CPE que ve el MikroTik")
-        if infra["olt"] and not datos.onu_id and datos.onu_identificador and not orden.cliente_id:
-            datos.onu_id = await self._onu_nueva(datos.onu_identificador, infra["olt"], usuario)
-        if infra["olt"] and not datos.onu_id and not orden.cliente_id:
+            raise ValueError(
+                "Falta la MAC de la WAN de la antena" if antena else "Falta la MAC WAN/CPE que ve el MikroTik"
+            )
+        if antena and not (datos.ip_antena or "").strip():
+            raise ValueError("Falta la IP de administración de la antena")
+        # Con antena no hay ONU: la OLT de la zona no aplica.
+        olt = None if antena else infra["olt"]
+        if olt and not datos.onu_id and datos.onu_identificador and not orden.cliente_id:
+            datos.onu_id = await self._onu_nueva(datos.onu_identificador, olt, usuario)
+        if olt and not datos.onu_id and not orden.cliente_id:
             raise ValueError("Elige la ONU que instalaste")
+        # La MAC: la del lease (DHCP) o, con antena, la de su WAN para ubicarla.
+        mac = datos.mac_address if (modo == "dhcp" or antena) else None
 
         # Lo pedido contra lo instalado: el técnico puede ajustarlo, queda anotado.
         cambios = []
@@ -245,10 +271,22 @@ class ActivacionService:
             elegida = await self.db.get(PlantillaFacturacionModel, plantilla_id) if plantilla_id else None
             cambios.append(f"plantilla de cobro distinta a la de la zona: {elegida.nombre if elegida else 'sin plantilla'}")
 
+        # DHCP: si el equipo ya tomó una IP del MikroTik, se queda con esa (el
+        # lease se vuelve estático con la velocidad del plan).
+        ip_dhcp = None
+        if modo == "dhcp" and mac:
+            try:
+                lease = await acceso_red.ip_del_lease(self.db, router, mac)
+            except Exception as exc:
+                logger.warning("No se leyó el lease DHCP de %s: %s", mac, exc)
+                lease = {}
+            if lease.get("usable") and lease.get("red_id") == red.id:
+                ip_dhcp = lease["ip"]
+
         servicio_clientes = ClientService(self.db)
         cliente_id = orden.cliente_id
         usuario_pppoe = None
-        if modo != "dhcp":
+        if modo == "pppoe":
             usuario_pppoe = await self._usuario_pppoe_libre(usuario_pppoe_de(nombre), cliente_id)
 
         if cliente_id is None:
@@ -259,8 +297,8 @@ class ActivacionService:
                     direccion=datos.direccion.strip(),
                     router_id=router.id,
                     plan_id=plan.id,
-                    olt_id=infra["olt"].id if infra["olt"] else None,
-                    onu_id=datos.onu_id,
+                    olt_id=olt.id if olt else None,
+                    onu_id=None if antena else datos.onu_id,
                     zona_id=zona.id,
                     plantilla_id=plantilla_id,
                     red_id=red.id,
@@ -270,8 +308,10 @@ class ActivacionService:
                     latitud=datos.latitud,
                     longitud=datos.longitud,
                     user_pppoe=usuario_pppoe,
-                    mac_address=datos.mac_address if modo == "dhcp" else None,
-                    ip_asignada=None,
+                    mac_address=mac,
+                    ip_asignada=ip_dhcp,
+                    tipo_conexion=datos.tipo_conexion,
+                    ip_antena=datos.ip_antena if antena else None,
                     contrato_apartado=(datos.contrato_apartado or "").strip().upper() or None,
                 ),
                 BackgroundTasks(),
@@ -288,6 +328,11 @@ class ActivacionService:
             cliente.zona_id = zona.id
             cliente.plantilla_id = plantilla_id
             cliente.red_id = cliente.red_id or red.id
+            cliente.tipo_conexion = datos.tipo_conexion
+            if antena:
+                cliente.ip_antena = datos.ip_antena
+            if mac:
+                cliente.mac_address = mac
             if usuario_pppoe:
                 cliente.user_pppoe = usuario_pppoe
             await self.db.commit()
@@ -296,8 +341,8 @@ class ActivacionService:
         activado = await servicio_clientes.activar_instalacion(
             cliente_id,
             InstalacionRequest(
-                onu_id=datos.onu_id,
-                olt_id=infra["olt"].id if infra["olt"] else None,
+                onu_id=None if antena else datos.onu_id,
+                olt_id=olt.id if olt else None,
                 caja_nap_id=datos.caja_nap_id,
                 puerto_nap=datos.puerto_nap,
                 latitud=datos.latitud,
@@ -306,8 +351,8 @@ class ActivacionService:
                 router_id=router.id,
                 user_pppoe=cliente.user_pppoe,
                 pass_pppoe=cliente.pass_pppoe,
-                mac_address=datos.mac_address if modo == "dhcp" else None,
-                potencia_optica_dbm=datos.potencia_optica_dbm,
+                mac_address=mac,
+                potencia_optica_dbm=None if antena else datos.potencia_optica_dbm,
                 meses_gratis=datos.meses_gratis,
             ),
             usuario_operador=usuario,
@@ -318,7 +363,11 @@ class ActivacionService:
         # La ONU se configura sola en cuanto se reporte: PPPoE del cliente y WiFi con su contrato.
         from src.application.services.aprovisionamiento_onu_service import AprovisionamientoOnuService
 
-        wifi = await AprovisionamientoOnuService(self.db).programar(activado.id) if modo != "dhcp" else None
+        # Solo una ONU con PPPoE se configura sola (WiFi y PPPoE por TR-069).
+        wifi = (
+            await AprovisionamientoOnuService(self.db).programar(activado.id)
+            if modo == "pppoe" and not antena else None
+        )
         # Una sola bienvenida con el WiFi: la que se configura sola la manda al quedar lista.
         if not (wifi and wifi["automatica"]):
             await self._bienvenida(activado.id, wifi)
@@ -347,6 +396,8 @@ class ActivacionService:
             "nombre": activado.nombre,
             "plan": plan.nombre,
             "modo": modo,
+            "tipo_conexion": datos.tipo_conexion,
+            "ip_antena": getattr(activado, "ip_antena", None),
             "usuario_pppoe": activado.user_pppoe,
             "password_pppoe": activado.pass_pppoe,
             "ip": activado.ip_asignada,

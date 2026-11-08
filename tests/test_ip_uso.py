@@ -49,7 +49,7 @@ def _red(**kw):
 def test_las_ip_fuera_del_sistema_no_salen_como_libres(monkeypatch):
     vistas = {"10.10.0.1": "MikroTik", "10.10.0.2": "Equipo en ARP: Casa", "10.10.0.3": "Usuario PPPoE: ana",
               "192.168.88.1": "Otra red"}
-    monkeypatch.setattr(modulo, "_leer_mikrotik", lambda router, usuario=None: vistas)
+    monkeypatch.setattr(modulo, "_leer_mikrotik", lambda router, usuario=None, mac=None: vistas)
 
     async def ocupadas(self, *_args):
         return {"10.10.0.3"}
@@ -64,7 +64,7 @@ def test_las_ip_fuera_del_sistema_no_salen_como_libres(monkeypatch):
 
 
 def test_sin_mikrotik_avisa_y_no_inventa(monkeypatch):
-    def falla(router, usuario=None):
+    def falla(router, usuario=None, mac=None):
         raise RuntimeError("timeout")
 
     monkeypatch.setattr(modulo, "_leer_mikrotik", falla)
@@ -80,3 +80,15 @@ def test_busca_por_sn_onu_y_datos_del_cliente(texto):
 
 def test_no_trae_lo_que_no_coincide():
     assert not coincide("maria", {"info": "HWTC1A2B3C4D", "description": "x"}, "José Pérez")
+
+
+def test_el_lease_del_propio_equipo_no_choca():
+    vistas = modulo.ips_vistas(
+        secrets=[], activos=[], propias=[],
+        leases=[{"address": "10.0.0.45", "mac-address": "AA:BB:CC:DD:EE:01", "dynamic": "true"},
+                {"address": "10.0.0.46", "mac-address": "AA:BB:CC:DD:EE:02"}],
+        arp=[{"address": "10.0.0.45", "mac-address": "AA:BB:CC:DD:EE:01"}],
+        ignorar_mac="aa:bb:cc:dd:ee:01",
+    )
+    # La IP que ya tomó el equipo del cliente queda libre para él; la de otro no.
+    assert "10.0.0.45" not in vistas and "10.0.0.46" in vistas

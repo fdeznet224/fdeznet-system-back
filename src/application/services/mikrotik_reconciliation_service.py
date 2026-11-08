@@ -16,11 +16,18 @@ from src.infrastructure.models import (
     LogCronjobModel,
     ServicioModel,
 )
+from src.application.services import acceso_red
 from src.utils.mikrotik import (
     debe_bloquear_acceso,
+    formatear_cola_estatica,
     formatear_rate_limit_dhcp,
+    mismos_limites,
     normalizar_mac,
 )
+
+
+class InventarioRouter(dict):
+    """Lo leído de un router, por modo: {"pppoe": {...}, "dhcp": {...}, "estatica": {...}}."""
 
 
 ESTADOS_CONCILIABLES = {"activo", "suspendido"}
@@ -55,12 +62,22 @@ class MikrotikReconciliationService:
         return str(valor or "").strip()
 
     @staticmethod
-    def _usa_dhcp(servicio) -> bool:
-        router = getattr(servicio, "router", None)
-        modo = getattr(getattr(router, "tipo_seguridad", None), "value", None)
-        if modo is None:
-            modo = getattr(router, "tipo_seguridad", "")
-        return str(modo).lower() == "dhcp"
+    def _modo(servicio) -> str:
+        """pppoe, dhcp o estatica (el del servicio o el de su router)."""
+        return acceso_red.modo_acceso(servicio)
+
+    @classmethod
+    def _usa_dhcp(cls, servicio) -> bool:
+        return cls._modo(servicio) == "dhcp"
+
+    @classmethod
+    def _clave_acceso(cls, servicio):
+        modo = cls._modo(servicio)
+        try:
+            identificador = acceso_red.identificador(modo, servicio)
+        except ValueError:
+            identificador = cls._valor_limpio(servicio.mac_address)
+        return servicio.router_id, modo, identificador
 
     @classmethod
     def _configuracion_desviada(cls, servicio, secret) -> bool:
@@ -82,9 +99,12 @@ class MikrotikReconciliationService:
 
     @staticmethod
     def _descripcion(servicio) -> str:
+        modo = MikrotikReconciliationService._modo(servicio)
         acceso = (
             f"dhcp='{servicio.mac_address}'"
-            if MikrotikReconciliationService._usa_dhcp(servicio)
+            if modo == "dhcp"
+            else f"ip fija='{servicio.ip_asignada}'"
+            if modo == "estatica"
             else f"pppoe='{servicio.user_pppoe}'"
         )
         return (
@@ -137,16 +157,14 @@ class MikrotikReconciliationService:
             faltantes.append("router activo")
         if not servicio.plan:
             faltantes.append("plan")
-        if MikrotikReconciliationService._usa_dhcp(servicio):
+        modo = MikrotikReconciliationService._modo(servicio)
+        if modo == "dhcp":
             if not normalizar_mac(servicio.mac_address):
                 faltantes.append("MAC WAN/CPE")
+            if not servicio.ip_asignada:
+                faltantes.append("IP")
         else:
-            if not servicio.user_pppoe:
-                faltantes.append("usuario PPPoE")
-            if not servicio.pass_pppoe:
-                faltantes.append("contraseña PPPoE")
-        if not servicio.ip_asignada:
-            faltantes.append("IP")
+            faltantes.extend(acceso_red.faltantes(modo, servicio))
         if faltantes:
             raise ValueError(
                 "configuración incompleta: " + ", ".join(faltantes)
@@ -160,8 +178,16 @@ class MikrotikReconciliationService:
         ips_cortadas,
     ) -> list[str]:
         self._validar_configuracion(servicio)
-        if self._usa_dhcp(servicio):
+        modo = self._modo(servicio)
+        # Llega lo leído del router por modo; si no, la lista de su modo.
+        if isinstance(secrets_por_usuario, InventarioRouter):
+            secrets_por_usuario = secrets_por_usuario[modo]
+        if modo == "dhcp":
             return await self._reconciliar_dhcp(
+                mk, servicio, secrets_por_usuario, ips_cortadas
+            )
+        if modo == "estatica":
+            return await self._reconciliar_estatica(
                 mk, servicio, secrets_por_usuario, ips_cortadas
             )
         usuario = servicio.user_pppoe
@@ -357,6 +383,52 @@ class MikrotikReconciliationService:
             servicio.is_online = False
         return acciones
 
+    async def _corte(self, mk, servicio, ips_cortadas, acciones):
+        debe_suspender = servicio.estado == "suspendido"
+        esta_en_corte = servicio.ip_asignada in ips_cortadas
+        if esta_en_corte == debe_suspender:
+            return
+        confirmado = await self.blocking_runner(
+            mk.gestionar_corte_cliente, servicio.ip_asignada, debe_suspender,
+        )
+        if confirmado is not True:
+            raise RuntimeError("MikroTik no confirmó la lista de corte")
+        if debe_suspender:
+            ips_cortadas.add(servicio.ip_asignada)
+            acciones.append("agregar IP a CORTE_FDEZNET")
+        else:
+            ips_cortadas.discard(servicio.ip_asignada)
+            acciones.append("retirar IP de CORTE_FDEZNET")
+
+    async def _reconciliar_estatica(self, mk, servicio, colas_por_ip, ips_cortadas) -> list[str]:
+        """IP fija: su cola con la velocidad del plan y la IP en el corte si debe."""
+        ip = self._valor_limpio(servicio.ip_asignada)
+        cola = colas_por_ip.get(ip)
+        limites = formatear_cola_estatica(servicio.plan)
+        acciones = []
+        desviada = (
+            not cola
+            or self._es_verdadero(cola.get("disabled"))
+            or not mismos_limites(cola.get("max-limit"), limites["max-limit"])
+            or not mismos_limites(cola.get("burst-limit") or "0/0", limites.get("burst-limit", "0/0"))
+        )
+        if desviada:
+            await self.blocking_runner(
+                mk.crear_actualizar_cola_estatica,
+                ip,
+                limites,
+                f"{servicio.cliente.nombre} | Servicio:{servicio.id} {servicio.alias}",
+            )
+            acciones.append("crear cola de IP fija faltante" if not cola else "corregir cola de IP fija")
+            cola = await self.blocking_runner(mk.obtener_cola_estatica_estricto, ip)
+            if not cola:
+                raise RuntimeError("MikroTik no confirmó la cola de la IP fija")
+            colas_por_ip[ip] = cola
+        await self._corte(mk, servicio, ips_cortadas, acciones)
+        if servicio.estado == "suspendido":
+            servicio.is_online = False
+        return acciones
+
     async def ejecutar(self) -> dict[str, int]:
         self.modo_corte = await obtener_modo_corte(self.db)
         servicios = await self._cargar_servicios()
@@ -369,30 +441,13 @@ class MikrotikReconciliationService:
             "routers": 0,
         }
         claves_acceso = Counter(
-            (
-                servicio.router_id,
-                "dhcp" if self._usa_dhcp(servicio) else "pppoe",
-                normalizar_mac(servicio.mac_address)
-                if self._usa_dhcp(servicio)
-                else self._valor_limpio(servicio.user_pppoe),
-            )
+            self._clave_acceso(servicio)
             for servicio in servicios
-            if servicio.router_id
-            and (
-                servicio.mac_address
-                if self._usa_dhcp(servicio)
-                else servicio.user_pppoe
-            )
+            if servicio.router_id and self._clave_acceso(servicio)[2]
         )
 
         for servicio in servicios:
-            clave_acceso = (
-                servicio.router_id,
-                "dhcp" if self._usa_dhcp(servicio) else "pppoe",
-                normalizar_mac(servicio.mac_address)
-                if self._usa_dhcp(servicio)
-                else self._valor_limpio(servicio.user_pppoe),
-            )
+            clave_acceso = self._clave_acceso(servicio)
             if (
                 servicio.router_id
                 and clave_acceso[2]
@@ -403,11 +458,10 @@ class MikrotikReconciliationService:
                     "ERROR",
                     (
                         f"No conciliado {self._descripcion(servicio)}: "
-                        + (
-                            "la MAC DHCP está repetida en el mismo router; "
-                            if self._usa_dhcp(servicio)
-                            else "el usuario PPPoE está repetido en el mismo router; "
-                        )
+                        + {
+                            "dhcp": "la MAC DHCP está repetida en el mismo router; ",
+                            "estatica": "la IP fija está repetida en el mismo router; ",
+                        }.get(clave_acceso[1], "el usuario PPPoE está repetido en el mismo router; ")
                         + "se requiere corrección manual"
                     ),
                 )
@@ -459,28 +513,30 @@ class MikrotikReconciliationService:
                             f"{firewall_msg}"
                         ),
                     )
-                es_dhcp = self._usa_dhcp(servicios_router[0])
-                secrets = await self.blocking_runner(
-                    mk.obtener_todos_dhcp_estricto
-                    if es_dhcp
-                    else mk.obtener_todos_pppoe_estricto
-                )
+                # Solo se lee lo de los modos que usa este router.
+                modos = {self._modo(servicio) for servicio in servicios_router}
+                secrets_por_usuario = InventarioRouter()
+                if "pppoe" in modos:
+                    secrets_por_usuario["pppoe"] = {
+                        item.get("name"): item
+                        for item in await self.blocking_runner(mk.obtener_todos_pppoe_estricto)
+                        if item.get("name")
+                    }
+                if "dhcp" in modos:
+                    secrets_por_usuario["dhcp"] = {
+                        normalizar_mac(item.get("mac-address")): item
+                        for item in await self.blocking_runner(mk.obtener_todos_dhcp_estricto)
+                        if item.get("mac-address")
+                    }
+                if "estatica" in modos:
+                    secrets_por_usuario["estatica"] = {
+                        str(item.get("target", "")).split("/")[0].strip(): item
+                        for item in await self.blocking_runner(mk.obtener_todas_colas_estricto)
+                        if item.get("target") and "," not in str(item.get("target"))
+                    }
                 ips_cortadas = await self.blocking_runner(
                     mk.obtener_ips_cortadas
                 )
-                secrets_por_usuario = {
-                    (
-                        normalizar_mac(item.get("mac-address"))
-                        if es_dhcp
-                        else item.get("name")
-                    ): item
-                    for item in secrets
-                    if (
-                        item.get("mac-address")
-                        if es_dhcp
-                        else item.get("name")
-                    )
-                }
             except Exception as exc:
                 reporte["errores"] += len(servicios_router)
                 self._registrar_log(

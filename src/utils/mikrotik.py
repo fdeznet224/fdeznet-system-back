@@ -73,6 +73,40 @@ def formatear_rate_limit_dhcp(plan) -> str:
     return maximum
 
 
+
+def formatear_cola_estatica(plan) -> dict[str, str]:
+    """Velocidad de un cliente con IP fija: una cola simple por su IP.
+
+    Mismo orden que PPPoE/DHCP (subida/bajada del cliente) y la misma ráfaga.
+    """
+    datos = {
+        "max-limit": f"{_velocidad(plan.velocidad_subida)}/{_velocidad(plan.velocidad_bajada)}",
+    }
+    if (plan.burst_subida or 0) > 0 or (plan.burst_bajada or 0) > 0:
+        datos["burst-limit"] = f"{_velocidad(plan.burst_subida)}/{_velocidad(plan.burst_bajada)}"
+        datos["burst-threshold"] = datos["max-limit"]
+        datos["burst-time"] = f"{plan.burst_time}/{plan.burst_time}"
+    return datos
+
+
+def a_bps(valor) -> int:
+    """"10M", "512k" o "10000000" -> bits por segundo (MikroTik devuelve números)."""
+    texto = str(valor or "").strip().upper()
+    coincide = re.fullmatch(r"(\d+(?:\.\d+)?)([KMG]?)", texto)
+    if not coincide:
+        return 0
+    factor = {"": 1, "K": 1000, "M": 1000000, "G": 1000000000}[coincide.group(2)]
+    return int(round(float(coincide.group(1)) * factor))
+
+
+def mismos_limites(actual: str | None, esperado: str | None) -> bool:
+    """Compara "10M/50M" con "10000000/50000000"."""
+    partes_a = str(actual or "0/0").split("/")
+    partes_e = str(esperado or "0/0").split("/")
+    return len(partes_a) == len(partes_e) and all(
+        a_bps(a) == a_bps(e) for a, e in zip(partes_a, partes_e)
+    )
+
 # Prefijos IPv4 de Meta (AS32934). WhatsApp comparte infraestructura con
 # Facebook e Instagram, por eso el modo suspendido también limita velocidad:
 # esas apps quedan prácticamente inutilizables y el chat sigue funcionando.

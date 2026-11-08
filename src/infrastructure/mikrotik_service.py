@@ -365,6 +365,74 @@ class MikroTikService:
         return True
 
     # ==========================================
+    #  3b. IP FIJA (cola simple por IP)
+    # ==========================================
+    @staticmethod
+    def _ip_fija(address) -> str:
+        ip = str(address or "").strip()
+        if not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip) or ip == "0.0.0.0":
+            raise ValueError("El cliente con IP fija necesita su IP")
+        return ip
+
+    @staticmethod
+    def _objetivo_es(cola, ip: str) -> bool:
+        objetivos = [t.strip() for t in str(cola.get("target", "")).split(",") if t.strip()]
+        return objetivos in ([ip], [f"{ip}/32"])
+
+    def obtener_todas_colas_estricto(self):
+        colas = self._request("GET", "/queue/simple", raise_on_error=True)
+        if not isinstance(colas, list):
+            raise RuntimeError("MikroTik devolvió una lista de colas inválida")
+        return colas
+
+    def obtener_cola_estatica_estricto(self, address, colas=None):
+        ip = self._ip_fija(address)
+        coincidencias = [c for c in (colas if colas is not None else self.obtener_todas_colas_estricto())
+                         if self._objetivo_es(c, ip)]
+        if len(coincidencias) > 1:
+            raise RuntimeError(f"La IP {ip} tiene más de una cola simple")
+        return coincidencias[0] if coincidencias else None
+
+    def crear_actualizar_cola_estatica(self, address, limites: dict, comment="FdezNet IP fija"):
+        """Crea o corrige la cola simple del cliente (target = su IP)."""
+        ip = self._ip_fija(address)
+        payload = {
+            "target": f"{ip}/32",
+            "max-limit": limites["max-limit"],
+            "burst-limit": limites.get("burst-limit", "0/0"),
+            "burst-threshold": limites.get("burst-threshold", "0/0"),
+            "burst-time": limites.get("burst-time", "0s/0s"),
+            "comment": comment,
+            "disabled": "false",
+        }
+        cola = self.obtener_cola_estatica_estricto(ip)
+        if cola:
+            resultado = self._request("PATCH", f"/queue/simple/{cola['.id']}", payload, raise_on_error=True)
+        else:
+            resultado = self._request("PUT", "/queue/simple", {"name": f"fdeznet-{ip}", **payload},
+                                      raise_on_error=True)
+        if resultado is None or resultado is False:
+            raise RuntimeError("MikroTik no confirmó la cola de la IP fija")
+        verificada = self.obtener_cola_estatica_estricto(ip)
+        if not verificada:
+            raise RuntimeError("La cola de la IP fija no apareció después de guardarla")
+        return verificada
+
+    def activar_desactivar_estatica(self, address, blocked: bool):
+        """La IP fija no tiene usuario que apagar: el corte es la lista CORTE_FDEZNET.
+
+        Solo confirma que el cliente existe en el MikroTik (su cola).
+        """
+        return self.obtener_cola_estatica_estricto(address) is not None
+
+    def eliminar_cola_estatica(self, address):
+        cola = self.obtener_cola_estatica_estricto(address)
+        if not cola:
+            return False
+        self._request("DELETE", f"/queue/simple/{cola['.id']}", raise_on_error=True)
+        return True
+
+    # ==========================================
     #  4. FIREWALL DE CORTES (MOROSOS)
     # ==========================================
     def inicializar_firewall_corte(

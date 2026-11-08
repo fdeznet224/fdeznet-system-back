@@ -22,9 +22,11 @@ from src.application.services.corte_whatsapp_service import (
     obtener_modo_corte,
 )
 from src.infrastructure.mikrotik_service import MikroTikService
+from src.application.services import acceso_red
 from src.utils.mikrotik import (
     debe_bloquear_acceso,
-    formatear_rate_limit_dhcp,
+    formatear_cola_estatica,
+    mismos_limites,
     normalizar_mac,
 )
 from src.infrastructure.models import (
@@ -53,6 +55,11 @@ class SubscriptionService:
     def _usa_dhcp(router: RouterModel) -> bool:
         mode = getattr(router.tipo_seguridad, "value", router.tipo_seguridad)
         return str(mode).lower() == "dhcp"
+
+    @staticmethod
+    def _modo(servicio: ServicioModel, router: RouterModel | None = None) -> str:
+        """pppoe, dhcp o estatica (el del servicio, o el de su router)."""
+        return acceso_red.modo_acceso(servicio, router if router is not None else servicio.router)
 
     @staticmethod
     def _consulta_relaciones():
@@ -334,7 +341,14 @@ class SubscriptionService:
                 "El domicilio necesita coordenadas GPS válidas"
             )
 
-        if self._usa_dhcp(router):
+        modo = self._modo(servicio, router)
+        if modo == "estatica":
+            # Trae la IP puesta en su equipo: ni usuario ni MAC obligatoria
+            # (la MAC, si la dan, es solo para saber qué equipo es).
+            servicio.mac_address = normalizar_mac(datos.mac_address or servicio.mac_address)
+            servicio.user_pppoe = None
+            servicio.pass_pppoe = None
+        elif modo == "dhcp":
             mac_address = normalizar_mac(
                 datos.mac_address or servicio.mac_address
             )
@@ -393,7 +407,8 @@ class SubscriptionService:
             # fallará más adelante de todos modos si no responde.
             en_mikrotik, _ = (
                 await IpUsoService(self.db).ips_en_mikrotik(
-                    red, ignorar_usuario=servicio.user_pppoe
+                    red, ignorar_usuario=servicio.user_pppoe,
+                    ignorar_mac=servicio.mac_address if modo == "dhcp" else None,
                 )
                 if red
                 else ({}, None)
@@ -522,21 +537,7 @@ class SubscriptionService:
             f"{servicio.cliente.nombre} | "
             f"Servicio:{servicio.id} {servicio.alias}"
         )
-        if self._usa_dhcp(router):
-            mk.crear_actualizar_lease_dhcp(
-                servicio.mac_address,
-                servicio.ip_asignada,
-                formatear_rate_limit_dhcp(plan),
-                comment,
-            )
-        else:
-            mk.crear_actualizar_pppoe(
-                user=servicio.user_pppoe,
-                password=servicio.pass_pppoe,
-                profile=plan.nombre,
-                remote_address=servicio.ip_asignada,
-                comment=comment,
-            )
+        acceso_red.aplicar(mk, modo, servicio, plan, comment)
 
         servicio.estado = "activo"
         servicio.is_online = False
@@ -649,10 +650,10 @@ class SubscriptionService:
             raise ValueError(
                 "El servicio no tiene completa su configuración MikroTik"
             )
-        is_dhcp = self._usa_dhcp(servicio.router)
-        if is_dhcp and not servicio.mac_address:
+        modo = self._modo(servicio)
+        if modo == "dhcp" and not servicio.mac_address:
             raise ValueError("El servicio DHCP no tiene MAC WAN/CPE")
-        if not is_dhcp and (
+        if modo == "pppoe" and (
             not servicio.user_pppoe or not servicio.pass_pppoe
         ):
             raise ValueError("El servicio PPPoE no tiene credenciales")
@@ -667,33 +668,15 @@ class SubscriptionService:
             f"{servicio.cliente.nombre} | "
             f"Servicio:{servicio.id} {servicio.alias}"
         )
-        if is_dhcp:
-            await asyncio.to_thread(
-                mk.crear_actualizar_lease_dhcp,
-                servicio.mac_address,
-                servicio.ip_asignada,
-                formatear_rate_limit_dhcp(servicio.plan),
-                comment,
-            )
-        else:
-            await asyncio.to_thread(
-                mk.crear_actualizar_pppoe,
-                servicio.user_pppoe,
-                servicio.pass_pppoe,
-                servicio.plan.nombre,
-                servicio.ip_asignada,
-                comment,
-            )
+        await asyncio.to_thread(acceso_red.aplicar, mk, modo, servicio, servicio.plan, comment)
 
         debe_suspender = servicio.estado == "suspendido"
         modo_corte = await obtener_modo_corte(self.db)
         encontrado = await asyncio.to_thread(
-            (
-                mk.activar_desactivar_dhcp
-                if is_dhcp
-                else mk.activar_desactivar_pppoe
-            ),
-            servicio.mac_address if is_dhcp else servicio.user_pppoe,
+            acceso_red.bloquear,
+            mk,
+            modo,
+            servicio,
             debe_bloquear_acceso(
                 debe_suspender, modo_corte.solo_whatsapp
             ),
@@ -708,7 +691,13 @@ class SubscriptionService:
         if confirmado is not True:
             raise RuntimeError("MikroTik no confirmó el estado de corte")
 
-        if is_dhcp:
+        if modo == "estatica":
+            cola = await asyncio.to_thread(mk.obtener_cola_estatica_estricto, servicio.ip_asignada)
+            if not cola or not mismos_limites(
+                cola.get("max-limit"), formatear_cola_estatica(servicio.plan)["max-limit"]
+            ):
+                raise RuntimeError("MikroTik no confirmó la velocidad de la IP fija")
+        elif modo == "dhcp":
             lease = await asyncio.to_thread(
                 mk.obtener_lease_dhcp_estricto,
                 servicio.mac_address,
@@ -748,7 +737,8 @@ class SubscriptionService:
         instalado = servicio.estado in {"activo", "suspendido"}
         red = await self.db.get(RedModel, servicio.red_id)
         en_mikrotik, error = await IpUsoService(self.db).ips_en_mikrotik(
-            red, ignorar_usuario=servicio.user_pppoe
+            red, ignorar_usuario=servicio.user_pppoe,
+            ignorar_mac=servicio.mac_address if self._modo(servicio) == "dhcp" else None,
         )
         if error and instalado:
             raise ValueError(f"{error}; la IP no se cambió")
@@ -768,11 +758,14 @@ class SubscriptionService:
                     servicio.router.pass_api,
                     servicio.router.port_api,
                 )
+                if anterior and self._modo(servicio) == "estatica":
+                    # La cola va por IP: la de la IP vieja ya no sirve.
+                    await asyncio.to_thread(mk.eliminar_cola_estatica, anterior)
                 await self._aplicar_plan_en_mikrotik(servicio)
                 if anterior:
                     # La IP vieja no debe quedar en la lista de corte.
                     await asyncio.to_thread(mk.gestionar_corte_cliente, anterior, False)
-                if not self._usa_dhcp(servicio.router) and servicio.user_pppoe:
+                if self._modo(servicio) == "pppoe" and servicio.user_pppoe:
                     # Al reconectar, la ONU toma la IP nueva.
                     await asyncio.to_thread(mk.desconectar_cliente_activo, servicio.user_pppoe)
             except Exception as exc:
@@ -800,9 +793,8 @@ class SubscriptionService:
             raise ValueError("El servicio está cancelado")
         if not servicio.router:
             raise ValueError("El servicio no tiene configuración MikroTik")
-        is_dhcp = self._usa_dhcp(servicio.router)
-        access_id = servicio.mac_address if is_dhcp else servicio.user_pppoe
-        if not access_id:
+        modo = self._modo(servicio)
+        if not acceso_red.identificador(modo, servicio):
             raise ValueError("El servicio no tiene configuración MikroTik")
 
         mk = MikroTikService(
@@ -814,12 +806,10 @@ class SubscriptionService:
         suspendido = estado == "suspendido"
         modo_corte = await obtener_modo_corte(self.db)
         encontrado = await asyncio.to_thread(
-            (
-                mk.activar_desactivar_dhcp
-                if is_dhcp
-                else mk.activar_desactivar_pppoe
-            ),
-            access_id,
+            acceso_red.bloquear,
+            mk,
+            modo,
+            servicio,
             debe_bloquear_acceso(suspendido, modo_corte.solo_whatsapp),
         )
         if encontrado is False:
