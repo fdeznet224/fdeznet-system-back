@@ -889,7 +889,8 @@ async def cambiar_onu_cliente(
             req.estado_vieja_onu,
             usuario_operador=current_user,
         )
-        wifi = await aprovisionamiento.programar(cliente_id, conocido["red"], conocido["clave"], cambio_onu=True)
+        wifi = await aprovisionamiento.programar(cliente_id, conocido["red"], conocido["clave"], cambio_onu=True,
+                                                 anterior=conocido)
         return {"status": "success", "message": mensaje, "wifi": wifi}
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error

@@ -1,6 +1,7 @@
 """La ONU del cliente nuevo se configura sola: PPPoE del cliente y WiFi con su contrato."""
 
 import asyncio
+import copy
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -64,12 +65,14 @@ CLIENTE = SimpleNamespace(id=9, nombre="Juan Pérez", cedula="187B", telefono="9
 def registro(identificador, creado=None):
     return SimpleNamespace(cliente_id=9, identificador=identificador, ssid="FdezNet-187B", clave_wifi="12345678",
                            estado="pendiente", intentos=0, detalle=None, device_id=None,
-                           creado_en=creado or datetime.now(), aplicado_en=None)
+                           creado_en=creado or datetime.now(), aplicado_en=None, cambio_onu=False, wifi_nuevo=False)
 
 
-def genieacs(dispositivos, mac_epon=None):
-    """GenieACS falso: `dispositivos` es {_id: serial}; la EPON nueva contesta su MAC al preguntarle."""
+def genieacs(dispositivos, mac_epon=None, documento=None, corta_pppoe=False):
+    """GenieACS falso: `dispositivos` es {_id: serial}; la EPON nueva contesta su MAC al preguntarle.
+    `corta_pppoe`: como la ZTE, aplica el PPPoE pero corta la sesión sin contestar."""
     tareas, preguntada = [], set()
+    documento = documento if documento is not None else DOCUMENTO
 
     def manejar(request):
         if request.method == "POST" and request.url.path.endswith("/tasks"):
@@ -78,6 +81,19 @@ def genieacs(dispositivos, mac_epon=None):
             tareas.append((dispositivo, tarea["name"], tarea))
             if tarea["name"] == "getParameterValues":
                 preguntada.add(dispositivo)
+            if tarea["name"] == "setParameterValues":
+                for ruta, valor, _ in tarea["parameterValues"]:
+                    nodo = documento
+                    *camino, campo = ruta.split(".")
+                    for parte in camino:
+                        nodo = nodo.setdefault(parte, {})
+                    nodo[campo] = {"_value": valor}
+                if corta_pppoe and any(r.endswith(".Username") for r, _, _ in tarea["parameterValues"]):
+                    return httpx.Response(202, json={"_id": "t1"})
+            return httpx.Response(200, json={})
+        if request.url.path == "/faults":
+            return httpx.Response(200, json=[{"_id": "dev:task_t1", "channel": "task_t1", "code": "session_terminated"}])
+        if request.method == "DELETE":
             return httpx.Response(200, json={})
         if request.url.path == "/tasks":
             return httpx.Response(200, json=[])
@@ -92,7 +108,7 @@ def genieacs(dispositivos, mac_epon=None):
                 ids = [i for i in ids if i == consulta["_id"]]
             return httpx.Response(200, json=[{"_id": i} for i in ids])
         if consulta.get("_id"):
-            return httpx.Response(200, json=[{"_id": consulta["_id"], **DOCUMENTO}])
+            return httpx.Response(200, json=[{"_id": consulta["_id"], **documento}])
         # Lista para buscar EPON nuevas.
         ahora = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         return httpx.Response(200, json=[{"_id": i, "_registered": ahora} for i in dispositivos])
@@ -100,11 +116,15 @@ def genieacs(dispositivos, mac_epon=None):
     return httpx.MockTransport(manejar), tareas
 
 
-def servicio(transporte, enviados):
+def servicio(transporte, enviados, avisos=None):
     async def enviar(cliente, registro):
         enviados.append((cliente.telefono, registro and (registro.ssid, registro.clave_wifi)))
 
-    return AprovisionamientoOnuService(BaseFalsa(CLIENTE), nbi="http://nbi", enviar_bienvenida=enviar, transporte=transporte)
+    async def wifi_nuevo(cliente, registro):
+        (avisos if avisos is not None else []).append((cliente.telefono, registro.ssid, registro.clave_wifi))
+
+    return AprovisionamientoOnuService(BaseFalsa(CLIENTE), nbi="http://nbi", enviar_bienvenida=enviar, transporte=transporte,
+                                       enviar_wifi_nuevo=wifi_nuevo)
 
 
 def correr(srv, reg):
@@ -116,13 +136,15 @@ def correr(srv, reg):
 
 
 def test_gpon_se_reconoce_por_serial_se_configura_y_se_le_manda_su_wifi():
-    transporte, tareas = genieacs({"00259E-HG8145V5-48575443F1C8D69E": "48575443F1C8D69E"})
+    transporte, tareas = genieacs({"00259E-HG8145V5-48575443F1C8D69E": "48575443F1C8D69E"}, documento=copy.deepcopy(DOCUMENTO))
     enviados = []
     reg = registro("HWTCF1C8D69E")
     assert correr(servicio(transporte, enviados), reg) is True
     assert reg.estado == "aplicado" and reg.device_id == "00259E-HG8145V5-48575443F1C8D69E"
-    cambio = next(t for _, nombre, t in tareas if nombre == "setParameterValues")
-    assert [f"{WAN}.1.WANPPPConnection.1.Username", "juan_perez", "xsd:string"] in cambio["parameterValues"]
+    wifi, pppoe = [t for _, nombre, t in tareas if nombre == "setParameterValues"]
+    # El WiFi primero y el PPPoE aparte, al final.
+    assert all(".WLANConfiguration." in r for r, _, _ in wifi["parameterValues"])
+    assert [f"{WAN}.1.WANPPPConnection.1.Username", "juan_perez", "xsd:string"] in pppoe["parameterValues"]
     # Su bienvenida sale ya con el WiFi puesto.
     assert enviados == [("9931112222", ("FdezNet-187B", "12345678"))]
 
@@ -234,7 +256,7 @@ def test_zte_renombra_sus_dos_bandas_aunque_se_llamen_distinto_y_no_la_de_fichas
 
 def test_onu_de_reemplazo_lleva_el_wifi_que_ya_tenia():
     resultado, agregados = programar_con("HWTC22222222", ssid="Casa Lopez", clave="lopez2024", cambio_onu=True)
-    assert resultado == {"red": "Casa Lopez", "clave": "lopez2024", "automatica": True, "clave_nueva": False}
+    assert resultado == {"red": "Casa Lopez", "clave": "lopez2024", "automatica": True, "clave_nueva": False, "aviso": True}
     assert agregados[0].cambio_onu is True and agregados[0].estado == "pendiente"
 
 
@@ -298,3 +320,64 @@ def test_la_zte_se_reconoce_por_su_serial_tal_cual():
     reg = registro("ZTEG24284C96")
     assert correr(servicio(transporte, []), reg) is True
     assert reg.device_id == "44F436-F670L-ZTEG24284C96"
+
+
+def test_si_la_zte_corta_al_cambiar_el_pppoe_no_se_da_por_hecho_hasta_verlo_puesto():
+    """Sindy, 7 nov: se marcó "aplicado" sin confirmar y la ONU no lo tenía."""
+    documento = copy.deepcopy(ZTE)
+    transporte, tareas = genieacs({"44F436-F670L-ZTEG24146156": "ZTEG24146156"}, documento=documento, corta_pppoe=True)
+    reg = registro("ZTEG24146156")
+    srv = servicio(transporte, [])
+    assert correr(srv, reg) is False
+    assert reg.estado == "pendiente" and "esperando" in reg.detalle and reg.device_id
+    # En la siguiente vuelta ya se ve su red y su PPPoE en la ONU: ahora sí quedó, sin volver a mandarlo.
+    enviados_antes = len([t for t in tareas if t[1] == "setParameterValues"])
+    assert correr(srv, reg) is True
+    assert reg.estado == "aplicado" and reg.detalle is None
+    assert len([t for t in tareas if t[1] == "setParameterValues"]) == enviados_antes
+
+
+def test_si_no_quedo_se_vuelve_a_mandar_y_al_final_se_da_por_fallido():
+    documento = copy.deepcopy(ZTE)
+    transporte, tareas = genieacs({"44F436-F670L-ZTEG24146156": "ZTEG24146156"}, documento=documento, corta_pppoe=True)
+    reg = registro("ZTEG24146156")
+    srv = servicio(transporte, [])
+    correr(srv, reg)
+    # La ONU lo descartó: no tiene ni la red ni el PPPoE.
+    wlan = documento["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
+    wlan["1"]["SSID"] = v("INFINITUM6156_2.4")
+    for _ in range(aprov.MAX_SIN_CONFIRMAR - 1):
+        wlan["1"]["SSID"] = v("INFINITUM6156_2.4")
+        correr(srv, reg)
+    assert reg.estado == "error" and "revisa la ONU" in reg.detalle
+    assert len([t for t in tareas if t[1] == "setParameterValues"]) > 2
+
+
+def test_cambio_de_onu_con_wifi_nuevo_se_le_manda_a_la_clienta_al_quedar():
+    transporte, _ = genieacs({"00259E-HG8145V5-48575443F1C8D69E": "48575443F1C8D69E"}, documento=copy.deepcopy(DOCUMENTO))
+    avisos, enviados = [], []
+    reg = registro("HWTCF1C8D69E")
+    reg.cambio_onu, reg.wifi_nuevo = True, True
+    assert correr(servicio(transporte, enviados, avisos), reg) is True
+    assert enviados == [] and avisos == [("9931112222", "FdezNet-187B", "12345678")]
+
+
+def test_cambio_de_onu_con_el_mismo_wifi_no_manda_mensaje():
+    transporte, _ = genieacs({"00259E-HG8145V5-48575443F1C8D69E": "48575443F1C8D69E"}, documento=copy.deepcopy(DOCUMENTO))
+    avisos = []
+    reg = registro("HWTCF1C8D69E")
+    reg.cambio_onu = True
+    assert correr(servicio(transporte, [], avisos), reg) is True
+    assert avisos == []
+
+
+def test_al_programar_un_cambio_de_onu_sabe_si_el_wifi_es_nuevo():
+    mismo, agregados = programar_con("HWTC22222222", ssid="Casa Lopez", clave="lopez2024", cambio_onu=True,
+                                     anterior={"red": "Casa Lopez", "clave": "lopez2024"})
+    assert mismo["aviso"] is False and agregados[0].wifi_nuevo is False
+    # Venía de antena: no se sabía su WiFi, va FdezNet-CONTRATO con contraseña nueva y se le avisa.
+    nuevo, agregados = programar_con("HWTC22222222", cambio_onu=True, anterior={"red": None, "clave": None})
+    assert nuevo["red"] == "FdezNet-187B" and nuevo["aviso"] is True and agregados[0].wifi_nuevo is True
+    # Se sabía el nombre pero no la contraseña (la Huawei no la deja leer): contraseña nueva, se avisa.
+    solo_nombre, _ = programar_con("HWTC22222222", ssid="Casa Lopez", cambio_onu=True, anterior={"red": "Casa Lopez", "clave": None})
+    assert solo_nombre["aviso"] is True

@@ -41,7 +41,7 @@ RE_LAN = re.compile(r"^LAN\d+$")
 # Arrancó hace menos de esto y no se ha revisado desde entonces: se le aplica su plantilla.
 RECIENTE = timedelta(minutes=15)
 # Si falló, se vuelve a intentar pasado este tiempo mientras siga siendo de su último arranque.
-REINTENTO = timedelta(minutes=30)
+REINTENTO = timedelta(minutes=5)
 VENTANA_REINTENTO = timedelta(hours=6)
 
 
@@ -488,10 +488,15 @@ class PlantillaTr069Service:
                 igd, config = documento.get(IGD) or {}, configuracion(documento)
 
             # 3) Enlace de puertos.
+            # Si la ONU rechaza un enlace se sigue con lo demás (el WiFi y el PPPoE del cliente importan más);
+            # lo que no quedó sale en "faltan".
             pendientes = enlaces_pendientes(config, definicion)
             for del_equipo, puertos in pendientes:
-                await cfg._poner_enlaces(http, device_id, igd, del_equipo["ruta"], puertos)
-                hecho.append(f"enlace de {del_equipo['nombre']}")
+                try:
+                    await cfg._poner_enlaces(http, device_id, igd, del_equipo["ruta"], puertos)
+                    hecho.append(f"enlace de {del_equipo['nombre']}")
+                except ValueError as error:
+                    logger.info("ONU %s rechazó el enlace de %s: %s", device_id, del_equipo["nombre"], error)
                 documento = await cfg._releer(http, device_id, ["wan"])
                 igd, config = documento.get(IGD) or {}, configuracion(documento)
 
@@ -576,7 +581,8 @@ class PlantillaTr069Service:
                 # revisado_en se guarda en hora local sin zona; GenieACS da UTC.
                 revisado = estado.revisado_en.astimezone() if estado and estado.revisado_en else None
                 if revisado and arranque and revisado > arranque:
-                    if not (estado.error and _ahora() - revisado > REINTENTO and _ahora() - arranque < VENTANA_REINTENTO):
+                    if not ((estado.error or not estado.conforme) and _ahora() - revisado > REINTENTO
+                            and _ahora() - arranque < VENTANA_REINTENTO):
                         continue
                 mapas = mapas or await clientes_por_equipo(self.db)
                 cliente = cliente_de(documento, mapas)

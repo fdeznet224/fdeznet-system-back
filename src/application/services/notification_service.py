@@ -23,6 +23,10 @@ PLANTILLAS_OBLIGATORIAS = {
     "bienvenida": (
         "👋 ¡Bienvenido a {empresa}, *{nombre}*!\n\n📄 Contrato: *{contrato}*\n📡 Plan: *{plan}* · {precio} al mes\n🗓️ Pagas del día *{dia_inicio_pago}* al *{ultimo_dia_pago}*; el corte es el día *{dia_corte_servicio}*.\n\n📶 Red WiFi: *{red_wifi}*\n🔑 Contraseña: *{clave_wifi}*\n\n📲 Tu portal: {portal} (entra con tu contrato)\n¿Dudas o fallas? Escríbenos aquí."
     ),
+    "wifi_nuevo": (
+        "📶 Hola *{nombre}*, ya quedó tu módem nuevo.\n\nTu red WiFi: *{red_wifi}*\n🔑 Contraseña: *{clave_wifi}*\n\n"
+        "Conecta tus equipos a esta red. ¿Dudas? Escríbenos aquí."
+    ),
     "pago_recibido": (
         "✅ Hola {nombre}, recibimos tu pago por {monto_pagado}. "
         "Gracias por tu pago.\n\n{detalle_cobro}"

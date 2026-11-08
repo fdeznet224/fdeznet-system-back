@@ -174,7 +174,7 @@ class ReparacionCampoService:
         )
         await self.db.commit()
         wifi = await aprovisionamiento.programar(
-            cliente.id, wifi_red or conocido["red"], wifi_clave or conocido["clave"], cambio_onu=True,
+            cliente.id, wifi_red or conocido["red"], wifi_clave or conocido["clave"], cambio_onu=True, anterior=conocido,
         )
         return {"onu": nueva.identificador, "onu_anterior": anterior.identificador if anterior else None, "wifi": wifi}
 
@@ -182,6 +182,10 @@ class ReparacionCampoService:
         """Lo que se le pondrá a la ONU de reemplazo; el técnico lo corrige si el cliente lo sabe distinto."""
         _, cliente = await self._orden_y_cliente(orden_id, usuario)
         return await AprovisionamientoOnuService(self.db).wifi_conocido(cliente.id)
+
+    async def configuracion_onu(self, orden_id: int, usuario: UsuarioModel) -> Optional[dict]:
+        _, cliente = await self._orden_y_cliente(orden_id, usuario)
+        return await AprovisionamientoOnuService(self.db).del_cliente(cliente.id)
 
     async def revision(self, orden_id: int, usuario: UsuarioModel) -> dict:
         """Lo que no se lee en vivo: potencia de antes del reporte, vecinos de su

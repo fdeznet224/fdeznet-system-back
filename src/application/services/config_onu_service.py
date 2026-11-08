@@ -756,20 +756,36 @@ class ConfigOnuService:
 
     async def _enlaces_zte(self, http, device_id, igd, prefijo, cambiados: Dict[str, List[str]]) -> None:
         base = f"{IGD}.{prefijo}_PortBinding"
-        existentes = {_texto(e, "WANInterface").rstrip("."): n for n, e in _instancias(igd.get(f"{prefijo}_PortBinding"))}
-        for wan, puertos in cambiados.items():
+        instancias = list(_instancias(igd.get(f"{prefijo}_PortBinding")))
+        existentes = {_texto(e, "WANInterface").rstrip("."): n for n, e in instancias if _texto(e, "WANInterface")}
+        # Un enlace vacío (por ejemplo, de un intento que la ONU rechazó) se reutiliza en vez de crear otro.
+        vacios = [n for n, e in instancias if not _texto(e, "WANInterface") and not _texto(e, "LANInterface")]
+        # Primero se quitan puertos (la ZTE no deja un puerto en dos enlaces: 9003) y luego se ponen.
+        for wan, puertos in sorted(cambiados.items(), key=lambda p: len(p[1])):
             n = existentes.get(wan)
             if n is None and not puertos:
                 continue
+            nuevo = False
             if n is None:
-                n = await self.red.agregar_instancia(http, device_id, base)
+                if vacios:
+                    n = vacios.pop(0)
+                else:
+                    n, nuevo = await self.red.agregar_instancia(http, device_id, base), True
             if not puertos:
                 await self.red._obligada(http, device_id, {"name": "deleteObject", "objectName": f"{base}.{n}"})
                 continue
-            await self._aplicar(http, device_id, [
-                [f"{base}.{n}.WANInterface", wan, "xsd:string"],
-                [f"{base}.{n}.LANInterface", ",".join(ruta_de_puerto(p) for p in puertos), "xsd:string"],
-            ])
+            try:
+                # Por partes: la ZTE rechaza varios campos juntos en un enlace recién creado.
+                await self._aplicar(http, device_id, [[f"{base}.{n}.WANInterface", wan, "xsd:string"]])
+                await self._aplicar(http, device_id, [
+                    [f"{base}.{n}.LANInterface", ",".join(ruta_de_puerto(p) for p in puertos), "xsd:string"]])
+            except ValueError:
+                if nuevo:
+                    try:
+                        await self.red._obligada(http, device_id, {"name": "deleteObject", "objectName": f"{base}.{n}"})
+                    except ValueError as error:
+                        logger.info("No se pudo borrar el enlace %s de %s: %s", n, device_id, error)
+                raise
 
     async def _enlaces_huawei(self, http, device_id, igd, cambiados: Dict[str, List[str]]) -> None:
         reglas = {_texto(r, "WanName"): n for n, r in _instancias(_nodo(igd, RUTAS))

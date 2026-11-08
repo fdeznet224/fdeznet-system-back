@@ -942,6 +942,8 @@ class AprovisionamientoOnuModel(Base):
     estado = Column(String(20), nullable=False, default="pendiente", server_default="pendiente", index=True)
     # La ONU de reemplazo de una reparación: lleva el WiFi que ya tenía el cliente y no se le manda bienvenida.
     cambio_onu = Column(Boolean, nullable=False, default=False, server_default="0")
+    # Cambio de ONU con un WiFi distinto al que tenía (o que no se sabía): se le manda por WhatsApp al quedar.
+    wifi_nuevo = Column(Boolean, nullable=False, default=False, server_default="0")
     intentos = Column(Integer, nullable=False, default=0, server_default="0")
     detalle = Column(String(255), nullable=True)
     device_id = Column(String(120), nullable=True)

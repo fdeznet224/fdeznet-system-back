@@ -149,3 +149,37 @@ def test_zte_restablecida_queda_bien_con_la_plantilla_general_copiada_de_la_huaw
     assert internet["puertos"] == ["LAN1", "LAN2", "LAN3", "SSID1", "SSID5"]
     vlan = acs.doc[IGD]["WANDevice"]["1"]["WANConnectionDevice"]["1"]["WANIPConnection"]["1"]
     assert vlan["X_TELMEX_COM_VLANID"]["_value"] == 4  # traducida al prefijo de esa ZTE
+
+
+def test_si_la_zte_rechaza_un_enlace_sigue_con_su_wifi_y_su_pppoe_y_no_deja_enlaces_vacios():
+    """ZTE de Sindy, 7 nov: un 9003 en el enlace de puertos detenía toda la plantilla y dejaba uno vacío."""
+    from test_plantilla_zte import zte
+
+    def rechaza(tarea):
+        return any(r.endswith(".LANInterface") for r, _, _ in tarea.get("parameterValues") or [])
+
+    acs, resultado = aplicar(zte(), definicion_de(huawei()), rechaza=rechaza)
+    assert any("enlace" in f or "puerto" in f.lower() for f in resultado["faltan"]), resultado
+    c = configuracion(acs.doc)
+    assert next(w for w in c["wans"] if w["tr069"])["usuario"] == "cliente327"
+    assert {r["indice"]: r["ssid"] for r in c["wifi"]}[1] == "FdezNet-187B"
+    enlaces = acs.doc[IGD].get("X_TELMEX_COM_PortBinding") or acs.doc[IGD].get("X_ZTE-COM_PortBinding") or {}
+    assert not [n for n, e in enlaces.items() if n.isdigit() and not e["WANInterface"]["_value"]]
+
+
+def test_la_zte_reutiliza_un_enlace_vacio_en_vez_de_crear_otro():
+    from test_plantilla_zte import zte
+
+    doc = zte()
+    igd = doc[IGD]
+    clave = "X_TELMEX_COM_PortBinding" if "X_TELMEX_COM_PortBinding" in igd else "X_ZTE-COM_PortBinding"
+    enlaces = igd.setdefault(clave, {})
+    vacio = str(max([int(k) for k in enlaces if k.isdigit()] + [0]) + 1)
+    enlaces[vacio] = {"WANInterface": v(""), "LANInterface": v("")}
+    def creados(acs):
+        return sum(t["name"] == "addObject" and "PortBinding" in t["objectName"] for t in acs.tareas)
+
+    sin_vacio, _ = aplicar(zte(), definicion_de(huawei()), cliente=None)
+    acs, resultado = aplicar(doc, definicion_de(huawei()), cliente=None)
+    assert resultado["faltan"] == [], resultado
+    assert creados(acs) == creados(sin_vacio) - 1
