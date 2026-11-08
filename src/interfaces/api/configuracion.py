@@ -42,6 +42,7 @@ from src.domain.schemas import (
     BrandingConfig,
     LocalLicenseStatus,
     MaintenanceStatus,
+    TipoRedUpdate,
     StoragePolicyUpdate,
     BackupPolicyUpdate,
     BackupRestoreRequest,
@@ -333,7 +334,20 @@ async def obtener_archivo_marca(tipo: str):
 async def guardar_marca(datos: BrandingConfig, db: AsyncSession = Depends(get_db)):
     config = await _obtener_configuracion(db)
     for campo, valor in datos.model_dump().items():
+        if campo == "tipo_red" and valor is None:
+            continue  # no borrar la elección al guardar la marca
         setattr(config, campo, valor.strip() if isinstance(valor, str) else valor)
+    await db.commit()
+    await db.refresh(config)
+    await FastAPICache.clear()
+    return config
+
+
+@router.put("/tipo-red", response_model=BrandingConfig)
+async def guardar_tipo_red(datos: TipoRedUpdate, db: AsyncSession = Depends(get_db)):
+    """WISP, fibra o híbrido: el menú y el alta se adaptan a esto."""
+    config = await _obtener_configuracion(db)
+    config.tipo_red = datos.tipo_red
     await db.commit()
     await db.refresh(config)
     await FastAPICache.clear()

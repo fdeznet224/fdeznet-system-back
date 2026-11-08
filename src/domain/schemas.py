@@ -248,6 +248,11 @@ class BrandingConfig(BaseModel):
     empresa_email: Optional[str] = Field(default=None, max_length=160)
     empresa_direccion: Optional[str] = Field(default=None, max_length=300)
     pie_recibo: Optional[str] = Field(default=None, max_length=300)
+    tipo_red: Optional[Literal["wisp", "fibra", "hibrido"]] = None
+
+
+class TipoRedUpdate(BaseModel):
+    tipo_red: Literal["wisp", "fibra", "hibrido"]
 
 
 class LicenseHeartbeatRequest(BaseModel):

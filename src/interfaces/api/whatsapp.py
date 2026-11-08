@@ -2294,6 +2294,16 @@ async def iniciar_whatsapp(
                 timeout=15.0,
             )
             return resp.json()
+    except httpx.ConnectError as e:
+        # En la nube el bot es un contenedor aparte: si no existe (demos o
+        # cuentas sin WhatsApp) no hay a quién conectarse.
+        detalle = (
+            "El WhatsApp no está activado en tu cuenta (en el demo no viene incluido). "
+            "Pídele a tu proveedor que lo active."
+            if os.getenv("NUBE_ISP")
+            else "El motor de WhatsApp no está corriendo"
+        )
+        raise HTTPException(status_code=503, detail=detalle) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail="No se pudo arrancar el motor de WhatsApp")
 

@@ -840,6 +840,65 @@ class MikroTikService:
             
         return {"up_bps": 0, "down_bps": 0}
 
+    def estado_por_ip(self, ip, mac=None):
+        """¿Está en línea un cliente sin PPPoE (IP fija o DHCP)?
+
+        Primero ping desde el MikroTik; si el equipo no contesta ping (muchos
+        CPE lo bloquean), se mira la tabla ARP: una entrada viva con MAC
+        quiere decir que el equipo está conectado.
+        """
+        ip = str(ip or "").strip()
+        if not ip:
+            return {"online": False, "datos": {"info": "Sin IP asignada"}}
+        datos = {"ip_actual": ip}
+        ping = self.ping_desde_router(ip, count=3)
+        online = ping.get("status") == "online"
+        if online:
+            datos["info"] = f"Responde ping (pérdida {ping.get('loss')})"
+        arp = self._request("GET", f"/ip/arp?address={ip}")
+        if isinstance(arp, list) and arp:
+            entrada = arp[0]
+            datos["mac"] = entrada.get("mac-address") or None
+            estado_arp = str(entrada.get("status", "")).lower()
+            viva = (
+                bool(entrada.get("mac-address"))
+                and estado_arp in {"reachable", "delay", "probe", ""}
+                and str(entrada.get("complete", "true")).lower() != "false"
+            )
+            if not online and viva:
+                online = True
+                datos["info"] = "No contesta ping, pero está en la tabla ARP"
+        if mac:
+            try:
+                lease = self.obtener_lease_dhcp_estricto(mac)
+            except Exception:
+                lease = None
+            if lease:
+                datos["lease"] = lease.get("status")
+                if lease.get("last-seen"):
+                    datos["uptime"] = f"visto hace {lease.get('last-seen')}"
+        if not online:
+            datos["info"] = "No responde ping ni aparece en ARP"
+        return {"online": online, "datos": datos}
+
+    def trafico_por_ip(self, ip):
+        """Consumo en vivo de la cola simple cuyo target es la IP del cliente.
+
+        Sirve para IP fija (cola fdeznet-<ip>) y DHCP (cola dinámica del lease
+        con rate-limit). Mismo sentido que la de PPPoE: up_bps = lo que el
+        router manda al cliente (su bajada).
+        """
+        ip = str(ip or "").strip()
+        colas = self._request("GET", "/queue/simple") if ip else None
+        for cola in colas if isinstance(colas, list) else []:
+            if self._objetivo_es(cola, ip):
+                try:
+                    subida, bajada = str(cola.get("rate", "0/0")).split("/")
+                    return {"up_bps": int(bajada), "down_bps": int(subida)}
+                except ValueError:
+                    break
+        return {"up_bps": 0, "down_bps": 0}
+
     def ping_desde_router(self, ip_destino, count=2):
         try:
             res = self._request("POST", "/ping", {"address": ip_destino, "count": str(count)})
