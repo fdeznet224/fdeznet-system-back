@@ -55,11 +55,16 @@ class DespertarTr069Service:
         conteo = {"llamados": 0, "contestaron": 0}
         ahora = _ahora()
         async with httpx.AsyncClient(base_url=self.red.nbi, timeout=ESPERA_ONU_MS / 1000 + 10, transport=self.transporte) as http:
-            respuesta = await http.get("/devices", params={
-                "query": json.dumps({"_lastInform": {"$lt": _iso(ahora - DORMIDO), "$gt": _iso(ahora - MAXIMO)}}),
-                "projection": "_id,_lastInform,_deviceId,InternetGatewayDevice.ManagementServer.ConnectionRequestURL",
-            })
-            respuesta.raise_for_status()
+            try:
+                respuesta = await http.get("/devices", params={
+                    "query": json.dumps({"_lastInform": {"$lt": _iso(ahora - DORMIDO), "$gt": _iso(ahora - MAXIMO)}}),
+                    "projection": "_id,_lastInform,_deviceId,InternetGatewayDevice.ManagementServer.ConnectionRequestURL",
+                })
+                respuesta.raise_for_status()
+            except httpx.HTTPError as error:
+                # Sin ACS (un ISP que no lo ha activado) o caído: no hay a quién llamar.
+                logger.debug("Sin ACS para llamar a las ONU: %s", error)
+                return conteo
             dormidos = respuesta.json()
             if not dormidos:
                 return conteo

@@ -83,3 +83,17 @@ def test_si_no_contesta_quita_la_orden_y_no_insiste_en_la_hora(monkeypatch):
 
     monkeypatch.setattr(servicio, "_activos", activos)
     assert asyncio.run(servicio.revisar()) == {"llamados": 0, "contestaron": 0} and tareas2 == []
+
+
+def test_sin_acs_no_falla():
+    import asyncio
+
+    import httpx
+
+    from src.application.services.despertar_tr069_service import DespertarTr069Service
+
+    def caido(request):
+        raise httpx.ConnectError("sin ACS", request=request)
+
+    servicio = DespertarTr069Service(None, nbi="http://nbi", transporte=httpx.MockTransport(caido))
+    assert asyncio.run(servicio.revisar()) == {"llamados": 0, "contestaron": 0}

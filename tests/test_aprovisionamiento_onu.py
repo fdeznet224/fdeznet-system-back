@@ -359,7 +359,7 @@ def test_cambio_de_onu_con_wifi_nuevo_se_le_manda_a_la_clienta_al_quedar():
     reg = registro("HWTCF1C8D69E")
     reg.cambio_onu, reg.wifi_nuevo = True, True
     assert correr(servicio(transporte, enviados, avisos), reg) is True
-    assert enviados == [] and avisos == [("9931112222", "FdezNet-187B", "12345678")]
+    assert enviados == [] and avisos == [("9931112222", reg.ssid, "12345678")]
 
 
 def test_cambio_de_onu_con_el_mismo_wifi_no_manda_mensaje():
@@ -377,7 +377,7 @@ def test_al_programar_un_cambio_de_onu_sabe_si_el_wifi_es_nuevo():
     assert mismo["aviso"] is False and agregados[0].wifi_nuevo is False
     # Venía de antena: no se sabía su WiFi, va FdezNet-CONTRATO con contraseña nueva y se le avisa.
     nuevo, agregados = programar_con("HWTC22222222", cambio_onu=True, anterior={"red": None, "clave": None})
-    assert nuevo["red"] == "FdezNet-187B" and nuevo["aviso"] is True and agregados[0].wifi_nuevo is True
+    assert nuevo["red"] == aprov.ssid_para("187B") and nuevo["aviso"] is True and agregados[0].wifi_nuevo is True
     # Se sabía el nombre pero no la contraseña (la Huawei no la deja leer): contraseña nueva, se avisa.
     solo_nombre, _ = programar_con("HWTC22222222", ssid="Casa Lopez", cambio_onu=True, anterior={"red": "Casa Lopez", "clave": None})
     assert solo_nombre["aviso"] is True
@@ -386,7 +386,7 @@ def test_al_programar_un_cambio_de_onu_sabe_si_el_wifi_es_nuevo():
 def test_si_no_se_pudo_sola_el_estado_trae_el_pppoe_para_ponerlo_a_mano():
     class Base:
         def __init__(self, estado):
-            self.reg = SimpleNamespace(estado=estado, ssid="FdezNet-3DCB", clave_wifi="12345678", detalle=None, cambio_onu=True,
+            self.reg = SimpleNamespace(estado=estado, ssid="Red-3DCB", clave_wifi="12345678", detalle=None, cambio_onu=True,
                                        wifi_nuevo=True, intentos=5, creado_en=datetime.now(), aplicado_en=None)
 
         async def execute(self, _consulta):
