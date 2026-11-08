@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.application.services import acs_nube_service
 from src.application.services.config_onu_service import ConfigOnuService, ficha_equipo
 from src.application.services.plantilla_tr069_service import (
     PlantillaTr069Service, cliente_de, clientes_por_equipo, desde_config, estado_dict, plantilla_dict, validar,
@@ -33,6 +34,17 @@ def _error(error: Exception) -> HTTPException:
     if isinstance(error, ValueError):
         return HTTPException(status_code=409, detail=str(error))
     return HTTPException(status_code=502, detail="No se pudo hablar con el ACS (GenieACS).")
+
+
+@router.get("/acs")
+async def acs_del_isp():
+    """URL, usuario y clave del ACS para poner en los módems (en la nube, el del ISP)."""
+    return acs_nube_service.datos()
+
+
+@router.post("/acs/activar")
+async def activar_acs():
+    return await acs_nube_service.activar()
 
 
 async def _fichas(db: AsyncSession, consulta: Optional[dict] = None) -> list:

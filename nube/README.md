@@ -73,6 +73,28 @@ vencimiento y la del corte; ya vencido, la franja es roja. Si pones
 `PANEL_CONTACTO_PAGO` (por ejemplo «WhatsApp 55 1234 5678») se agrega al aviso.
 La API del ISP lo consulta firmado en `/cuenta/estado` y lo guarda 10 minutos.
 
+## ACS (TR-069) de cada ISP
+
+Cada ISP activa su propio GenieACS desde *Infraestructura → TR-069 → Activar mi
+ACS* (la API lo pide firmado a `/cuenta/acs`; el panel corre
+`nube/activar-acs.sh <isp> <puerto> <dominio>` en segundo plano):
+
+- Base `acs_<isp>` con su propio usuario en el Mongo compartido
+  (`compose.mongo.yml`, clave de root en `secretos/mongo_root`, se crea solo).
+- Contenedor `<isp>-acs-1` (perfil `acs`, imagen `fdezpay-acs:1.2.16` que construye
+  `construir-version.sh`) con cwmp y nbi. Credenciales en `instancias/<isp>/acs.env`;
+  si se vuelve a correr el script, se conservan.
+- Puerto público desde `PANEL_PRIMER_PUERTO_ACS` (7548): los módems se reportan a
+  `http://<isp>.<dominio>:<puerto>` con el usuario y la clave que ve el ISP.
+  Abrir el rango en ufw una vez: `ufw allow 7548:7647/tcp`.
+- Para "llamar" a un módem al momento, el ACS manda las redes privadas por la
+  API (que tiene el WireGuard del ISP) y la API las enmascara como 10.9.0.1. La
+  red de clientes del ISP tiene que estar en las subredes de su túnel.
+- En su primer reporte (`0 BOOTSTRAP`) la provisión `wispay-alta` le pone al
+  módem el usuario/clave de llamada y el reporte cada 300 s.
+
+El respaldo guarda solo `acs.env`; los equipos se vuelven a reportar solos.
+
 ## Mudar a la nube un ISP que tenía su propia VPS
 
 Para un ISP instalado con `install.sh`. Se conservan sus datos, sus usuarios y

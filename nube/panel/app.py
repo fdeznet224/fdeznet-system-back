@@ -486,8 +486,8 @@ def detalle(request: Request, isp_id: int, msg: str = "", csrf: str = Depends(se
     servicios = [
         {"nombre": nombre, "estado": contenedores.get(isp.slug, {}).get(clave, "Sin crear"),
          "ram": memoria.get(f"{isp.slug}-{clave}-1")}
-        for clave, nombre in (("api", "API"), ("bot", "WhatsApp"), ("web", "Web"))
-        if clave != "bot" or isp.whatsapp
+        for clave, nombre in (("api", "API"), ("bot", "WhatsApp"), ("web", "Web"), ("acs", "ACS (TR-069)"))
+        if (clave != "bot" or isp.whatsapp) and (clave != "acs" or docker_ops.tiene_acs(isp.slug))
     ]
     return _render(
         request, "detalle.html", csrf, isp=isp, estado=_estado(isp), pagos=pagos, corte=_corte(isp),
@@ -1283,6 +1283,48 @@ def cuenta_actualizar(isp: str = "", vence: str = "", firma: str = ""):
         isp_id, version = registro.id, liberada.version
     threading.Thread(target=_actualizar_isp, args=(isp_id, version, "lo pidió el ISP"), daemon=True).start()
     return {"ok": True, "version": version}
+
+
+_activando_acs: set[str] = set()
+
+
+def _activar_acs(isp_id: int) -> None:
+    """Hilo: crea el ACS del ISP y recrea su API para que lo use."""
+    with Sesion() as db:
+        isp = db.get(Isp, isp_id)
+        try:
+            datos = docker_ops.activar_acs(isp.slug, isp.dominio, encendido=not isp.suspendido)
+        except (docker_ops.ErrorDocker, OSError) as error:
+            log.error("No se pudo activar el ACS de %s: %s", isp.slug, error)
+            _bitacora(db, isp.id, "ACS falló", str(error)[-300:])
+        else:
+            _bitacora(db, isp.id, "ACS activado", datos["ACS_URL"])
+        finally:
+            db.commit()
+            _activando_acs.discard(isp.slug)
+
+
+@app.post("/cuenta/acs")
+def cuenta_acs(isp: str = "", vence: str = "", firma: str = ""):
+    """El admin del ISP activó su ACS en Infraestructura → TR-069."""
+    with Sesion() as db:
+        registro = _isp_firmado(db, isp, "acs", vence, firma)
+        if registro.suspendido:
+            raise HTTPException(status_code=409, detail="El sistema está suspendido")
+        if registro.slug in _activando_acs or registro.slug in _actualizando:
+            return {"ok": True}
+        try:
+            construidas = docker_ops.imagen_acs_lista()
+        except (docker_ops.ErrorDocker, OSError):
+            construidas = False
+        if not construidas:
+            raise HTTPException(status_code=409, detail="El ACS no está disponible ahora; avisa a soporte")
+        _activando_acs.add(registro.slug)
+        _bitacora(db, registro.id, "ACS pedido", "lo pidió el ISP")
+        db.commit()
+        isp_id = registro.id
+    threading.Thread(target=_activar_acs, args=(isp_id,), daemon=True).start()
+    return {"ok": True}
 
 
 def _volver_al_isp(isp: Isp, resultado: str) -> RedirectResponse:

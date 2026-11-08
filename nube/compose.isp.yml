@@ -20,6 +20,8 @@ services:
       - NET_ADMIN
     sysctls:
       net.ipv4.conf.all.src_valid_mark: "1"
+      # El ACS del ISP llega a los módems por el WireGuard de la API.
+      net.ipv4.ip_forward: "1"
     ports:
       - "${WG_PORT}:${WG_PORT}/udp"
     volumes:
@@ -60,6 +62,33 @@ services:
       - interna
     mem_limit: ${BOT_MEMORIA:-1500m}
     cpus: ${BOT_CPUS:-1}
+
+  # Opcional: el ACS (TR-069) del ISP; arranca con "acs" en COMPOSE_PROFILES
+  # (lo pone nube/activar-acs.sh). Los módems se reportan al puerto ACS_PORT.
+  acs:
+    profiles: ["acs"]
+    # Va con la versión de GenieACS, no con la del sistema: activar el ACS no
+    # depende de en qué versión esté el ISP (construir-version.sh la construye).
+    image: fdezpay-acs:1.2.16
+    build:
+      context: ..
+      dockerfile: nube/acs.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: instancias/${ISP}/acs.env
+        required: false
+    environment:
+      TZ: America/Mexico_City
+    # Pone las rutas hacia las redes del ISP por la API (connection request).
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "${ACS_PORT:-7547}:7547"
+    networks:
+      - interna
+      - fdezpay-db
+    mem_limit: ${ACS_MEMORIA:-400m}
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
 
   web:
     image: fdezpay-web:${IMAGEN_VERSION:-local}

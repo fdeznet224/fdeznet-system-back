@@ -29,7 +29,7 @@ grep -qx "ISP=$ISP" "$TMP/respaldo.txt" || { echo "El respaldo no es de $ISP" >&
 RESPALDO_REMOTO="" "$DIR/respaldar-instancia.sh" "$ISP" | sed 's/^/previo: /'
 
 compose=(docker compose -p "$ISP" --env-file "$INST/compose.env" -f "$DIR/compose.isp.yml")
-"${compose[@]}" --profile whatsapp stop
+"${compose[@]}" --profile whatsapp --profile acs stop
 
 # 1. Base: se vacía y se carga. Los permisos del usuario del ISP no se pierden.
 docker compose -f "$DIR/compose.mysql.yml" exec -T mysql sh -c \

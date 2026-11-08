@@ -1,0 +1,33 @@
+# MongoDB compartido para el ACS (GenieACS) de los ISP que lo activen: una base
+# y un usuario por ISP (cada usuario solo puede leer y escribir la suya).
+# Lo levanta nube/activar-acs.sh la primera vez que un ISP activa su ACS.
+name: fdezpay-mongo
+
+services:
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root
+    # Los ACS guardan poco (equipos y tareas); con 256 MB de caché sobra.
+    command: ["--wiredTigerCacheSizeGB", "0.25"]
+    secrets:
+      - mongo_root
+    volumes:
+      - datos:/data/db
+    networks:
+      - fdezpay-db
+    mem_limit: ${MONGO_MEMORIA:-700m}
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+secrets:
+  mongo_root:
+    file: ./secretos/mongo_root
+
+volumes:
+  datos:
+
+networks:
+  fdezpay-db:
+    external: true

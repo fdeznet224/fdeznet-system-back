@@ -689,3 +689,61 @@ def test_cuenta_estado_dias_restantes(panel):
     cuenta = cliente.get("/cuenta/estado", params={"isp": "colega", "vence": vence, "firma": firma}).json()["cuenta"]
     assert cuenta["dias_restantes"] == 12 and cuenta["es_demo"] is False
     assert cuenta["vigente_hasta"] == (date.today() + timedelta(days=12)).isoformat()
+
+
+# --- ACS (TR-069) que activa el ISP -------------------------------------------
+
+def test_el_isp_activa_su_acs(panel, monkeypatch):
+    import time
+    from nube.panel import app as app_mod, docker_ops, drive
+    from nube.panel.db import Bitacora, Isp, Sesion
+    from sqlalchemy import select
+
+    cliente, llamadas = panel
+    monkeypatch.setattr(app_mod.threading, "Thread", _HiloInmediato)
+    lista = {"imagen": False}
+    monkeypatch.setattr(docker_ops, "imagen_acs_lista", lambda: lista["imagen"])
+    monkeypatch.setattr(docker_ops, "activar_acs", lambda slug, dominio, encendido: llamadas.append(
+        ("acs", slug, dominio, encendido)) or {"ACS_URL": f"http://{dominio}:7548", "ACS_USUARIO": "u", "ACS_CLAVE": "c"})
+    csrf = _entrar(cliente)
+    cliente.post("/isp/nuevo", data={"csrf": csrf, "nombre": "Colega", "slug": "colega"})
+    vence = int(time.time()) + 60
+    firma = lambda accion: drive.firmar(drive.secreto_isp("s" * 64, "colega"), "colega", accion, vence)
+    activar = lambda f: cliente.post("/cuenta/acs", params={"isp": "colega", "vence": vence, "firma": f})
+
+    assert activar(firma("cuenta")).status_code == 403  # la firma es por acción
+    assert activar(firma("acs")).status_code == 409  # la imagen no está construida
+    lista["imagen"] = True
+    llamadas.clear()
+    assert activar(firma("acs")).json() == {"ok": True}
+    assert llamadas == [("acs", "colega", "colega.ejemplo.com", True)]
+    with Sesion() as db:
+        acciones = db.scalars(select(Bitacora.accion).where(Bitacora.isp_id == 1)).all()
+        assert "ACS activado" in acciones
+        db.get(Isp, 1).suspendido = True
+        db.commit()
+    assert activar(firma("acs")).status_code == 409  # suspendido
+
+
+def test_puerto_y_perfil_del_acs(tmp_path, monkeypatch):
+    from nube.panel import docker_ops
+
+    monkeypatch.setattr(docker_ops, "NUBE_DIR", tmp_path)
+    for slug, extra in (("uno", "ACS_PORT=7548\n"), ("dos", "")):
+        inst = tmp_path / "instancias" / slug
+        inst.mkdir(parents=True)
+        (inst / "compose.env").write_text(f"ISP={slug}\nIMAGEN_VERSION=1\nCOMPOSE_PROFILES=whatsapp\n{extra}")
+        (inst / "api.env").write_text("FDEZNET_LIMITE_CLIENTES=\n")
+    assert docker_ops.puerto_acs("uno") == 7548  # conserva el suyo
+    assert docker_ops.puerto_acs("dos") == 7549  # el siguiente libre
+
+    compose = []
+    monkeypatch.setattr(docker_ops, "_compose", lambda slug, *a, **k: compose.append((slug, a)))
+    monkeypatch.setattr(docker_ops, "_correr", lambda *a, **k: "")
+    (tmp_path / "instancias" / "uno" / "acs.env").write_text("ACS_USUARIO=x\n")
+    for slug in ("uno", "dos"):
+        docker_ops.aplicar_ajustes(slug, version="2.117.0", whatsapp=False, limite_clientes=None,
+                                   limite_routers=None, encendido=True)
+    # Quitar el bot no apaga el ACS.
+    assert "COMPOSE_PROFILES=acs\n" in (tmp_path / "instancias" / "uno" / "compose.env").read_text()
+    assert "COMPOSE_PROFILES=\n" in (tmp_path / "instancias" / "dos" / "compose.env").read_text()

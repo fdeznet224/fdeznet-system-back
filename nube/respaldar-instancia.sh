@@ -64,6 +64,8 @@ fi
 
 # 3. Secretos de la instancia (para llevarla a otra VPS) y una ficha legible.
 cp "$INST/compose.env" "$INST/api.env" "$TMP/"
+# El ACS: solo sus credenciales; sus equipos se vuelven a reportar solos.
+[[ ! -f "$INST/acs.env" ]] || cp "$INST/acs.env" "$TMP/"
 {
   echo "ISP=$ISP"
   echo "FECHA=$(date -Iseconds)"

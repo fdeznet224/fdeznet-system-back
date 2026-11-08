@@ -100,9 +100,10 @@ def _editar_env(archivo: Path, valores: dict[str, str]) -> None:
 def aplicar_ajustes(slug: str, *, version: str, whatsapp: bool, limite_clientes: int | None,
                     limite_routers: int | None, encendido: bool) -> None:
     """Guarda versión, bot y límites; si el ISP está activo, recrea lo que cambió."""
+    perfiles = (["whatsapp"] if whatsapp else []) + (["acs"] if tiene_acs(slug) else [])
     _editar_env(_instancia(slug) / "compose.env", {
         "IMAGEN_VERSION": version,
-        "COMPOSE_PROFILES": "whatsapp" if whatsapp else "",
+        "COMPOSE_PROFILES": ",".join(perfiles),
     })
     _editar_env(_instancia(slug) / "api.env", {
         "FDEZNET_LIMITE_CLIENTES": "" if limite_clientes is None else str(limite_clientes),
@@ -116,6 +117,57 @@ def aplicar_ajustes(slug: str, *, version: str, whatsapp: bool, limite_clientes:
         except ErrorDocker:
             pass  # No tenía bot.
     _compose(slug, "up", "-d", "--remove-orphans", timeout=600)
+
+
+# --- ACS (TR-069) del ISP ---------------------------------------------------
+
+PRIMER_PUERTO_ACS = int(os.getenv("PANEL_PRIMER_PUERTO_ACS", "7548"))
+
+
+def tiene_acs(slug: str) -> bool:
+    return (_instancia(slug) / "acs.env").is_file()
+
+
+def puertos_acs_en_uso() -> list[int]:
+    usados = []
+    for archivo in (NUBE_DIR / "instancias").glob("*/compose.env"):
+        for linea in archivo.read_text(encoding="utf-8").splitlines():
+            clave, _, valor = linea.partition("=")
+            if clave == "ACS_PORT" and valor.strip().isdigit():
+                usados.append(int(valor))
+    return usados
+
+
+def puerto_acs(slug: str) -> int:
+    """El que ya tenía el ISP, o el siguiente libre."""
+    archivo = _instancia(slug) / "compose.env"
+    for linea in archivo.read_text(encoding="utf-8").splitlines():
+        clave, _, valor = linea.partition("=")
+        if clave == "ACS_PORT" and valor.strip().isdigit():
+            return int(valor)
+    usados = set(puertos_acs_en_uso())
+    puerto = PRIMER_PUERTO_ACS
+    while puerto in usados:
+        puerto += 1
+    return puerto
+
+
+def imagen_acs_lista() -> bool:
+    """La imagen del ACS ya se construyó en la VPS (nube/construir-version.sh)."""
+    salida = _correr(["docker", "images", "-q", "fdezpay-acs:1.2.16"], timeout=30)
+    return bool(salida.strip())
+
+
+def activar_acs(slug: str, dominio: str, *, encendido: bool) -> dict[str, str]:
+    """Activa (o repara) el ACS del ISP; devuelve ACS_URL, ACS_USUARIO y ACS_CLAVE."""
+    salida = _correr(
+        [str(NUBE_DIR / "activar-acs.sh"), slug, str(puerto_acs(slug)), dominio],
+        timeout=900, env={"ARRANCAR": "1" if encendido else "0"},
+    )
+    datos = dict(re.findall(r"^(ACS_[A-Z]+)=(\S+)$", salida, re.MULTILINE))
+    if "ACS_URL" not in datos:
+        raise ErrorDocker("El ACS se activó pero no se obtuvieron sus datos")
+    return datos
 
 
 def asegurar_enlace(slug: str, enlace: dict[str, str]) -> bool:
@@ -141,7 +193,7 @@ def borrar(slug: str) -> None:
 
 
 def detener(slug: str) -> None:
-    _compose(slug, "--profile", "whatsapp", "stop", timeout=120)
+    _compose(slug, "--profile", "whatsapp", "--profile", "acs", "stop", timeout=120)
 
 
 def encender(slug: str) -> None:
@@ -154,7 +206,7 @@ def estado_contenedores() -> dict[str, dict[str, str]]:
     estados: dict[str, dict[str, str]] = {}
     for linea in salida.splitlines():
         datos = json.loads(linea)
-        coincide = re.fullmatch(r"(.+)-(api|bot|web)-1", datos.get("Names", ""))
+        coincide = re.fullmatch(r"(.+)-(api|bot|web|acs)-1", datos.get("Names", ""))
         if coincide:
             estados.setdefault(coincide.group(1), {})[coincide.group(2)] = datos.get("Status", "")
     return estados

@@ -27,6 +27,11 @@ wg-quick down "$WG_INTERFACE" >/dev/null 2>&1 || true
 if ! wg-quick up "$WG_INTERFACE"; then
   echo "[nube] AVISO: no se pudo levantar WireGuard; la API arranca sin VPN" >&2
 fi
+# Lo que el ACS del ISP manda a los módems por el túnel sale con la IP de la
+# VPN (10.9.0.1), la única que el MikroTik acepta de este lado.
+iptables -t nat -C POSTROUTING -o "$WG_INTERFACE" -j MASQUERADE 2>/dev/null \
+  || iptables -t nat -A POSTROUTING -o "$WG_INTERFACE" -j MASQUERADE \
+  || echo "[nube] AVISO: sin NAT hacia el túnel; el ACS no podrá llamar a los módems" >&2
 
 # 2. Base de datos: esperar a MySQL. Una base vacía se crea con el esquema
 #    actual y se registra en Alembic (como install.sh); una existente se migra.

@@ -9,5 +9,5 @@ VERSION="${1:-$(sed -n 's/^SYSTEM_VERSION *= *"\(.*\)"/\1/p' "$DIR/../src/versio
 printf 'ISP=build\nWEB_PORT=1\nWG_PORT=1\nWEBHOOK_SECRET=x\nIMAGEN_VERSION=%s\n' "$VERSION" > "$DIR/.construir.env"
 trap 'rm -f "$DIR/.construir.env"' EXIT
 docker compose -p construir --env-file "$DIR/.construir.env" -f "$DIR/compose.isp.yml" \
-  --profile whatsapp build
+  --profile whatsapp --profile acs build
 echo "Versión $VERSION lista; aplícala a cada ISP desde el panel."
