@@ -19,6 +19,7 @@ from src.application.services.corte_whatsapp_service import (
     obtener_modo_corte,
 )
 from src.infrastructure.mikrotik_service import MikroTikService
+from src.application.services.acceso_red import NOMBRES as NOMBRES_MODO, modo_router
 from src.utils.mikrotik import (
     debe_bloquear_acceso,
     formatear_rate_limit_dhcp,
@@ -320,6 +321,33 @@ class NetworkService:
     # ==========================================
     # 4. DIAGNÓSTICO EN VIVO Y MONITOREO
     # ==========================================
+    @staticmethod
+    def _estado_en_vivo(mk, router, datos) -> dict:
+        """En línea según el modo del router: sesión PPPoE, o ping/ARP por IP."""
+        modo = modo_router(router)
+        if modo == "pppoe":
+            sesion = mk.obtener_info_sesion(datos.user_pppoe) if datos.user_pppoe else None
+            if sesion and sesion.get("online"):
+                return {"online": True, "metodo": "PPPoE", "datos": {
+                    "uptime": sesion.get("uptime", "0s"),
+                    "ip_actual": sesion.get("ip"),
+                    "mac_onu": sesion.get("mac_onu"),
+                }}
+            return {"online": False, "metodo": "PPPoE", "datos": {}}
+        resultado = mk.estado_por_ip(
+            datos.ip_asignada,
+            mac=getattr(datos, "mac_address", None) if modo == "dhcp" else None,
+        )
+        return {"online": resultado["online"], "metodo": NOMBRES_MODO[modo], "datos": resultado["datos"]}
+
+    @staticmethod
+    def _trafico_en_vivo(mk, router, datos) -> dict:
+        if modo_router(router) == "pppoe":
+            if not datos.user_pppoe:
+                return {}
+            return mk.obtener_consumo_interfaz_pppoe(datos.user_pppoe) or {}
+        return mk.trafico_por_ip(datos.ip_asignada)
+
     async def obtener_estado_tecnico(self, cliente_id: int):
         mk, cliente = await self._get_mk_session(cliente_id)
         
@@ -333,57 +361,30 @@ class NetworkService:
             "detalles": {}
         }
 
-        if cliente.user_pppoe:
-            # 1. Verificar sesión activa PPPoE
-            sesion = mk.obtener_info_sesion(cliente.user_pppoe)
-            if sesion and sesion.get("online"):
-                info["online"] = True
-                info["detalles"] = {
-                    "uptime": sesion.get("uptime"),
-                    "mac_onu": sesion.get("mac_onu"),
-                    "ip_actual": sesion.get("ip")
-                }
-
-            # 2. Obtener consumo real de la interfaz virtual
-            consumo = mk.obtener_consumo_interfaz_pppoe(cliente.user_pppoe)
-            if consumo:
-                info["consumo"] = consumo
+        estado = self._estado_en_vivo(mk, cliente.router, cliente)
+        info["tecnologia"] = estado["metodo"]
+        info["online"] = estado["online"]
+        if estado["online"]:
+            info["detalles"] = estado["datos"]
+        consumo = self._trafico_en_vivo(mk, cliente.router, cliente)
+        if consumo:
+            info["consumo"] = consumo
 
         return info
 
     async def verificar_conexion(self, cliente_id: int):
         mk, cliente = await self._get_mk_session(cliente_id)
-        
-        online = False
-        detalles = {}
-
-        if cliente.user_pppoe:
-            sesion = mk.obtener_info_sesion(cliente.user_pppoe)
-            if sesion and sesion.get("online"):
-                online = True
-                detalles = {
-                    "uptime": sesion.get("uptime", "0s"),
-                    "ip_actual": sesion.get("ip"),
-                    "mac_onu": sesion.get("mac_onu")
-                }
-
-        return {
-            "online": online,
-            "metodo": "PPPoE",
-            "datos": detalles
-        }
+        return self._estado_en_vivo(mk, cliente.router, cliente)
 
     async def verificar_trafico(self, cliente_id: int):
         mk, cliente = await self._get_mk_session(cliente_id)
-        if cliente.user_pppoe:
-            consumo = mk.obtener_consumo_interfaz_pppoe(cliente.user_pppoe)
-            return {
-                "velocidad_subida": consumo.get("up_bps", 0),
-                "velocidad_bajada": consumo.get("down_bps", 0),
-                "total_subida": 0,
-                "total_bajada": 0
-            }
-        return {"velocidad_subida": 0, "velocidad_bajada": 0, "total_subida": 0, "total_bajada": 0}
+        consumo = self._trafico_en_vivo(mk, cliente.router, cliente)
+        return {
+            "velocidad_subida": consumo.get("up_bps", 0),
+            "velocidad_bajada": consumo.get("down_bps", 0),
+            "total_subida": 0,
+            "total_bajada": 0
+        }
 
     async def ping_cliente(self, cliente_id: int):
         mk, cliente = await self._get_mk_session(cliente_id)
@@ -404,52 +405,23 @@ class NetworkService:
             "consumo": None,
             "detalles": {},
         }
-        if servicio.user_pppoe:
-            sesion = mk.obtener_info_sesion(servicio.user_pppoe)
-            if sesion and sesion.get("online"):
-                info["online"] = True
-                info["detalles"] = {
-                    "uptime": sesion.get("uptime"),
-                    "mac_onu": sesion.get("mac_onu"),
-                    "ip_actual": sesion.get("ip"),
-                }
-            consumo = mk.obtener_consumo_interfaz_pppoe(
-                servicio.user_pppoe
-            )
-            if consumo:
-                info["consumo"] = consumo
+        estado = self._estado_en_vivo(mk, servicio.router, servicio)
+        info["tecnologia"] = estado["metodo"]
+        info["online"] = estado["online"]
+        if estado["online"]:
+            info["detalles"] = estado["datos"]
+        consumo = self._trafico_en_vivo(mk, servicio.router, servicio)
+        if consumo:
+            info["consumo"] = consumo
         return info
 
     async def verificar_conexion_servicio(self, servicio_id: int):
         mk, servicio = await self._get_mk_session_servicio(servicio_id)
-        sesion = (
-            mk.obtener_info_sesion(servicio.user_pppoe)
-            if servicio.user_pppoe
-            else None
-        )
-        online = bool(sesion and sesion.get("online"))
-        return {
-            "servicio_id": servicio.id,
-            "online": online,
-            "metodo": "PPPoE",
-            "datos": (
-                {
-                    "uptime": sesion.get("uptime", "0s"),
-                    "ip_actual": sesion.get("ip"),
-                    "mac_onu": sesion.get("mac_onu"),
-                }
-                if online
-                else {}
-            ),
-        }
+        return {"servicio_id": servicio.id, **self._estado_en_vivo(mk, servicio.router, servicio)}
 
     async def verificar_trafico_servicio(self, servicio_id: int):
         mk, servicio = await self._get_mk_session_servicio(servicio_id)
-        consumo = (
-            mk.obtener_consumo_interfaz_pppoe(servicio.user_pppoe)
-            if servicio.user_pppoe
-            else None
-        ) or {}
+        consumo = self._trafico_en_vivo(mk, servicio.router, servicio)
         return {
             "servicio_id": servicio.id,
             "velocidad_subida": consumo.get("up_bps", 0),

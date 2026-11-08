@@ -184,7 +184,7 @@ class VPNService:
             raise ValueError("Se permiten como máximo 20 subredes remotas")
         return redes
 
-    def _validar_rutas_disponibles(self, redes: list[str]) -> None:
+    def _validar_rutas_disponibles(self, redes: list[str], excepto_peer: str | None = None) -> None:
         """Evita anunciar una LAN que ya pertenece a otro peer de WireGuard."""
         if not redes:
             return
@@ -200,9 +200,9 @@ class VPNService:
         existentes: list[ipaddress.IPv4Network] = []
         for line in output.splitlines():
             parts = line.split(maxsplit=1)
-            if len(parts) != 2:
+            if len(parts) != 2 or (excepto_peer and parts[0] == excepto_peer):
                 continue
-            for value in parts[1].split(","):
+            for value in parts[1].replace(" ", ",").split(","):
                 try:
                     network = ipaddress.ip_network(value.strip(), strict=False)
                 except ValueError:
@@ -236,7 +236,7 @@ class VPNService:
             if len(parts) != 2:
                 continue
             public_key, allowed = parts
-            for value in allowed.split(","):
+            for value in allowed.replace(" ", ",").split(","):
                 try:
                     network = ipaddress.ip_network(value.strip(), strict=False)
                 except ValueError:
@@ -321,6 +321,31 @@ class VPNService:
         return nuevo_tunel
     
 
+
+    async def editar_subredes(self, tunel: VpnTunnelModel, subredes_remotas: str | None):
+        """Cambia las LAN que la VPS manda por el túnel de un MikroTik.
+
+        Solo toca el peer en la VPS (allowed-ips); el MikroTik ya acepta todo
+        lo que llega de la VPN, así que no hay que volver a pegar el script.
+        """
+        if tunel.script_mikrotik and "[Interface]" in tunel.script_mikrotik:
+            raise ValueError(
+                "Las rutas de una app móvil van dentro de su QR; bórrala y créala de nuevo"
+            )
+        redes = self.normalizar_subredes(subredes_remotas)
+        self._validar_rutas_disponibles(redes, excepto_peer=tunel.public_key)
+        allowed_ips = ",".join([f"{tunel.ip_asignada}/32", *redes])
+        if self.SERVER_PUBKEY != "ERROR_LLAVE_NO_ENCONTRADA":
+            self._ejecutar_comando(con_privilegios([
+                self.WG_BIN, "set", self.WG_INTERFACE,
+                "peer", tunel.public_key,
+                "allowed-ips", allowed_ips,
+            ]))
+            self._ejecutar_comando(con_privilegios([self.WG_QUICK_BIN, "save", self.WG_INTERFACE]))
+        tunel.subredes_remotas = ", ".join(redes) or None
+        await self.db.commit()
+        await self.db.refresh(tunel)
+        return tunel
 
     async def crear_acceso_tecnico(self, nombre: str, subredes_remotas: str | None = None):
         """Genera un archivo .conf y un Código QR para Celulares/PCs"""

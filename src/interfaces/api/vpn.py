@@ -49,6 +49,25 @@ async def listar_subredes_vpn(db: AsyncSession = Depends(get_db)):
 
 
 
+class VpnSubredesUpdate(BaseModel):
+    subredes_remotas: str | None = None
+
+
+@router.patch("/tunnels/{tunnel_id}", response_model=VpnTunnelResponse)
+async def editar_subredes_tunel(tunnel_id: int, datos: VpnSubredesUpdate, db: AsyncSession = Depends(get_db)):
+    """Agrega o quita subredes detrás de un MikroTik sin rehacer el túnel."""
+    tunel = await db.get(VpnTunnelModel, tunnel_id)
+    if not tunel:
+        raise HTTPException(status_code=404, detail="Túnel no encontrado")
+    try:
+        tunel = await VPNService(db).editar_subredes(tunel, datos.subredes_remotas)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return VpnTunnelResponse.model_validate(tunel).model_copy(
+        update={"script_mikrotik": asegurar_vigilante(tunel.script_mikrotik)}
+    )
+
+
 @router.delete("/tunnels/{tunnel_id}")
 async def eliminar_tunel(tunnel_id: int, db: AsyncSession = Depends(get_db)):
     """Elimina un túnel VPN de la base de datos para liberar la IP"""

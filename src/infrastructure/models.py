@@ -1890,6 +1890,8 @@ class ConfiguracionSistema(Base):
     empresa_email = Column(String(160), nullable=True)
     empresa_direccion = Column(String(300), nullable=True)
     pie_recibo = Column(String(300), nullable=True)
+    # wisp (radioenlaces) | fibra | hibrido; vacío = aún no lo elige el admin
+    tipo_red = Column(String(10), nullable=True)
 
     # --- LICENCIA / ACTUALIZACIONES ---
     licencia_estado = Column(String(30), nullable=False, default="sin_configurar")
