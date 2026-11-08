@@ -53,6 +53,8 @@ MAX_RECHAZOS = 3
 MAX_SIN_CONFIRMAR = 5
 # Registros cuyo WiFi está puesto en la ONU del cliente (o lo puso él): sirven para la de reemplazo.
 CON_WIFI_PUESTO = ("aplicado", "guardado", "manual")
+# Estados en que la ONU no se configuró sola y el técnico la configura a mano.
+A_MANO = ("error", "vencido", "manual")
 
 
 def prefijo_wifi() -> str:
@@ -221,9 +223,14 @@ class AprovisionamientoOnuService:
         )).scalars().first()
         if not registro:
             return None
-        return {"estado": registro.estado, "red": registro.ssid, "clave": registro.clave_wifi, "detalle": registro.detalle,
-                "cambio_onu": bool(registro.cambio_onu), "aviso": bool(getattr(registro, "wifi_nuevo", False)),
-                "intentos": registro.intentos, "creado_en": registro.creado_en, "aplicado_en": registro.aplicado_en}
+        datos = {"estado": registro.estado, "red": registro.ssid, "clave": registro.clave_wifi, "detalle": registro.detalle,
+                 "cambio_onu": bool(registro.cambio_onu), "aviso": bool(getattr(registro, "wifi_nuevo", False)),
+                 "intentos": registro.intentos, "creado_en": registro.creado_en, "aplicado_en": registro.aplicado_en}
+        if registro.estado in A_MANO:
+            # Si no se pudo sola, el técnico la configura a mano: necesita también el PPPoE.
+            cliente = await self.db.get(ClienteModel, cliente_id)
+            datos.update(usuario_pppoe=getattr(cliente, "user_pppoe", None), clave_pppoe=getattr(cliente, "pass_pppoe", None))
+        return datos
 
     async def reintentar(self, cliente_id: int) -> Optional[Dict[str, Any]]:
         """Vuelve a esperar a la ONU (por ejemplo, ya se le puso el ACS) con la misma red y contraseña."""

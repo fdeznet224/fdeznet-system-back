@@ -381,3 +381,21 @@ def test_al_programar_un_cambio_de_onu_sabe_si_el_wifi_es_nuevo():
     # Se sabía el nombre pero no la contraseña (la Huawei no la deja leer): contraseña nueva, se avisa.
     solo_nombre, _ = programar_con("HWTC22222222", ssid="Casa Lopez", cambio_onu=True, anterior={"red": "Casa Lopez", "clave": None})
     assert solo_nombre["aviso"] is True
+
+
+def test_si_no_se_pudo_sola_el_estado_trae_el_pppoe_para_ponerlo_a_mano():
+    class Base:
+        def __init__(self, estado):
+            self.reg = SimpleNamespace(estado=estado, ssid="FdezNet-3DCB", clave_wifi="12345678", detalle=None, cambio_onu=True,
+                                       wifi_nuevo=True, intentos=5, creado_en=datetime.now(), aplicado_en=None)
+
+        async def execute(self, _consulta):
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: self.reg))
+
+        async def get(self, _modelo, _id):
+            return CLIENTE
+
+    fallo = asyncio.run(AprovisionamientoOnuService(Base("error"), nbi="http://nbi").del_cliente(9))
+    assert fallo["usuario_pppoe"] == "juan_perez" and fallo["clave_pppoe"] == "clave-pppoe"
+    listo = asyncio.run(AprovisionamientoOnuService(Base("aplicado"), nbi="http://nbi").del_cliente(9))
+    assert "usuario_pppoe" not in listo
