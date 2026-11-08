@@ -31,6 +31,9 @@ umask 077
 # 1. Mongo compartido (la primera vez se crea con su clave de root).
 install -d -m 0700 "$DIR/secretos"
 [[ -s "$DIR/secretos/mongo_root" ]] || clave 40 > "$DIR/secretos/mongo_root"
+# Mongo lee su secreto con su propio usuario (999); la carpeta secretos/ (0700)
+# es la que lo protege en la VPS.
+chmod 0444 "$DIR/secretos/mongo_root"
 mongo=(docker compose -f "$DIR/compose.mongo.yml")
 "${mongo[@]}" up -d >/dev/null
 mongosh_root() {
