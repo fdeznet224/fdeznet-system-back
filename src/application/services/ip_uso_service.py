@@ -36,13 +36,19 @@ def ips_vistas(
     leases: List[Dict[str, Any]],
     propias: List[Dict[str, Any]],
     ignorar_usuario: Optional[str] = None,
+    ignorar_mac: Optional[str] = None,
 ) -> Dict[str, str]:
     """IP → de dónde la vio el MikroTik (el primer origen gana).
 
     `ignorar_usuario`: el PPPoE del propio servicio, que no choca consigo mismo.
+    `ignorar_mac`: el equipo del propio cliente (su lease DHCP o su ARP).
     """
     vistas: Dict[str, str] = {}
     propio = (ignorar_usuario or "").strip()
+    mac_propia = (ignorar_mac or "").strip().upper()
+
+    def es_suyo(item: Dict[str, Any]) -> bool:
+        return bool(mac_propia) and str(item.get("mac-address", "")).upper() == mac_propia
 
     def anotar(ip: Optional[str], origen: str) -> None:
         if ip and ip not in vistas:
@@ -59,9 +65,13 @@ def ips_vistas(
             continue
         anotar(_ip(item.get("remote-address")), f"Usuario PPPoE: {item.get('name') or '?'}")
     for item in leases:
+        if es_suyo(item):
+            continue
         nombre = item.get("host-name") or item.get("comment") or item.get("mac-address") or "?"
         anotar(_ip(item.get("address")), f"DHCP: {nombre}")
     for item in arp:
+        if es_suyo(item):
+            continue
         if str(item.get("complete", "true")).lower() == "false" and not item.get("mac-address"):
             continue
         detalle = item.get("comment") or item.get("mac-address") or "?"
@@ -69,7 +79,9 @@ def ips_vistas(
     return vistas
 
 
-def _leer_mikrotik(router: RouterModel, ignorar_usuario: Optional[str] = None) -> Dict[str, str]:
+def _leer_mikrotik(
+    router: RouterModel, ignorar_usuario: Optional[str] = None, ignorar_mac: Optional[str] = None,
+) -> Dict[str, str]:
     mk = MikroTikService(router.ip_vpn, router.user_api, router.pass_api, router.port_api)
 
     def lista(ruta: str, obligatoria: bool) -> List[Dict[str, Any]]:
@@ -88,6 +100,7 @@ def _leer_mikrotik(router: RouterModel, ignorar_usuario: Optional[str] = None) -
         leases=lista("/ip/dhcp-server/lease", False),
         propias=lista("/ip/address", False),
         ignorar_usuario=ignorar_usuario,
+        ignorar_mac=ignorar_mac,
     )
 
 
@@ -96,14 +109,14 @@ class IpUsoService:
         self.db = db
 
     async def ips_en_mikrotik(
-        self, red: RedModel, ignorar_usuario: Optional[str] = None,
+        self, red: RedModel, ignorar_usuario: Optional[str] = None, ignorar_mac: Optional[str] = None,
     ) -> Tuple[Dict[str, str], Optional[str]]:
         """IP de la red que usa el MikroTik, o el error si no se pudo leer."""
         router = await self.db.get(RouterModel, red.router_id) if red.router_id else None
         if not router:
             return {}, "La red no tiene MikroTik asignado"
         try:
-            vistas = await asyncio.to_thread(_leer_mikrotik, router, ignorar_usuario)
+            vistas = await asyncio.to_thread(_leer_mikrotik, router, ignorar_usuario, ignorar_mac)
         except Exception as exc:
             logger.warning("No se leyeron las IP del MikroTik %s: %s", router.nombre, exc)
             return {}, f"No se pudo consultar el MikroTik {router.nombre}"

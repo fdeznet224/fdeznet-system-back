@@ -5,6 +5,7 @@ import re
 import httpx
 from sqlalchemy import select, or_, func
 
+from src.application.services.acceso_red import modo_acceso
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Body, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -194,15 +195,8 @@ async def obtener_datos_portal(
         "direccion": cliente.direccion,
         "ip_asignada": cliente.ip_asignada or "Pendiente",
         "mac_address": cliente.mac_address,
-        "tipo_seguridad": (
-            getattr(
-                cliente.router.tipo_seguridad,
-                "value",
-                cliente.router.tipo_seguridad,
-            )
-            if cliente.router
-            else "pppoe"
-        ),
+        # El modo de este cliente (pppoe, dhcp o estatica), no el del router.
+        "tipo_seguridad": modo_acceso(cliente, cliente.router),
         "suggested_user": cliente.user_pppoe,
         "suggested_pass": cliente.pass_pppoe,
         

@@ -192,10 +192,10 @@ class NetworkService:
             raise ValueError(f"Error conectando al Router: {str(e)}")
 
         log_acciones = []
-        modo = getattr(
-            router.tipo_seguridad, "value", router.tipo_seguridad
-        )
-        es_dhcp = str(modo).lower() == "dhcp"
+        from src.application.services.acceso_red import modo_router
+
+        # Sin PPPoE en el router (DHCP o IP fija) no hacen falta perfiles.
+        es_dhcp = modo_router(router) in ("dhcp", "estatica")
 
         try:
             # ---------------------------------------------------------
@@ -222,7 +222,7 @@ class NetworkService:
                     logger.error(f"Error sincronizando plan {plan.nombre}: {e}")
             
             log_acciones.append(
-                "DHCP usa la velocidad directamente en cada lease."
+                "DHCP e IP fija llevan la velocidad en cada cliente."
                 if es_dhcp
                 else f"{contador_planes} Perfiles PPPoE listos."
             )

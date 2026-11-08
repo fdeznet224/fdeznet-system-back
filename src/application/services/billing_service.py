@@ -2309,12 +2309,9 @@ class BillingService:
                 router.pass_api,
                 router.port_api,
             )
-            modo = getattr(
-                router.tipo_seguridad,
-                "value",
-                router.tipo_seguridad,
-            )
-            if str(modo).lower() == "dhcp":
+            from src.application.services.acceso_red import modo_acceso
+
+            if modo_acceso(cliente, router) == "dhcp":
                 mac = normalizar_mac(cliente.mac_address)
                 if not mac:
                     return False

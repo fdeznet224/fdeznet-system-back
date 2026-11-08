@@ -31,6 +31,8 @@ from .encrypted_field import EncryptedText
 class TipoSeguridad(str, enum.Enum):
     pppoe = "pppoe"
     dhcp = "dhcp"
+    # IP puesta en el equipo del cliente; solo cola simple con la velocidad.
+    estatica = "estatica"
 
 class TipoControl(str, enum.Enum):
     colas_dinamicas = "colas_dinamicas"
@@ -103,7 +105,7 @@ class RouterModel(Base):
     ip_vpn = Column(String(50), nullable=False, unique=True)
     user_api = Column(String(50), default="admin")
     pass_api = Column(EncryptedText(), nullable=False)
-    port_api = Column(Integer, default=8728)
+    port_api = Column(Integer, default=80)  # API REST (servicio www)
     tipo_seguridad = Column(Enum(TipoSeguridad), default=TipoSeguridad.pppoe)
     tipo_control = Column(Enum(TipoControl), default=TipoControl.colas_dinamicas)
     version_os = Column(String(10), default="v7")
