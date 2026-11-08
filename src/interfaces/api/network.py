@@ -16,7 +16,9 @@ from src.domain.schemas import WireguardConfigResponse
 from src.infrastructure.database import get_db
 from src.infrastructure.auth import role_required
 from src.application.services.pppoe_config_service import resolver_password_pppoe
+from src.application.services import importacion_service as importacion
 from src.application.services.importacion_service import crear_servicio_importado
+from src.application.services.acceso_red import NOMBRES as NOMBRES_MODO, modo_router
 from src.infrastructure.models import (
     InventarioONUModel,
     RouterModel, 
@@ -394,63 +396,44 @@ async def descargar_plantilla_preparada(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(role_required(["admin"]))
 ):
-    """Genera y descarga el Excel directamente desde la memoria RAM (100% PPPoE)."""
-    
-    # 1. Obtener Datos
+    """Excel con los clientes que ya tiene el MikroTik, según su modo.
+
+    PPPoE: sus secrets. DHCP: los leases de la red (IP + MAC). IP fija: las
+    colas simples de una IP de la red. Solo van las columnas de ese modo.
+    """
+    import asyncio
+
     router_db = await db.get(RouterModel, router_id)
     red_db = await db.get(RedModel, red_id)
-    if not router_db or not red_db: 
+    if not router_db or not red_db:
         raise HTTPException(404, "Datos no encontrados")
 
     planes_db = (await db.execute(select(PlanModel).where(PlanModel.router_id == router_id))).scalars().all()
-    mapa_planes = {p.nombre.strip().lower(): p.id for p in planes_db if p.nombre}
-
-    # 2. Leer Mikrotik (SOLO PPPoE)
+    modo = modo_router(router_db)
+    base = {"id_red": red_id, "id_zona": zona_id, "id_plantilla_facturacion": plantilla_id,
+            "id_plan_sugerido": plan_id, "id_olt": olt_id}
     mk = MikroTikService(router_db.ip_vpn, router_db.user_api, router_db.pass_api, router_db.port_api)
-    filas = []
+
+    def leer():
+        if modo == "dhcp":
+            return importacion.filas_dhcp(mk.obtener_todos_dhcp_estricto(), base, planes_db, plan_id, red_db.cidr)
+        if modo == "estatica":
+            try:
+                arp = mk._request("GET", "/ip/arp", raise_on_error=True)
+            except Exception:
+                arp = []
+            return importacion.filas_estatica(mk.obtener_todas_colas_estricto(), base, planes_db, plan_id,
+                                              red_db.cidr, arp if isinstance(arp, list) else [])
+        return importacion.filas_pppoe(mk.obtener_todos_pppoe_estricto(), base, planes_db, plan_id)
 
     try:
-        secrets = mk.obtener_todos_pppoe()
-
-        for item in secrets:
-            perfil_mk = item.get('profile', '') or item.get('comment', '') or ''
-            perfil_limpio = perfil_mk.strip().lower()
-            plan_final_id = mapa_planes.get(perfil_limpio)
-            
-            if not plan_final_id:
-                for p_nombre, p_id in mapa_planes.items():
-                    if p_nombre in perfil_limpio:
-                        plan_final_id = p_id
-                        break
-            if not plan_final_id: 
-                plan_final_id = plan_id 
-
-            ip = item.get('remote-address') or ''
-            nombre_mk = item.get('comment') or item.get('name') or f"Cliente PPPoE {ip}"
-
-            filas.append({
-                "nombre_cliente": nombre_mk, 
-                "numero_contrato": "",
-                "ip_asignada": ip,
-                "identificador_onu": item.get('caller-id') or '', 
-                "usuario_pppoe": item.get('name', ''),
-                "password_pppoe": item.get('password', ''),
-                "telefono": "",
-                "direccion": "",
-                "id_red": red_id,
-                "id_zona": zona_id,
-                "id_plantilla_facturacion": plantilla_id,
-                "id_plan_sugerido": plan_final_id, 
-                "id_olt": olt_id, 
-                "perfil_mikrotik_original": perfil_mk
-            })
-
+        filas = await asyncio.to_thread(leer)
     except Exception as e:
-        print(f"⚠️ Error leyendo Mikrotik PPPoE: {e}")
-    
+        raise HTTPException(502, f"No se pudo leer el MikroTik {router_db.nombre}: {e}") from e
+
     # 3. Generar Excel en MEMORIA
-    df = pd.DataFrame(filas)
-    filename = f"Importacion_PPPoE_{router_db.nombre.replace(' ', '_')}.xlsx"
+    df = pd.DataFrame(filas, columns=importacion.columnas_plantilla(modo))
+    filename = f"Importacion_{NOMBRES_MODO[modo].replace(' ', '_')}_{router_db.nombre.replace(' ', '_')}.xlsx"
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -477,8 +460,10 @@ async def procesar_importacion(
     import pandas as pd
     from sqlalchemy import select
 
-    if not await db.get(RouterModel, router_id): 
+    router_db = await db.get(RouterModel, router_id)
+    if not router_db:
         raise HTTPException(400, "Router inválido")
+    modo = modo_router(router_db)
     
     try:
         content = await archivo.read()
@@ -494,6 +479,10 @@ async def procesar_importacion(
         users_db = (await db.execute(select(ClienteModel.user_pppoe))).scalars().all()
         users_existentes = set(users_db)
         
+        macs_existentes = {
+            m.upper() for m in (await db.execute(select(ClienteModel.mac_address))).scalars().all() if m
+        }
+
         cedulas_db = (await db.execute(select(ClienteModel.cedula))).scalars().all()
         cedulas_existentes = set(cedulas_db)
         
@@ -521,13 +510,29 @@ async def procesar_importacion(
 
             nombre = str(row.get('nombre_cliente', '')).strip() or f"Cliente Fila {fila}"
             ip = str(row.get('ip_asignada', '')).strip()
-            user_ppp = str(row.get('usuario_pppoe', '')).strip() or None
-            
-            # 🔥 2. AUTO-REGISTRO DE INVENTARIO ONU (Por SN/Identificador) 🔥
+            # Solo lo del modo del router: PPPoE, MAC del lease o IP fija.
+            acceso, motivo = importacion.acceso_de_fila(modo, row.to_dict())
+            if motivo:
+                errores.append(f"Fila {fila}: {motivo}.")
+                continue
+            user_ppp = acceso["user_pppoe"]
+            mac = acceso["mac_address"]
+
+            if ip and ip in ips_existentes:
+                errores.append(f"Fila {fila}: IP {ip} duplicada.")
+                continue
+            if user_ppp and user_ppp in users_existentes:
+                errores.append(f"Fila {fila}: Usuario PPPoE duplicado.")
+                continue
+            if mac and mac in macs_existentes:
+                errores.append(f"Fila {fila}: MAC {mac} duplicada.")
+                continue
+
+            # 2. Inventario de ONU (solo fibra; una antena no es ONU).
             sn_excel = str(row.get('identificador_onu', '')).strip().upper()
             onu_id_asignado = None
 
-            if sn_excel:
+            if sn_excel and acceso["tipo_conexion"] == "fibra":
                 stmt_inv = select(InventarioONUModel).where(InventarioONUModel.identificador == sn_excel)
                 onu_existente = (await db.execute(stmt_inv)).scalar_one_or_none()
 
@@ -544,15 +549,6 @@ async def procesar_importacion(
                     db.add(nueva_onu)
                     await db.flush() 
                     onu_id_asignado = nueva_onu.id
-
-            # 3. Validaciones de IP y Usuario
-            if ip and ip in ips_existentes:
-                errores.append(f"Fila {fila}: IP {ip} duplicada.")
-                continue
-
-            if user_ppp and user_ppp in users_existentes:
-                errores.append(f"Fila {fila}: Usuario PPPoE duplicado.")
-                continue
 
             # Se acepta el encabezado anterior para importar archivos existentes.
             cedula_excel = str(
@@ -583,15 +579,15 @@ async def procesar_importacion(
                 telefono=str(row.get('telefono', '')),
                 direccion=str(row.get('direccion', '')),
                 user_pppoe=user_ppp,
-                pass_pppoe=str(
-                    row.get("password_pppoe")
-                    or await resolver_password_pppoe(db)
-                ),
+                pass_pppoe=(acceso["pass_pppoe"] or await resolver_password_pppoe(db)) if modo == "pppoe" else None,
                 ip_asignada=ip if ip else None,
+                mac_address=mac,
+                tipo_conexion=acceso["tipo_conexion"],
+                ip_antena=acceso["ip_antena"],
                 
                 onu_id=onu_id_asignado,  
                 red_id=red_id if red_id > 0 else None, 
-                olt_id=olt_id if olt_id > 0 else None,
+                olt_id=olt_id if olt_id > 0 and acceso["tipo_conexion"] == "fibra" else None,
                 
                 router_id=router_id,
                 zona_id=zona_id if zona_id > 0 else None,
@@ -606,6 +602,7 @@ async def procesar_importacion(
             await crear_servicio_importado(db, nuevo)
             if ip: ips_existentes.add(ip)
             if user_ppp: users_existentes.add(user_ppp)
+            if mac: macs_existentes.add(mac)
             count_ok += 1
 
         await db.commit()
