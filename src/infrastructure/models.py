@@ -105,7 +105,7 @@ class RouterModel(Base):
     ip_vpn = Column(String(50), nullable=False, unique=True)
     user_api = Column(String(50), default="admin")
     pass_api = Column(EncryptedText(), nullable=False)
-    port_api = Column(Integer, default=8728)
+    port_api = Column(Integer, default=80)  # API REST (servicio www)
     tipo_seguridad = Column(Enum(TipoSeguridad), default=TipoSeguridad.pppoe)
     tipo_control = Column(Enum(TipoControl), default=TipoControl.colas_dinamicas)
     version_os = Column(String(10), default="v7")

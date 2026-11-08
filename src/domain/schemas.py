@@ -567,7 +567,8 @@ class RouterBase(BaseModel):
     nombre: str = Field(..., min_length=3, max_length=100)
     ip_vpn: str
     user_api: str = "admin"
-    port_api: int = 8728
+    # API REST de RouterOS 7 (servicio www).
+    port_api: int = 80
     tipo_seguridad: TipoSeguridadEnum = TipoSeguridadEnum.pppoe
     tipo_control: TipoControlEnum = TipoControlEnum.colas_dinamicas
     version_os: str = "v7"
