@@ -2316,7 +2316,7 @@ async def logout_whatsapp(
             resp = await client.post(
                 f"{BASE_NODE_URL}/logout",
                 headers=NODE_HEADERS,
-                timeout=10.0,
+                timeout=45.0,
             )
             return resp.json()
     except Exception as e:

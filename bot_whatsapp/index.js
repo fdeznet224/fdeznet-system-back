@@ -76,6 +76,42 @@ if (!fs.existsSync(UPLOADS_DIR)) {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true, mode: 0o700 });
 }
 
+// Carpeta de la sesión de WhatsApp. En Docker es un volumen montado: no se
+// puede borrar la carpeta (EBUSY), solo vaciarla.
+const AUTH_PATH = path.join(__dirname, '.wwebjs_auth');
+const MARCA_FALLOS = path.join(AUTH_PATH, '.fallos-inicio');
+const MAX_FALLOS_INICIO = 3;
+
+function limpiarSesion() {
+    try {
+        if (!fs.existsSync(AUTH_PATH)) return;
+        for (const nombre of fs.readdirSync(AUTH_PATH)) {
+            fs.rmSync(path.join(AUTH_PATH, nombre), { recursive: true, force: true });
+        }
+        console.log('🧹 Sesión de WhatsApp borrada; al iniciar pedirá QR nuevo.');
+    } catch (e) {
+        console.error('⚠️ No se pudo borrar la sesión:', e.message);
+    }
+}
+
+/** Cuenta arranques fallidos seguidos con sesión guardada; devuelve el total. */
+function anotarFalloInicio() {
+    try {
+        const previos = Number(fs.readFileSync(MARCA_FALLOS, 'utf8')) || 0;
+        fs.writeFileSync(MARCA_FALLOS, String(previos + 1));
+        return previos + 1;
+    } catch (e) {
+        try { fs.writeFileSync(MARCA_FALLOS, '1'); } catch (_) {}
+        return 1;
+    }
+}
+
+function borrarMarcaFallos() {
+    try { fs.rmSync(MARCA_FALLOS, { force: true }); } catch (_) {}
+}
+
+// El panel pidió cerrar sesión: /logout se encarga, no hay que reiniciar.
+let cerrandoSesion = false;
 let client = null; 
 let isReady = false;
 let lastQR = null;
@@ -140,6 +176,7 @@ function iniciarMotor() {
         isReady = true;
         lastQR = null;
         console.log('✅ WHATSAPP CONECTADO Y LISTO');
+        borrarMarcaFallos();
 
         // 1. Vigila si Chromium muere (El Perro Guardián que ya tenías)
         client.pupBrowser.on('disconnected', () => {
@@ -193,14 +230,20 @@ function iniciarMotor() {
         console.error('❌ FALLO DE AUTENTICACIÓN:', msg);
         isReady = false;
         await detenerMotor();
-        const authPath = path.join(__dirname, '.wwebjs_auth');
-        if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
+        limpiarSesion();
         console.log('🔄 Sesión limpia. Por favor, reinicia o llama a /init para reescanear.');
     });
 
     client.on('disconnected', async (reason) => {
         console.log('❌ CLIENTE DESCONECTADO:', reason);
         isReady = false;
+        // Cerraron la sesión (desde el celular o el panel): la guardada ya no
+        // sirve y al reiniciar Chrome se queda trabado intentando abrirla.
+        if (cerrandoSesion) return;
+        if (reason === 'LOGOUT') {
+            await detenerMotor();
+            limpiarSesion();
+        }
         
         // 🔥 CORRECCIÓN 2: DELEGAR REINICIO A SYSTEMD
         // Eliminamos el setTimeout que causaba fugas de memoria y procesos zombies.
@@ -355,6 +398,12 @@ function iniciarMotor() {
 
     client.initialize().catch(err => {
         console.error("❌ Fallo crítico al inicializar:", err.message);
+        // Una sesión dañada hace fallar cada arranque ("Execution context was
+        // destroyed"). Tras varios seguidos se borra para que salga QR nuevo.
+        if (anotarFalloInicio() >= MAX_FALLOS_INICIO) {
+            console.error(`☠️ ${MAX_FALLOS_INICIO} arranques fallidos seguidos: la sesión está dañada.`);
+            limpiarSesion();
+        }
         // Si falla al arrancar de cero, también nos suicidamos para que Systemd intente de nuevo
         process.exit(1);
     });
@@ -386,12 +435,13 @@ app.post('/init', (req, res) => {
 });
 
 app.post('/logout', async (req, res) => {
+    cerrandoSesion = true;
     try {
         if (client && isReady) await client.logout();
     } catch (e) {}
     await detenerMotor();
-    const authPath = path.join(__dirname, '.wwebjs_auth');
-    if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
+    limpiarSesion();
+    cerrandoSesion = false;
     res.json({ status: 'stopped' });
 });
 
