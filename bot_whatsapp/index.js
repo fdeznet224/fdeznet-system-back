@@ -109,6 +109,18 @@ function anotarFalloInicio() {
     }
 }
 
+/**
+ * Chrome deja candados (Singleton*) en el perfil. Si el proceso o el
+ * contenedor anterior murió sin cerrarlo, el nuevo se niega a arrancar ("The
+ * profile appears to be in use"). Solo hay un Chrome por bot: es seguro quitarlos.
+ */
+function quitarCandadosChrome() {
+    const perfil = path.join(AUTH_PATH, 'session');
+    for (const nombre of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+        try { fs.rmSync(path.join(perfil, nombre), { force: true }); } catch (_) {}
+    }
+}
+
 function borrarMarcaFallos() {
     try { fs.rmSync(MARCA_FALLOS, { force: true }); } catch (_) {}
 }
@@ -151,6 +163,7 @@ setInterval(() => {
 
 function iniciarMotor() {
     console.log('⚡ Iniciando motor de WhatsApp con optimización de memoria...');
+    quitarCandadosChrome();
     
     client = new Client({
         authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
