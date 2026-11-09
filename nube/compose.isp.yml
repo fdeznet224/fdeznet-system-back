@@ -15,6 +15,8 @@ services:
     environment:
       WG_PORT: ${WG_PORT}
       WHATSAPP_BASE_URL: http://bot:3000
+      # Así la API sabe si la cuenta tiene el bot (perfil whatsapp).
+      PERFILES_NUBE: ${COMPOSE_PROFILES:-}
       TZ: America/Mexico_City
     cap_add:
       - NET_ADMIN
