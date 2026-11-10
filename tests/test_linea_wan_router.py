@@ -72,7 +72,9 @@ def test_balanceo_misma_distancia_es_principal():
 def test_mensajes():
     respaldo = {"estado": "respaldo", "enlace": "LTE", "nombre_principal": "DEDICADO"}
     principal = {"estado": "principal", "enlace": "DEDICADO", "nombre_principal": "DEDICADO"}
-    assert "respaldo LTE" in mensaje_cambio_wan("Centro", "principal", respaldo, "hoy")
+    assert mensaje_cambio_wan("Centro", "principal", respaldo, "hoy") == (
+        "⚠️ AVISO Internet: Centro perdió la línea principal y está saliendo por el respaldo desde el hoy."
+    )
     assert "volvió a la línea principal" in mensaje_cambio_wan("Centro", "respaldo", principal, "hoy")
     assert mensaje_cambio_wan("Centro", None, principal, "hoy") is None
     assert mensaje_cambio_wan("Centro", "principal", principal, "hoy") is None
