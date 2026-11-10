@@ -111,6 +111,11 @@ class RouterModel(Base):
     version_os = Column(String(10), default="v7")
     is_active = Column(Boolean, default=True)
     is_online = Column(Boolean, default=True)
+    # Línea de internet por la que sale: principal, respaldo o sin_internet.
+    wan_estado = Column(String(15), nullable=True)
+    wan_enlace = Column(String(150), nullable=True)
+    wan_principal = Column(String(150), nullable=True)  # Puerta de la línea principal.
+    wan_desde = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         server_default=text("CURRENT_TIMESTAMP"),

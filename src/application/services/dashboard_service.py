@@ -474,6 +474,13 @@ class DashboardService:
         ).one()
         total_routers = int(routers.total or 0)
         conectados = int(routers.conectados or 0)
+        sin_principal = (
+            await self.db.execute(
+                select(RouterModel.nombre, RouterModel.wan_estado, RouterModel.wan_enlace, RouterModel.wan_desde)
+                .where(RouterModel.is_active == True, RouterModel.wan_estado.in_(["respaldo", "sin_internet"]))  # noqa: E712
+                .order_by(RouterModel.nombre)
+            )
+        ).all()
 
         # Cada cliente cuenta una vez: activo si tiene algún contrato activo,
         # suspendido si no tiene activos pero sí suspendido, y si no, sin contrato.
@@ -513,6 +520,16 @@ class DashboardService:
             "ordenes_reparacion": int(ordenes.reparaciones or 0),
             "routers_conectados": conectados,
             "routers_desconectados": max(total_routers - conectados, 0),
+            # Routers que salen por la línea de respaldo o sin internet.
+            "routers_sin_linea_principal": [
+                {
+                    "nombre": fila.nombre,
+                    "estado": fila.wan_estado,
+                    "enlace": fila.wan_enlace,
+                    "desde": fila.wan_desde.isoformat() if fila.wan_desde else None,
+                }
+                for fila in sin_principal
+            ],
             "clientes_registrados": total_clientes,
             "clientes_activos": clientes_activos,
             "clientes_suspendidos": clientes_suspendidos,
