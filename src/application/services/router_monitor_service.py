@@ -146,9 +146,8 @@ def mensaje_cambio_wan(router: str, anterior: str | None, nuevo: dict, fecha: st
         return None
     if estado == WAN_RESPALDO:
         return (
-            f"⚠️ AVISO Internet: {router} perdió la línea principal "
-            f"({nuevo['nombre_principal']}) y está saliendo por el respaldo "
-            f"{nuevo['enlace']} desde el {fecha}."
+            f"⚠️ AVISO Internet: {router} perdió la línea principal y está "
+            f"saliendo por el respaldo desde el {fecha}."
         )
     if estado == WAN_SIN_INTERNET:
         return (
@@ -156,8 +155,5 @@ def mensaje_cambio_wan(router: str, anterior: str | None, nuevo: dict, fecha: st
             f"desde el {fecha}. Los clientes de ese router están sin servicio."
         )
     if anterior in (WAN_RESPALDO, WAN_SIN_INTERNET):
-        return (
-            f"✅ AVISO Internet: {router} volvió a la línea principal "
-            f"{nuevo['enlace']} el {fecha}."
-        )
+        return f"✅ AVISO Internet: {router} volvió a la línea principal el {fecha}."
     return None  # Primera lectura o ya estaba en la principal.
