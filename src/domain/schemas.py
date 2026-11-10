@@ -598,6 +598,10 @@ class RouterResponse(RouterBase):
     id: int
     is_active: bool
     created_at: datetime
+    is_online: Optional[bool] = None
+    wan_estado: Optional[str] = None
+    wan_enlace: Optional[str] = None
+    wan_desde: Optional[datetime] = None
 
 # ==========================================
 # 6. CAJAS NAP

@@ -840,6 +840,15 @@ class MikroTikService:
             
         return {"up_bps": 0, "down_bps": 0}
 
+    def rutas_por_defecto(self):
+        """Rutas 0.0.0.0/0 (líneas de internet); None si el router no respondió."""
+        rutas = self._request("GET", "/ip/route?dst-address=0.0.0.0/0")
+        if rutas is None or rutas is False:
+            return None
+        if isinstance(rutas, dict):
+            rutas = [rutas]
+        return [r for r in rutas if isinstance(r, dict)] if isinstance(rutas, list) else None
+
     def estado_por_ip(self, ip, mac=None):
         """¿Está en línea un cliente sin PPPoE (IP fija o DHCP)?
 

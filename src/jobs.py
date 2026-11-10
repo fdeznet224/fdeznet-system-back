@@ -23,8 +23,11 @@ from src.application.services.mikrotik_reconciliation_service import (
     MikrotikReconciliationService,
 )
 from src.application.services.router_monitor_service import (
+    LECTURAS_PARA_CAMBIO_WAN,
     describir_enlace_vpn,
     evaluar_estado_router,
+    evaluar_wan,
+    mensaje_cambio_wan,
 )
 from src.application.services.vpn_service import leer_handshakes_wireguard
 from src.application.services.comprobante_service import ComprobanteService
@@ -326,6 +329,49 @@ def obtener_usuarios_activos_http_sync(ip, user, password, port=80):
 # Fallas consecutivas por router; se reinicia con el proceso, lo cual sólo
 # retrasa unos minutos la siguiente alerta de caída.
 _fallas_routers: dict[int, int] = {}
+# Estado de la línea de internet visto en lecturas seguidas, para no avisar
+# por un parpadeo: {router_id: (estado, veces)}.
+_wan_pendiente: dict[int, tuple[str, int]] = {}
+
+
+def _fecha_aviso() -> str:
+    return datetime.now().strftime('%d/%m/%Y, %I:%M:%S %p').lower().replace('pm', 'p.m.').replace('am', 'a.m.')
+
+
+async def _revisar_linea_wan(router, mk, db) -> None:
+    """Detecta si el router salió por la línea de respaldo o se quedó sin internet."""
+    rutas = await asyncio.to_thread(mk.rutas_por_defecto)
+    lectura = evaluar_wan(rutas, router.wan_principal)
+    if lectura is None:
+        return
+    estado = lectura["estado"]
+    if estado == router.wan_estado:
+        _wan_pendiente.pop(router.id, None)
+        if estado == "principal" and lectura["principal"] != router.wan_principal:
+            router.wan_principal = lectura["principal"]
+        if lectura["enlace"] and lectura["enlace"] != router.wan_enlace:
+            router.wan_enlace = lectura["enlace"]  # Cambió de respaldo a otro respaldo.
+        return
+    previo, veces = _wan_pendiente.get(router.id, (None, 0))
+    veces = veces + 1 if previo == estado else 1
+    # La primera lectura se guarda al instante; los cambios piden confirmación.
+    if router.wan_estado is not None and veces < LECTURAS_PARA_CAMBIO_WAN:
+        _wan_pendiente[router.id] = (estado, veces)
+        return
+    _wan_pendiente.pop(router.id, None)
+    anterior = router.wan_estado
+    router.wan_estado = estado
+    router.wan_enlace = lectura["enlace"]
+    router.wan_principal = lectura["principal"]
+    router.wan_desde = datetime.now().astimezone()
+    mensaje = mensaje_cambio_wan(router.nombre, anterior, lectura, _fecha_aviso())
+    if mensaje:
+        await enviar_alertas_whatsapp(mensaje, db, tipo_evento="alerta_internet")
+        db.add(LogCronjobModel(
+            nivel="INFO" if estado == "principal" else "WARN",
+            origen="Red",
+            mensaje=mensaje,
+        ))
 
 
 async def tarea_monitoreo_routers():
@@ -341,6 +387,11 @@ async def tarea_monitoreo_routers():
                     bool(router.is_online), respondio, _fallas_routers.get(router.id, 0)
                 )
                 _fallas_routers[router.id] = fallas
+                if respondio:
+                    try:
+                        await _revisar_linea_wan(router, mk, db)
+                    except Exception as error:  # No debe frenar el resto del monitoreo.
+                        print(f"⚠️ [RED] No se pudo revisar la línea de internet de {router.nombre}: {error}")
                 
                 if router.is_online != conectado:
                     router.is_online = conectado
