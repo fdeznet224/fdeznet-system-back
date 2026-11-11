@@ -477,7 +477,7 @@ class ActivacionService:
         if pagado:
             pago = (
                 await self.db.execute(
-                    select(PagoModel, UsuarioModel.nombre)
+                    select(PagoModel, func.coalesce(UsuarioModel.nombre_completo, UsuarioModel.usuario))
                     .outerjoin(UsuarioModel, UsuarioModel.id == PagoModel.usuario_id)
                     .where(PagoModel.factura_id == factura.id, PagoModel.estado == "aplicado")
                     .order_by(PagoModel.id.desc())
