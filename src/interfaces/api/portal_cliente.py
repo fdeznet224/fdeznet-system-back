@@ -35,6 +35,8 @@ cambios_red = LoginRateLimiter(max_attempts=20, window_seconds=600)
 reportes = LoginRateLimiter(max_attempts=3, window_seconds=3600)
 codigos_telefono = LoginRateLimiter(max_attempts=3, window_seconds=3600)
 # La gráfica en vivo pregunta cada pocos segundos; esto evita que alguien sature el MikroTik.
+# La prueba de notificaciones: al activar puede ir dos veces (si la suscripción vieja estaba muerta).
+pruebas_push = LoginRateLimiter(max_attempts=6, window_seconds=3600)
 lecturas_trafico = LoginRateLimiter(max_attempts=40, window_seconds=60)
 
 CATEGORIAS_PORTAL = {"sin_internet", "lentitud", "router_wifi", "otro"}
@@ -393,6 +395,15 @@ async def activar_notificaciones(datos: Suscripcion, cliente=Depends(cliente_por
     return {"ok": True}
 
 
+@router.post("/notificaciones/verificar")
+async def verificar_notificaciones(datos: Cancelacion, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    """Si el celular cree tenerlas activas pero el servidor ya lo borró (Google dijo 410), se resuscribe."""
+    from src.application.services.push_service import PushService
+
+    dueno = await PushService(db).dueno(datos.endpoint)
+    return {"estado": "propio" if dueno == cliente.id else "ninguno" if dueno is None else "otro"}
+
+
 @router.post("/notificaciones/quitar")
 async def quitar_notificaciones(datos: Cancelacion, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
     from src.application.services.push_service import PushService
@@ -405,8 +416,8 @@ async def quitar_notificaciones(datos: Cancelacion, cliente=Depends(cliente_port
 async def probar_notificaciones(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
     from src.application.services.push_service import PushService
 
-    reportes.ensure_allowed(f"prueba:{cliente.id}")
-    reportes.register_failure(f"prueba:{cliente.id}")
+    pruebas_push.ensure_allowed(f"prueba:{cliente.id}")
+    pruebas_push.register_failure(f"prueba:{cliente.id}")
     enviadas = await PushService(db).enviar(cliente.id, "Notificaciones activadas", "Aquí te avisaremos de tus pagos y de tu servicio.")
     if not enviadas:
         raise HTTPException(status_code=409, detail="No se pudo enviar a este celular.")

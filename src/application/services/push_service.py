@@ -145,6 +145,11 @@ class PushService:
             PushSuscripcionModel.cliente_id == cliente_id, PushSuscripcionModel.endpoint == endpoint))
         await self.db.commit()
 
+    async def dueno(self, endpoint: str) -> Optional[int]:
+        """De qué contrato es este celular en el servidor (None si no está o se borró por muerto)."""
+        return (await self.db.execute(
+            select(PushSuscripcionModel.cliente_id).where(PushSuscripcionModel.endpoint == endpoint))).scalars().first()
+
     async def cuantas(self, cliente_id: int) -> int:
         return len((await self.db.execute(
             select(PushSuscripcionModel.id).where(PushSuscripcionModel.cliente_id == cliente_id))).all())

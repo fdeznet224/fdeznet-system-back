@@ -313,3 +313,17 @@ def test_sin_vendedor_configurado_no_hay_fichas(monkeypatch):
     monkeypatch.delenv("FICHAS_USUARIO", raising=False)
     monkeypatch.delenv("FICHAS_CLAVE", raising=False)
     assert fichas_service.configuracion() is None
+
+
+
+def test_el_celular_sabe_si_el_servidor_lo_sigue_teniendo():
+    class Base:
+        def __init__(self, dueno):
+            self.dueno = dueno
+
+        async def execute(self, _consulta):
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: self.dueno))
+
+    assert asyncio.run(push.PushService(Base(327)).dueno("https://push.example/a")) == 327
+    # Google dijo 410 y se borró: el celular se tiene que volver a suscribir.
+    assert asyncio.run(push.PushService(Base(None)).dueno("https://push.example/a")) is None
