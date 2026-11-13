@@ -1830,7 +1830,7 @@ class BillingService:
                     if servicio:
                         servicio.ultima_reactivacion_origen = (
                             "bot"
-                            if nuevo_pago.metodo_pago == "autovalidado"
+                            if nuevo_pago.metodo_pago in ("autovalidado", "codi")
                             else "manual"
                         )
                         servicio.ultima_reactivacion_en = datetime.now()

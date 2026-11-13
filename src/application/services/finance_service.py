@@ -63,6 +63,7 @@ METODOS_PERMITIDOS = {
     "tarjeta",
     "deposito",
     "autovalidado",
+    "codi",
     "saldo_favor",
     "otro",
 }
@@ -235,7 +236,7 @@ class FinanceService:
         if metodo not in METODOS_PERMITIDOS:
             raise ValueError(
                 "Método inválido. Usa efectivo, transferencia, tarjeta, "
-                "depósito, autovalidado, saldo_favor u otro"
+                "depósito, autovalidado, codi, saldo_favor u otro"
             )
         return metodo
 

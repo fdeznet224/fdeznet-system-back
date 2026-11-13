@@ -1815,6 +1815,11 @@ class ConfiguracionCorreoBancoModel(Base):
     # los datos de la captura (código único que no se puede reusar).
     validar_pagos_con = Column(String(20), nullable=False, default="correo", server_default="correo")
     ultimo_uid = Column(String(50), nullable=True)
+    # Cobro CoDi con pey.mx: el agente manda el cobro a la app del banco del
+    # cliente y pey avisa por webhook cuando se paga.
+    codi_activo = Column(Boolean, nullable=False, default=False, server_default="0")
+    pey_api_key = Column(EncryptedText(), nullable=True)
+    pey_webhook_secreto = Column(EncryptedText(), nullable=True)
     credencial_verificada_en = Column(DateTime, nullable=True)
     ultima_revision = Column(DateTime, nullable=True)
     ultimo_error = Column(String(500), nullable=True)
@@ -2027,6 +2032,29 @@ class PlantillaMensajeModel(Base):
     tipo = Column(String(50), unique=True) 
     texto = Column(Text)    
     activo = Column(Boolean, default=True)
+
+
+class CobroCodiModel(Base):
+    """Cada cobro CoDi enviado con pey.mx y el pago que llegó por webhook."""
+
+    __tablename__ = "cobros_codi"
+
+    id = Column(Integer, primary_key=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id", ondelete="SET NULL"), nullable=True, index=True)
+    tipo = Column(String(10), nullable=False, default="celular")  # celular | qr
+    telefono = Column(String(10), nullable=True)
+    monto = Column(Numeric(12, 2), nullable=False)
+    # enviado → aplicado; error al mandarlo; sin_aplicar si llegó dinero que no se pudo aplicar.
+    estado = Column(String(20), nullable=False, default="enviado", index=True)
+    pey_transaction_id = Column(String(40), nullable=True, unique=True)
+    codi_id = Column(String(40), nullable=True)
+    num_ref = Column(String(7), nullable=True)
+    monto_pagado = Column(Numeric(12, 2), nullable=True)
+    pago_ids = Column(String(255), nullable=True)
+    detalle = Column(String(500), nullable=True)
+    origen = Column(String(20), nullable=False, default="whatsapp")
+    creado_en = Column(DateTime, nullable=False, server_default=func.now())
+    pagado_en = Column(DateTime, nullable=True)
 
 
 class ConfiguracionBotModel(Base):

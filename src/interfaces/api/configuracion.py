@@ -823,6 +823,50 @@ class PagosCapturaRequest(BaseModel):
         return ",".join(dict.fromkeys(partes))
 
 
+class PagosCodiRequest(BaseModel):
+    activo: bool = False
+    # Vacío conserva la que ya estaba guardada.
+    api_key: str | None = Field(default=None, max_length=300)
+    webhook_secreto: str | None = Field(default=None, max_length=300)
+
+
+def _respuesta_codi(config) -> dict:
+    from src.application.services.codi_service import url_webhook
+
+    return {
+        "activo": bool(config.codi_activo),
+        "tiene_api_key": bool((config.pey_api_key or "").strip()),
+        "tiene_webhook_secreto": bool((config.pey_webhook_secreto or "").strip()),
+        "url_webhook": url_webhook(),
+    }
+
+
+@router.get("/pagos-codi")
+async def obtener_pagos_codi(db: AsyncSession = Depends(get_db)):
+    config = await config_pagos(db)
+    await db.commit()
+    return _respuesta_codi(config)
+
+
+@router.put("/pagos-codi")
+async def guardar_pagos_codi(datos: PagosCodiRequest, db: AsyncSession = Depends(get_db)):
+    config = await config_pagos(db)
+    if (datos.api_key or "").strip():
+        config.pey_api_key = datos.api_key.strip()
+    if (datos.webhook_secreto or "").strip():
+        config.pey_webhook_secreto = datos.webhook_secreto.strip()
+    if datos.activo and not (config.pey_api_key or "").strip():
+        raise HTTPException(status_code=400, detail="Escribe la API key de pey para activar el cobro por CoDi")
+    if datos.activo and not (config.pey_webhook_secreto or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Escribe el secreto del webhook de pey: sin él los pagos no se aplicarían solos",
+        )
+    config.codi_activo = datos.activo
+    await db.commit()
+    return _respuesta_codi(config)
+
+
 @router.get("/pagos-captura")
 async def obtener_pagos_captura(db: AsyncSession = Depends(get_db)):
     config = await config_pagos(db)

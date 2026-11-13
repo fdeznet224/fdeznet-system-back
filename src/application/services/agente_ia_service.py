@@ -29,6 +29,7 @@ from src.application.services.billing_service import BillingService
 from src.application.services.cobertura_service import zona_y_plan
 from src.application.services.bot_flow_service import get_or_create_bot_config
 from src.application.services.bot_pausa_service import bot_en_pausa, pausar_bot
+from src.application.services.codi_service import cobrar_al_celular, codi_disponible
 from src.application.services.comprobante_service import (
     ComprobanteService,
     normalizar_contrato,
@@ -78,11 +79,11 @@ CONSULTAS = {
 }
 ACCIONES = {
     "registrar_prospecto", "registrar_promesa", "crear_orden_tecnica", "aplicar_comprobante",
-    "solicitar_cambio_contrasena", "pasar_a_humano",
+    "solicitar_cambio_contrasena", "pasar_a_humano", "cobrar_por_codi",
 }
 REQUIEREN_CLIENTE = {
     "consultar_cuenta", "diagnosticar_conexion", "medir_velocidad", "registrar_promesa",
-    "crear_orden_tecnica", "aplicar_comprobante", "solicitar_cambio_contrasena",
+    "crear_orden_tecnica", "aplicar_comprobante", "solicitar_cambio_contrasena", "cobrar_por_codi",
 }
 CATEGORIAS_ORDEN = ("sin_internet", "cable_roto", "potencia_baja", "lentitud", "router_wifi", "cambio_domicilio", "otro")
 RE_COORDENADAS = re.compile(r"(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})")
@@ -190,6 +191,18 @@ HERRAMIENTAS = [
                  {"motivo": {"type": "string"}}, ["motivo"]),
 ]
 
+# Solo se ofrece cuando el ISP activó el cobro por CoDi (pey.mx).
+HERRAMIENTA_CODI = _herramienta(
+    "cobrar_por_codi",
+    "Manda a la app del banco del cliente identificado un cobro CoDi por todo lo que debe; "
+    "el cliente solo lo acepta y el pago se aplica solo.",
+    {"telefono": {"type": "string", "description": "celular de 10 dígitos al que se manda; vacío = el de este chat"}},
+)
+
+REGLA_CODI = """
+
+4b. Pagar por CoDi (sin captura): cuando un cliente identificado quiere pagar, pregunta cómo pagar o escribe "PAGAR", ofrécele primero mandarle el cobro a la app de su banco: lo acepta ahí y su pago se aplica solo, sin mandar comprobante. Si acepta, usa `cobrar_por_codi` (al número de este chat; si pide otro número, pásalo en `telefono`). Con `enviado`, dile que abra la app de su banco y acepte el cobro por el monto, y que tiene `vence_en_minutos` minutos; si tarda, que escriba PAGAR otra vez. NO digas que el pago ya quedó: le llega su recibo por aquí cuando lo acepte. Si dice que no le llegó, explícale que su banco debe tener CoDi activado (en su app, sección CoDi o Cobro Digital) y ofrécele los datos para transferencia (`datos_de_pago`). Si `cobrar_por_codi` devuelve `error`, dale los datos para transferencia."""
+
 
 
 
@@ -236,17 +249,22 @@ class AgenteIAService:
         if not clave:
             return await self._fallar(interaccion, "Falta la clave de API del agente")
 
+        codi = await codi_disponible(self.db)
         contexto = _Contexto(self, interaccion, modo, telefono, telefono_busqueda, media_url)
         await contexto.cargar_identidad()
         interaccion.cliente_id = contexto.cliente.id if contexto.cliente else None
 
         mensajes = [
-            {"role": "system", "content": await self._instrucciones(config)},
+            {"role": "system", "content": await self._instrucciones(config, codi)},
             {"role": "user", "content": await self._mensaje_usuario(contexto, texto, media_url)},
         ]
         # Copia fija: si una acción falla y se deshace, la sesión olvida la
         # configuración y leerla de nuevo a media conversación truena.
-        modelo = SimpleNamespace(agente_modelo=config.agente_modelo, agente_url=config.agente_url)
+        modelo = SimpleNamespace(
+            agente_modelo=config.agente_modelo,
+            agente_url=config.agente_url,
+            herramientas=HERRAMIENTAS + [HERRAMIENTA_CODI] if codi else HERRAMIENTAS,
+        )
         try:
             respuesta = await self._conversar(modelo, clave, mensajes, contexto)
         except Exception as exc:
@@ -353,7 +371,7 @@ class AgenteIAService:
         cuerpo = {
             "model": config.agente_modelo,
             "messages": mensajes,
-            "tools": HERRAMIENTAS,
+            "tools": getattr(config, "herramientas", HERRAMIENTAS),
             "tool_choice": "auto",
         }
         cliente = self.http or httpx.AsyncClient(timeout=90)
@@ -375,11 +393,12 @@ class AgenteIAService:
                 await cliente.aclose()
         raise RuntimeError("El proveedor de IA no respondió")
 
-    async def _instrucciones(self, config) -> str:
+    async def _instrucciones(self, config, codi: bool = False) -> str:
         marca = await self.db.get(ConfiguracionSistema, 1)
         empresa = getattr(marca, "empresa_nombre", None) or "tu proveedor de internet"
         return (
             INSTRUCCIONES.format(empresa=empresa, hoy=date.today().strftime("%A %d/%m/%Y"), portal=_url_portal())
+            + (REGLA_CODI if codi else "")
             + "\n\n# CONOCIMIENTO DEL ISP\n\n"
             + (config.agente_conocimiento or CONOCIMIENTO_INICIAL)
         )
@@ -993,6 +1012,12 @@ class _Contexto:
                 "No digas que el pago ya se aplicó."
             )
         return resultado
+
+    async def _cobrar_por_codi(self, telefono: str = "") -> dict:
+        numero = telefono or self._telefono_de_contacto()
+        if not numero:
+            return {"error": "No se conoce el número de este chat: pregúntale a qué celular (10 dígitos) se lo mandas."}
+        return await cobrar_al_celular(self.db, self.cliente, numero, origen="whatsapp")
 
     async def _validar_comprobante(self, revision_id: int) -> dict:
         if self.cliente:

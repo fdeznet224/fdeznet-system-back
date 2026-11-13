@@ -391,7 +391,7 @@ def test_si_la_promesa_se_rechaza_el_agente_igual_le_contesta(monkeypatch):
 
     servicio = AgenteIAService(db, enviar=enviar)
     monkeypatch.setattr(servicio, "_llamar_modelo", llamar)
-    monkeypatch.setattr(servicio, "_instrucciones", lambda _config: nada())
+    monkeypatch.setattr(servicio, "_instrucciones", lambda *_: nada())
     monkeypatch.setattr(servicio, "_mensaje_usuario", lambda *_args: nada())
 
     interaccion = asyncio.run(servicio.atender("262491842027612@lid", None, 15542, "fdeznet promesa de pago"))
@@ -442,7 +442,7 @@ def test_si_el_agente_falla_el_cliente_no_se_queda_sin_respuesta(monkeypatch):
     monkeypatch.setattr(_Contexto, "_avisar_personal", avisar)
     servicio = AgenteIAService(db, enviar=enviar)
     monkeypatch.setattr(servicio, "_llamar_modelo", caido)
-    monkeypatch.setattr(servicio, "_instrucciones", lambda _config: _nada())
+    monkeypatch.setattr(servicio, "_instrucciones", lambda *_: _nada())
     monkeypatch.setattr(servicio, "_mensaje_usuario", lambda *_args: _nada())
 
     interaccion = asyncio.run(servicio.atender("262491842027612@lid", None, 15542, "promesa de pago"))

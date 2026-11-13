@@ -65,6 +65,7 @@ from src.interfaces.api import (
     network,
     olts,
     ordenes,
+    pagos_codi,
     planes,
     portal_cliente,
     servicios,
@@ -371,6 +372,8 @@ app.include_router(
     dependencies=[Depends(require_valid_license)],
 )
 app.include_router(configuracion.public_router)
+# Aviso de pago de pey.mx (CoDi): lo protege la firma del webhook.
+app.include_router(pagos_codi.webhook_router, dependencies=[Depends(require_valid_license)])
 # El cliente entra con su contrato: sesión propia, sin usuario del personal.
 app.include_router(portal_cliente.router, dependencies=[Depends(require_valid_license)])
 app.include_router(control_plane.heartbeat_router)
