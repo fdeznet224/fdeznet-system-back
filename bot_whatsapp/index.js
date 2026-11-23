@@ -16,7 +16,7 @@ const path = require('path');
 const crypto = require('crypto');
 const mime = require('mime-types');
 const { descargarMediaConReintentos, describirError } = require('./media-utils');
-const { resolverChatSalida, resolverTelefonoEntrante } = require('./phone-utils');
+const { recordarChat, resolverChatSalida, resolverTelefonoEntrante } = require('./phone-utils');
 const { crearVinculador } = require('./vincular-envios');
 const {
     crearRegistroEnvios,
@@ -345,6 +345,9 @@ function iniciarMotor() {
                     '⚠️ WhatsApp no pudo resolver el LID del remitente; '
                     + 'el backend no lo usará como identidad telefónica.'
                 );
+            } else {
+                // Si luego la consulta de ese número falla, se le escribe a este chat.
+                recordarChat(numeroReal.split('@')[0], msg.from);
             }
 
             await postBackend('/whatsapp/webhook/recibir', {

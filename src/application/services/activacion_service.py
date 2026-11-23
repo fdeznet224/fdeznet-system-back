@@ -26,6 +26,7 @@ from src.application.services.acceso_onu_config import MODELO_DEL_TECNICO
 from src.application.services.resumen_cobro import Prorrateo, resumen_cobro
 from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.utils.mikrotik import normalizar_mac
+from src.utils.telefono import telefono_cliente
 from src.infrastructure.models import (
     CajaNapModel,
     ClienteModel,
@@ -71,6 +72,12 @@ class ActivacionTecnicoRequest(BaseModel):
     # antena y la MAC de su WAN (en mac_address).
     tipo_conexion: Literal["fibra", "radio"] = "fibra"
     ip_antena: Optional[str] = Field(default=None, max_length=45)
+
+    @field_validator("telefono")
+    @classmethod
+    def _telefono(cls, valor):
+        # Se revisa antes de activar: 10 dígitos, como en el alta del panel.
+        return telefono_cliente(valor)
 
     @field_validator("ip_antena")
     @classmethod

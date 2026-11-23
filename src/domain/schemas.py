@@ -13,6 +13,7 @@ from datetime import datetime, date
 from decimal import Decimal
 
 from src.utils.mikrotik import normalizar_mac
+from src.utils.telefono import telefono_cliente
 
 # ==========================================
 # 0. ENUMS GLOBALES
@@ -840,11 +841,19 @@ class ClienteCreate(ClienteBase):
     def validar_mac_address(cls, value):
         return normalizar_mac(value)
 
-class ClienteUpdate(ClienteBase):
-    """Edición de la ficha: la MAC se valida en el servicio, solo si cambió.
+    @field_validator("telefono")
+    @classmethod
+    def validar_telefono(cls, value):
+        # Solo los 10 dígitos; el envío por WhatsApp prueba 52 y 521.
+        return telefono_cliente(value)
 
-    Muchas fichas traen en la MAC el serial de la ONU (datos anteriores); el
-    formulario la manda sin cambios y no debe impedir guardar lo demás.
+class ClienteUpdate(ClienteBase):
+    """Edición de la ficha: la MAC y el teléfono se validan en el servicio,
+    solo si cambiaron.
+
+    Muchas fichas traen en la MAC el serial de la ONU (datos anteriores) o un
+    teléfono viejo mal escrito; el formulario los manda sin cambios y no debe
+    impedir guardar lo demás.
     """
 
 

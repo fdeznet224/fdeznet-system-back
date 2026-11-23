@@ -5,8 +5,9 @@ import logging
 import os
 import asyncio
 import itertools
-import re
 from datetime import datetime, timedelta
+
+from src.utils.telefono import telefono_para_whatsapp
 
 # Configuración de Logs para ver qué pasa en la consola
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +22,28 @@ def set_intervalo_default(segundos: int) -> int:
     segundos = max(1, min(int(segundos), 3600))
     GLOBAL_SETTINGS["intervalo_default"] = segundos
     return segundos
+
+
+INTENTOS_SIN_WHATSAPP = 3
+
+
+def reintentar_sin_whatsapp(resultado: dict, datos: dict) -> dict:
+    """"Sin WhatsApp" se reintenta un par de veces (a 1 y 5 minutos).
+
+    WhatsApp a veces no contesta la consulta del número durante unos minutos
+    y el puente lo reporta como si no tuviera WhatsApp, aunque a ese mismo
+    número ya le hayan llegado mensajes. Solo aplica a la cola con registro
+    (con intentos); al último intento queda como fallido.
+    """
+    if not resultado.get("sin_whatsapp") or resultado.get("ok"):
+        return resultado
+    intentos = datos.get("intentos")
+    if intentos is None:
+        return resultado
+    limite = min(INTENTOS_SIN_WHATSAPP, datos.get("max_intentos") or INTENTOS_SIN_WHATSAPP)
+    if intentos < limite:
+        return {**resultado, "reintentable": True}
+    return resultado
 
 
 def estado_por_ack(ack: int) -> str:
@@ -49,20 +72,10 @@ class WhatsAppService:
 
     def _formatear_numero(self, numero: str):
         if not numero: return None
-        
-        # 🔥 CORRECCIÓN: Si es un LID o ya trae arroba, no lo formatees, pásalo intacto
-        if "@" in str(numero):
-            return str(numero)
-            
-        num = "".join(re.findall(r'\d+', str(numero)))
-        
-        if len(num) == 10:
-            return f"521{num}"
-            
-        if len(num) == 12 and num.startswith("52") and not num.startswith("521"):
-            return f"521{num[2:]}"
-            
-        return num
+        # Un LID o un chat con arroba pasa intacto; un número mexicano en
+        # cualquier forma (con espacios, guiones, +52, +521, 044) queda en
+        # 521 + 10 dígitos. El puente prueba también 52 + 10 dígitos.
+        return telefono_para_whatsapp(numero) or None
 
     async def enviar_mensaje(
         self,
@@ -407,6 +420,7 @@ class WhatsAppQueue:
                         resultado = await self._enviar_por_chat_verificado(
                             mensaje_id, datos, resultado
                         )
+                    resultado = reintentar_sin_whatsapp(resultado, datos)
 
                     if resultado["ok"]:
                         tipo = "PDF + Texto" if datos.get("ruta") else "Texto"
@@ -568,6 +582,8 @@ class WhatsAppQueue:
                 "mensaje": registro.mensaje,
                 "ruta": registro.ruta_archivo,
                 "tipo_evento": registro.tipo_evento,
+                "intentos": registro.intentos,
+                "max_intentos": registro.max_intentos,
                 "intervalo": (
                     registro.intervalo_salida
                     if registro.intervalo_salida and registro.intervalo_salida > 0

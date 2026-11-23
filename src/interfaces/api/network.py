@@ -19,6 +19,7 @@ from src.application.services.pppoe_config_service import resolver_password_pppo
 from src.application.services import importacion_service as importacion
 from src.application.services.importacion_service import crear_servicio_importado
 from src.application.services.acceso_red import NOMBRES as NOMBRES_MODO, modo_router
+from src.utils.telefono import telefono_cliente
 from src.infrastructure.models import (
     InventarioONUModel,
     RouterModel, 
@@ -572,11 +573,22 @@ async def procesar_importacion(
                         cedulas_existentes.add(cedula_final)
                         break
 
+            # El teléfono se guarda en 10 dígitos; si no se entiende, el cliente
+            # se importa sin teléfono y se avisa para corregirlo en su ficha.
+            try:
+                telefono_excel = telefono_cliente(row.get('telefono', ''))
+            except ValueError:
+                telefono_excel = None
+                errores.append(
+                    f"Fila {fila}: el teléfono '{row.get('telefono')}' no tiene 10 dígitos; "
+                    "el cliente se importó sin teléfono."
+                )
+
             # 🚀 5. CREACIÓN DEL CLIENTE
             nuevo = ClienteModel(
                 nombre=nombre,
-                cedula=cedula_final, 
-                telefono=str(row.get('telefono', '')),
+                cedula=cedula_final,
+                telefono=telefono_excel,
                 direccion=str(row.get('direccion', '')),
                 user_pppoe=user_ppp,
                 pass_pppoe=(acceso["pass_pppoe"] or await resolver_password_pppoe(db)) if modo == "pppoe" else None,

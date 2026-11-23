@@ -304,6 +304,7 @@ class OrdenService:
                 orden.created_at,
                 ahora,
             )
+            await self._avisar_terminada(orden, usuario)
         elif nuevo_estado == "cancelada":
             orden.fecha_cancelacion = ahora
         elif nuevo_estado == "en_camino":
@@ -321,6 +322,18 @@ class OrdenService:
         else:
             await self.db.flush()
         return await self.obtener(orden.id)
+
+    async def _avisar_terminada(self, orden: OrdenServicioModel, usuario: UsuarioModel):
+        """El cliente recibe por WhatsApp que su servicio quedó restablecido."""
+        from src.application.services.agenda_service import preparar_aviso_terminada
+
+        try:
+            tecnico = await self.db.get(UsuarioModel, orden.tecnico_id) if orden.tecnico_id else usuario
+            async with self.db.begin_nested():
+                await preparar_aviso_terminada(self.db, orden, tecnico)
+        except Exception:
+            # Un problema con el aviso no debe impedir cerrar la orden.
+            logger.exception("No se pudo preparar el aviso de orden terminada (orden %s)", orden.id)
 
     async def _avisar_en_camino(self, orden: OrdenServicioModel, usuario: UsuarioModel):
         """El cliente se entera por WhatsApp de que el técnico va a su domicilio."""

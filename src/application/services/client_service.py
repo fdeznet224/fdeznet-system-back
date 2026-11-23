@@ -63,6 +63,7 @@ from src.utils.mikrotik import (
     formatear_rate_limit_dhcp,
     normalizar_mac,
 )
+from src.utils.telefono import telefono_cliente
 
 def mac_editada(nueva, actual):
     """(cambia, valor) para la MAC al editar la ficha.
@@ -1011,7 +1012,19 @@ class ClientService:
                 update_data["mac_address"] = valor
             else:
                 update_data.pop("mac_address")
-    
+
+        # El teléfono queda en 10 dígitos. Uno viejo mal escrito que el
+        # formulario reenvía sin cambios no impide guardar lo demás.
+        if "telefono" in update_data:
+            nuevo = update_data["telefono"]
+            if (nuevo or "").strip() == (cliente_db.telefono or "").strip() and nuevo:
+                try:
+                    update_data["telefono"] = telefono_cliente(nuevo)
+                except ValueError:
+                    update_data.pop("telefono")
+            else:
+                update_data["telefono"] = telefono_cliente(nuevo)
+
         # 3. LIMPIEZA DE LLAVES FORÁNEAS
         campos_fk = [
             "caja_nap_id", "puerto_nap", "router_id", "plan_id", 

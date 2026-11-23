@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
     comoIdTelefono,
+    recordarChat,
     resolverChatSalida,
     resolverTelefonoEntrante,
     variantesNumero,
@@ -86,5 +87,46 @@ test('un chat @lid se usa tal cual', async () => {
 
 test('si WhatsApp no contesta la consulta se conserva el envío de siempre', async () => {
     const client = { async getNumberId() { throw new Error('timeout'); } };
-    assert.equal(await resolverChatSalida(client, '5219613339474'), '5219613339474@c.us');
+    assert.equal(await resolverChatSalida(client, '5219610000001'), '5219610000001@c.us');
+});
+
+test('un número de 10 dígitos o con +52, guiones o espacios se prueba con 521 y 52', () => {
+    assert.deepEqual(variantesNumero('9613339474'), ['5219613339474', '529613339474']);
+    assert.deepEqual(variantesNumero('961-333-9474'), ['5219613339474', '529613339474']);
+    assert.deepEqual(variantesNumero('+52 961 333 9474'), ['529613339474', '5219613339474']);
+    assert.deepEqual(variantesNumero('044 961 333 9474'), ['5219613339474', '529613339474']);
+    assert.deepEqual(variantesNumero('+1 805 555 0100'), ['18055550100']);
+});
+
+test('si la consulta falla después, usa el chat que ya funcionó con ese número', async () => {
+    let responde = true;
+    const client = {
+        async getNumberId(numero) {
+            if (!responde) return null;
+            return numero === '529612220001' ? { _serialized: '529612220001@c.us' } : null;
+        },
+    };
+    assert.equal(await resolverChatSalida(client, '9612220001'), '529612220001@c.us');
+    responde = false;
+    assert.equal(await resolverChatSalida(client, '5219612220001'), '529612220001@c.us');
+});
+
+test('recuerda el chat de quien nos escribe para responderle aunque la consulta falle', async () => {
+    recordarChat('5219612220002', '123456789012345@lid');
+    const client = { async getNumberId() { return null; } };
+    assert.equal(await resolverChatSalida(client, '9612220002'), '123456789012345@lid');
+});
+
+test('si WhatsApp no encuentra el número pero ya hay chat en la sesión, se usa ese chat', async () => {
+    const client = {
+        async getNumberId() { return null; },
+        async getContactLidAndPhone() { return [{ lid: '555000111222333@lid', pn: '529612220003@c.us' }]; },
+        pupPage: {
+            async evaluate(_fn, ids) {
+                assert.ok(ids.includes('5219612220003@c.us') && ids.includes('555000111222333@lid'));
+                return '555000111222333@lid';
+            },
+        },
+    };
+    assert.equal(await resolverChatSalida(client, '9612220003'), '555000111222333@lid');
 });

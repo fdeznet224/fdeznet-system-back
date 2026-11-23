@@ -32,6 +32,17 @@ MENSAJE_EN_CAMINO = (
     "Llegará en aproximadamente 30 minutos. Por favor ten a alguien en casa para recibirlo."
 )
 
+# Al terminar una orden con el servicio ya funcionando (la instalación tiene
+# su propio mensaje de bienvenida y el retiro no aplica).
+TIPOS_AVISO_TERMINADA = {"reparacion", "cambio_onu", "cambio_domicilio"}
+LARGO_SOLUCION = 300
+MENSAJE_ORDEN_TERMINADA = (
+    "✅ Hola {nombre}, el técnico {tecnico} de {empresa} terminó el trabajo "
+    "y tu servicio de internet ya quedó restablecido.\n\n"
+    "🛠️ Lo que se hizo: {solucion}\n\n"
+    "Si notas cualquier falla, responde este mensaje y te ayudamos. ¡Gracias por tu paciencia!"
+)
+
 
 def _a_hora(texto: str) -> time:
     horas, minutos = texto.split(":")[:2]
@@ -96,7 +107,34 @@ async def agenda_del_dia(db, tecnico_id: Optional[int], dia: date, excluir_orden
 
 async def preparar_aviso_en_camino(db, orden: OrdenServicioModel, tecnico: Optional[UsuarioModel]) -> Optional[MensajeChatModel]:
     """Deja en la bandeja de salida el aviso al cliente; sale con la próxima revisión (≤ 1 min)."""
-    clave = f"orden:{orden.id}:en_camino"
+    return await _preparar_aviso_orden(db, orden, tecnico, "tecnico_en_camino", "en_camino", MENSAJE_EN_CAMINO)
+
+
+async def preparar_aviso_terminada(db, orden: OrdenServicioModel, tecnico: Optional[UsuarioModel]) -> Optional[MensajeChatModel]:
+    """Al terminar una reparación (o cambio de ONU / domicilio) el cliente recibe
+    por WhatsApp que su servicio quedó restablecido y lo que hizo el técnico."""
+    if orden.tipo not in TIPOS_AVISO_TERMINADA:
+        return None
+    solucion = " ".join((orden.solucion or "").split())
+    if len(solucion) > LARGO_SOLUCION:
+        solucion = solucion[: LARGO_SOLUCION - 1].rstrip() + "…"
+    return await _preparar_aviso_orden(
+        db, orden, tecnico, "orden_terminada", "terminada", MENSAJE_ORDEN_TERMINADA,
+        {"solucion": solucion or "revisión y ajuste del equipo"},
+    )
+
+
+async def _preparar_aviso_orden(
+    db,
+    orden: OrdenServicioModel,
+    tecnico: Optional[UsuarioModel],
+    tipo: str,
+    etapa: str,
+    texto_defecto: str,
+    extras: Optional[dict] = None,
+) -> Optional[MensajeChatModel]:
+    """Un aviso por orden y etapa, al chat del cliente (o del prospecto)."""
+    clave = f"orden:{orden.id}:{etapa}"
     if (await db.execute(select(MensajeChatModel.id).where(MensajeChatModel.clave_dedupe == clave))).scalar_one_or_none():
         return None
     cliente = await db.get(ClienteModel, orden.cliente_id) if orden.cliente_id else None
@@ -111,7 +149,7 @@ async def preparar_aviso_en_camino(db, orden: OrdenServicioModel, tecnico: Optio
     plantilla = (
         await db.execute(
             select(PlantillaMensajeModel).where(
-                PlantillaMensajeModel.tipo == "tecnico_en_camino", PlantillaMensajeModel.activo.is_(True)
+                PlantillaMensajeModel.tipo == tipo, PlantillaMensajeModel.activo.is_(True)
             )
         )
     ).scalar_one_or_none()
@@ -121,8 +159,9 @@ async def preparar_aviso_en_camino(db, orden: OrdenServicioModel, tecnico: Optio
         "nombre": nombre.split()[0] if nombre.split() else "",
         "tecnico": ((tecnico.nombre_completo or tecnico.usuario) if tecnico else "").split(" ")[0],
         "empresa": getattr(marca, "empresa_nombre", None) or "tu proveedor de internet",
+        **(extras or {}),
     }
-    texto = (plantilla.texto if plantilla and plantilla.texto else MENSAJE_EN_CAMINO)
+    texto = (plantilla.texto if plantilla and plantilla.texto else texto_defecto)
     for llave, valor in variables.items():
         texto = texto.replace("{" + llave + "}", valor)
     mensaje = MensajeChatModel(
@@ -131,7 +170,7 @@ async def preparar_aviso_en_camino(db, orden: OrdenServicioModel, tecnico: Optio
         direccion="salida",
         mensaje=re.sub(r" {2,}", " ", texto).strip(),
         tipo_mensaje="texto",
-        tipo_evento="tecnico_en_camino",
+        tipo_evento=tipo,
         clave_dedupe=clave,
         leido=True,
         ack=0,
