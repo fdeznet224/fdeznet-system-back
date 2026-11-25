@@ -254,6 +254,12 @@ class PortalClienteService:
             return None
         return {"celular": celular_para_codi(cliente), "confirmado": bool(cliente.telefono_codi)}
 
+    async def cliente(self, cliente_id: int) -> ClienteModel:
+        cliente = await self.db.get(ClienteModel, cliente_id)
+        if cliente is None:
+            raise LookupError("No encontramos tu cuenta.")
+        return cliente
+
     async def pagar_codi(self, cliente_id: int, telefono: str) -> Dict[str, Any]:
         """Manda a la app del banco del cliente el cobro por todo lo que debe."""
         from src.application.services.codi_service import cobrar_al_celular

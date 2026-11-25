@@ -325,6 +325,34 @@ async def pagar_codi(datos: Telefono, cliente=Depends(cliente_portal), db: Async
     return resultado
 
 
+@router.post("/pago-codi/qr")
+async def qr_codi(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    """QR por lo que debe, para que otra persona lo escanee desde su banco (vale 24 horas)."""
+    from src.application.services.codi_service import crear_qr
+
+    llave = f"qr{cliente.id}"
+    try:
+        cobros_codi.ensure_allowed(llave)
+    except HTTPException as error:
+        raise HTTPException(status_code=429, detail="Espera un rato e intenta de nuevo.") from error
+    datos = await crear_qr(db, await PortalClienteService(db).cliente(cliente.id), origen="portal")
+    if datos.get("error"):
+        raise HTTPException(status_code=409, detail=datos["error"])
+    cobros_codi.register_failure(llave)
+    return datos
+
+
+@router.get("/pago-codi/{cobro_id}")
+async def estado_pago_codi(cobro_id: int, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    """Si ya se pagó (el portal lo pregunta mientras espera)."""
+    from src.application.services.codi_service import estado_cobro
+
+    estado = await estado_cobro(db, cobro_id, cliente_id=cliente.id)
+    if estado is None:
+        raise HTTPException(status_code=404, detail="Cobro no encontrado")
+    return estado
+
+
 @router.get("/promesa")
 async def opciones_promesa(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
     return await PortalClienteService(db).opciones_promesa(cliente)

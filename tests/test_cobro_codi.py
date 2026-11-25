@@ -379,3 +379,132 @@ def test_en_prueba_no_le_cobra_a_otro_contrato(monkeypatch):
     http = httpx.AsyncClient(transport=httpx.MockTransport(lambda _p: pytest.fail("no debe llamar a pey")))
     resultado = asyncio.run(codi.cobrar_al_celular(_DB(), CLIENTE, "4441234567", http=http))
     assert "no está activo" in resultado["error"]
+
+
+# ------------------------------------------------------- QR y respaldo
+class _Lista:
+    def __init__(self, valores):
+        self.valores = valores
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.valores
+
+    def first(self):
+        return self.valores[0] if self.valores else None
+
+
+class _DBRevision(_DB):
+    """Devuelve los cobros pendientes a la revisión y guarda los cambios de estado."""
+
+    def __init__(self, cobros):
+        super().__init__()
+        self.cobros = {c.id: c for c in cobros}
+
+    async def execute(self, sentencia):
+        return _Lista(list(self.cobros.values()))
+
+    async def get(self, modelo, llave):
+        return self.cobros.get(llave) if modelo is CobroCodiModel else None
+
+
+def test_la_revision_aplica_lo_pagado_y_vence_lo_viejo(monkeypatch):
+    from datetime import datetime, timedelta
+
+    _config(monkeypatch)
+    ahora = datetime.now()
+    pagado = CobroCodiModel(id=1, cliente_id=7, tipo="celular", estado="enviado", pey_transaction_id="TX1",
+                            monto=Decimal("350"), creado_en=ahora - timedelta(minutes=5), vence_en=ahora + timedelta(minutes=10))
+    viejo = CobroCodiModel(id=2, cliente_id=7, tipo="celular", estado="enviado", pey_transaction_id="TX2",
+                           monto=Decimal("350"), creado_en=ahora - timedelta(hours=1), vence_en=ahora - timedelta(minutes=40))
+    qr = CobroCodiModel(id=3, cliente_id=7, tipo="qr", estado="enviado", codi_id="IDC9",
+                        monto=Decimal("350"), creado_en=ahora - timedelta(minutes=5), vence_en=ahora + timedelta(hours=20))
+    aplicados = []
+
+    async def aplicar(_db, **datos):
+        aplicados.append((datos["transaccion"], datos["es_qr"], datos["monto"]))
+        return {"aplicado": True}
+
+    monkeypatch.setattr(codi, "aplicar_pago_codi", aplicar)
+
+    def pey(peticion):
+        ruta = peticion.url.path
+        if ruta == "/transaction/TX1":
+            return httpx.Response(200, json={"id": "TX1", "status": "PAID", "amount": 350, "datePaid": 1790724818})
+        if ruta == "/transaction/TX2":
+            return httpx.Response(200, json={"id": "TX2", "status": "PENDING", "amount": 350})
+        if ruta == "/transaction/codi/qr/IDC9":
+            return httpx.Response(200, json={"items": [{"id": "TXQ", "status": "PAID", "amount": 350}], "nextToken": None})
+        return httpx.Response(404)
+
+    db = _DBRevision([pagado, viejo, qr])
+    http = httpx.AsyncClient(transport=httpx.MockTransport(pey))
+    assert asyncio.run(codi.revisar_cobros_pendientes(db, http=http)) == 2
+    assert aplicados == [("TX1", False, Decimal("350.00")), ("TXQ", True, Decimal("350.00"))]
+    assert viejo.estado == "vencido" and qr.estado == "enviado"
+
+
+def test_un_qr_pagado_dos_veces_se_registra_dos_veces(monkeypatch):
+    _config(monkeypatch)
+    llamadas, _ = _pagos(monkeypatch)
+    qr = CobroCodiModel(id=41, cliente_id=7, tipo="qr", codi_id="IDC9", monto=Decimal("350"), estado="aplicado",
+                        pey_transaction_id="TXA", origen="portal")
+    db = _DB(cobro=None, cliente=CLIENTE)
+
+    async def execute(sentencia):
+        texto = str(sentencia)
+        if "codi_id" in texto.split("WHERE")[-1]:
+            return _Resultado(qr)
+        return _Resultado(None)
+
+    db.execute = execute
+    resultado = asyncio.run(codi.aplicar_pago_codi(db, es_qr=True, transaccion="TXB", monto=Decimal("350"),
+                                                   codi_qr_id="IDC9"))
+    assert resultado["aplicado"] is True
+    nuevo = [o for o in db.agregados if isinstance(o, CobroCodiModel)][0]
+    assert nuevo.pey_transaction_id == "TXB" and nuevo.codi_id == "IDC9" and nuevo.cliente_id == 7
+    assert llamadas[0][4] == "codi:TXB"
+
+
+def test_crea_el_qr_por_lo_que_debe(monkeypatch):
+    _config(monkeypatch)
+    _deuda(monkeypatch, 350)
+    enviados = []
+
+    def pey(peticion):
+        enviados.append(json.loads(peticion.content))
+        assert peticion.url.path == "/codi/qr"
+        return httpx.Response(201, json={"id": "IDC1", "qrString": '{"TYP":19,"v":{"DEV":"x"}}'})
+
+    db = _DB()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(pey))
+    datos = asyncio.run(codi.crear_qr(db, CLIENTE, http=http))
+    assert datos["monto"] == "350.00" and base64.b64decode(datos["qr_png"]).startswith(b"\x89PNG")
+    assert enviados[0]["amount"] == 350 and enviados[0]["expiration"] == 86400
+    cobro = [o for o in db.agregados if isinstance(o, CobroCodiModel)][0]
+    assert cobro.tipo == "qr" and cobro.codi_id == "IDC1" and cobro.vence_en is not None
+
+
+def test_el_agente_manda_el_qr_como_imagen(monkeypatch, tmp_path):
+    import src.application.services.agente_ia_service as agente_mod
+
+    async def qr(_db, cliente, origen="whatsapp"):
+        return {"cobro_id": 5, "monto": "350.00", "vence_en": "2026-11-26T10:00",
+                "qr_png": base64.b64encode(b"\x89PNGfalso").decode()}
+
+    monkeypatch.setattr(agente_mod, "crear_qr", qr)
+    monkeypatch.chdir(tmp_path)
+    mandados = []
+
+    async def enviar(telefono, texto, ruta=None):
+        mandados.append((telefono, texto, open(ruta, "rb").read()))
+        return True
+
+    contexto = _Contexto(AgenteIAService(_DB(), enviar=enviar), SimpleNamespace(mensaje_chat_id=1), "automatico",
+                         "5214441234567@c.us", None, None)
+    contexto.cliente = CLIENTE
+    resultado = asyncio.run(contexto.usar("mandar_qr_codi", {}))
+    assert resultado["enviado"] is True
+    assert mandados[0][0] == "5214441234567@c.us" and "329B" in mandados[0][1] and mandados[0][2] == b"\x89PNGfalso"

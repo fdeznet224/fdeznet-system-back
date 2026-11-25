@@ -11,6 +11,7 @@ usar; las reglas de dinero y de identidad se aplican aquí, en código:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -29,7 +30,9 @@ from src.application.services.billing_service import BillingService
 from src.application.services.cobertura_service import zona_y_plan
 from src.application.services.bot_flow_service import get_or_create_bot_config
 from src.application.services.bot_pausa_service import bot_en_pausa, pausar_bot
-from src.application.services.codi_service import cobrar_al_celular, celular_legible, celular_para_codi, codi_disponible
+from src.application.services.codi_service import (
+    cobrar_al_celular, celular_legible, celular_para_codi, codi_disponible, crear_qr, revisar_cobros_pendientes,
+)
 from src.application.services.comprobante_service import (
     ComprobanteService,
     normalizar_contrato,
@@ -79,11 +82,12 @@ CONSULTAS = {
 }
 ACCIONES = {
     "registrar_prospecto", "registrar_promesa", "crear_orden_tecnica", "aplicar_comprobante",
-    "solicitar_cambio_contrasena", "pasar_a_humano", "cobrar_por_codi",
+    "solicitar_cambio_contrasena", "pasar_a_humano", "cobrar_por_codi", "mandar_qr_codi",
 }
 REQUIEREN_CLIENTE = {
     "consultar_cuenta", "diagnosticar_conexion", "medir_velocidad", "registrar_promesa",
     "crear_orden_tecnica", "aplicar_comprobante", "solicitar_cambio_contrasena", "cobrar_por_codi",
+    "mandar_qr_codi",
 }
 CATEGORIAS_ORDEN = ("sin_internet", "cable_roto", "potencia_baja", "lentitud", "router_wifi", "cambio_domicilio", "otro")
 RE_COORDENADAS = re.compile(r"(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})")
@@ -199,6 +203,11 @@ HERRAMIENTA_CODI = _herramienta(
     {"telefono": {"type": "string", "description": "celular de 10 dígitos que el cliente confirmó o escribió"}},
     ["telefono"],
 )
+HERRAMIENTA_QR_CODI = _herramienta(
+    "mandar_qr_codi",
+    "Manda por este chat la imagen de un QR CoDi por todo lo que debe el cliente identificado, "
+    "para que OTRA persona lo escanee desde la app de su banco (vale 24 horas).",
+)
 
 REGLA_CODI = """
 4b. Pagar por CoDi (sin captura): el cobro llega a la app del banco ligada a un CELULAR, que puede no ser el de este chat.
@@ -207,7 +216,8 @@ REGLA_CODI = """
 - Si pide el número de cuenta, la tarjeta, si es "la misma cuenta" o cómo transferir: usa `datos_de_pago` y en UN solo mensaje dale primero la opción rápida (te mando el cobro a la app de tu banco, solo responde SÍ y confirma el celular) y abajo los datos para transferir tal cual vienen. No lo obligues a usar CoDi.
 - Con `enviado`, dile que abra la app de su banco y acepte el cobro por el monto en el celular indicado, que tiene `vence_en_minutos` minutos y que si se vence escriba PAGAR. NO digas que el pago ya quedó: le llega su recibo por aquí cuando lo acepte.
 - Si dice que no le llegó o que se venció, pregúntale si ese es el celular registrado en la app de su banco y que revise que tenga CoDi activado (en su app, sección CoDi o Cobro Digital); si da otro número, mándalo a ese. Si aun así no puede, dale los datos para transferencia (`datos_de_pago`). Si `cobrar_por_codi` devuelve `error`, dale los datos para transferencia.
-- Cliente NO identificado que quiere pagar: dale los datos para transferencia y dile que si te da su contrato también le puedes mandar el cobro directo a su banco."""
+- Cliente NO identificado que quiere pagar: dale los datos para transferencia y dile que si te da su contrato también le puedes mandar el cobro directo a su banco.
+- QR (`mandar_qr_codi`): úsalo cuando le va a pagar OTRA persona (un familiar, alguien que le hace el favor) o cuando quiere pagar desde otro celular o banco. Dile que lo reenvíe a quien le paga y que esa persona lo escanee desde la app de su banco (sección CoDi o "Pagar con QR"); vale 24 horas y el pago se aplica solo. No lo ofrezcas como primera opción: el cliente no puede escanear su propia pantalla."""
 
 
 def _url_portal() -> str:
@@ -269,7 +279,7 @@ class AgenteIAService:
         modelo = SimpleNamespace(
             agente_modelo=config.agente_modelo,
             agente_url=config.agente_url,
-            herramientas=HERRAMIENTAS + [HERRAMIENTA_CODI] if codi else HERRAMIENTAS,
+            herramientas=HERRAMIENTAS + [HERRAMIENTA_CODI, HERRAMIENTA_QR_CODI] if codi else HERRAMIENTAS,
         )
         try:
             respuesta = await self._conversar(modelo, clave, mensajes, contexto)
@@ -770,6 +780,12 @@ class _Contexto:
         ]
 
     async def _consultar_cuenta(self) -> dict:
+        # "Ya pagué": si un cobro CoDi se pagó y el aviso de pey no ha llegado, se aplica ahora.
+        try:
+            await revisar_cobros_pendientes(self.db, cliente_id=self.cliente.id)
+        except Exception:
+            logger.exception("No se pudo revisar en pey los cobros de %s", self.cliente.id)
+            await self._deshacer()
         estado = await BillingService(self.db).estado_cuenta_cliente(self.cliente.id)
         await self.db.commit()
         promesa = (
@@ -1042,6 +1058,25 @@ class _Contexto:
         if not numero:
             return {"error": "No se conoce el número de este chat: pregúntale a qué celular (10 dígitos) se lo mandas."}
         return await cobrar_al_celular(self.db, self.cliente, numero, origen="whatsapp")
+
+    async def _mandar_qr_codi(self) -> dict:
+        datos = await crear_qr(self.db, self.cliente, origen="whatsapp")
+        if datos.get("error"):
+            return datos
+        if not self.servicio.enviar:
+            return {"error": "No se pudo mandar la imagen por aquí; dale los datos para transferencia."}
+        carpeta = os.path.abspath(os.path.join("static", "codi_qr"))
+        os.makedirs(carpeta, exist_ok=True)
+        ruta = os.path.join(carpeta, f"{datos['cobro_id']}.png")
+        with open(ruta, "wb") as archivo:
+            archivo.write(base64.b64decode(datos["qr_png"]))
+        texto = (
+            f"QR para pagar ${datos['monto']} del contrato {self.cliente.cedula}. "
+            "Escanéalo desde la app de tu banco (CoDi); el pago se aplica solo."
+        )
+        if not await self.servicio.enviar(self.telefono, texto, ruta):
+            return {"error": "No se pudo mandar la imagen; dale los datos para transferencia."}
+        return {"enviado": True, "monto": datos["monto"], "vale_hasta": datos["vence_en"]}
 
     async def _validar_comprobante(self, revision_id: int) -> dict:
         if self.cliente:

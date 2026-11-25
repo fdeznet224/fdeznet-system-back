@@ -205,8 +205,8 @@ async def listar_sugerencias(
 
 
 def _servicio(db: AsyncSession) -> AgenteIAService:
-    async def enviar(telefono: str, mensaje: str) -> bool:
-        return await WhatsAppService().enviar_mensaje(telefono=telefono, mensaje=mensaje, tipo_evento="agente_ia")
+    async def enviar(telefono: str, mensaje: str, ruta: str | None = None) -> bool:
+        return await WhatsAppService().enviar_mensaje(telefono=telefono, mensaje=mensaje, ruta=ruta, tipo_evento="agente_ia")
 
     return AgenteIAService(db, enviar=enviar)
 

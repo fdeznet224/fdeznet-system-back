@@ -2048,7 +2048,8 @@ class CobroCodiModel(Base):
     tipo = Column(String(10), nullable=False, default="celular")  # celular | qr
     telefono = Column(String(10), nullable=True)
     monto = Column(Numeric(12, 2), nullable=False)
-    # enviado → aplicado; error al mandarlo; sin_aplicar si llegó dinero que no se pudo aplicar.
+    # enviado → aplicado; error al mandarlo; sin_aplicar si llegó dinero que no se pudo aplicar;
+    # vencido si nadie lo pagó a tiempo.
     estado = Column(String(20), nullable=False, default="enviado", index=True)
     pey_transaction_id = Column(String(40), nullable=True, unique=True)
     codi_id = Column(String(40), nullable=True)
@@ -2059,6 +2060,9 @@ class CobroCodiModel(Base):
     origen = Column(String(20), nullable=False, default="whatsapp")
     creado_en = Column(DateTime, nullable=False, server_default=func.now())
     pagado_en = Column(DateTime, nullable=True)
+    # QR: el texto que se dibuja (se puede volver a mostrar) y hasta cuándo se puede pagar.
+    qr_texto = Column(Text, nullable=True)
+    vence_en = Column(DateTime, nullable=True)
 
 
 class ConfiguracionBotModel(Base):

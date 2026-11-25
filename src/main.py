@@ -12,6 +12,7 @@ from fastapi_cache.backends.inmemory import InMemoryBackend
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from src.jobs import (
     tarea_aplicar_pagos_adelantados,
+    tarea_revisar_cobros_codi,
     tarea_conciliar_mikrotik,
     tarea_retomar_chats_pausados,
     tarea_cron_unificada,
@@ -177,6 +178,14 @@ async def lifespan(app: FastAPI):
         max_instances=1,
     )
     scheduler.add_job(tarea_sincronizar_clientes, 'interval', minutes=3)
+    scheduler.add_job(
+        tarea_revisar_cobros_codi,
+        "interval",
+        minutes=3,
+        id="revisar_cobros_codi",
+        coalesce=True,
+        max_instances=1,
+    )
     scheduler.add_job(
         tarea_baja_automatica,
         "interval",
@@ -398,6 +407,7 @@ app.include_router(clients.router, dependencies=licensed)
 app.include_router(planes.router, dependencies=licensed)
 app.include_router(servicios.router, dependencies=licensed)
 app.include_router(finanzas.router, dependencies=licensed_financial)
+app.include_router(pagos_codi.router, dependencies=licensed)
 app.include_router(network.router, dependencies=licensed)
 app.include_router(usuarios.router, dependencies=licensed_admin)
 app.include_router(zonas.router, dependencies=licensed)

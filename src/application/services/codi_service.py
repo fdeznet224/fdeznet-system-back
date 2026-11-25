@@ -139,6 +139,7 @@ async def cobrar_al_celular(
     if reciente:
         return {
             "enviado": True,
+            "cobro_id": reciente.id,
             "ya_enviado_hace_un_momento": True,
             "monto": str(total),
             "celular": numero,
@@ -148,6 +149,7 @@ async def cobrar_al_celular(
     cobro = CobroCodiModel(
         cliente_id=cliente.id, tipo="celular", telefono=numero, monto=total,
         estado="enviado", origen=origen, creado_en=datetime.now(),
+        vence_en=datetime.now() + timedelta(seconds=VIGENCIA_SEGUNDOS),
     )
     db.add(cobro)
     await db.flush()
@@ -188,10 +190,213 @@ async def cobrar_al_celular(
     await db.commit()
     return {
         "enviado": True,
+        "cobro_id": cobro.id,
         "monto": str(total),
         "celular": numero,
         "vence_en_minutos": VIGENCIA_SEGUNDOS // 60,
     }
+
+
+# ------------------------------------------------------------------- QR
+# El QR lo escanea otra persona (un familiar que le paga) o el cliente frente al técnico.
+VIGENCIA_QR_CLIENTE = timedelta(hours=24)
+VIGENCIA_QR_TECNICO = timedelta(minutes=30)
+
+
+def imagen_qr(texto: str) -> bytes:
+    """PNG del QR CoDi (se dibuja aquí con el texto que da pey)."""
+    import io
+
+    import qrcode
+
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=3)
+    qr.add_data(texto)
+    salida = io.BytesIO()
+    qr.make_image().save(salida, format="PNG")
+    return salida.getvalue()
+
+
+async def crear_qr(
+    db: AsyncSession,
+    cliente: ClienteModel,
+    vigencia: timedelta = VIGENCIA_QR_CLIENTE,
+    origen: str = "portal",
+    http: httpx.AsyncClient | None = None,
+) -> dict:
+    """QR CoDi por todo lo que debe; si ya hay uno vigente por el mismo monto, se reusa."""
+    from src.application.services.billing_service import BillingService
+
+    config = await config_pagos(db)
+    if not codi_para(config, cliente):
+        return {"error": "El cobro por CoDi no está activo."}
+    estado = await BillingService(db).estado_cuenta_cliente(cliente.id)
+    total = _monto(estado.get("total"))
+    if total <= 0:
+        return {"error": "El cliente no tiene saldo pendiente."}
+
+    ahora = datetime.now()
+    # Se reusa si le queda al menos la mitad de su tiempo: un QR nuevo por cada vez
+    # que lo piden deja varios vivos y el riesgo de que lo paguen dos veces.
+    vigente = (
+        await db.execute(
+            select(CobroCodiModel).where(
+                CobroCodiModel.cliente_id == cliente.id,
+                CobroCodiModel.tipo == "qr",
+                CobroCodiModel.estado == "enviado",
+                CobroCodiModel.monto == total,
+                CobroCodiModel.qr_texto.is_not(None),
+                CobroCodiModel.vence_en >= ahora + vigencia / 2,
+            ).order_by(CobroCodiModel.id.desc()).limit(1)
+        )
+    ).scalars().first()
+    if vigente:
+        return _datos_qr(vigente)
+
+    cobro = CobroCodiModel(
+        cliente_id=cliente.id, tipo="qr", monto=total, estado="enviado", origen=origen,
+        creado_en=ahora, vence_en=ahora + vigencia,
+    )
+    db.add(cobro)
+    await db.flush()
+    cobro.num_ref = str(cobro.id % 10_000_000 or 1)
+    cuerpo = {
+        "amount": float(total),
+        "concept": f"Internet contrato {cliente.cedula or cliente.id}"[:40],
+        "expiration": int(vigencia.total_seconds()),
+        "numRef": cobro.num_ref,
+        "metadata": {"cobro_id": cobro.id, "cliente_id": cliente.id},
+    }
+    cliente_http = http or httpx.AsyncClient(timeout=30)
+    try:
+        respuesta = await cliente_http.post(
+            f"{PEY_API_URL}/codi/qr", json=cuerpo,
+            headers={"Authorization": f"Bearer {(config.pey_api_key or '').strip()}"},
+        )
+        datos = respuesta.json() if respuesta.content else {}
+    except Exception as exc:
+        logger.exception("pey no respondió al QR CoDi %s", cobro.id)
+        cobro.estado = "error"
+        cobro.detalle = f"{type(exc).__name__}: {exc}"[:500]
+        await db.commit()
+        return {"error": "No se pudo generar el QR en este momento."}
+    finally:
+        if http is None:
+            await cliente_http.aclose()
+    if respuesta.status_code >= 400 or not datos.get("qrString") or not datos.get("id"):
+        cobro.estado = "error"
+        cobro.detalle = f"HTTP {respuesta.status_code}: {respuesta.text[:450]}"
+        await db.commit()
+        logger.warning("pey rechazó el QR CoDi %s: %s", cobro.id, cobro.detalle)
+        return {"error": "No se pudo generar el QR en este momento."}
+    cobro.codi_id = str(datos["id"])[:40]
+    cobro.qr_texto = str(datos["qrString"])
+    await db.commit()
+    return _datos_qr(cobro)
+
+
+def _datos_qr(cobro: CobroCodiModel) -> dict:
+    return {
+        "cobro_id": cobro.id,
+        "monto": str(_monto(cobro.monto)),
+        "vence_en": cobro.vence_en.isoformat(timespec="minutes") if cobro.vence_en else None,
+        "qr_png": base64.b64encode(imagen_qr(cobro.qr_texto)).decode(),
+    }
+
+
+async def estado_cobro(db: AsyncSession, cobro_id: int, cliente_id: int | None = None) -> dict | None:
+    """Cómo va un cobro; antes pregunta a pey por si el aviso no llegó."""
+    cobro = await db.get(CobroCodiModel, cobro_id)
+    if cobro is None or (cliente_id is not None and cobro.cliente_id != cliente_id):
+        return None
+    if cobro.estado == "enviado":
+        await revisar_cobros_pendientes(db, cliente_id=cobro.cliente_id)
+        cobro = await db.get(CobroCodiModel, cobro_id)
+        await db.refresh(cobro)
+    pagado = cobro.estado == "aplicado" or (
+        cobro.tipo == "qr" and bool(
+            (await db.execute(
+                select(CobroCodiModel.id).where(
+                    CobroCodiModel.codi_id == cobro.codi_id, CobroCodiModel.estado == "aplicado",
+                ).limit(1)
+            )).scalar_one_or_none()
+        )
+    )
+    return {"cobro_id": cobro.id, "estado": "pagado" if pagado else cobro.estado, "monto": str(_monto(cobro.monto))}
+
+
+# ------------------------------------------------------- revisión de respaldo
+# Si el aviso de pey no llega (servidor reiniciando, internet caído), el pago se
+# busca en pey y se aplica igual. El aviso y esta revisión nunca lo aplican dos veces.
+MARGEN_VENCIMIENTO = timedelta(minutes=15)
+REVISAR_HASTA = timedelta(days=2)
+
+
+async def revisar_cobros_pendientes(
+    db: AsyncSession, cliente_id: int | None = None, http: httpx.AsyncClient | None = None,
+) -> int:
+    """Pregunta a pey por los cobros sin pagar; aplica los pagados y marca los vencidos."""
+    config = await config_pagos(db)
+    clave = (config.pey_api_key or "").strip()
+    if not clave:
+        return 0
+    ahora = datetime.now()
+    filtros = [
+        CobroCodiModel.estado == "enviado",
+        CobroCodiModel.creado_en >= ahora - REVISAR_HASTA,
+        CobroCodiModel.creado_en <= ahora - timedelta(seconds=30),
+    ]
+    if cliente_id is not None:
+        filtros.append(CobroCodiModel.cliente_id == cliente_id)
+    cobros = (await db.execute(select(CobroCodiModel).where(*filtros).order_by(CobroCodiModel.id))).scalars().all()
+    pendientes = [(c.id, c.tipo, c.pey_transaction_id, c.codi_id, c.vence_en, c.creado_en) for c in cobros]
+    if not pendientes:
+        return 0
+
+    aplicados = 0
+    cliente_http = http or httpx.AsyncClient(timeout=20)
+    cabeceras = {"Authorization": f"Bearer {clave}"}
+    try:
+        for cobro_id, tipo, transaccion, codi_id, vence_en, creado_en in pendientes:
+            try:
+                if tipo == "qr" and codi_id:
+                    respuesta = await cliente_http.get(f"{PEY_API_URL}/transaction/codi/qr/{codi_id}", headers=cabeceras)
+                    pagos = (respuesta.json() or {}).get("items") or [] if respuesta.status_code == 200 else []
+                    for pago in pagos:
+                        if pago.get("status") == "PAID" and pago.get("id"):
+                            resultado = await aplicar_pago_codi(
+                                db, es_qr=True, transaccion=str(pago["id"])[:40], monto=_monto(pago.get("amount")),
+                                fecha_pagado=pago.get("datePaid"), metadata=pago.get("metadata") or {},
+                                codi_qr_id=codi_id,
+                            )
+                            aplicados += int(bool(resultado.get("aplicado") and not resultado.get("repetido")))
+                elif transaccion:
+                    respuesta = await cliente_http.get(f"{PEY_API_URL}/transaction/{transaccion}", headers=cabeceras)
+                    pago = respuesta.json() if respuesta.status_code == 200 and respuesta.content else {}
+                    if pago.get("status") == "PAID":
+                        resultado = await aplicar_pago_codi(
+                            db, es_qr=False, transaccion=transaccion, monto=_monto(pago.get("amount")),
+                            fecha_pagado=pago.get("datePaid"), metadata=pago.get("metadata") or {},
+                        )
+                        aplicados += int(bool(resultado.get("aplicado") and not resultado.get("repetido")))
+                        continue
+                else:
+                    continue
+            except Exception:
+                logger.exception("No se pudo revisar en pey el cobro CoDi %s", cobro_id)
+                await db.rollback()
+                continue
+            limite = (vence_en or creado_en + timedelta(seconds=VIGENCIA_SEGUNDOS)) + MARGEN_VENCIMIENTO
+            if ahora > limite:
+                cobro = await db.get(CobroCodiModel, cobro_id)
+                if cobro is not None and cobro.estado == "enviado":
+                    cobro.estado = "vencido"
+                    await db.commit()
+    finally:
+        if http is None:
+            await cliente_http.aclose()
+    if aplicados:
+        logger.info("Revisión CoDi: %s pago(s) aplicados sin aviso de pey", aplicados)
+    return aplicados
 
 
 # ------------------------------------------------------------------- webhook
@@ -229,33 +434,70 @@ def verificar_firma(secreto: str, headers, cuerpo: bytes, ahora: float | None = 
 
 async def procesar_webhook(db: AsyncSession, headers, cuerpo: bytes) -> dict:
     """Aplica el pago que avisa pey. Repetir el aviso no cobra dos veces."""
-    from src.application.services.billing_service import BillingService
-
     config = await config_pagos(db)
     verificar_firma(config.pey_webhook_secreto or "", headers, cuerpo)
     datos = json.loads(cuerpo or b"{}")
     tipo = datos.get("type")
     if tipo not in EVENTOS_PAGO:
         return {"ignorado": tipo}
+    return await aplicar_pago_codi(
+        db,
+        es_qr=tipo.startswith("codi.qr"),
+        transaccion=str(datos.get("transactionId") or "")[:40],
+        monto=_monto(datos.get("amount")),
+        fecha_pagado=datos.get("datePaid"),
+        num_ref=datos.get("numRef"),
+        metadata=datos.get("metadata") or {},
+        codi_qr_id=datos.get("codiQrId"),
+    )
 
-    transaccion = str(datos.get("transactionId") or "")[:40]
-    monto = _monto(datos.get("amount"))
-    metadata = datos.get("metadata") or {}
+
+async def aplicar_pago_codi(
+    db: AsyncSession,
+    *,
+    es_qr: bool,
+    transaccion: str,
+    monto: Decimal,
+    fecha_pagado=None,
+    num_ref=None,
+    metadata: dict | None = None,
+    codi_qr_id: str | None = None,
+) -> dict:
+    """Aplica un pago CoDi (del aviso de pey o de la revisión de respaldo); nunca dos veces."""
+    from src.application.services.billing_service import BillingService
+
+    metadata = metadata or {}
     externos = metadata.get("externalMetadata") or {}
     cobro = None
     if transaccion:
         cobro = (
             await db.execute(select(CobroCodiModel).where(CobroCodiModel.pey_transaction_id == transaccion))
         ).scalars().first()
+        if cobro and cobro.estado == "aplicado":
+            return {"aplicado": True, "repetido": True}
     if cobro is None:
+        if es_qr and codi_qr_id:
+            cobro = (
+                await db.execute(
+                    select(CobroCodiModel).where(CobroCodiModel.codi_id == str(codi_qr_id)[:40])
+                    .order_by(CobroCodiModel.id).limit(1)
+                )
+            ).scalars().first()
         cobro_id = externos.get("cobro_id") or metadata.get("cobro_id")
-        if str(cobro_id or "").isdigit():
+        if cobro is None and str(cobro_id or "").isdigit():
             cobro = await db.get(CobroCodiModel, int(cobro_id))
-    if cobro and cobro.estado == "aplicado":
-        return {"aplicado": True, "repetido": True}
+        if cobro is not None and cobro.pey_transaction_id and cobro.pey_transaction_id != transaccion:
+            if not es_qr:
+                return {"aplicado": False, "motivo": "otra_transaccion"}
+            # Un QR se puede pagar más de una vez: cada pago es su propio registro.
+            cobro = CobroCodiModel(
+                cliente_id=cobro.cliente_id, tipo="qr", codi_id=cobro.codi_id, monto=cobro.monto,
+                estado="enviado", origen=cobro.origen, creado_en=datetime.now(), vence_en=cobro.vence_en,
+            )
+            db.add(cobro)
     if cobro is None:
         cobro = CobroCodiModel(
-            tipo="qr" if tipo.startswith("codi.qr") else "celular", monto=monto,
+            tipo="qr" if es_qr else "celular", monto=monto,
             estado="sin_aplicar", origen="desconocido", creado_en=datetime.now(),
         )
         db.add(cobro)
@@ -263,9 +505,9 @@ async def procesar_webhook(db: AsyncSession, headers, cuerpo: bytes) -> dict:
         cobro.pey_transaction_id = transaccion
     cobro.monto_pagado = monto
     cobro.pagado_en = (
-        datetime.fromtimestamp(int(datos["datePaid"])) if str(datos.get("datePaid") or "").isdigit() else datetime.now()
+        datetime.fromtimestamp(int(fecha_pagado)) if str(fecha_pagado or "").isdigit() else datetime.now()
     )
-    cobro.num_ref = str(datos.get("numRef") or cobro.num_ref or "")[:7] or None
+    cobro.num_ref = str(num_ref or cobro.num_ref or "")[:7] or None
     rastreo = metadata.get("trackingKey")
 
     cliente = await db.get(ClienteModel, cobro.cliente_id) if cobro.cliente_id else None

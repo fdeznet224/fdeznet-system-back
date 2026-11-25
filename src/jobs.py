@@ -753,3 +753,21 @@ async def tarea_cron_unificada():
                 mensaje=f"Error fatal en el ciclo del Cronjob: {str(e)}"
             ))
             await db.commit()
+
+
+async def tarea_revisar_cobros_codi():
+    """Respaldo del aviso de pey: busca en pey los cobros CoDi sin pagar y aplica los pagados."""
+    from src.application.services.codi_service import revisar_cobros_pendientes
+
+    async with SessionLocal() as db:
+        try:
+            return await revisar_cobros_pendientes(db)
+        except Exception as exc:
+            await db.rollback()
+            db.add(LogCronjobModel(
+                nivel="ERROR",
+                origen="CoDi",
+                mensaje=f"No se pudieron revisar los cobros CoDi: {str(exc)[:300]}",
+            ))
+            await db.commit()
+

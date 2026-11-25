@@ -129,9 +129,9 @@ def lanzar_agente(
         if _ultimo_mensaje_agente.get(telefono_raw) != mensaje_chat_id:
             return  # llegó otro mensaje del mismo chat; ese lo atiende
         async with SessionLocal() as db:
-            async def enviar(telefono: str, mensaje: str) -> bool:
+            async def enviar(telefono: str, mensaje: str, ruta: str | None = None) -> bool:
                 return await WhatsAppService().enviar_mensaje(
-                    telefono=telefono, mensaje=mensaje, tipo_evento="agente_ia"
+                    telefono=telefono, mensaje=mensaje, ruta=ruta, tipo_evento="agente_ia"
                 )
 
             try:
