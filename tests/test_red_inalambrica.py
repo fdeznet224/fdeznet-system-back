@@ -81,8 +81,8 @@ class _DB:
 
 
 def test_acomoda_los_clientes_en_su_ap_por_ip_o_mac():
-    ap = EquipoRedModel(id=5, nombre="AP Norte", ip="10.50.0.1")
-    estacion = EquipoRedModel(id=6, nombre="PtP Sagrado", ip="10.50.0.12", padre_id=None)
+    ap = EquipoRedModel(id=5, nombre="AP Norte", tipo="ap", ip="10.50.0.1")
+    estacion = EquipoRedModel(id=6, nombre="PtP Sagrado", tipo="ptp_estacion", ip="10.50.0.12", padre_id=None)
     juan = ClienteModel(id=1, nombre="Juan", ip_antena="10.50.0.11", mac_address=None, tipo_conexion="radio")
     ana = ClienteModel(id=2, nombre="Ana", ip_antena="10.99.0.9", mac_address="fc:ec:da:44:55:66", tipo_conexion="radio")
     lejano = ClienteModel(id=3, nombre="Otro", ip_antena="10.60.0.1", mac_address=None, tipo_conexion="radio")
@@ -200,3 +200,38 @@ def test_la_olt_agrupa_a_sus_clientes_por_pon():
     assert [p["pon"] for p in pons] == [1, 2, None]
     assert pons[0]["clientes"][0] == {"id": 2, "contrato": "3C4D", "nombre": "Luis", "estado": "activo", "responde": False, "potencia": -28.1}
     assert pons[1]["clientes"][0]["potencia"] == -21.5 and pons[2]["clientes"][0]["responde"] is None
+
+
+def test_la_estacion_no_hace_colgar_a_su_base_de_ella():
+    base = EquipoRedModel(id=16, nombre="PTP-A", tipo="ptp_base", ip="11.11.11.10", router_id=3, padre_id=None)
+    estacion = EquipoRedModel(id=17, nombre="PTP-B", tipo="ptp_estacion", ip="11.11.11.11", router_id=3, padre_id=16)
+    servicio = red.RedInalambricaService(_DB([], [base, estacion]))
+    # La estación ve a su base en sus estaciones: no debe colgarla de ella.
+    asyncio.run(servicio._vincular_estaciones(estacion, red.resumir_estaciones([{"mac": "A", "lastip": "11.11.11.10", "signal": -50}])))
+    assert base.padre_id is None
+    # La base sí cuelga a una estación suelta que ve.
+    suelta = EquipoRedModel(id=18, nombre="PTP-C", tipo="ptp_estacion", ip="11.11.11.12", router_id=3, padre_id=None)
+    servicio = red.RedInalambricaService(_DB([], [base, estacion, suelta]))
+    asyncio.run(servicio._vincular_estaciones(base, red.resumir_estaciones([{"mac": "B", "lastip": "11.11.11.12", "signal": -50}])))
+    assert suelta.padre_id == 16
+
+
+def test_un_circulo_se_dibuja_en_vez_de_perderse():
+    router = SimpleNamespace(id=3, nombre="Paraiso", ip_vpn="10.8.0.2", is_online=True)
+    a = EquipoRedModel(id=16, nombre="PTP-A", tipo="ptp_base", marca="ubiquiti", ip="11.11.11.10", router_id=3, padre_id=17, troncal=False, activo=True, router_hijo_id=None)
+    b = EquipoRedModel(id=17, nombre="PTP-B", tipo="ptp_estacion", marca="ubiquiti", ip="11.11.11.11", router_id=3, padre_id=16, troncal=False, activo=True, router_hijo_id=None)
+
+    class _DBCirculo:
+        async def execute(self, sentencia):
+            texto = str(sentencia)
+            if "FROM olts" in texto:
+                return _Resultado([])
+            if "FROM routers" in texto:
+                return _Resultado([router])
+            if "FROM equipos_red" in texto:
+                return _Resultado([a, b])
+            return _Resultado([])
+
+    arbol = asyncio.run(red.RedInalambricaService(_DBCirculo()).arbol())
+    assert sorted(e["nombre"] for e in arbol["routers"][0]["equipos"]) == ["PTP-A", "PTP-B"]
+    assert red.ancestros(16, {16: 17, 17: 16}) == {16, 17}

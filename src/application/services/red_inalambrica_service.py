@@ -123,6 +123,16 @@ async def leer_airos(base: str, usuario: str, clave: str, http: Optional[httpx.A
             await cliente.aclose()
 
 
+def ancestros(equipo_id: int, padres: Dict[int, Optional[int]]) -> set:
+    """Los equipos de los que cuelga (hacia arriba), sin quedarse dando vueltas si hay un círculo."""
+    vistos: set = set()
+    actual = padres.get(equipo_id)
+    while actual is not None and actual not in vistos:
+        vistos.add(actual)
+        actual = padres.get(actual)
+    return vistos
+
+
 def nombre_comparable(texto: Any) -> str:
     """Sin acentos, mayúsculas ni espacios de más: "Ximena Zuñiga " == "ximena zuniga"."""
     plano = unicodedata.normalize("NFKD", str(texto or "")).encode("ascii", "ignore").decode()
@@ -288,9 +298,15 @@ class RedInalambricaService:
                 usadas.add(id(sta))
                 cliente.equipo_red_id = equipo.id
                 cliente.antena_senal = sta["senal"]
-        # Un PtP estación conectado a esta base cuelga de ella (si no se eligió otro).
-        for otro in (await self.db.execute(select(EquipoRedModel).where(EquipoRedModel.id != equipo.id))).scalars().all():
-            if otro.padre_id is None and (otro.ip in ips):
+        # Un PtP estación que se ve en esta base (o AP) cuelga de ella, si no se eligió otro.
+        # Nunca al revés: una estación también ve a su base y eso armaría un círculo.
+        if equipo.tipo not in ("ptp_base", "ap"):
+            return
+        todos = (await self.db.execute(select(EquipoRedModel))).scalars().all()
+        padres = {e.id: e.padre_id for e in todos}
+        for otro in todos:
+            if (otro.id != equipo.id and otro.padre_id is None and otro.tipo == "ptp_estacion"
+                    and otro.ip in ips and otro.id not in ancestros(equipo.id, padres)):
                 otro.padre_id = equipo.id
 
     async def revisar(self, equipo_id: int) -> Dict[str, Any]:
@@ -343,8 +359,12 @@ class RedInalambricaService:
         equipo = await self._equipo(equipo_id) if equipo_id else EquipoRedModel()
         if datos.get("tipo") not in TIPOS:
             raise ValueError("Tipo de equipo no válido.")
-        if datos.get("padre_id") and equipo_id and int(datos["padre_id"]) == equipo_id:
-            raise ValueError("Un equipo no puede colgar de sí mismo.")
+        if datos.get("padre_id") and equipo_id:
+            if int(datos["padre_id"]) == equipo_id:
+                raise ValueError("Un equipo no puede colgar de sí mismo.")
+            padres = {e.id: e.padre_id for e in (await self.db.execute(select(EquipoRedModel))).scalars().all()}
+            if equipo_id in ancestros(int(datos["padre_id"]), padres):
+                raise ValueError("Ese equipo cuelga de este; elige uno que esté más arriba.")
         if datos.get("router_hijo_id") and datos.get("router_hijo_id") == datos.get("router_id") and not datos.get("troncal"):
             raise ValueError("Un equipo de la zona no puede tener colgado a su propio MikroTik; márcalo como troncal.")
         for campo in ("nombre", "tipo", "marca", "modelo", "ip", "router_id", "padre_id", "zona_id", "troncal", "router_hijo_id",
@@ -448,7 +468,10 @@ class RedInalambricaService:
                 por_equipo.setdefault(c.equipo_red_id, []).append(dato)
             else:
                 sin_ap.setdefault(c.router_id, []).append(dato)
-        ids = {e.id for e in equipos}
+        # Un equipo en un círculo (A cuelga de B y B de A) se dibuja arriba en vez de perderse.
+        padres = {e.id: e.padre_id for e in equipos}
+        en_circulo = {e.id for e in equipos if e.id in ancestros(e.id, padres)}
+        ids = {e.id for e in equipos} - en_circulo
         colgados = {e.router_hijo_id for e in equipos if e.router_hijo_id}
         olts = await self._olts_con_clientes()
 
@@ -467,7 +490,7 @@ class RedInalambricaService:
             hijo = por_id.get(equipo.router_hijo_id) if equipo.router_hijo_id else None
             return {
                 **self._datos(equipo),
-                "hijos": [nodo(h) for h in equipos if h.padre_id == equipo.id],
+                "hijos": [nodo(h) for h in equipos if h.padre_id == equipo.id and h.id not in en_circulo],
                 "clientes": por_equipo.get(equipo.id, []),
                 "router": nodo_router(hijo) if hijo else None,
             }
