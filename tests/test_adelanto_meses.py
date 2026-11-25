@@ -83,3 +83,28 @@ def test_el_pago_cubre_lo_que_debe_y_con_lo_demas_adelanta(monkeypatch):
         10, None, "codi", Decimal("1300"), meses_adelanto=2, clave_idempotencia="codi:TX"))
     assert llamadas["emitir"] == (10, Decimal("1000.00"), 2)
     assert llamadas["pago"] == (10, "codi", Decimal("1300"), "codi:TX")
+
+
+def test_el_primer_mes_incluye_los_cargos_pendientes(monkeypatch):
+    """Las fichas cargadas a la siguiente factura entran en el primer mes adelantado."""
+    cliente = SimpleNamespace(id=10, nombre="Cliente", telefono=None, plan=None, plantilla=None)
+    servicio = _servicio_facturable(101, cliente)
+    servicio.proxima_facturacion = date(2026, 12, 1)
+    fichas = [SimpleNamespace(servicio_id=None, saldo_pendiente=Decimal("10.00"), concepto="Ficha 24 horas")
+              for _ in range(2)]
+
+    async def servicios(_self, _cliente_id):
+        return [servicio]
+
+    monkeypatch.setattr(BillingService, "_servicios_para_adelantar", servicios)
+
+    class _DB(_BillingDB):
+        def __init__(self):
+            super().__init__([])
+            from test_multi_service import _ScalarResult
+            self.resultados = iter([_ScalarResult(fichas), _ScalarResult([])])
+
+    cotizacion = asyncio.run(BillingService(_DB()).cotizar_adelanto(10, 2))
+    assert [d["total"] for d in cotizacion["detalle"]] == [Decimal("520.00"), Decimal("500.00")]
+    assert cotizacion["detalle"][0]["incluye"] == ["Ficha 24 horas"] and "incluye" not in cotizacion["detalle"][1]
+    assert cotizacion["total"] == Decimal("1020.00")

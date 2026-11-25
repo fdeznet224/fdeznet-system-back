@@ -1520,12 +1520,25 @@ class BillingService:
         """Cuánto cuestan los siguientes ``meses`` que todavía no se facturan.
 
         Se calcula igual que la emisión (precio del plan, impuesto y servicios
-        extra mensuales); no guarda nada.
+        extra mensuales) e incluye en el primer mes los cargos que esperan a la
+        siguiente factura (fichas, cuotas, reconexión); no guarda nada.
         """
         meses = max(0, min(int(meses or 0), 12))
         detalle, total = [], Decimal("0.00")
         if not meses:
             return {"meses": 0, "detalle": detalle, "total": total}
+        hoy = date.today()
+        cargos = (
+            await self.db.execute(
+                select(FacturaConceptoModel).where(
+                    FacturaConceptoModel.cliente_id == cliente_id,
+                    FacturaConceptoModel.factura_id.is_(None),
+                    FacturaConceptoModel.estado == "pendiente",
+                    FacturaConceptoModel.fecha_cargo <= hoy,
+                )
+            )
+        ).scalars().all()
+        cargos_sin_cobrar = list(cargos)
         for servicio in await self._servicios_para_adelantar(cliente_id):
             plantilla = servicio.plantilla or getattr(servicio.cliente, "plantilla", None)
             plan = servicio.plan or getattr(servicio.cliente, "plan", None)
@@ -1553,12 +1566,22 @@ class BillingService:
                     precio_mensual=plan.precio, impuesto_porcentaje=plantilla.impuesto or 0,
                 )
                 importe = (periodo.total + (Decimal("0.00") if periodo.es_prorrateada else extras)).quantize(Decimal("0.01"))
+                # La emisión mete en esta factura los cargos de este servicio o sin servicio.
+                propios = [c for c in cargos_sin_cobrar if c.servicio_id in (None, servicio.id)]
+                if propios:
+                    cargos_sin_cobrar = [c for c in cargos_sin_cobrar if c not in propios]
+                    monto_cargos = sum((Decimal(c.saldo_pendiente or 0) for c in propios), Decimal("0.00"))
+                    importe = (importe + monto_cargos).quantize(Decimal("0.01"))
+                    conceptos = sorted({c.concepto for c in propios})
+                else:
+                    conceptos = []
                 detalle.append({
                     "servicio_id": servicio.id,
                     "mes": (f"{MESES_EN_ESPANOL[periodo.periodo_desde.month - 1]} {periodo.periodo_desde.year}"
                             if periodo.periodo_desde.day == 1 else
                             f"{periodo.periodo_desde:%d/%m/%Y} - {periodo.periodo_hasta:%d/%m/%Y}"),
                     "total": importe,
+                    **({"incluye": conceptos} if conceptos else {}),
                 })
                 total += importe
                 desde = periodo.siguiente_facturacion

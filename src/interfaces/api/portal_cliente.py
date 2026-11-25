@@ -361,7 +361,8 @@ async def cotizar_adelanto(meses: int = Query(..., ge=1, le=12), cliente=Depends
     cotizacion = await BillingService(db).cotizar_adelanto(cliente.id, meses)
     await db.rollback()
     return {
-        "meses": [{"mes": d["mes"], "total": float(d["total"])} for d in cotizacion["detalle"]],
+        "meses": [{"mes": d["mes"], "total": float(d["total"]), "incluye": d.get("incluye", [])}
+                  for d in cotizacion["detalle"]],
         "total": float(cotizacion["total"]),
     }
 

@@ -113,7 +113,8 @@ async def _total_a_cobrar(db: AsyncSession, cliente, meses_adelanto: int = 0) ->
     cotizacion = await billing.cotizar_adelanto(cliente.id, meses)
     if cotizacion["total"] <= 0:
         return deuda, 0, []
-    adelanto = [{"mes": d["mes"], "total": str(d["total"])} for d in cotizacion["detalle"]]
+    adelanto = [{"mes": d["mes"], "total": str(d["total"]), **({"incluye": d["incluye"]} if d.get("incluye") else {})}
+                for d in cotizacion["detalle"]]
     return (deuda + cotizacion["total"]).quantize(Decimal("0.01")), meses, adelanto
 
 

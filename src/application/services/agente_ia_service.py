@@ -228,6 +228,7 @@ REGLA_CODI = """
 - Si dice que no le llegó o que se venció, pregúntale si ese es el celular registrado en la app de su banco y que revise que tenga CoDi activado (en su app, sección CoDi o Cobro Digital); si da otro número, mándalo a ese. Si aun así no puede, dale los datos para transferencia (`datos_de_pago`). Si `cobrar_por_codi` devuelve `error`, dale los datos para transferencia.
 - Cliente NO identificado que quiere pagar: dale los datos para transferencia y dile que si te da su contrato también le puedes mandar el cobro directo a su banco.
 - Pagar por adelantado (meses que aún no se le cobran): usa `cotizar_adelanto` con los meses que pide, dile cuánto es por mes y el total (más lo que deba hoy) y, si acepta, manda el cobro con `meses_adelanto` (confirmando el celular como siempre) o el QR con `meses_adelanto`. Al pagarse, esos meses quedan pagados solos. El adelanto solo se hace por CoDi; si quiere transferir, dile que por ahora el adelanto es con el cobro a su banco.
+- Preguntas sobre CoDi: explícalo en palabras sencillas y en pocas líneas. CoDi (Cobro Digital) es el sistema de pagos del Banco de México: el cobro le llega a la app de su banco y solo lo acepta; el dinero pasa al momento, a cualquier hora y cualquier día. No cobra comisión. Es seguro: no da números de tarjeta ni contraseñas a nadie, todo pasa dentro de la app de su banco. Casi todos los bancos lo tienen; si no le llega, que busque en su app la opción "CoDi" o "Cobro Digital" y la active con su número de celular (se hace una sola vez). Ventaja para él: no manda captura y su pago queda aplicado solo, aunque sea de noche o en fin de semana. Si su banco no lo tiene, puede seguir pagando por transferencia o en efectivo como siempre.
 - QR (`mandar_qr_codi`): úsalo cuando le va a pagar OTRA persona (un familiar, alguien que le hace el favor) o cuando quiere pagar desde otro celular o banco. Dile que lo reenvíe a quien le paga y que esa persona lo escanee desde la app de su banco (sección CoDi o "Pagar con QR"); vale 24 horas y el pago se aplica solo. No lo ofrezcas como primera opción: el cliente no puede escanear su propia pantalla."""
 
 
@@ -1065,7 +1066,8 @@ class _Contexto:
         deuda = (await BillingService(self.db).estado_cuenta_cliente(self.cliente.id)).get("total") or 0
         await self.db.commit()
         return {
-            "meses": [{"mes": d["mes"], "total": str(d["total"])} for d in cotizacion["detalle"]],
+            "meses": [{"mes": d["mes"], "total": str(d["total"]), **({"incluye": d["incluye"]} if d.get("incluye") else {})}
+                      for d in cotizacion["detalle"]],
             "total_adelanto": str(cotizacion["total"]),
             "debe_hoy": str(deuda),
             "total_a_cobrar": str(Decimal(str(deuda)) + cotizacion["total"]),
