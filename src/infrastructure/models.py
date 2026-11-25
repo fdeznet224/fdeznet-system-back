@@ -2063,6 +2063,8 @@ class CobroCodiModel(Base):
     # QR: el texto que se dibuja (se puede volver a mostrar) y hasta cuándo se puede pagar.
     qr_texto = Column(Text, nullable=True)
     vence_en = Column(DateTime, nullable=True)
+    # Meses que adelanta: al llegar el pago se emiten y se dejan pagados.
+    meses_adelanto = Column(Integer, nullable=False, default=0, server_default="0")
 
 
 class ConfiguracionBotModel(Base):

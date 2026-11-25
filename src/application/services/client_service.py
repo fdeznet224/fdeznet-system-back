@@ -1025,6 +1025,12 @@ class ClientService:
             else:
                 update_data["telefono"] = telefono_cliente(nuevo)
 
+        if "telefono_codi" in update_data:
+            digitos = re.sub(r"\D", "", update_data["telefono_codi"] or "")
+            if digitos and len(digitos) < 10:
+                raise ValueError("El celular CoDi debe tener 10 dígitos")
+            update_data["telefono_codi"] = digitos[-10:] or None
+
         # 3. LIMPIEZA DE LLAVES FORÁNEAS
         campos_fk = [
             "caja_nap_id", "puerto_nap", "router_id", "plan_id", 

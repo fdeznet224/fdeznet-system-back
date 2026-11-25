@@ -11,7 +11,7 @@ from datetime import date
 import httpx
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -85,6 +85,15 @@ class Promesa(BaseModel):
 
 class Telefono(BaseModel):
     telefono: str
+
+
+class PagoCodi(BaseModel):
+    telefono: str
+    meses_adelanto: int = Field(default=0, ge=0, le=12)
+
+
+class QrCodi(BaseModel):
+    meses_adelanto: int = Field(default=0, ge=0, le=12)
 
 
 class Codigo(BaseModel):
@@ -309,7 +318,7 @@ async def factura_pdf(factura_id: int, cliente=Depends(cliente_portal), db: Asyn
 
 
 @router.post("/pago-codi")
-async def pagar_codi(datos: Telefono, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+async def pagar_codi(datos: PagoCodi, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
     """Manda el cobro CoDi a la app de su banco; el pago se aplica solo cuando lo acepta."""
     llave = str(cliente.id)
     try:
@@ -317,7 +326,7 @@ async def pagar_codi(datos: Telefono, cliente=Depends(cliente_portal), db: Async
     except HTTPException as error:
         raise HTTPException(status_code=429, detail="Ya te mandamos varios cobros; espera un rato e intenta de nuevo.") from error
     try:
-        resultado = await PortalClienteService(db).pagar_codi(cliente.id, datos.telefono)
+        resultado = await PortalClienteService(db).pagar_codi(cliente.id, datos.telefono, datos.meses_adelanto)
     except (ValueError, LookupError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     if not resultado.get("ya_enviado_hace_un_momento"):
@@ -326,7 +335,7 @@ async def pagar_codi(datos: Telefono, cliente=Depends(cliente_portal), db: Async
 
 
 @router.post("/pago-codi/qr")
-async def qr_codi(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+async def qr_codi(datos: QrCodi | None = None, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
     """QR por lo que debe, para que otra persona lo escanee desde su banco (vale 24 horas)."""
     from src.application.services.codi_service import crear_qr
 
@@ -335,11 +344,26 @@ async def qr_codi(cliente=Depends(cliente_portal), db: AsyncSession = Depends(ge
         cobros_codi.ensure_allowed(llave)
     except HTTPException as error:
         raise HTTPException(status_code=429, detail="Espera un rato e intenta de nuevo.") from error
-    datos = await crear_qr(db, await PortalClienteService(db).cliente(cliente.id), origen="portal")
-    if datos.get("error"):
-        raise HTTPException(status_code=409, detail=datos["error"])
+    resultado = await crear_qr(db, await PortalClienteService(db).cliente(cliente.id), origen="portal",
+                               meses_adelanto=datos.meses_adelanto if datos else 0)
+    if resultado.get("error"):
+        raise HTTPException(status_code=409, detail=resultado["error"])
     cobros_codi.register_failure(llave)
-    return datos
+    return resultado
+
+
+@router.get("/adelanto")
+async def cotizar_adelanto(meses: int = Query(..., ge=1, le=12), cliente=Depends(cliente_portal),
+                           db: AsyncSession = Depends(get_db)):
+    """Cuánto cuestan los siguientes meses si los paga por adelantado."""
+    from src.application.services.billing_service import BillingService
+
+    cotizacion = await BillingService(db).cotizar_adelanto(cliente.id, meses)
+    await db.rollback()
+    return {
+        "meses": [{"mes": d["mes"], "total": float(d["total"])} for d in cotizacion["detalle"]],
+        "total": float(cotizacion["total"]),
+    }
 
 
 @router.get("/pago-codi/{cobro_id}")

@@ -78,7 +78,7 @@ PRECIOS = {"entrada": Decimal("0.30"), "cache": Decimal("0.006"), "salida": Deci
 
 CONSULTAS = {
     "registrar_nombre", "identificar_cliente", "elegir_contrato", "consultar_cuenta", "diagnosticar_conexion", "medir_velocidad",
-    "consultar_avisos", "datos_de_pago", "leer_comprobante",
+    "consultar_avisos", "datos_de_pago", "leer_comprobante", "cotizar_adelanto",
 }
 ACCIONES = {
     "registrar_prospecto", "registrar_promesa", "crear_orden_tecnica", "aplicar_comprobante",
@@ -87,7 +87,7 @@ ACCIONES = {
 REQUIEREN_CLIENTE = {
     "consultar_cuenta", "diagnosticar_conexion", "medir_velocidad", "registrar_promesa",
     "crear_orden_tecnica", "aplicar_comprobante", "solicitar_cambio_contrasena", "cobrar_por_codi",
-    "mandar_qr_codi",
+    "mandar_qr_codi", "cotizar_adelanto",
 }
 CATEGORIAS_ORDEN = ("sin_internet", "cable_roto", "potencia_baja", "lentitud", "router_wifi", "cambio_domicilio", "otro")
 RE_COORDENADAS = re.compile(r"(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})")
@@ -200,13 +200,23 @@ HERRAMIENTA_CODI = _herramienta(
     "cobrar_por_codi",
     "Manda a la app del banco del cliente identificado un cobro CoDi por todo lo que debe; "
     "el cliente solo lo acepta y el pago se aplica solo. Úsala solo cuando el cliente ya confirmó el celular.",
-    {"telefono": {"type": "string", "description": "celular de 10 dígitos que el cliente confirmó o escribió"}},
+    {
+        "telefono": {"type": "string", "description": "celular de 10 dígitos que el cliente confirmó o escribió"},
+        "meses_adelanto": {"type": "integer", "description": "meses que quiere adelantar además de lo que debe (0 = solo lo que debe)"},
+    },
     ["telefono"],
 )
 HERRAMIENTA_QR_CODI = _herramienta(
     "mandar_qr_codi",
     "Manda por este chat la imagen de un QR CoDi por todo lo que debe el cliente identificado, "
     "para que OTRA persona lo escanee desde la app de su banco (vale 24 horas).",
+    {"meses_adelanto": {"type": "integer", "description": "meses que adelanta además de lo que debe (0 = solo lo que debe)"}},
+)
+HERRAMIENTA_COTIZAR_ADELANTO = _herramienta(
+    "cotizar_adelanto",
+    "Cuánto cuestan los siguientes meses que el cliente quiere pagar por adelantado (aún no facturados).",
+    {"meses": {"type": "integer", "description": "cuántos meses quiere adelantar (1 a 12)"}},
+    ["meses"],
 )
 
 REGLA_CODI = """
@@ -217,6 +227,7 @@ REGLA_CODI = """
 - Con `enviado`, dile que abra la app de su banco y acepte el cobro por el monto en el celular indicado, que tiene `vence_en_minutos` minutos y que si se vence escriba PAGAR. NO digas que el pago ya quedó: le llega su recibo por aquí cuando lo acepte.
 - Si dice que no le llegó o que se venció, pregúntale si ese es el celular registrado en la app de su banco y que revise que tenga CoDi activado (en su app, sección CoDi o Cobro Digital); si da otro número, mándalo a ese. Si aun así no puede, dale los datos para transferencia (`datos_de_pago`). Si `cobrar_por_codi` devuelve `error`, dale los datos para transferencia.
 - Cliente NO identificado que quiere pagar: dale los datos para transferencia y dile que si te da su contrato también le puedes mandar el cobro directo a su banco.
+- Pagar por adelantado (meses que aún no se le cobran): usa `cotizar_adelanto` con los meses que pide, dile cuánto es por mes y el total (más lo que deba hoy) y, si acepta, manda el cobro con `meses_adelanto` (confirmando el celular como siempre) o el QR con `meses_adelanto`. Al pagarse, esos meses quedan pagados solos. El adelanto solo se hace por CoDi; si quiere transferir, dile que por ahora el adelanto es con el cobro a su banco.
 - QR (`mandar_qr_codi`): úsalo cuando le va a pagar OTRA persona (un familiar, alguien que le hace el favor) o cuando quiere pagar desde otro celular o banco. Dile que lo reenvíe a quien le paga y que esa persona lo escanee desde la app de su banco (sección CoDi o "Pagar con QR"); vale 24 horas y el pago se aplica solo. No lo ofrezcas como primera opción: el cliente no puede escanear su propia pantalla."""
 
 
@@ -279,7 +290,8 @@ class AgenteIAService:
         modelo = SimpleNamespace(
             agente_modelo=config.agente_modelo,
             agente_url=config.agente_url,
-            herramientas=HERRAMIENTAS + [HERRAMIENTA_CODI, HERRAMIENTA_QR_CODI] if codi else HERRAMIENTAS,
+            herramientas=(HERRAMIENTAS + [HERRAMIENTA_CODI, HERRAMIENTA_QR_CODI, HERRAMIENTA_COTIZAR_ADELANTO]
+                          if codi else HERRAMIENTAS),
         )
         try:
             respuesta = await self._conversar(modelo, clave, mensajes, contexto)
@@ -1046,7 +1058,20 @@ class _Contexto:
             )
         return resultado
 
-    async def _cobrar_por_codi(self, telefono: str = "") -> dict:
+    async def _cotizar_adelanto(self, meses: int = 1) -> dict:
+        cotizacion = await BillingService(self.db).cotizar_adelanto(self.cliente.id, meses)
+        if cotizacion["total"] <= 0:
+            return {"error": "No se puede calcular el adelanto de este servicio; pásalo a un asesor si insiste."}
+        deuda = (await BillingService(self.db).estado_cuenta_cliente(self.cliente.id)).get("total") or 0
+        await self.db.commit()
+        return {
+            "meses": [{"mes": d["mes"], "total": str(d["total"])} for d in cotizacion["detalle"]],
+            "total_adelanto": str(cotizacion["total"]),
+            "debe_hoy": str(deuda),
+            "total_a_cobrar": str(Decimal(str(deuda)) + cotizacion["total"]),
+        }
+
+    async def _cobrar_por_codi(self, telefono: str = "", meses_adelanto: int = 0) -> dict:
         numero = telefono or celular_para_codi(self.cliente, self._telefono_de_contacto())
         numero = re.sub(r"\D", "", numero or "")[-10:] or None
         if numero and numero not in re.sub(r"[\s\-.()]", "", self.conversacion):
@@ -1057,10 +1082,10 @@ class _Contexto:
             )}
         if not numero:
             return {"error": "No se conoce el número de este chat: pregúntale a qué celular (10 dígitos) se lo mandas."}
-        return await cobrar_al_celular(self.db, self.cliente, numero, origen="whatsapp")
+        return await cobrar_al_celular(self.db, self.cliente, numero, origen="whatsapp", meses_adelanto=meses_adelanto)
 
-    async def _mandar_qr_codi(self) -> dict:
-        datos = await crear_qr(self.db, self.cliente, origen="whatsapp")
+    async def _mandar_qr_codi(self, meses_adelanto: int = 0) -> dict:
+        datos = await crear_qr(self.db, self.cliente, origen="whatsapp", meses_adelanto=meses_adelanto)
         if datos.get("error"):
             return datos
         if not self.servicio.enviar:

@@ -430,7 +430,14 @@ class BillingService:
         self,
         dia_objetivo: int = None,
         servicio_id: int | None = None,
+        adelantar: bool = False,
     ):
+        """Emite las facturas que ya tocan.
+
+        ``adelantar`` (solo con ``servicio_id``) emite el siguiente periodo aunque
+        todavía no toque: es un pago por adelantado que se aplica enseguida, así
+        que no se avisa por WhatsApp de la factura nueva.
+        """
         hoy = date.today()
         notificador = NotificationService(self.db)
 
@@ -536,7 +543,7 @@ class BillingService:
             # El modo manual sirve para recuperar una emisión atrasada, no
             # para adelantar varios meses al ejecutar el endpoint repetidas
             # veces.
-            if hoy < fecha_generacion:
+            if hoy < fecha_generacion and not (adelantar and servicio_id is not None):
                 reporte["omitidos_no_toca_emitir"] += 1
                 continue
 
@@ -779,7 +786,7 @@ class BillingService:
                     or periodo.periodo_hasta < hoy
                 )
             )
-            if cliente.telefono and debe_notificar:
+            if cliente.telefono and debe_notificar and not adelantar:
                 await self.db.flush()
                 estado_cuenta = await self.estado_cuenta_cliente(cliente.id)
                 exito = await notificador.notificar(
@@ -1495,6 +1502,114 @@ class BillingService:
             if facturas
             else None,
         }
+
+    async def _servicios_para_adelantar(self, cliente_id: int) -> list:
+        return (
+            await self.db.execute(
+                select(ServicioModel)
+                .options(selectinload(ServicioModel.plan), selectinload(ServicioModel.plantilla),
+                         selectinload(ServicioModel.cliente).selectinload(ClienteModel.plan),
+                         selectinload(ServicioModel.cliente).selectinload(ClienteModel.plantilla))
+                .where(ServicioModel.cliente_id == cliente_id, ServicioModel.estado == "activo",
+                       ServicioModel.proxima_facturacion.is_not(None))
+                .order_by(ServicioModel.id)
+            )
+        ).scalars().all()
+
+    async def cotizar_adelanto(self, cliente_id: int, meses: int) -> dict:
+        """Cuánto cuestan los siguientes ``meses`` que todavía no se facturan.
+
+        Se calcula igual que la emisión (precio del plan, impuesto y servicios
+        extra mensuales); no guarda nada.
+        """
+        meses = max(0, min(int(meses or 0), 12))
+        detalle, total = [], Decimal("0.00")
+        if not meses:
+            return {"meses": 0, "detalle": detalle, "total": total}
+        for servicio in await self._servicios_para_adelantar(cliente_id):
+            plantilla = servicio.plantilla or getattr(servicio.cliente, "plantilla", None)
+            plan = servicio.plan or getattr(servicio.cliente, "plan", None)
+            if plantilla is None or plan is None:
+                continue
+            dia_ciclo = BillingCalendarService.dia_ciclo_servicio(servicio, plantilla)
+            extras = sum(
+                (Decimal(a.precio_mensual or 0) for a in (
+                    await self.db.execute(
+                        select(ServicioAdicionalModel).where(
+                            ServicioAdicionalModel.cliente_id == cliente_id,
+                            ServicioAdicionalModel.activo.is_(True),
+                            ServicioAdicionalModel.periodicidad != "unico",
+                            or_(ServicioAdicionalModel.servicio_id == servicio.id,
+                                ServicioAdicionalModel.servicio_id.is_(None)),
+                        )
+                    )
+                ).scalars().all()),
+                Decimal("0.00"),
+            )
+            desde = servicio.proxima_facturacion
+            for _ in range(meses):
+                periodo = BillingCalendarService.calcular_periodo_por_dia_ciclo(
+                    periodo_desde=desde, dia_ciclo=dia_ciclo,
+                    precio_mensual=plan.precio, impuesto_porcentaje=plantilla.impuesto or 0,
+                )
+                importe = (periodo.total + (Decimal("0.00") if periodo.es_prorrateada else extras)).quantize(Decimal("0.01"))
+                detalle.append({
+                    "servicio_id": servicio.id,
+                    "mes": (f"{MESES_EN_ESPANOL[periodo.periodo_desde.month - 1]} {periodo.periodo_desde.year}"
+                            if periodo.periodo_desde.day == 1 else
+                            f"{periodo.periodo_desde:%d/%m/%Y} - {periodo.periodo_hasta:%d/%m/%Y}"),
+                    "total": importe,
+                })
+                total += importe
+                desde = periodo.siguiente_facturacion
+        return {"meses": meses, "detalle": detalle, "total": total.quantize(Decimal("0.01"))}
+
+    async def emitir_adelanto(self, cliente_id: int, disponible, meses_max: int) -> int:
+        """Emite, mes por mes, los periodos que alcanza a cubrir ``disponible``.
+
+        Se llama al llegar el pago: primero se cubre lo que ya debe y con lo que
+        sobra se emiten los siguientes meses (hasta ``meses_max``). Devuelve
+        cuántos meses emitió; lo que no alcance para un mes queda a favor.
+        """
+        restante = FinanceService.dinero(disponible, permitir_cero=True)
+        emitidos = 0
+        while emitidos < max(0, min(int(meses_max or 0), 12)):
+            cotizacion = await self.cotizar_adelanto(cliente_id, 1)
+            if cotizacion["total"] <= 0 or restante + Decimal("0.01") < cotizacion["total"]:
+                break
+            for servicio_id in dict.fromkeys(d["servicio_id"] for d in cotizacion["detalle"]):
+                await self.generar_emision_masiva(servicio_id=servicio_id, adelantar=True)
+            restante -= cotizacion["total"]
+            emitidos += 1
+        return emitidos
+
+    async def registrar_pago_con_adelanto(
+        self,
+        cliente_id: int,
+        usuario_operador: UsuarioModel,
+        metodo_pago: str,
+        monto,
+        meses_adelanto: int = 0,
+        referencia: str | None = None,
+        clave_idempotencia: str | None = None,
+    ) -> dict:
+        """Cobro total que además adelanta meses: emite esos meses y aplica el pago."""
+        clave = (clave_idempotencia or "").strip()[:80] or None
+        if meses_adelanto and clave:
+            ya = (
+                await self.db.execute(
+                    select(PagoModel.id).where(
+                        PagoModel.clave_idempotencia.like(f"{clave}:%"), PagoModel.cliente_id == cliente_id,
+                    ).limit(1)
+                )
+            ).scalar_one_or_none()
+            if ya is None:
+                deuda = FinanceService.dinero((await self.estado_cuenta_cliente(cliente_id)).get("total") or 0, permitir_cero=True)
+                await self.emitir_adelanto(cliente_id, FinanceService.dinero(monto) - deuda, meses_adelanto)
+        return await self.registrar_pago_cliente(
+            cliente_id, usuario_operador, metodo_pago, monto,
+            referencia=referencia, clave_idempotencia=clave_idempotencia,
+        )
 
     async def registrar_pago_cliente(
         self,

@@ -101,6 +101,22 @@ def celular_legible(numero: str | None) -> str:
     return f"{numero[:3]} {numero[3:6]} {numero[6:]}" if numero and len(numero) == 10 else (numero or "")
 
 
+async def _total_a_cobrar(db: AsyncSession, cliente, meses_adelanto: int = 0) -> tuple[Decimal, int, list]:
+    """Lo que debe hoy más los meses que quiere adelantar (sin facturar todavía)."""
+    from src.application.services.billing_service import BillingService
+
+    billing = BillingService(db)
+    deuda = _monto((await billing.estado_cuenta_cliente(cliente.id)).get("total"))
+    meses = max(0, min(int(meses_adelanto or 0), 12))
+    if not meses:
+        return deuda, 0, []
+    cotizacion = await billing.cotizar_adelanto(cliente.id, meses)
+    if cotizacion["total"] <= 0:
+        return deuda, 0, []
+    adelanto = [{"mes": d["mes"], "total": str(d["total"])} for d in cotizacion["detalle"]]
+    return (deuda + cotizacion["total"]).quantize(Decimal("0.01")), meses, adelanto
+
+
 # --------------------------------------------------------------------- envío
 async def cobrar_al_celular(
     db: AsyncSession,
@@ -108,10 +124,9 @@ async def cobrar_al_celular(
     telefono: str,
     http: httpx.AsyncClient | None = None,
     origen: str = "whatsapp",
+    meses_adelanto: int = 0,
 ) -> dict:
-    """Manda el cobro CoDi por el total que debe el cliente al celular indicado."""
-    from src.application.services.billing_service import BillingService
-
+    """Manda el cobro CoDi por lo que debe (más los meses que adelanta) al celular indicado."""
     config = await config_pagos(db)
     clave = (config.pey_api_key or "").strip()
     if not codi_para(config, cliente):
@@ -120,10 +135,9 @@ async def cobrar_al_celular(
     if not numero:
         return {"error": "Hace falta un celular de 10 dígitos para mandar el cobro."}
 
-    estado = await BillingService(db).estado_cuenta_cliente(cliente.id)
-    total = _monto(estado.get("total"))
+    total, meses_adelanto, adelanto = await _total_a_cobrar(db, cliente, meses_adelanto)
     if total <= 0:
-        return {"error": "El cliente no tiene saldo pendiente."}
+        return {"error": "El cliente no tiene saldo pendiente; si quiere adelantar meses, di cuántos."}
 
     reciente = (
         await db.execute(
@@ -148,7 +162,7 @@ async def cobrar_al_celular(
 
     cobro = CobroCodiModel(
         cliente_id=cliente.id, tipo="celular", telefono=numero, monto=total,
-        estado="enviado", origen=origen, creado_en=datetime.now(),
+        estado="enviado", origen=origen, creado_en=datetime.now(), meses_adelanto=meses_adelanto,
         vence_en=datetime.now() + timedelta(seconds=VIGENCIA_SEGUNDOS),
     )
     db.add(cobro)
@@ -192,6 +206,7 @@ async def cobrar_al_celular(
         "enviado": True,
         "cobro_id": cobro.id,
         "monto": str(total),
+        **({"incluye_adelanto": adelanto} if adelanto else {}),
         "celular": numero,
         "vence_en_minutos": VIGENCIA_SEGUNDOS // 60,
     }
@@ -222,15 +237,13 @@ async def crear_qr(
     vigencia: timedelta = VIGENCIA_QR_CLIENTE,
     origen: str = "portal",
     http: httpx.AsyncClient | None = None,
+    meses_adelanto: int = 0,
 ) -> dict:
-    """QR CoDi por todo lo que debe; si ya hay uno vigente por el mismo monto, se reusa."""
-    from src.application.services.billing_service import BillingService
-
+    """QR CoDi por lo que debe (más los meses que adelanta); si hay uno vigente igual, se reusa."""
     config = await config_pagos(db)
     if not codi_para(config, cliente):
         return {"error": "El cobro por CoDi no está activo."}
-    estado = await BillingService(db).estado_cuenta_cliente(cliente.id)
-    total = _monto(estado.get("total"))
+    total, meses_adelanto, _adelanto = await _total_a_cobrar(db, cliente, meses_adelanto)
     if total <= 0:
         return {"error": "El cliente no tiene saldo pendiente."}
 
@@ -244,6 +257,7 @@ async def crear_qr(
                 CobroCodiModel.tipo == "qr",
                 CobroCodiModel.estado == "enviado",
                 CobroCodiModel.monto == total,
+                CobroCodiModel.meses_adelanto == meses_adelanto,
                 CobroCodiModel.qr_texto.is_not(None),
                 CobroCodiModel.vence_en >= ahora + vigencia / 2,
             ).order_by(CobroCodiModel.id.desc()).limit(1)
@@ -254,7 +268,7 @@ async def crear_qr(
 
     cobro = CobroCodiModel(
         cliente_id=cliente.id, tipo="qr", monto=total, estado="enviado", origen=origen,
-        creado_en=ahora, vence_en=ahora + vigencia,
+        creado_en=ahora, vence_en=ahora + vigencia, meses_adelanto=meses_adelanto,
     )
     db.add(cobro)
     await db.flush()
@@ -493,6 +507,7 @@ async def aplicar_pago_codi(
             cobro = CobroCodiModel(
                 cliente_id=cobro.cliente_id, tipo="qr", codi_id=cobro.codi_id, monto=cobro.monto,
                 estado="enviado", origen=cobro.origen, creado_en=datetime.now(), vence_en=cobro.vence_en,
+                meses_adelanto=cobro.meses_adelanto,
             )
             db.add(cobro)
     if cobro is None:
@@ -525,9 +540,9 @@ async def aplicar_pago_codi(
     usuario = await usuario_de_sistema(db, USUARIO_CODI)
     referencia = f"CoDi {rastreo or cobro.num_ref or transaccion}"[:100]
     try:
-        resultado = await BillingService(db).registrar_pago_cliente(
-            cliente.id, usuario, "codi", monto, referencia=referencia,
-            clave_idempotencia=f"codi:{transaccion or cobro.id}",
+        resultado = await BillingService(db).registrar_pago_con_adelanto(
+            cliente.id, usuario, "codi", monto, meses_adelanto=cobro.meses_adelanto or 0,
+            referencia=referencia, clave_idempotencia=f"codi:{transaccion or cobro.id}",
         )
     except ValueError as exc:
         await db.rollback()

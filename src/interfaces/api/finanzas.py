@@ -1,7 +1,7 @@
 import logging
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Annotated, Optional, Literal
-from datetime import date
+from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func, desc, false
@@ -12,6 +12,7 @@ from pydantic import BaseModel, BeforeValidator, Field
 from src.infrastructure.database import get_db
 from src.infrastructure.auth import get_current_user, role_required
 from src.infrastructure.models import (
+    CobroCodiModel,
     FacturaModel, 
     ClienteModel, 
     PagoModel, 
@@ -1158,6 +1159,7 @@ async def obtener_reporte_cobranza(
     usuario_id: Optional[int] = Query(None),
     router_id: Optional[int] = Query(None),
     zona_id: Optional[int] = Query(None),
+    metodo: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
@@ -1209,6 +1211,8 @@ async def obtener_reporte_cobranza(
         query = query.where(ClienteModel.router_id == router_id)
     if zona_id:
         query = query.where(ClienteModel.zona_id == zona_id)
+    if metodo:
+        query = query.where(PagoModel.metodo_pago == metodo)
 
     query = query.order_by(desc(PagoModel.id))
     if busqueda:
@@ -1217,6 +1221,7 @@ async def obtener_reporte_cobranza(
     pagos = result.all()
 
     total = sum([p.monto_total for p in pagos])
+    codi = await _detalle_codi_de_pagos(db, [p.id for p in pagos if p.metodo_pago == "codi"])
 
     return {
         "total_periodo": total,
@@ -1235,10 +1240,91 @@ async def obtener_reporte_cobranza(
                 "usuario_nombre": row.usuario_nombre or "Sistema"
                 ,"zona_nombre": row.zona_nombre or "Sin zona"
                 ,"router_nombre": row.router_nombre or "Sin MikroTik"
+                ,"codi": codi.get(row.id)
             }
             for row in pagos
         ]
     }
+
+CANALES_CODI = {"whatsapp": "WhatsApp", "portal": "Portal", "tecnico": "QR del técnico", "prueba": "Prueba"}
+
+
+def _canal_codi(cobro) -> str:
+    canal = CANALES_CODI.get(cobro.origen or "", cobro.origen or "Desconocido")
+    if cobro.tipo == "qr" and cobro.origen != "tecnico":
+        canal = f"QR · {canal}"
+    return canal
+
+
+async def _detalle_codi_de_pagos(db: AsyncSession, pago_ids: list[int]) -> dict:
+    """Por cada pago CoDi: por dónde entró y a qué celular se mandó el cobro."""
+    if not pago_ids:
+        return {}
+    buscados = {str(i) for i in pago_ids}
+    cobros = (
+        await db.execute(
+            select(CobroCodiModel).where(
+                CobroCodiModel.estado == "aplicado",
+                or_(*[CobroCodiModel.pago_ids.like(f"%{i}%") for i in pago_ids]),
+            )
+        )
+    ).scalars().all()
+    detalle = {}
+    for cobro in cobros:
+        for pago_id in (cobro.pago_ids or "").split(","):
+            if pago_id.strip() in buscados:
+                detalle[int(pago_id)] = {
+                    "canal": _canal_codi(cobro),
+                    "celular": cobro.telefono,
+                    "meses_adelanto": cobro.meses_adelanto or 0,
+                }
+    return detalle
+
+
+@router.get("/cobros-codi")
+async def cobros_codi(
+    estado: Optional[str] = Query(None),
+    busqueda: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cada cobro CoDi enviado (pagado o no) y de quién es; los "sin aplicar" primero."""
+    query = (
+        select(CobroCodiModel, ClienteModel.nombre, ClienteModel.cedula)
+        .outerjoin(ClienteModel, CobroCodiModel.cliente_id == ClienteModel.id)
+        .where(CobroCodiModel.creado_en >= datetime.now() - timedelta(days=60))
+    )
+    if estado:
+        query = query.where(CobroCodiModel.estado == estado)
+    termino = (busqueda or "").strip()
+    if termino:
+        like = f"%{termino.lower()}%"
+        query = query.where(or_(
+            func.lower(ClienteModel.nombre).like(like), func.lower(ClienteModel.cedula).like(like),
+            CobroCodiModel.telefono.like(f"%{termino}%"),
+        ))
+    filas = (await db.execute(query.order_by(desc(CobroCodiModel.id)).limit(300))).all()
+    orden = {"sin_aplicar": 0, "error": 1}
+    filas = sorted(filas, key=lambda f: orden.get(f[0].estado, 2))
+    return [
+        {
+            "id": cobro.id,
+            "cliente_id": cobro.cliente_id,
+            "cliente_nombre": nombre or "Sin cliente",
+            "cliente_cedula": cedula,
+            "canal": _canal_codi(cobro),
+            "celular": cobro.telefono,
+            "monto": float(cobro.monto or 0),
+            "monto_pagado": float(cobro.monto_pagado) if cobro.monto_pagado is not None else None,
+            "meses_adelanto": cobro.meses_adelanto or 0,
+            "estado": cobro.estado,
+            "detalle": cobro.detalle,
+            "creado_en": cobro.creado_en,
+            "pagado_en": cobro.pagado_en,
+            "pago_ids": [int(i) for i in (cobro.pago_ids or "").split(",") if i.strip().isdigit()],
+        }
+        for cobro, nombre, cedula in filas
+    ]
+
 
 @router.get("/estadisticas")
 async def get_estadisticas(

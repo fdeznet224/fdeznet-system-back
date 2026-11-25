@@ -263,7 +263,7 @@ def test_el_agente_pide_el_numero_si_el_chat_es_lid():
 def test_el_agente_manda_el_cobro_al_numero_del_chat(monkeypatch):
     enviados = []
 
-    async def cobrar(_db, cliente, numero, origen="whatsapp"):
+    async def cobrar(_db, cliente, numero, origen="whatsapp", meses_adelanto=0):
         enviados.append((cliente.id, numero, origen))
         return {"enviado": True}
 
@@ -306,7 +306,7 @@ def test_el_pago_guarda_el_celular_del_banco(monkeypatch):
 def test_el_agente_usa_el_celular_que_ya_funciono(monkeypatch):
     enviados = []
 
-    async def cobrar(_db, cliente, numero, origen="whatsapp"):
+    async def cobrar(_db, cliente, numero, origen="whatsapp", meses_adelanto=0):
         enviados.append(numero)
         return {"enviado": True}
 
@@ -490,7 +490,7 @@ def test_crea_el_qr_por_lo_que_debe(monkeypatch):
 def test_el_agente_manda_el_qr_como_imagen(monkeypatch, tmp_path):
     import src.application.services.agente_ia_service as agente_mod
 
-    async def qr(_db, cliente, origen="whatsapp"):
+    async def qr(_db, cliente, origen="whatsapp", meses_adelanto=0):
         return {"cobro_id": 5, "monto": "350.00", "vence_en": "2026-11-26T10:00",
                 "qr_png": base64.b64encode(b"\x89PNGfalso").decode()}
 
@@ -508,3 +508,36 @@ def test_el_agente_manda_el_qr_como_imagen(monkeypatch, tmp_path):
     resultado = asyncio.run(contexto.usar("mandar_qr_codi", {}))
     assert resultado["enviado"] is True
     assert mandados[0][0] == "5214441234567@c.us" and "329B" in mandados[0][1] and mandados[0][2] == b"\x89PNGfalso"
+
+
+def test_el_panel_dice_por_donde_entro_cada_cobro():
+    from src.interfaces.api.finanzas import _canal_codi
+
+    assert _canal_codi(SimpleNamespace(origen="whatsapp", tipo="celular")) == "WhatsApp"
+    assert _canal_codi(SimpleNamespace(origen="portal", tipo="qr")) == "QR · Portal"
+    assert _canal_codi(SimpleNamespace(origen="tecnico", tipo="qr")) == "QR del técnico"
+
+
+def test_cobro_con_adelanto_suma_los_meses(monkeypatch):
+    _config(monkeypatch)
+    _deuda(monkeypatch, 300)
+
+    async def cotizar(_self, _cliente_id, meses):
+        return {"meses": meses, "total": Decimal("700.00"),
+                "detalle": [{"servicio_id": 1, "mes": "Diciembre 2026", "total": Decimal("350")},
+                            {"servicio_id": 1, "mes": "Enero 2027", "total": Decimal("350")}]}
+
+    monkeypatch.setattr(BillingService, "cotizar_adelanto", cotizar)
+    enviados = []
+
+    def pey(peticion):
+        enviados.append(json.loads(peticion.content))
+        return httpx.Response(200, json={"transactionId": "TXA", "codiId": "1"})
+
+    db = _DB()
+    resultado = asyncio.run(codi.cobrar_al_celular(db, CLIENTE, "4441234567", meses_adelanto=2,
+                                                   http=httpx.AsyncClient(transport=httpx.MockTransport(pey))))
+    assert resultado["monto"] == "1000.00" and [m["mes"] for m in resultado["incluye_adelanto"]] == ["Diciembre 2026", "Enero 2027"]
+    assert enviados[0]["amount"] == 1000
+    cobro = [o for o in db.agregados if isinstance(o, CobroCodiModel)][0]
+    assert cobro.meses_adelanto == 2

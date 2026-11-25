@@ -260,14 +260,14 @@ class PortalClienteService:
             raise LookupError("No encontramos tu cuenta.")
         return cliente
 
-    async def pagar_codi(self, cliente_id: int, telefono: str) -> Dict[str, Any]:
+    async def pagar_codi(self, cliente_id: int, telefono: str, meses_adelanto: int = 0) -> Dict[str, Any]:
         """Manda a la app del banco del cliente el cobro por todo lo que debe."""
         from src.application.services.codi_service import cobrar_al_celular
 
         cliente = await self.db.get(ClienteModel, cliente_id)
         if cliente is None:
             raise LookupError("No encontramos tu cuenta.")
-        resultado = await cobrar_al_celular(self.db, cliente, telefono, origen="portal")
+        resultado = await cobrar_al_celular(self.db, cliente, telefono, origen="portal", meses_adelanto=meses_adelanto)
         if resultado.get("error"):
             # Los mensajes del servicio le hablan al agente; aquí se le habla al cliente.
             error = resultado["error"]

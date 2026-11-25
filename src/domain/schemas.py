@@ -856,6 +856,9 @@ class ClienteUpdate(ClienteBase):
     impedir guardar lo demás.
     """
 
+    # El celular de la app de su banco (CoDi); vacío lo borra.
+    telefono_codi: Optional[str] = None
+
 
 class ClienteResponse(ClienteBase):
     model_config = ConfigDict(from_attributes=True)
@@ -864,6 +867,7 @@ class ClienteResponse(ClienteBase):
     estado: str
     created_at: datetime
     saldo_a_favor: Decimal = Decimal("0.00")
+    telefono_codi: Optional[str] = None
     router: Optional[RouterResponse] = None
     zona: Optional[ZonaResponse] = None          
     plantilla: Optional[PlantillaResponse] = None 
