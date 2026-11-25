@@ -273,5 +273,109 @@ def test_el_agente_manda_el_cobro_al_numero_del_chat(monkeypatch):
     contexto = _Contexto(AgenteIAService(_DB()), SimpleNamespace(mensaje_chat_id=1), "automatico",
                          "5214441234567@c.us", None, None)
     contexto.cliente = CLIENTE
+    # Sin preguntarle el número no se manda nada.
+    assert "444 123 4567" in asyncio.run(contexto.usar("cobrar_por_codi", {}))["error"]
+    assert enviados == []
+    contexto.conversacion = "EMPRESA: ¿Te lo mando al 444 123 4567?\nCLIENTE: sí"
     assert asyncio.run(contexto.usar("cobrar_por_codi", {}))["enviado"] is True
     assert enviados == [(7, "4441234567", "whatsapp")]
+
+
+# ------------------------------------------------------- celular del banco
+def test_celular_para_codi_prefiere_el_que_ya_funciono():
+    cliente = SimpleNamespace(telefono_codi="9611234567", telefono="9610000000")
+    assert codi.celular_para_codi(cliente, "5219613699652@c.us") == "9611234567"
+    cliente.telefono_codi = None
+    assert codi.celular_para_codi(cliente, "5219613699652@c.us") == "9613699652"
+    assert codi.celular_para_codi(cliente, "123456789012345@lid") == "9610000000"
+    assert codi.celular_legible("9613699652") == "961 369 9652"
+
+
+def test_el_pago_guarda_el_celular_del_banco(monkeypatch):
+    _config(monkeypatch)
+    _pagos(monkeypatch)
+    cliente = SimpleNamespace(id=7, nombre="Juana Pérez", cedula="329B", telefono_codi=None)
+    cobro = CobroCodiModel(id=41, cliente_id=7, tipo="celular", telefono="9611234567", monto=Decimal("350"),
+                           estado="enviado", pey_transaction_id="01TX")
+    db = _DB(cobro=cobro, cliente=cliente)
+    cuerpo = _aviso()
+    assert asyncio.run(codi.procesar_webhook(db, _firmar(cuerpo), cuerpo))["aplicado"] is True
+    assert cliente.telefono_codi == "9611234567"
+
+
+def test_el_agente_usa_el_celular_que_ya_funciono(monkeypatch):
+    enviados = []
+
+    async def cobrar(_db, cliente, numero, origen="whatsapp"):
+        enviados.append(numero)
+        return {"enviado": True}
+
+    import src.application.services.agente_ia_service as agente_mod
+
+    monkeypatch.setattr(agente_mod, "cobrar_al_celular", cobrar)
+    contexto = _Contexto(AgenteIAService(_DB()), SimpleNamespace(mensaje_chat_id=1), "automatico",
+                         "5214441234567@c.us", None, None)
+    contexto.cliente = SimpleNamespace(**vars(CLIENTE), telefono_codi="9611234567")
+    contexto.conversacion = "EMPRESA: ¿Te lo mando al 961-123-4567?\nCLIENTE: no, al 9619998877"
+    asyncio.run(contexto.usar("cobrar_por_codi", {}))
+    asyncio.run(contexto.usar("cobrar_por_codi", {"telefono": "9619998877"}))
+    assert enviados == ["9611234567", "9619998877"]
+
+
+def test_el_agente_confirma_el_celular_antes_de_cobrar():
+    from src.application.services.agente_ia_service import HERRAMIENTA_CODI, REGLA_CODI
+
+    assert HERRAMIENTA_CODI["function"]["parameters"]["required"] == ["telefono"]
+    assert "SOLO después de que confirme" in REGLA_CODI
+    assert "datos_de_pago" in REGLA_CODI  # si pide la cuenta, también se la da
+
+
+# ------------------------------------------------------- responde PAGAR
+def test_responde_pagar_solo_con_codi_y_agente(monkeypatch):
+    import src.application.services.bot_flow_service as bot
+    import src.application.services.notification_service as avisos
+
+    estado = {"codi": True, "modo": "automatico"}
+
+    async def disponible(_db, _cliente=None):
+        return estado["codi"]
+
+    async def config_bot(_db):
+        return SimpleNamespace(agente_modo=estado["modo"])
+
+    monkeypatch.setattr(codi, "codi_disponible", disponible)
+    monkeypatch.setattr(bot, "get_or_create_bot_config", config_bot)
+    assert asyncio.run(avisos.invitacion_codi(None)) == avisos.TEXTO_PAGAR_CODI
+    estado["modo"] = "apagado"
+    assert asyncio.run(avisos.invitacion_codi(None)) == ""
+    estado.update(codi=False, modo="automatico")
+    assert asyncio.run(avisos.invitacion_codi(None)) == ""
+
+
+def test_la_notificacion_del_portal_no_dice_responde_pagar():
+    from src.application.services.notification_service import TEXTO_PAGAR_CODI
+    from src.application.services.push_service import texto_de_whatsapp
+
+    texto = texto_de_whatsapp(f"Tu pago vence el 5.\n\n{TEXTO_PAGAR_CODI}")
+    assert "PAGAR" not in texto and texto.startswith("Tu pago vence el 5.")
+
+
+# ------------------------------------------------------- modo prueba
+def test_en_prueba_solo_los_contratos_de_la_lista():
+    config = SimpleNamespace(codi_activo=True, pey_api_key="sk", codi_solo_contratos="187B, 329b")
+    assert codi.codi_para(config, SimpleNamespace(cedula="187b")) is True
+    assert codi.codi_para(config, SimpleNamespace(cedula="329B")) is True
+    assert codi.codi_para(config, SimpleNamespace(cedula="F1C8")) is False
+    assert codi.codi_para(config, None) is False
+    config.codi_solo_contratos = None
+    assert codi.codi_para(config, SimpleNamespace(cedula="F1C8")) is True
+    config.codi_activo = False
+    assert codi.codi_para(config, SimpleNamespace(cedula="187B")) is False
+
+
+def test_en_prueba_no_le_cobra_a_otro_contrato(monkeypatch):
+    config = _config(monkeypatch)
+    config.codi_solo_contratos = "187B"
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda _p: pytest.fail("no debe llamar a pey")))
+    resultado = asyncio.run(codi.cobrar_al_celular(_DB(), CLIENTE, "4441234567", http=http))
+    assert "no está activo" in resultado["error"]

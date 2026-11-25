@@ -41,6 +41,8 @@ lecturas_trafico = LoginRateLimiter(max_attempts=40, window_seconds=60)
 
 CATEGORIAS_PORTAL = {"sin_internet", "lentitud", "router_wifi", "otro"}
 compras_fichas = LoginRateLimiter(max_attempts=10, window_seconds=600)
+# Cobros CoDi: 5 por hora (cada uno llega como notificación a su banco).
+cobros_codi = LoginRateLimiter(max_attempts=5, window_seconds=3600)
 
 
 def rutas_categorias():
@@ -304,6 +306,23 @@ async def factura_pdf(factura_id: int, cliente=Depends(cliente_portal), db: Asyn
     return Response(content=await pdf_de_factura(db, factura), media_type="application/pdf", headers={
         "Content-Disposition": f'attachment; filename="{nombre_pdf(factura)}"', "Cache-Control": "no-store",
     })
+
+
+@router.post("/pago-codi")
+async def pagar_codi(datos: Telefono, cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+    """Manda el cobro CoDi a la app de su banco; el pago se aplica solo cuando lo acepta."""
+    llave = str(cliente.id)
+    try:
+        cobros_codi.ensure_allowed(llave)
+    except HTTPException as error:
+        raise HTTPException(status_code=429, detail="Ya te mandamos varios cobros; espera un rato e intenta de nuevo.") from error
+    try:
+        resultado = await PortalClienteService(db).pagar_codi(cliente.id, datos.telefono)
+    except (ValueError, LookupError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if not resultado.get("ya_enviado_hace_un_momento"):
+        cobros_codi.register_failure(llave)
+    return resultado
 
 
 @router.get("/promesa")

@@ -305,6 +305,8 @@ class ClienteModel(Base):
     cedula = Column(String(50), unique=True, index=True) 
     
     telefono = Column(String(20))
+    # El celular de la app de su banco: con el que ya pagó por CoDi.
+    telefono_codi = Column(String(10), nullable=True)
     direccion = Column(String(200))
     correo = Column(String(100))
     
@@ -1820,6 +1822,8 @@ class ConfiguracionCorreoBancoModel(Base):
     codi_activo = Column(Boolean, nullable=False, default=False, server_default="0")
     pey_api_key = Column(EncryptedText(), nullable=True)
     pey_webhook_secreto = Column(EncryptedText(), nullable=True)
+    # En prueba: CoDi solo para estos contratos (separados por coma); vacío = todos.
+    codi_solo_contratos = Column(String(255), nullable=True)
     credencial_verificada_en = Column(DateTime, nullable=True)
     ultima_revision = Column(DateTime, nullable=True)
     ultimo_error = Column(String(500), nullable=True)

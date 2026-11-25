@@ -29,7 +29,7 @@ from src.application.services.billing_service import BillingService
 from src.application.services.cobertura_service import zona_y_plan
 from src.application.services.bot_flow_service import get_or_create_bot_config
 from src.application.services.bot_pausa_service import bot_en_pausa, pausar_bot
-from src.application.services.codi_service import cobrar_al_celular, codi_disponible
+from src.application.services.codi_service import cobrar_al_celular, celular_legible, celular_para_codi, codi_disponible
 from src.application.services.comprobante_service import (
     ComprobanteService,
     normalizar_contrato,
@@ -195,15 +195,19 @@ HERRAMIENTAS = [
 HERRAMIENTA_CODI = _herramienta(
     "cobrar_por_codi",
     "Manda a la app del banco del cliente identificado un cobro CoDi por todo lo que debe; "
-    "el cliente solo lo acepta y el pago se aplica solo.",
-    {"telefono": {"type": "string", "description": "celular de 10 dígitos al que se manda; vacío = el de este chat"}},
+    "el cliente solo lo acepta y el pago se aplica solo. Úsala solo cuando el cliente ya confirmó el celular.",
+    {"telefono": {"type": "string", "description": "celular de 10 dígitos que el cliente confirmó o escribió"}},
+    ["telefono"],
 )
 
 REGLA_CODI = """
-
-4b. Pagar por CoDi (sin captura): cuando un cliente identificado quiere pagar, pregunta cómo pagar o escribe "PAGAR", ofrécele primero mandarle el cobro a la app de su banco: lo acepta ahí y su pago se aplica solo, sin mandar comprobante. Si acepta, usa `cobrar_por_codi` (al número de este chat; si pide otro número, pásalo en `telefono`). Con `enviado`, dile que abra la app de su banco y acepte el cobro por el monto, y que tiene `vence_en_minutos` minutos; si tarda, que escriba PAGAR otra vez. NO digas que el pago ya quedó: le llega su recibo por aquí cuando lo acepte. Si dice que no le llegó, explícale que su banco debe tener CoDi activado (en su app, sección CoDi o Cobro Digital) y ofrécele los datos para transferencia (`datos_de_pago`). Si `cobrar_por_codi` devuelve `error`, dale los datos para transferencia."""
-
-
+4b. Pagar por CoDi (sin captura): el cobro llega a la app del banco ligada a un CELULAR, que puede no ser el de este chat.
+- Cuando un cliente identificado quiere pagar, pregunta cómo pagar o escribe "PAGAR", ofrécele mandarle el cobro a la app de su banco: lo acepta ahí y su pago se aplica solo, sin mandar captura. Dile el monto (consultar_cuenta) y pregúntale si se lo mandas al "Celular para CoDi" que viene en los datos del cliente, ESCRIBIENDO EL NÚMERO completo (por ejemplo "¿te lo mando al 961 369 9652?"), aclarando que debe ser el celular que tiene registrado en la app de su banco y que si es otro te lo escriba. Si escribe "PAGAR" o ya pidió pagar por CoDi, en ese mismo mensaje pídele confirmar el número.
+- Usa `cobrar_por_codi` SOLO después de que confirme ("sí", "ese", "ok") o escriba otro número; pasa en `telefono` el número confirmado (10 dígitos). Nunca lo mandes sin confirmar el número.
+- Si pide el número de cuenta, la tarjeta, si es "la misma cuenta" o cómo transferir: usa `datos_de_pago` y en UN solo mensaje dale primero la opción rápida (te mando el cobro a la app de tu banco, solo responde SÍ y confirma el celular) y abajo los datos para transferir tal cual vienen. No lo obligues a usar CoDi.
+- Con `enviado`, dile que abra la app de su banco y acepte el cobro por el monto en el celular indicado, que tiene `vence_en_minutos` minutos y que si se vence escriba PAGAR. NO digas que el pago ya quedó: le llega su recibo por aquí cuando lo acepte.
+- Si dice que no le llegó o que se venció, pregúntale si ese es el celular registrado en la app de su banco y que revise que tenga CoDi activado (en su app, sección CoDi o Cobro Digital); si da otro número, mándalo a ese. Si aun así no puede, dale los datos para transferencia (`datos_de_pago`). Si `cobrar_por_codi` devuelve `error`, dale los datos para transferencia.
+- Cliente NO identificado que quiere pagar: dale los datos para transferencia y dile que si te da su contrato también le puedes mandar el cobro directo a su banco."""
 
 
 def _url_portal() -> str:
@@ -249,9 +253,11 @@ class AgenteIAService:
         if not clave:
             return await self._fallar(interaccion, "Falta la clave de API del agente")
 
-        codi = await codi_disponible(self.db)
         contexto = _Contexto(self, interaccion, modo, telefono, telefono_busqueda, media_url)
         await contexto.cargar_identidad()
+        # En prueba solo se ofrece a los contratos de la lista.
+        codi = await codi_disponible(self.db, contexto.cliente or await contexto._cliente_del_telefono_registrado())
+        contexto.codi = codi
         interaccion.cliente_id = contexto.cliente.id if contexto.cliente else None
 
         mensajes = [
@@ -453,13 +459,13 @@ class AgenteIAService:
                 "pregúntale con quién tienes el gusto; en esa respuesta no pidas contrato."
             )
         if len(contexto.contratos) > 1:
-            lineas = "\n".join(
+            lista_contratos = "\n".join(
                 f"- {c['contrato']}: {c['titular']} (servicio {c['estado_servicio']})"
                 + (f", lo llama \"{c['como_lo_llama']}\"" if c.get("como_lo_llama") else "")
                 for c in contexto._lista_contratos()
             )
             identidad = (
-                f"CLIENTE IDENTIFICADO con VARIOS CONTRATOS en este chat:\n{lineas}\n"
+                f"CLIENTE IDENTIFICADO con VARIOS CONTRATOS en este chat:\n{lista_contratos}\n"
                 f"El último que se atendió fue {contexto.cliente.cedula}. Antes de consultar su cuenta o su "
                 "conexión o de registrar algo, usa elegir_contrato: si por la conversación queda claro de cuál "
                 "habla (lo nombra, usa cómo lo llama o venían hablando de ese), elígelo sin preguntar; si no, "
@@ -479,8 +485,17 @@ class AgenteIAService:
             "\n(El cliente envió una imagen; si parece comprobante o foto del módem o de su red WiFi, "
             "usa leer_comprobante.)" if media_url else ""
         )
+        if contexto.codi and contexto.cliente:
+            celular = celular_para_codi(contexto.cliente, contexto._telefono_de_contacto())
+            if celular:
+                origen = "con el que ya pagó por CoDi" if getattr(contexto.cliente, "telefono_codi", None) else "aún sin confirmar"
+                identidad += f"\nCelular para CoDi: {celular_legible(celular)} ({origen})."
+            else:
+                identidad += "\nCelular para CoDi: no se conoce; pregúntale a qué celular (el de la app de su banco) se lo mandas."
         if not contexto._telefono_de_contacto():
             identidad += "\nNo se conoce el teléfono de este chat: si vas a registrar un interesado, pídele un número de contacto."
+        # Para comprobar que el celular del cobro CoDi se le preguntó o lo escribió él.
+        contexto.conversacion = "\n".join(lineas + [texto or ""])
         return (
             "Conversación reciente:\n{}\n\n{}\n{}\n{}\n\nÚltimo mensaje del cliente:\n{}{}"
         ).format("\n".join(lineas) or "(sin mensajes previos)", hora, quien, identidad, texto or "", adjunto)
@@ -543,6 +558,8 @@ class _Contexto:
         self.telefono_busqueda = telefono_busqueda
         self.media_url = media_url
         self.usuario = usuario
+        self.codi = False
+        self.conversacion = ""
         self.cliente = None
         # Contratos que atiende este chat; con más de uno se elige antes de consultar.
         self.contratos = []
@@ -1014,7 +1031,14 @@ class _Contexto:
         return resultado
 
     async def _cobrar_por_codi(self, telefono: str = "") -> dict:
-        numero = telefono or self._telefono_de_contacto()
+        numero = telefono or celular_para_codi(self.cliente, self._telefono_de_contacto())
+        numero = re.sub(r"\D", "", numero or "")[-10:] or None
+        if numero and numero not in re.sub(r"[\s\-.()]", "", self.conversacion):
+            # El cobro va a la app del banco ligada a ese número: sin confirmarlo no se manda.
+            return {"error": (
+                f"Todavía no confirma el celular. Pregúntale si se lo mandas al {celular_legible(numero)}, "
+                "escribiendo el número, y aclara que debe ser el registrado en la app de su banco. Espera su respuesta."
+            )}
         if not numero:
             return {"error": "No se conoce el número de este chat: pregúntale a qué celular (10 dígitos) se lo mandas."}
         return await cobrar_al_celular(self.db, self.cliente, numero, origen="whatsapp")

@@ -102,7 +102,10 @@ async def llaves(db: AsyncSession) -> Dict[str, str]:
 
 def texto_de_whatsapp(mensaje: str) -> str:
     """Sin *negritas* ni _cursivas_ ni saltos de más, y corto para la notificación."""
-    limpio = re.sub(r"[*_~]", "", mensaje or "")
+    from src.application.services.notification_service import TEXTO_PAGAR_CODI
+
+    # "Responde PAGAR" es para WhatsApp; en el portal está el botón.
+    limpio = re.sub(r"[*_~]", "", (mensaje or "").replace(TEXTO_PAGAR_CODI, ""))
     limpio = re.sub(r"\s*\n\s*", " · ", limpio.strip())
     return limpio if len(limpio) <= LARGO_CUERPO else limpio[: LARGO_CUERPO - 1].rstrip() + "…"
 

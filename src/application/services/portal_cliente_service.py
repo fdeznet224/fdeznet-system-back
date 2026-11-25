@@ -238,12 +238,41 @@ class PortalClienteService:
             "tiene_onu": bool(cliente.onu_id or (servicio and servicio.onu_id)),
             "telefono": cliente.telefono,
             "correo": cliente.correo,
+            "codi": await self._codi(cliente),
             **(await self._zona_y_efectivo(servicio, cliente)),
             "calendario": cuenta_regresiva(
                 await self._factura_pendiente(cliente_id), date.today(),
                 (servicio.proxima_facturacion if servicio and servicio.proxima_facturacion else cliente.proxima_factura),
             ),
         }
+
+    async def _codi(self, cliente: ClienteModel) -> Optional[Dict[str, Any]]:
+        """Si el ISP cobra por CoDi: a qué celular se le sugiere mandar el cobro."""
+        from src.application.services.codi_service import celular_para_codi, codi_disponible
+
+        if not await codi_disponible(self.db, cliente):
+            return None
+        return {"celular": celular_para_codi(cliente), "confirmado": bool(cliente.telefono_codi)}
+
+    async def pagar_codi(self, cliente_id: int, telefono: str) -> Dict[str, Any]:
+        """Manda a la app del banco del cliente el cobro por todo lo que debe."""
+        from src.application.services.codi_service import cobrar_al_celular
+
+        cliente = await self.db.get(ClienteModel, cliente_id)
+        if cliente is None:
+            raise LookupError("No encontramos tu cuenta.")
+        resultado = await cobrar_al_celular(self.db, cliente, telefono, origen="portal")
+        if resultado.get("error"):
+            # Los mensajes del servicio le hablan al agente; aquí se le habla al cliente.
+            error = resultado["error"]
+            if "10 dígitos" in error:
+                raise ValueError("Escribe el celular a 10 dígitos.")
+            if "saldo pendiente" in error:
+                raise ValueError("No tienes saldo pendiente.")
+            if "no está activo" in error:
+                raise ValueError("El pago con la app de tu banco no está disponible por ahora.")
+            raise ValueError("No se pudo mandar el cobro a ese número. Revisa que sea el celular de la app de tu banco.")
+        return resultado
 
     async def estado_servicio(self, cliente_id: int) -> Dict[str, Any]:
         """Lo que Inicio le avisa arriba: falla en su zona o cómo va su reconexión."""

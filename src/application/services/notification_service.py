@@ -87,7 +87,20 @@ def quitar_aviso_de_pdf(texto: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", limpio)
 
 
-OPCIONALES = ("red_wifi", "clave_wifi", "portal")
+OPCIONALES = ("red_wifi", "clave_wifi", "portal", "pagar_codi")
+
+TEXTO_PAGAR_CODI = "💳 *Paga en un minuto desde la app de tu banco:* responde *PAGAR* y te mandamos el cobro."
+
+
+async def invitacion_codi(db, cliente=None) -> str:
+    """La línea de "responde PAGAR": solo si el cobro CoDi está activo y el agente contesta."""
+    from src.application.services.bot_flow_service import get_or_create_bot_config
+    from src.application.services.codi_service import codi_disponible
+
+    if not await codi_disponible(db, cliente):
+        return ""
+    config = await get_or_create_bot_config(db)
+    return TEXTO_PAGAR_CODI if (config.agente_modo or "apagado") != "apagado" else ""
 
 
 def sin_lineas_vacias(texto: str, datos: dict) -> str:
@@ -287,8 +300,12 @@ class NotificationService:
             # Instalación: el WiFi que se le puso a su ONU y su portal.
             "red_wifi": "",
             "clave_wifi": "",
+            "pagar_codi": "",
             "portal": (os.getenv("PUBLIC_URL", "").strip().rstrip("/") + "/cliente") if os.getenv("PUBLIC_URL", "").strip() else "",
         }
+
+        if tipo_evento in EVENTOS_CON_TOTAL:
+            datos_base["pagar_codi"] = await invitacion_codi(self.db, cliente)
 
         # 5. UNIFICAR DATOS (Las variables de 'variables_extra' sobrescriben los valores por defecto)
         datos_finales = {**datos_base, **(variables_extra or {})}
@@ -323,6 +340,11 @@ class NotificationService:
         ):
             mensaje_formateado = f"{mensaje_formateado}\n\n{desglose_total}"
         
+        # Pagar por CoDi va al final aunque la plantilla no tenga {pagar_codi}.
+        pagar_codi = str(datos_finales.get("pagar_codi") or "").strip()
+        if pagar_codi and "{pagar_codi}" not in texto_plantilla and pagar_codi not in mensaje_formateado:
+            mensaje_formateado = f"{mensaje_formateado}\n\n{pagar_codi}"
+
         # 7. ENCOLAR TAREA HACIA EL BOT DE WHATSAPP
         registro = MensajeChatModel(
             cliente_id=cliente.id,

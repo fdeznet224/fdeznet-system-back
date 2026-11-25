@@ -56,9 +56,22 @@ def url_webhook() -> str | None:
     return f"{base}/api/pagos/codi/webhook" if base else None
 
 
-async def codi_disponible(db: AsyncSession) -> bool:
-    config = await db.get(ConfiguracionCorreoBancoModel, 1)
-    return bool(config and config.codi_activo and (config.pey_api_key or "").strip())
+def contratos_de_prueba(config) -> set[str]:
+    return {c.strip().upper() for c in (getattr(config, "codi_solo_contratos", None) or "").split(",") if c.strip()}
+
+
+def codi_para(config, cliente=None) -> bool:
+    """Activo y con llave; en prueba, solo para los contratos de la lista."""
+    if not (config and config.codi_activo and (config.pey_api_key or "").strip()):
+        return False
+    prueba = contratos_de_prueba(config)
+    if not prueba:
+        return True
+    return bool(cliente is not None and (getattr(cliente, "cedula", None) or "").strip().upper() in prueba)
+
+
+async def codi_disponible(db: AsyncSession, cliente=None) -> bool:
+    return codi_para(await db.get(ConfiguracionCorreoBancoModel, 1), cliente)
 
 
 def _monto(valor) -> Decimal:
@@ -71,6 +84,21 @@ def _monto(valor) -> Decimal:
 def _telefono_10(valor: str | None) -> str | None:
     digitos = re.sub(r"\D", "", valor or "")
     return digitos[-10:] if len(digitos) >= 10 else None
+
+
+def celular_para_codi(cliente, numero_chat: str | None = None) -> str | None:
+    """A qué celular se ofrece el cobro: el que ya funcionó, el del chat o el registrado."""
+    if numero_chat and "@lid" in numero_chat:
+        numero_chat = None  # un LID de WhatsApp no es un teléfono
+    return (
+        _telefono_10(getattr(cliente, "telefono_codi", None))
+        or _telefono_10(numero_chat)
+        or _telefono_10(getattr(cliente, "telefono", None))
+    )
+
+
+def celular_legible(numero: str | None) -> str:
+    return f"{numero[:3]} {numero[3:6]} {numero[6:]}" if numero and len(numero) == 10 else (numero or "")
 
 
 # --------------------------------------------------------------------- envío
@@ -86,7 +114,7 @@ async def cobrar_al_celular(
 
     config = await config_pagos(db)
     clave = (config.pey_api_key or "").strip()
-    if not config.codi_activo or not clave:
+    if not codi_para(config, cliente):
         return {"error": "El cobro por CoDi no está activo; da los datos para transferencia."}
     numero = _telefono_10(telefono)
     if not numero:
@@ -279,6 +307,11 @@ async def procesar_webhook(db: AsyncSession, headers, cuerpo: bytes) -> dict:
     cobro.monto_pagado = monto
     cobro.pago_ids = ",".join(str(i) for i in resultado.get("pago_ids") or [])[:255]
     cobro.detalle = None
+    # Ese número sí tiene CoDi en su banco: la próxima vez se le ofrece ese.
+    if cobro.tipo == "celular" and cobro.telefono:
+        cliente = await db.get(ClienteModel, cobro.cliente_id)
+        if cliente is not None:
+            cliente.telefono_codi = cobro.telefono
     await db.commit()
     return {"aplicado": True, "pago_ids": resultado.get("pago_ids")}
 

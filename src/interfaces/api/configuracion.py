@@ -828,6 +828,8 @@ class PagosCodiRequest(BaseModel):
     # Vacío conserva la que ya estaba guardada.
     api_key: str | None = Field(default=None, max_length=300)
     webhook_secreto: str | None = Field(default=None, max_length=300)
+    # En prueba: solo estos contratos (separados por coma). Vacío = todos los clientes.
+    solo_contratos: str = Field(default="", max_length=255)
 
 
 def _respuesta_codi(config) -> dict:
@@ -838,6 +840,7 @@ def _respuesta_codi(config) -> dict:
         "tiene_api_key": bool((config.pey_api_key or "").strip()),
         "tiene_webhook_secreto": bool((config.pey_webhook_secreto or "").strip()),
         "url_webhook": url_webhook(),
+        "solo_contratos": config.codi_solo_contratos or "",
     }
 
 
@@ -863,6 +866,8 @@ async def guardar_pagos_codi(datos: PagosCodiRequest, db: AsyncSession = Depends
             detail="Escribe el secreto del webhook de pey: sin él los pagos no se aplicarían solos",
         )
     config.codi_activo = datos.activo
+    contratos = [c.strip().upper() for c in re.split(r"[,\s]+", datos.solo_contratos or "") if c.strip()]
+    config.codi_solo_contratos = ",".join(dict.fromkeys(contratos)) or None
     await db.commit()
     return _respuesta_codi(config)
 
