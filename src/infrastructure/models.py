@@ -2056,6 +2056,10 @@ class EquipoRedModel(Base):
     # Por cuál MikroTik se llega (ping, puente para abrirlo) y de qué equipo cuelga (árbol).
     router_id = Column(Integer, ForeignKey("routers.id", ondelete="SET NULL"), nullable=True, index=True)
     padre_id = Column(Integer, ForeignKey("equipos_red.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Red troncal: va arriba de los MikroTik (nodo principal, troncal, enlaces a cada zona).
+    troncal = Column(Boolean, nullable=False, default=False, server_default="0")
+    # El MikroTik de zona que cuelga de este equipo (p. ej. el Mimosa que llega a la zona).
+    router_hijo_id = Column(Integer, ForeignKey("routers.id", ondelete="SET NULL"), nullable=True)
     zona_id = Column(Integer, ForeignKey("zonas.id", ondelete="SET NULL"), nullable=True)
     ubicacion = Column(String(200), nullable=True)
     latitud = Column(Float, nullable=True)

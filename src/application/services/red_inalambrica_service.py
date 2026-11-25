@@ -10,6 +10,7 @@
 import asyncio
 import logging
 import re
+import unicodedata
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -25,13 +26,14 @@ from src.infrastructure.models import ClienteModel, EquipoRedModel, RouterModel
 logger = logging.getLogger(__name__)
 
 TIPOS = {
+    "router": "MikroTik / router",
     "ptp_base": "PtP (base)",
     "ptp_estacion": "PtP (estación)",
     "ap": "AP / sectorial",
     "switch": "Switch",
     "otro": "Otro",
 }
-MARCAS = {"ubiquiti": "Ubiquiti", "mikrotik": "MikroTik", "otra": "Otra"}
+MARCAS = {"ubiquiti": "Ubiquiti", "mimosa": "Mimosa", "mikrotik": "MikroTik", "otra": "Otra"}
 PUENTE_EQUIPO = "FDEZNET-EQUIPO"
 PUENTE_EQUIPO_BASE = 19000
 PUENTE_EQUIPO_MINUTOS = 30
@@ -69,6 +71,7 @@ def resumir_status(datos: Dict[str, Any]) -> Dict[str, Any]:
         "estaciones": int(wifi.get("count")) if str(wifi.get("count") or "").isdigit() else None,
         "firmware": host.get("fwversion"),
         "modelo": host.get("devmodel"),
+        "nombre_equipo": host.get("hostname"),
         "uptime_s": int(host.get("uptime")) if str(host.get("uptime") or "").isdigit() else None,
     }
 
@@ -82,7 +85,7 @@ def resumir_estaciones(lista: Any) -> List[Dict[str, Any]]:
         remoto = sta.get("remote") or {}
         estaciones.append({
             "mac": str(sta.get("mac") or "").upper() or None,
-            "ip": sta.get("lastip") or None,
+            "ip": sta.get("lastip") if sta.get("lastip") not in (None, "", "0.0.0.0") else None,
             "senal": _numero(sta.get("signal")),
             "ccq": _numero(sta.get("ccq")),
             "nombre": remoto.get("hostname") or sta.get("name") or None,
@@ -108,12 +111,33 @@ async def leer_airos(base: str, usuario: str, clave: str, http: Optional[httpx.A
         status = await cliente.get(f"{base}/status.cgi", headers=cabeceras)
         if status.status_code in (401, 403) or "json" not in status.headers.get("content-type", "") and not status.text.lstrip().startswith("{"):
             raise PermissionError("Usuario o clave de airOS incorrectos")
-        estaciones = await cliente.get(f"{base}/sta.cgi", headers=cabeceras)
-        lista = estaciones.json() if estaciones.status_code == 200 and estaciones.text.lstrip().startswith("[") else []
-        return {"status": resumir_status(status.json()), "estaciones": resumir_estaciones(lista)}
+        datos = status.json()
+        # airOS 8 trae las estaciones dentro de status.cgi; airOS 6 en sta.cgi.
+        lista = (datos.get("wireless") or {}).get("sta")
+        if not isinstance(lista, list):
+            estaciones = await cliente.get(f"{base}/sta.cgi", headers=cabeceras)
+            lista = estaciones.json() if estaciones.status_code == 200 and estaciones.text.lstrip().startswith("[") else []
+        return {"status": resumir_status(datos), "estaciones": resumir_estaciones(lista)}
     finally:
         if http is None:
             await cliente.aclose()
+
+
+def nombre_comparable(texto: Any) -> str:
+    """Sin acentos, mayúsculas ni espacios de más: "Ximena Zuñiga " == "ximena zuniga"."""
+    plano = unicodedata.normalize("NFKD", str(texto or "")).encode("ascii", "ignore").decode()
+    return " ".join(plano.lower().split())
+
+
+def mismo_nombre(equipo: Any, cliente: Any) -> bool:
+    """El nombre de la antena es el del cliente (o uno contiene al otro, con 2+ palabras)."""
+    a, b = nombre_comparable(equipo), nombre_comparable(cliente)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    corto, largo = sorted((a, b), key=len)
+    return len(corto.split()) >= 2 and f" {corto} " in f" {largo} "
 
 
 # ------------------------------------------------------------------ puente
@@ -225,6 +249,8 @@ class RedInalambricaService:
             logger.info("airOS de %s: %s", equipo.nombre, exc)
             return
         for campo, valor in datos["status"].items():
+            if campo == "nombre_equipo":
+                continue
             if campo == "modelo":
                 equipo.modelo = valor or equipo.modelo
             else:
@@ -241,14 +267,25 @@ class RedInalambricaService:
             return
         ips = {e["ip"]: e for e in estaciones if e["ip"]}
         macs = {e["mac"]: e for e in estaciones if e["mac"]}
-        clientes = (
-            await self.db.execute(
-                select(ClienteModel).where(ClienteModel.tipo_conexion == "radio", ClienteModel.estado != "cancelado")
-            )
-        ).scalars().all()
+        filtros = [ClienteModel.tipo_conexion == "radio", ClienteModel.estado != "cancelado"]
+        if equipo.router_id:
+            filtros.append(ClienteModel.router_id == equipo.router_id)
+        clientes = (await self.db.execute(select(ClienteModel).where(*filtros))).scalars().all()
+        usadas: set = set()
+        pendientes = []
         for cliente in clientes:
             sta = ips.get((cliente.ip_antena or "").strip()) or macs.get((cliente.mac_address or "").strip().upper())
             if sta:
+                usadas.add(id(sta))
+                cliente.equipo_red_id = equipo.id
+                cliente.antena_senal = sta["senal"]
+            else:
+                pendientes.append(cliente)
+        # Respaldo: la antena se llama como el cliente (IP 0.0.0.0 o cambiada).
+        for cliente in pendientes:
+            sta = next((e for e in estaciones if id(e) not in usadas and mismo_nombre(e["nombre"], cliente.nombre)), None)
+            if sta:
+                usadas.add(id(sta))
                 cliente.equipo_red_id = equipo.id
                 cliente.antena_senal = sta["senal"]
         # Un PtP estación conectado a esta base cuelga de ella (si no se eligió otro).
@@ -308,7 +345,9 @@ class RedInalambricaService:
             raise ValueError("Tipo de equipo no válido.")
         if datos.get("padre_id") and equipo_id and int(datos["padre_id"]) == equipo_id:
             raise ValueError("Un equipo no puede colgar de sí mismo.")
-        for campo in ("nombre", "tipo", "marca", "modelo", "ip", "router_id", "padre_id", "zona_id",
+        if datos.get("router_hijo_id") and datos.get("router_hijo_id") == datos.get("router_id") and not datos.get("troncal"):
+            raise ValueError("Un equipo de la zona no puede tener colgado a su propio MikroTik; márcalo como troncal.")
+        for campo in ("nombre", "tipo", "marca", "modelo", "ip", "router_id", "padre_id", "zona_id", "troncal", "router_hijo_id",
                       "ubicacion", "latitud", "longitud", "usuario", "puerto_web", "activo"):
             if campo in datos:
                 setattr(equipo, campo, datos[campo])
@@ -335,6 +374,7 @@ class RedInalambricaService:
             "id": equipo.id, "nombre": equipo.nombre, "tipo": equipo.tipo, "tipo_nombre": TIPOS.get(equipo.tipo, equipo.tipo),
             "marca": equipo.marca, "modelo": equipo.modelo, "ip": equipo.ip, "router_id": equipo.router_id,
             "padre_id": equipo.padre_id, "zona_id": equipo.zona_id, "ubicacion": equipo.ubicacion,
+            "troncal": bool(equipo.troncal), "router_hijo_id": equipo.router_hijo_id,
             "latitud": equipo.latitud, "longitud": equipo.longitud, "usuario": equipo.usuario,
             "tiene_clave": bool(equipo.clave), "puerto_web": equipo.puerto_web, "activo": bool(equipo.activo),
             "responde": equipo.responde, "latencia_ms": equipo.latencia_ms, "perdida": equipo.perdida,
@@ -348,7 +388,8 @@ class RedInalambricaService:
         }
 
     async def arbol(self) -> Dict[str, Any]:
-        """Por MikroTik: sus equipos en árbol y, en cada AP, los clientes conectados."""
+        """La red completa: la troncal arriba (nodo principal, troncal, enlaces a cada zona),
+        de cada enlace cuelga el MikroTik de la zona y de él sus AP y sus clientes."""
         routers = (await self.db.execute(select(RouterModel).order_by(RouterModel.nombre))).scalars().all()
         equipos = (await self.db.execute(select(EquipoRedModel).order_by(EquipoRedModel.nombre))).scalars().all()
         clientes = (
@@ -369,25 +410,37 @@ class RedInalambricaService:
             else:
                 sin_ap.setdefault(c.router_id, []).append(dato)
         ids = {e.id for e in equipos}
+        colgados = {e.router_hijo_id for e in equipos if e.router_hijo_id}
+
+        def nodo_router(router: RouterModel) -> Dict[str, Any]:
+            return {
+                "id": router.id, "nombre": router.nombre, "ip": router.ip_vpn, "en_linea": bool(router.is_online),
+                "equipos": [nodo(e) for e in equipos
+                            if e.router_id == router.id and not e.troncal and e.padre_id not in ids],
+                "clientes_sin_ap": sin_ap.get(router.id, []),
+            }
+
+        por_id = {r.id: r for r in routers}
 
         def nodo(equipo: EquipoRedModel) -> Dict[str, Any]:
+            hijo = por_id.get(equipo.router_hijo_id) if equipo.router_hijo_id else None
             return {
                 **self._datos(equipo),
                 "hijos": [nodo(h) for h in equipos if h.padre_id == equipo.id],
                 "clientes": por_equipo.get(equipo.id, []),
+                "router": nodo_router(hijo) if hijo else None,
             }
 
-        raices = lambda router_id: [nodo(e) for e in equipos if e.router_id == router_id and e.padre_id not in ids]  # noqa: E731
+        troncal = [nodo(e) for e in equipos if e.troncal and e.padre_id not in ids]
         resultado = []
         for router in routers:
-            arbol, sueltos = raices(router.id), sin_ap.get(router.id, [])
-            if arbol or sueltos:
-                resultado.append({
-                    "id": router.id, "nombre": router.nombre, "ip": router.ip_vpn,
-                    "en_linea": bool(router.is_online), "equipos": arbol, "clientes_sin_ap": sueltos,
-                })
-        sin_router = [nodo(e) for e in equipos if not e.router_id and e.padre_id not in ids]
+            if router.id in colgados:
+                continue  # se dibuja dentro de su enlace de la troncal
+            dato = nodo_router(router)
+            if dato["equipos"] or dato["clientes_sin_ap"]:
+                resultado.append(dato)
+        sin_router = [nodo(e) for e in equipos if not e.router_id and not e.troncal and e.padre_id not in ids]
         if sin_router:
             resultado.append({"id": None, "nombre": "Sin MikroTik", "ip": None, "en_linea": None,
                               "equipos": sin_router, "clientes_sin_ap": sin_ap.get(None, [])})
-        return {"routers": resultado, "tipos": TIPOS, "marcas": MARCAS}
+        return {"troncal": troncal, "routers": resultado, "tipos": TIPOS, "marcas": MARCAS}

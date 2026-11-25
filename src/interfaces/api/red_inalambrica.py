@@ -24,6 +24,8 @@ class Equipo(BaseModel):
     ip: str
     router_id: Optional[int] = None
     padre_id: Optional[int] = None
+    troncal: bool = False
+    router_hijo_id: Optional[int] = None
     zona_id: Optional[int] = None
     ubicacion: Optional[str] = Field(default=None, max_length=200)
     latitud: Optional[float] = None

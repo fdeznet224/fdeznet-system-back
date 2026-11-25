@@ -26,6 +26,7 @@ def test_resume_el_status_y_las_estaciones():
     assert status["capacidad_tx"] == 180000 and status["modelo"] == "LiteAP AC" and status["uptime_s"] == 86400
     estaciones = red.resumir_estaciones(STA_V8)
     assert estaciones[0] == {"mac": "FC:EC:DA:11:22:33", "ip": "10.50.0.11", "senal": -61, "ccq": None, "nombre": "Juan"}
+    assert red.resumir_estaciones([{"mac": "x", "lastip": "0.0.0.0"}])[0]["ip"] is None
     # airOS 6 manda la frecuencia como texto.
     assert red.resumir_status({"wireless": {"frequency": "5800 MHz", "signal": "-60"}})["frecuencia"] == "5800 MHz"
 
@@ -44,8 +45,10 @@ def _airos(version: int):
                 return httpx.Response(302, headers={"location": "/login.cgi"})
             if version == 8:
                 assert peticion.headers.get("X-CSRF-ID") == "abc"
+                return httpx.Response(200, json={**STATUS_V8, "wireless": {**STATUS_V8["wireless"], "sta": STA_V8}})
             return httpx.Response(200, json=STATUS_V8)
         if ruta == "/sta.cgi":
+            assert version == 6, "airOS 8 trae las estaciones en status.cgi"
             return httpx.Response(200, json=STA_V8)
         return httpx.Response(404)
     return httpx.AsyncClient(transport=httpx.MockTransport(responder), follow_redirects=False)
@@ -122,3 +125,48 @@ def test_el_arbol_cuelga_equipos_y_clientes(monkeypatch):
     assert vg["equipos"][0]["hijos"][0]["nombre"] == "AP Sagrado"
     assert [c["contrato"] for c in vg["equipos"][0]["hijos"][0]["clientes"]] == ["4A1B"]
     assert [c["contrato"] for c in vg["clientes_sin_ap"]] == ["7C2D"]
+
+
+def test_empareja_por_nombre_si_la_antena_no_trae_ip():
+    ap = EquipoRedModel(id=7, nombre="FdezNet-3-AUX", ip="13.13.13.5", router_id=4)
+    flor = ClienteModel(id=4, nombre="Flor Ruiz Hernández", ip_antena="13.13.13.17", mac_address=None, tipo_conexion="radio")
+    ximena = ClienteModel(id=5, nombre="Ximena Zuñiga Sanchez", ip_antena="13.13.13.99", mac_address=None, tipo_conexion="radio")
+    estaciones = red.resumir_estaciones([
+        {"mac": "74:AC:B9:72:BF:AC", "lastip": "0.0.0.0", "signal": -57, "remote": {"hostname": "Flor Ruiz Hernandez"}},
+        {"mac": "60:22:32:B2:D1:F4", "lastip": "13.13.13.26", "signal": -63, "remote": {"hostname": "Ximena Zuniga"}},
+    ])
+    asyncio.run(red.RedInalambricaService(_DB([flor, ximena], []))._vincular_estaciones(ap, estaciones))
+    assert (flor.equipo_red_id, flor.antena_senal) == (7, -57)
+    assert (ximena.equipo_red_id, ximena.antena_senal) == (7, -63)  # "ximena zuniga" está dentro de su nombre
+    assert red.mismo_nombre("Juan", "Juan Pérez") is False  # una sola palabra no basta
+
+
+def test_la_troncal_va_arriba_y_el_mikrotik_cuelga_de_su_enlace():
+    fm = SimpleNamespace(id=4, nombre="Flores Magon", ip_vpn="10.8.0.4", is_online=True)
+    vg = SimpleNamespace(id=2, nombre="Vicente Guerrero", ip_vpn="10.8.0.3", is_online=True)
+    base = dict(marca="ubiquiti", activo=True, router_hijo_id=None)
+    nodo = EquipoRedModel(id=1, nombre="RB-ADMINISTRADOR", tipo="router", ip="192.168.21.1", router_id=4, padre_id=None, troncal=True, **{**base, "marca": "mikrotik"})
+    af = EquipoRedModel(id=2, nombre="airFiber nodo", tipo="ptp_base", ip="192.168.21.2", router_id=4, padre_id=1, troncal=True, **base)
+    mimosa = EquipoRedModel(id=3, nombre="Mimosa FM", tipo="ptp_estacion", ip="192.168.21.7", router_id=4, padre_id=2, troncal=True, **{**base, "marca": "mimosa", "router_hijo_id": 4})
+    ap = EquipoRedModel(id=4, nombre="FdezNet-90-sec2", tipo="ap", ip="13.13.13.3", router_id=4, padre_id=None, troncal=False, **base)
+    juan = ClienteModel(id=1, cedula="3067", nombre="Ximena", estado="activo", ip_antena="13.13.13.26", equipo_red_id=4, router_id=4)
+    ana = ClienteModel(id=2, cedula="7C2D", nombre="Ana", estado="activo", ip_antena="10.50.0.13", equipo_red_id=None, router_id=2)
+
+    class _DBArbol:
+        async def execute(self, sentencia):
+            texto = str(sentencia)
+            if "FROM routers" in texto:
+                return _Resultado([fm, vg])
+            if "FROM equipos_red" in texto:
+                return _Resultado([nodo, af, mimosa, ap])
+            return _Resultado([juan, ana])
+
+    arbol = asyncio.run(red.RedInalambricaService(_DBArbol()).arbol())
+    raiz = arbol["troncal"][0]
+    assert raiz["nombre"] == "RB-ADMINISTRADOR"
+    enlace = raiz["hijos"][0]["hijos"][0]
+    assert enlace["nombre"] == "Mimosa FM" and enlace["router"]["nombre"] == "Flores Magon"
+    assert [e["nombre"] for e in enlace["router"]["equipos"]] == ["FdezNet-90-sec2"]
+    assert enlace["router"]["equipos"][0]["clientes"][0]["contrato"] == "3067"
+    # Flores Magón ya no sale suelto; Vicente Guerrero sí (aún no cuelga de su enlace).
+    assert [r["nombre"] for r in arbol["routers"]] == ["Vicente Guerrero"]
