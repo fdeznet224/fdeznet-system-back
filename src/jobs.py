@@ -771,3 +771,27 @@ async def tarea_revisar_cobros_codi():
             ))
             await db.commit()
 
+
+async def tarea_revisar_equipos_red():
+    """AP, PtP y demás equipos: ping desde su MikroTik y lectura de airOS (Ubiquiti)."""
+    from src.application.services.red_inalambrica_service import RedInalambricaService
+
+    async with SessionLocal() as db:
+        try:
+            servicio = RedInalambricaService(db)
+            conteo = await servicio.revisar_todos()
+            await servicio.cerrar_puentes_vencidos()
+        except Exception as exc:
+            await db.rollback()
+            db.add(LogCronjobModel(nivel="ERROR", origen="Red inalámbrica",
+                                   mensaje=f"No se pudieron revisar los equipos: {str(exc)[:300]}"))
+            await db.commit()
+            return
+        if conteo["errores"]:
+            db.add(LogCronjobModel(
+                nivel="WARN", origen="Red inalámbrica",
+                mensaje=f"Equipos: {conteo['revisados']} revisados, {conteo['responden']} responden, "
+                        f"{conteo['errores']} sin poder revisar (MikroTik sin respuesta)",
+            ))
+            await db.commit()
+

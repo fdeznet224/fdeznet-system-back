@@ -89,7 +89,16 @@ class AntenaService:
             raise ValueError("Falta la IP de la antena en la ficha del cliente.")
         await self._revisar(cliente, {})
         await self.db.commit()
-        return estado_antena(cliente)
+        from src.infrastructure.models import EquipoRedModel
+
+        equipo_id = getattr(cliente, "equipo_red_id", None)
+        ap = await self.db.get(EquipoRedModel, equipo_id) if equipo_id else None
+        return {
+            **estado_antena(cliente),
+            # El AP al que está conectada (lo detecta la lectura de airOS) y cómo la ve.
+            "ap": {"id": ap.id, "nombre": ap.nombre, "responde": ap.responde} if ap else None,
+            "senal": getattr(cliente, "antena_senal", None),
+        }
 
     async def revisar_todas(self) -> Dict[str, int]:
         """Pasada automática: todas las antenas de clientes que no están cancelados."""

@@ -407,6 +407,9 @@ class ClienteModel(Base):
     antena_latencia_ms = Column(Float, nullable=True)
     antena_perdida = Column(Integer, nullable=True)
     antena_revisada_en = Column(DateTime, nullable=True)
+    # AP al que está conectada su antena (lo detecta la lectura de airOS del AP) y la señal con la que el AP la ve.
+    equipo_red_id = Column(Integer, ForeignKey("equipos_red.id", ondelete="SET NULL"), nullable=True, index=True)
+    antena_senal = Column(Float, nullable=True)
 
 
 # ==========================================
@@ -2036,6 +2039,52 @@ class PlantillaMensajeModel(Base):
     tipo = Column(String(50), unique=True) 
     texto = Column(Text)    
     activo = Column(Boolean, default=True)
+
+
+class EquipoRedModel(Base):
+    """AP, PtP, switch u otro equipo de la red (entre el MikroTik y las antenas de los clientes)."""
+
+    __tablename__ = "equipos_red"
+
+    id = Column(Integer, primary_key=True)
+    nombre = Column(String(100), nullable=False)
+    # ptp_base | ptp_estacion | ap | switch | otro
+    tipo = Column(String(20), nullable=False, default="ap")
+    marca = Column(String(20), nullable=False, default="ubiquiti")
+    modelo = Column(String(100), nullable=True)
+    ip = Column(String(45), nullable=False)
+    # Por cuál MikroTik se llega (ping, puente para abrirlo) y de qué equipo cuelga (árbol).
+    router_id = Column(Integer, ForeignKey("routers.id", ondelete="SET NULL"), nullable=True, index=True)
+    padre_id = Column(Integer, ForeignKey("equipos_red.id", ondelete="SET NULL"), nullable=True, index=True)
+    zona_id = Column(Integer, ForeignKey("zonas.id", ondelete="SET NULL"), nullable=True)
+    ubicacion = Column(String(200), nullable=True)
+    latitud = Column(Float, nullable=True)
+    longitud = Column(Float, nullable=True)
+    usuario = Column(String(60), nullable=True)
+    clave = Column(EncryptedText(), nullable=True)
+    puerto_web = Column(String(6), nullable=False, default="443")
+    activo = Column(Boolean, nullable=False, default=True, server_default="1")
+    # Ping desde su MikroTik.
+    responde = Column(Boolean, nullable=True)
+    latencia_ms = Column(Float, nullable=True)
+    perdida = Column(Integer, nullable=True)
+    revisado_en = Column(DateTime, nullable=True)
+    # Lectura de airOS (Ubiquiti).
+    senal = Column(Float, nullable=True)
+    ruido = Column(Float, nullable=True)
+    ccq = Column(Float, nullable=True)
+    capacidad_tx = Column(Float, nullable=True)
+    capacidad_rx = Column(Float, nullable=True)
+    frecuencia = Column(String(30), nullable=True)
+    ancho_canal = Column(String(20), nullable=True)
+    ssid = Column(String(100), nullable=True)
+    modo = Column(String(30), nullable=True)
+    estaciones = Column(Integer, nullable=True)
+    firmware = Column(String(60), nullable=True)
+    uptime_s = Column(Integer, nullable=True)
+    airos_leido_en = Column(DateTime, nullable=True)
+    airos_error = Column(String(300), nullable=True)
+    creado_en = Column(DateTime, nullable=False, server_default=func.now())
 
 
 class CobroCodiModel(Base):
