@@ -200,6 +200,9 @@ def test_la_olt_agrupa_a_sus_clientes_por_pon():
     assert [p["pon"] for p in pons] == [1, 2, None]
     assert pons[0]["clientes"][0] == {"id": 2, "contrato": "3C4D", "nombre": "Luis", "estado": "activo", "responde": False, "potencia": -28.1}
     assert pons[1]["clientes"][0]["potencia"] == -21.5 and pons[2]["clientes"][0]["responde"] is None
+    assert olts[0]["responde"] is True  # Ana está conectada
+    ana.is_online = False
+    assert asyncio.run(red.RedInalambricaService(_DBOlt())._olts_con_clientes())[0]["responde"] is False
 
 
 def test_la_estacion_no_hace_colgar_a_su_base_de_ella():
@@ -235,3 +238,46 @@ def test_un_circulo_se_dibuja_en_vez_de_perderse():
     arbol = asyncio.run(red.RedInalambricaService(_DBCirculo()).arbol())
     assert sorted(e["nombre"] for e in arbol["routers"][0]["equipos"]) == ["PTP-A", "PTP-B"]
     assert red.ancestros(16, {16: 17, 17: 16}) == {16, 17}
+
+
+def test_la_olt_cuelga_del_ptp_y_el_mikrotik_no_cuelga_de_lo_suyo():
+    router = SimpleNamespace(id=3, nombre="Paraiso", ip_vpn="10.8.0.2", is_online=True)
+    ptp = EquipoRedModel(id=17, nombre="PTP-B", tipo="ptp_estacion", marca="ubiquiti", ip="11.11.11.11", router_id=3, padre_id=None, troncal=False, activo=True, router_hijo_id=None)
+    olt = SimpleNamespace(id=1, nombre="Villa de Guadalupe", ip="11.11.11.2", tecnologia="GPON", router_id=3, equipo_padre_id=17)
+    cli = ClienteModel(id=9, cedula="AB12", nombre="Ana", estado="activo", olt_id=1, is_online=True)
+
+    class _DBOlt:
+        async def execute(self, sentencia):
+            texto = str(sentencia)
+            if "FROM olts" in texto:
+                return _Resultado([olt])
+            if "FROM lecturas_opticas" in texto:
+                return _Resultado([])
+            if "FROM routers" in texto:
+                return _Resultado([router])
+            if "FROM equipos_red" in texto:
+                return _Resultado([ptp])
+            return _Resultado([cli])
+
+    arbol = asyncio.run(red.RedInalambricaService(_DBOlt()).arbol())
+    paraiso = arbol["routers"][0]
+    assert paraiso["olts"] == []  # ya no cuelga del MikroTik
+    assert paraiso["equipos"][0]["olts"][0]["nombre"] == "Villa de Guadalupe"
+
+    class _DBColgar:
+        def __init__(self):
+            self.commits = 0
+
+        async def get(self, modelo, llave):
+            return router
+
+        async def execute(self, sentencia):
+            return _Resultado([ptp])
+
+        async def commit(self):
+            self.commits += 1
+
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        asyncio.run(red.RedInalambricaService(_DBColgar()).colgar_router(3, 17))

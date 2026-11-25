@@ -51,6 +51,30 @@ def _error(error: Exception) -> HTTPException:
     return HTTPException(status_code=502, detail="El MikroTik no respondió; intenta en un momento.")
 
 
+class Padre(BaseModel):
+    equipo_id: Optional[int] = None
+
+
+@router.put("/olts/{olt_id}/padre")
+async def colgar_olt(olt_id: int, datos: Padre, db: AsyncSession = Depends(get_db), _u=Depends(editan)):
+    """De qué equipo cuelga la OLT en la topología (vacío: de su MikroTik)."""
+    try:
+        await RedInalambricaService(db).colgar_olt(olt_id, datos.equipo_id)
+    except ValueError as error:
+        raise _error(error) from error
+    return {"ok": True}
+
+
+@router.put("/routers/{router_id}/padre")
+async def colgar_router(router_id: int, datos: Padre, db: AsyncSession = Depends(get_db), _u=Depends(editan)):
+    """De qué equipo cuelga el MikroTik en la topología (vacío: suelto arriba)."""
+    try:
+        await RedInalambricaService(db).colgar_router(router_id, datos.equipo_id)
+    except ValueError as error:
+        raise _error(error) from error
+    return {"ok": True}
+
+
 @router.get("/arbol")
 async def arbol(db: AsyncSession = Depends(get_db), _u=Depends(ven)):
     return await RedInalambricaService(db).arbol()

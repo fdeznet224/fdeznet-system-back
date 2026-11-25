@@ -226,6 +226,8 @@ class OLTModel(Base):
     api_verify_ssl = Column(Boolean, default=False, server_default="0")
     
     router_id = Column(Integer, ForeignKey("routers.id"), nullable=True) # A qué MikroTik está conectada
+    # Topología: el equipo de red del que cuelga (p. ej. el PtP que le llega); si no, del MikroTik.
+    equipo_padre_id = Column(Integer, ForeignKey("equipos_red.id", ondelete="SET NULL", use_alter=True), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(
         DateTime(timezone=True),

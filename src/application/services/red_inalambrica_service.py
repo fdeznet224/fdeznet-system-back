@@ -379,6 +379,38 @@ class RedInalambricaService:
         await self.db.refresh(equipo)
         return self._datos(equipo)
 
+    async def colgar_olt(self, olt_id: int, equipo_id: Optional[int]) -> None:
+        """La OLT cuelga de ese equipo (el enlace que le llega); sin equipo, de su MikroTik."""
+        olt = await self.db.get(OLTModel, olt_id)
+        if not olt:
+            raise ValueError("OLT no encontrada.")
+        if equipo_id is not None:
+            await self._equipo(equipo_id)
+        olt.equipo_padre_id = equipo_id
+        await self.db.commit()
+
+    async def colgar_router(self, router_id: int, equipo_id: Optional[int]) -> None:
+        """El MikroTik cuelga de ese equipo (p. ej. el Mimosa que le llega); sin equipo, va suelto arriba."""
+        router = await self.db.get(RouterModel, router_id)
+        if not router:
+            raise ValueError("MikroTik no encontrado.")
+        equipos = (await self.db.execute(select(EquipoRedModel))).scalars().all()
+        if equipo_id is not None:
+            elegido = next((e for e in equipos if e.id == equipo_id), None)
+            if elegido is None:
+                raise ValueError("Equipo no encontrado.")
+            # Lo que está dentro de este MikroTik (no troncal, o colgando de algo suyo) no puede ser su padre.
+            padres = {e.id: e.padre_id for e in equipos}
+            dentro = {e.id for e in equipos if e.router_id == router_id and not e.troncal}
+            if elegido.id in dentro or ancestros(elegido.id, padres) & dentro:
+                raise ValueError("Ese equipo está dentro de este MikroTik; elige uno que le llegue desde arriba.")
+        for e in equipos:
+            if e.router_hijo_id == router_id:
+                e.router_hijo_id = None
+        if equipo_id is not None:
+            next(e for e in equipos if e.id == equipo_id).router_hijo_id = router_id
+        await self.db.commit()
+
     async def borrar(self, equipo_id: int) -> None:
         equipo = await self._equipo(equipo_id)
         for hijo in (await self.db.execute(select(EquipoRedModel).where(EquipoRedModel.padre_id == equipo_id))).scalars().all():
@@ -440,8 +472,13 @@ class RedInalambricaService:
                     "responde": bool(c.is_online) if c.is_online is not None else None,
                     "potencia": float(lectura.potencia_rx_dbm) if lectura and lectura.potencia_rx_dbm is not None else None,
                 })
+            # La OLT está en línea si alguno de sus clientes está conectado; si tiene
+            # clientes y ninguno lo está, lo más probable es que la caída sea de la OLT.
+            estados = [c["responde"] for lista in pons.values() for c in lista if c["responde"] is not None]
             resultado.append({
+                "responde": (any(estados) if estados else None),
                 "id": olt.id, "nombre": olt.nombre, "ip": olt.ip, "tecnologia": olt.tecnologia, "router_id": olt.router_id,
+                "equipo_padre_id": getattr(olt, "equipo_padre_id", None),
                 "pons": [{"pon": pon, "clientes": lista} for pon, lista in sorted(pons.items(), key=lambda par: (par[0] is None, par[0] or 0))],
             })
         return resultado
@@ -474,6 +511,7 @@ class RedInalambricaService:
         ids = {e.id for e in equipos} - en_circulo
         colgados = {e.router_hijo_id for e in equipos if e.router_hijo_id}
         olts = await self._olts_con_clientes()
+        ids_todos = {e.id for e in equipos}
 
         def nodo_router(router: RouterModel) -> Dict[str, Any]:
             return {
@@ -481,7 +519,7 @@ class RedInalambricaService:
                 "equipos": [nodo(e) for e in equipos
                             if e.router_id == router.id and not e.troncal and e.padre_id not in ids],
                 "clientes_sin_ap": sin_ap.get(router.id, []),
-                "olts": [o for o in olts if o["router_id"] == router.id],
+                "olts": [o for o in olts if o["router_id"] == router.id and o["equipo_padre_id"] not in ids_todos],
             }
 
         por_id = {r.id: r for r in routers}
@@ -493,6 +531,7 @@ class RedInalambricaService:
                 "hijos": [nodo(h) for h in equipos if h.padre_id == equipo.id and h.id not in en_circulo],
                 "clientes": por_equipo.get(equipo.id, []),
                 "router": nodo_router(hijo) if hijo else None,
+                "olts": [o for o in olts if o["equipo_padre_id"] == equipo.id],
             }
 
         troncal = [nodo(e) for e in equipos if e.troncal and e.padre_id not in ids]
