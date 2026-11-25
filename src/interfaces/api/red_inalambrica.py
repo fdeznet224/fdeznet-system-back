@@ -75,6 +75,18 @@ async def colgar_router(router_id: int, datos: Padre, db: AsyncSession = Depends
     return {"ok": True}
 
 
+@router.post("/revisar-todo")
+async def revisar_todo(db: AsyncSession = Depends(get_db), _u=Depends(ven)):
+    """Ping a todos los equipos y OLT ahora mismo (lo mismo que la pasada de cada minuto)."""
+    return await RedInalambricaService(db).ping_rapido()
+
+
+@router.get("/fallas")
+async def fallas(db: AsyncSession = Depends(get_db), _u=Depends(ven)):
+    """Los puntos de falla de la red ahora (para el aviso de Inicio)."""
+    return (await RedInalambricaService(db).arbol())["fallas"]
+
+
 @router.get("/arbol")
 async def arbol(db: AsyncSession = Depends(get_db), _u=Depends(ven)):
     return await RedInalambricaService(db).arbol()

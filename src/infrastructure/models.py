@@ -228,6 +228,13 @@ class OLTModel(Base):
     router_id = Column(Integer, ForeignKey("routers.id"), nullable=True) # A qué MikroTik está conectada
     # Topología: el equipo de red del que cuelga (p. ej. el PtP que le llega); si no, del MikroTik.
     equipo_padre_id = Column(Integer, ForeignKey("equipos_red.id", ondelete="SET NULL", use_alter=True), nullable=True)
+    # Último ping a su IP de administración desde su MikroTik (cada 10 min).
+    ping_responde = Column(Boolean, nullable=True)
+    ping_latencia_ms = Column(Float, nullable=True)
+    ping_revisado_en = Column(DateTime, nullable=True)
+    fallas_seguidas = Column(Integer, nullable=False, default=0, server_default="0")
+    caido_desde = Column(DateTime, nullable=True)
+    alerta_enviada = Column(Boolean, nullable=False, default=False, server_default="0")
     is_active = Column(Boolean, default=True)
     created_at = Column(
         DateTime(timezone=True),
@@ -2075,6 +2082,10 @@ class EquipoRedModel(Base):
     latencia_ms = Column(Float, nullable=True)
     perdida = Column(Integer, nullable=True)
     revisado_en = Column(DateTime, nullable=True)
+    # Caído hasta fallar 2 pings seguidos (un ping perdido no es una falla).
+    fallas_seguidas = Column(Integer, nullable=False, default=0, server_default="0")
+    caido_desde = Column(DateTime, nullable=True)
+    alerta_enviada = Column(Boolean, nullable=False, default=False, server_default="0")
     # Lectura de airOS (Ubiquiti).
     senal = Column(Float, nullable=True)
     ruido = Column(Float, nullable=True)

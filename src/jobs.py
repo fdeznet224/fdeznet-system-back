@@ -795,3 +795,16 @@ async def tarea_revisar_equipos_red():
             ))
             await db.commit()
 
+
+async def tarea_ping_red():
+    """Cada minuto: ping a AP, PtP y OLT desde su MikroTik; avisa del punto de falla por WhatsApp."""
+    from src.application.services.red_inalambrica_service import RedInalambricaService
+
+    async with SessionLocal() as db:
+        try:
+            return await RedInalambricaService(db).ping_rapido()
+        except Exception as exc:
+            await db.rollback()
+            db.add(LogCronjobModel(nivel="ERROR", origen="Red", mensaje=f"Ping de la red falló: {str(exc)[:300]}"))
+            await db.commit()
+

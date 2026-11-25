@@ -203,6 +203,10 @@ def test_la_olt_agrupa_a_sus_clientes_por_pon():
     assert olts[0]["responde"] is True  # Ana está conectada
     ana.is_online = False
     assert asyncio.run(red.RedInalambricaService(_DBOlt())._olts_con_clientes())[0]["responde"] is False
+    # El ping a la OLT manda sobre lo que digan sus clientes.
+    olt.ping_responde, olt.ping_latencia_ms = True, 1.4
+    datos = asyncio.run(red.RedInalambricaService(_DBOlt())._olts_con_clientes())[0]
+    assert datos["responde"] is True and datos["latencia_ms"] == 1.4
 
 
 def test_la_estacion_no_hace_colgar_a_su_base_de_ella():
@@ -281,3 +285,32 @@ def test_la_olt_cuelga_del_ptp_y_el_mikrotik_no_cuelga_de_lo_suyo():
 
     with _pytest.raises(ValueError):
         asyncio.run(red.RedInalambricaService(_DBColgar()).colgar_router(3, 17))
+
+
+def test_caido_hasta_fallar_dos_veces_y_regresa():
+    from datetime import datetime
+
+    ap = EquipoRedModel(id=1, nombre="AP", ip="1.1.1.1", fallas_seguidas=0, caido_desde=None, responde=True)
+    ahora = datetime(2026, 11, 25, 10, 0)
+    assert red.registrar_ping(ap, False, None, ahora) is None and ap.responde is True  # un ping perdido no es falla
+    assert red.registrar_ping(ap, False, None, ahora) == "cayo" and ap.responde is False and ap.caido_desde == ahora
+    assert red.registrar_ping(ap, False, None, ahora) is None  # sigue caído, no vuelve a "caer"
+    assert red.registrar_ping(ap, True, 2.1, ahora) == "regreso" and ap.responde is True and ap.caido_desde is None
+
+
+def test_el_punto_de_falla_es_el_mas_alto_caido():
+    def equipo(i, nombre, responde, hijos=(), clientes=0, router=None):
+        return {"id": i, "nombre": nombre, "ip": f"10.0.0.{i}", "tipo_nombre": "AP", "responde": responde,
+                "caido_desde": "2026-11-25T10:00" if responde is False else None, "hijos": list(hijos),
+                "clientes": [{"id": n} for n in range(clientes)], "olts": [], "router": router}
+    ap1 = equipo(3, "AP sec2", False, clientes=6)
+    ap2 = equipo(4, "AP sec3", True, clientes=7)
+    mikrotik = {"id": 4, "nombre": "Flores Magon", "en_linea": True, "equipos": [ap1, ap2], "clientes_sin_ap": [], "olts": []}
+    mimosa = equipo(10, "Mimosa FM", True, router=mikrotik)
+    arbol = {"troncal": [equipo(1, "Nodo", True, hijos=[mimosa])], "routers": []}
+    fallas = red.puntos_de_falla(arbol)
+    assert [(f["nombre"], f["clientes_afectados"]) for f in fallas] == [("AP sec2", 6)]
+    # Si se cae el Mimosa, el punto de falla es él (y no cada AP de abajo).
+    mimosa["responde"], mimosa["caido_desde"] = False, "2026-11-25T10:05"
+    fallas = red.puntos_de_falla(arbol)
+    assert [(f["nombre"], f["clientes_afectados"]) for f in fallas] == [("Mimosa FM", 13)]

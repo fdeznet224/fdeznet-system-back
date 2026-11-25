@@ -9,6 +9,7 @@
 
 import asyncio
 import logging
+import os
 import re
 import unicodedata
 from datetime import datetime, timedelta
@@ -39,6 +40,79 @@ PUENTE_EQUIPO_BASE = 19000
 PUENTE_EQUIPO_MINUTOS = 30
 FORMATO_EXPIRA = "%Y-%m-%dT%H:%M"
 ESPERA_AIROS = 12.0
+# Ping rápido cada minuto: caído hasta fallar 2 veces seguidas (un ping perdido no es falla).
+PINGS_RAPIDOS = 2
+FALLAS_PARA_CAIDO = 2
+SIMULTANEOS = 10
+
+
+def registrar_ping(obj: Any, responde: bool, latencia: Optional[float], ahora: datetime, olt: bool = False) -> Optional[str]:
+    """Guarda el ping y dice si el equipo "cayo" o "regreso" (o nada)."""
+    campo_resp, campo_lat, campo_fecha = ("ping_responde", "ping_latencia_ms", "ping_revisado_en") if olt else ("responde", "latencia_ms", "revisado_en")
+    setattr(obj, campo_fecha, ahora)
+    if responde:
+        obj.fallas_seguidas = 0
+        setattr(obj, campo_resp, True)
+        setattr(obj, campo_lat, latencia)
+        if obj.caido_desde is not None:
+            obj.caido_desde = None
+            return "regreso"
+        return None
+    obj.fallas_seguidas = (obj.fallas_seguidas or 0) + 1
+    if obj.fallas_seguidas >= FALLAS_PARA_CAIDO:
+        setattr(obj, campo_resp, False)
+        setattr(obj, campo_lat, None)
+        if obj.caido_desde is None:
+            obj.caido_desde = ahora
+            return "cayo"
+    return None
+
+
+def _clientes_debajo(nodo: Dict[str, Any]) -> int:
+    """Clientes que dependen de un nodo del árbol (radio, fibra y lo de su MikroTik)."""
+    total = len(nodo.get("clientes") or []) + len(nodo.get("clientes_sin_ap") or [])
+    total += sum(len(p["clientes"]) for o in nodo.get("olts") or [] for p in o.get("pons", []))
+    for hijo in (nodo.get("hijos") or []) + (nodo.get("equipos") or []):
+        total += _clientes_debajo(hijo)
+    if nodo.get("router"):
+        total += _clientes_debajo(nodo["router"])
+    return total
+
+
+def puntos_de_falla(arbol: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Equipos u OLT caídos cuyo equipo de arriba sí responde: ahí está la falla
+    (corte de luz o equipo dañado); lo de abajo cae por consecuencia."""
+    fallas: List[Dict[str, Any]] = []
+
+    def visitar(nodo: Dict[str, Any], tipo: str, arriba_caido: bool) -> None:
+        caido = nodo.get("responde") is False
+        if caido and not arriba_caido and nodo.get("caido_desde"):
+            fallas.append({
+                "clave": f"{'o' if tipo == 'olt' else 'e'}{nodo['id']}", "tipo": tipo, "id": nodo["id"],
+                "nombre": nodo["nombre"] if tipo != "olt" else f"OLT {nodo['nombre']}", "ip": nodo.get("ip"),
+                "tipo_nombre": nodo.get("tipo_nombre") or "OLT", "desde": nodo["caido_desde"],
+                "clientes_afectados": _clientes_debajo(nodo) if tipo != "olt" else sum(len(p["clientes"]) for p in nodo.get("pons", [])),
+            })
+        abajo = arriba_caido or caido
+        for hijo in nodo.get("hijos") or []:
+            visitar(hijo, "equipo", abajo)
+        for o in nodo.get("olts") or []:
+            visitar(o, "olt", abajo)
+        if nodo.get("router"):
+            visitar_router(nodo["router"], abajo)
+
+    def visitar_router(router: Dict[str, Any], arriba_caido: bool) -> None:
+        abajo = arriba_caido or router.get("en_linea") is False
+        for e in router.get("equipos") or []:
+            visitar(e, "equipo", abajo)
+        for o in router.get("olts") or []:
+            visitar(o, "olt", abajo)
+
+    for raiz in arbol.get("troncal") or []:
+        visitar(raiz, "equipo", False)
+    for router in arbol.get("routers") or []:
+        visitar_router(router, False)
+    return fallas
 
 
 # ------------------------------------------------------------------ airOS
@@ -240,10 +314,8 @@ class RedInalambricaService:
             _mk(router)._request, "POST", "/ping", {"address": equipo.ip, "count": str(PINGS)}, True,
         )
         resultado = resumir_ping(respuestas)
-        equipo.responde = resultado["responde"]
-        equipo.latencia_ms = resultado["latencia_ms"]
+        registrar_ping(equipo, resultado["responde"], resultado["latencia_ms"], datetime.now())
         equipo.perdida = resultado["perdida"]
-        equipo.revisado_en = datetime.now()
 
     async def _leer_airos(self, equipo: EquipoRedModel, http: Optional[httpx.AsyncClient] = None) -> None:
         if equipo.marca != "ubiquiti" or not equipo.usuario or not equipo.clave:
@@ -327,7 +399,7 @@ class RedInalambricaService:
             if not router:
                 continue
             try:
-                await self._ping(equipo, router)
+                # El ping lo hace la pasada de cada minuto; aquí solo se lee airOS de los que responden.
                 conteo["revisados"] += 1
                 conteo["responden"] += int(bool(equipo.responde))
                 if equipo.responde:
@@ -339,6 +411,92 @@ class RedInalambricaService:
                 conteo["errores"] += 1
                 logger.warning("No se pudo revisar el equipo %s: %s", equipo.nombre, exc)
         return conteo
+
+    async def ping_rapido(self) -> Dict[str, int]:
+        """Cada minuto: ping a cada equipo y OLT desde su MikroTik (todos a la vez) y avisos de falla."""
+        equipos = (await self.db.execute(select(EquipoRedModel).where(EquipoRedModel.activo.is_(True)))).scalars().all()
+        olts = (await self.db.execute(select(OLTModel).where(OLTModel.is_active.is_(True), OLTModel.router_id.is_not(None)))).scalars().all()
+        routers = {r.id: r for r in (await self.db.execute(select(RouterModel))).scalars().all()}
+        limite = asyncio.Semaphore(SIMULTANEOS)
+
+        async def pingar(router: RouterModel, ip: str) -> Optional[Dict[str, Any]]:
+            async with limite:
+                try:
+                    respuestas = await asyncio.to_thread(
+                        _mk(router)._request, "POST", "/ping", {"address": ip, "count": str(PINGS_RAPIDOS)}, True,
+                    )
+                except Exception:
+                    return None  # sin MikroTik no se sabe nada: no cuenta como falla
+                return resumir_ping(respuestas, PINGS_RAPIDOS)
+
+        trabajos = [(e, False) for e in equipos if routers.get(e.router_id)] + [(o, True) for o in olts if routers.get(o.router_id) and o.ip]
+        resultados = await asyncio.gather(*(pingar(routers[obj.router_id], obj.ip.strip()) for obj, _ in trabajos))
+        ahora = datetime.now()
+        conteo = {"revisados": 0, "cayeron": 0, "regresaron": 0}
+        regresaron = []
+        for (obj, es_olt), resultado in zip(trabajos, resultados):
+            if resultado is None:
+                continue
+            conteo["revisados"] += 1
+            if not es_olt:
+                obj.perdida = resultado["perdida"]
+            desde = obj.caido_desde
+            cambio = registrar_ping(obj, resultado["responde"], resultado["latencia_ms"], ahora, olt=es_olt)
+            if cambio == "cayo":
+                conteo["cayeron"] += 1
+            elif cambio == "regreso":
+                conteo["regresaron"] += 1
+                if obj.alerta_enviada:
+                    regresaron.append((obj, desde))
+        await self.db.commit()
+        await self._avisar(regresaron)
+        return conteo
+
+    async def _avisar(self, regresaron: List[tuple]) -> None:
+        """WhatsApp a los teléfonos de alerta: el punto de falla (no lo que cae por consecuencia) y cuando regresa."""
+        from src.infrastructure.models import ConfiguracionSistema
+
+        config = await self.db.get(ConfiguracionSistema, 1)
+        numeros = [n.strip() for n in (getattr(config, "telefonos_alerta", "") or "").split(",") if n.strip()]
+        enlace = os.getenv("PUBLIC_URL", "").strip().rstrip("/")
+        mensajes: List[str] = []
+        for obj, desde in regresaron:
+            minutos = int((datetime.now() - desde).total_seconds() // 60) if desde else None
+            nombre = f"OLT {obj.nombre}" if isinstance(obj, OLTModel) else obj.nombre
+            mensajes.append(f"🟢 *Regresó* {nombre} ({obj.ip}). Ya responde de nuevo"
+                            + (f"; estuvo sin responder {minutos} min." if minutos is not None else "."))
+            obj.alerta_enviada = False
+        fallas = puntos_de_falla(await self.arbol())
+        for falla in fallas:
+            modelo = OLTModel if falla["tipo"] == "olt" else EquipoRedModel
+            obj = await self.db.get(modelo, falla["id"])
+            if obj is None or obj.alerta_enviada:
+                continue
+            obj.alerta_enviada = True
+            hora = obj.caido_desde.strftime("%H:%M") if obj.caido_desde else ""
+            mensajes.append(
+                f"🔴 *Falla en la red*: {falla['tipo_nombre']} *{falla['nombre']}* ({falla['ip']}) no responde desde las {hora}.\n"
+                f"{falla['clientes_afectados']} clientes afectados. Puede ser corte de luz o falla del equipo."
+                + (f"\nVer: {enlace}/admin/topologia" if enlace else "")
+            )
+        await self.db.commit()
+        if not mensajes or not numeros:
+            return
+        from src.infrastructure.models import MensajeChatModel
+        from src.infrastructure.whatsapp_client import whatsapp_queue
+
+        for texto in mensajes:
+            for numero in numeros:
+                try:
+                    mensaje = MensajeChatModel(
+                        cliente_id=None, telefono=numero, direccion="salida", tipo_mensaje="texto",
+                        tipo_evento="alerta_red", leido=True, ack=0, estado_envio="pendiente", mensaje=texto,
+                    )
+                    self.db.add(mensaje)
+                    await self.db.commit()
+                    await whatsapp_queue.agregar_tarea({"mensaje_chat_id": mensaje.id, "intervalo": 0, "tipo_evento": "alerta_red"})
+                except Exception:
+                    logger.exception("No se pudo avisar de la red a %s", numero)
 
     async def cerrar_puentes_vencidos(self) -> int:
         routers = (
@@ -436,6 +594,7 @@ class RedInalambricaService:
             "frecuencia": equipo.frecuencia, "ancho_canal": equipo.ancho_canal, "ssid": equipo.ssid,
             "modo": equipo.modo, "estaciones": equipo.estaciones, "firmware": equipo.firmware,
             "uptime_s": equipo.uptime_s, "airos_error": equipo.airos_error,
+            "caido_desde": equipo.caido_desde.isoformat(timespec="minutes") if getattr(equipo, "caido_desde", None) else None,
             "airos_leido_en": equipo.airos_leido_en.isoformat() if equipo.airos_leido_en else None,
         }
 
@@ -475,8 +634,12 @@ class RedInalambricaService:
             # La OLT está en línea si alguno de sus clientes está conectado; si tiene
             # clientes y ninguno lo está, lo más probable es que la caída sea de la OLT.
             estados = [c["responde"] for lista in pons.values() for c in lista if c["responde"] is not None]
+            ping = getattr(olt, "ping_responde", None)
             resultado.append({
-                "responde": (any(estados) if estados else None),
+                # Primero el ping a su IP de administración; si no hay, lo que dicen sus clientes.
+                "responde": ping if ping is not None else (any(estados) if estados else None),
+                "latencia_ms": getattr(olt, "ping_latencia_ms", None),
+                "caido_desde": olt.caido_desde.isoformat(timespec="minutes") if getattr(olt, "caido_desde", None) else None,
                 "id": olt.id, "nombre": olt.nombre, "ip": olt.ip, "tecnologia": olt.tecnologia, "router_id": olt.router_id,
                 "equipo_padre_id": getattr(olt, "equipo_padre_id", None),
                 "pons": [{"pon": pon, "clientes": lista} for pon, lista in sorted(pons.items(), key=lambda par: (par[0] is None, par[0] or 0))],
@@ -546,4 +709,6 @@ class RedInalambricaService:
         if sin_router:
             resultado.append({"id": None, "nombre": "Sin MikroTik", "ip": None, "en_linea": None,
                               "equipos": sin_router, "clientes_sin_ap": sin_ap.get(None, []), "olts": []})
-        return {"troncal": troncal, "routers": resultado, "tipos": TIPOS, "marcas": MARCAS}
+        datos = {"troncal": troncal, "routers": resultado, "tipos": TIPOS, "marcas": MARCAS}
+        datos["fallas"] = puntos_de_falla(datos)
+        return datos

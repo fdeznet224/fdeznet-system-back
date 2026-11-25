@@ -12,6 +12,7 @@ from fastapi_cache.backends.inmemory import InMemoryBackend
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from src.jobs import (
     tarea_aplicar_pagos_adelantados,
+    tarea_ping_red,
     tarea_revisar_equipos_red,
     tarea_revisar_cobros_codi,
     tarea_conciliar_mikrotik,
@@ -193,6 +194,14 @@ async def lifespan(app: FastAPI):
         "interval",
         minutes=10,
         id="revisar_equipos_red",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        tarea_ping_red,
+        "interval",
+        minutes=1,
+        id="ping_red",
         coalesce=True,
         max_instances=1,
     )
