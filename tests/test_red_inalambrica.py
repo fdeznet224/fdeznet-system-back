@@ -113,6 +113,8 @@ def test_el_arbol_cuelga_equipos_y_clientes(monkeypatch):
     class _DBArbol:
         async def execute(self, sentencia):
             texto = str(sentencia)
+            if "FROM olts" in texto:
+                return _Resultado([])
             if "FROM routers" in texto:
                 return _Resultado([router])
             if "FROM equipos_red" in texto:
@@ -155,6 +157,8 @@ def test_la_troncal_va_arriba_y_el_mikrotik_cuelga_de_su_enlace():
     class _DBArbol:
         async def execute(self, sentencia):
             texto = str(sentencia)
+            if "FROM olts" in texto:
+                return _Resultado([])
             if "FROM routers" in texto:
                 return _Resultado([fm, vg])
             if "FROM equipos_red" in texto:
@@ -170,3 +174,29 @@ def test_la_troncal_va_arriba_y_el_mikrotik_cuelga_de_su_enlace():
     assert enlace["router"]["equipos"][0]["clientes"][0]["contrato"] == "3067"
     # Flores Magón ya no sale suelto; Vicente Guerrero sí (aún no cuelga de su enlace).
     assert [r["nombre"] for r in arbol["routers"]] == ["Vicente Guerrero"]
+
+
+def test_la_olt_agrupa_a_sus_clientes_por_pon():
+    from decimal import Decimal
+
+    olt = SimpleNamespace(id=8, nombre="Flores Magon", ip="13.13.13.2", tecnologia="GPON", router_id=4)
+    ana = ClienteModel(id=1, cedula="1A2B", nombre="Ana", estado="activo", olt_id=8, is_online=True)
+    luis = ClienteModel(id=2, cedula="3C4D", nombre="Luis", estado="activo", olt_id=8, is_online=False)
+    sin = ClienteModel(id=3, cedula="5E6F", nombre="Sin lectura", estado="activo", olt_id=8, is_online=None)
+    lecturas = [SimpleNamespace(cliente_id=1, pon=2, potencia_rx_dbm=Decimal("-21.5")),
+                SimpleNamespace(cliente_id=2, pon=1, potencia_rx_dbm=Decimal("-28.1"))]
+
+    class _DBOlt:
+        async def execute(self, sentencia):
+            texto = str(sentencia)
+            if "FROM olts" in texto:
+                return _Resultado([olt])
+            if "FROM lecturas_opticas" in texto:
+                return _Resultado(lecturas)
+            return _Resultado([ana, luis, sin])
+
+    olts = asyncio.run(red.RedInalambricaService(_DBOlt())._olts_con_clientes())
+    pons = olts[0]["pons"]
+    assert [p["pon"] for p in pons] == [1, 2, None]
+    assert pons[0]["clientes"][0] == {"id": 2, "contrato": "3C4D", "nombre": "Luis", "estado": "activo", "responde": False, "potencia": -28.1}
+    assert pons[1]["clientes"][0]["potencia"] == -21.5 and pons[2]["clientes"][0]["responde"] is None

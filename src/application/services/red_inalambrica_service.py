@@ -15,13 +15,13 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.services.acceso_remoto_service import RUTAS_PUENTE, _responde, reglas_puente, url_de
 from src.application.services.antena_service import PINGS, resumir_ping
 from src.infrastructure.mikrotik_service import MikroTikService
-from src.infrastructure.models import ClienteModel, EquipoRedModel, RouterModel
+from src.infrastructure.models import ClienteModel, EquipoRedModel, LecturaOpticaModel, OLTModel, RouterModel
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +387,45 @@ class RedInalambricaService:
             "airos_leido_en": equipo.airos_leido_en.isoformat() if equipo.airos_leido_en else None,
         }
 
+    async def _olts_con_clientes(self) -> List[Dict[str, Any]]:
+        """Cada OLT con sus clientes de fibra agrupados por PON (de la última lectura óptica)."""
+        olts = (await self.db.execute(select(OLTModel).where(OLTModel.is_active.is_(True)).order_by(OLTModel.nombre))).scalars().all()
+        if not olts:
+            return []
+        clientes = (
+            await self.db.execute(
+                select(ClienteModel).where(
+                    ClienteModel.olt_id.in_([o.id for o in olts]), ClienteModel.estado != "cancelado",
+                    ClienteModel.tipo_conexion != "radio",
+                ).order_by(ClienteModel.nombre)
+            )
+        ).scalars().all()
+        ultima = (
+            select(func.max(LecturaOpticaModel.id))
+            .where(LecturaOpticaModel.cliente_id.in_([c.id for c in clientes] or [0]))
+            .group_by(LecturaOpticaModel.cliente_id)
+        )
+        lecturas = {
+            l.cliente_id: l for l in (
+                await self.db.execute(select(LecturaOpticaModel).where(LecturaOpticaModel.id.in_(ultima)))
+            ).scalars().all()
+        } if clientes else {}
+        resultado = []
+        for olt in olts:
+            pons: Dict[Optional[int], List[Dict[str, Any]]] = {}
+            for c in (c for c in clientes if c.olt_id == olt.id):
+                lectura = lecturas.get(c.id)
+                pons.setdefault(lectura.pon if lectura else None, []).append({
+                    "id": c.id, "contrato": c.cedula, "nombre": c.nombre, "estado": c.estado,
+                    "responde": bool(c.is_online) if c.is_online is not None else None,
+                    "potencia": float(lectura.potencia_rx_dbm) if lectura and lectura.potencia_rx_dbm is not None else None,
+                })
+            resultado.append({
+                "id": olt.id, "nombre": olt.nombre, "ip": olt.ip, "tecnologia": olt.tecnologia, "router_id": olt.router_id,
+                "pons": [{"pon": pon, "clientes": lista} for pon, lista in sorted(pons.items(), key=lambda par: (par[0] is None, par[0] or 0))],
+            })
+        return resultado
+
     async def arbol(self) -> Dict[str, Any]:
         """La red completa: la troncal arriba (nodo principal, troncal, enlaces a cada zona),
         de cada enlace cuelga el MikroTik de la zona y de él sus AP y sus clientes."""
@@ -411,6 +450,7 @@ class RedInalambricaService:
                 sin_ap.setdefault(c.router_id, []).append(dato)
         ids = {e.id for e in equipos}
         colgados = {e.router_hijo_id for e in equipos if e.router_hijo_id}
+        olts = await self._olts_con_clientes()
 
         def nodo_router(router: RouterModel) -> Dict[str, Any]:
             return {
@@ -418,6 +458,7 @@ class RedInalambricaService:
                 "equipos": [nodo(e) for e in equipos
                             if e.router_id == router.id and not e.troncal and e.padre_id not in ids],
                 "clientes_sin_ap": sin_ap.get(router.id, []),
+                "olts": [o for o in olts if o["router_id"] == router.id],
             }
 
         por_id = {r.id: r for r in routers}
@@ -437,10 +478,10 @@ class RedInalambricaService:
             if router.id in colgados:
                 continue  # se dibuja dentro de su enlace de la troncal
             dato = nodo_router(router)
-            if dato["equipos"] or dato["clientes_sin_ap"]:
+            if dato["equipos"] or dato["clientes_sin_ap"] or dato["olts"]:
                 resultado.append(dato)
         sin_router = [nodo(e) for e in equipos if not e.router_id and not e.troncal and e.padre_id not in ids]
         if sin_router:
             resultado.append({"id": None, "nombre": "Sin MikroTik", "ip": None, "en_linea": None,
-                              "equipos": sin_router, "clientes_sin_ap": sin_ap.get(None, [])})
+                              "equipos": sin_router, "clientes_sin_ap": sin_ap.get(None, []), "olts": []})
         return {"troncal": troncal, "routers": resultado, "tipos": TIPOS, "marcas": MARCAS}
