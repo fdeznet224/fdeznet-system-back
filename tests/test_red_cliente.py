@@ -59,7 +59,8 @@ LAN = {
     "WLANConfiguration": {
         "1": {"SSID": {"_value": "Casa"}, "X_HW_RFBand": {"_value": "2.4GHz"}, "Enable": {"_value": True},
               "KeyPassphrase": {"_value": ""},
-              "AssociatedDevice": {"1": {"AssociatedDeviceMACAddress": {"_value": "7A:49:BF:EF:CE:78"}}}},
+              "AssociatedDevice": {"1": {"AssociatedDeviceMACAddress": {"_value": "7A:49:BF:EF:CE:78"},
+                                         "X_HW_RSSI": {"_value": "-72"}}}},
         "5": {"SSID": {"_value": "Casa"}, "X_HW_RFBand": {"_value": "5GHz"}, "Enable": {"_value": True}},
         "4": {"SSID": {"_value": ""}},
     },
@@ -76,6 +77,8 @@ def test_equipos_con_su_red_y_bloqueados_que_ya_no_aparecen():
         ("aa:aa:aa:aa:aa:aa", False, True),
     ]
     assert lista[0]["red"] == "Casa · 2.4GHz" and lista[1]["conexion"] == "cable"
+    assert (lista[0]["senal_dbm"], lista[0]["calidad_senal"]) == (-72, "débil")
+    assert lista[1]["senal_dbm"] is None
     # Sin la web de la ONU no se sabe quién está bloqueado.
     assert all(e["bloqueado"] is None for e in equipos(LAN, redes, None))
 
@@ -424,3 +427,13 @@ def test_la_x6_10_con_por_ciento_en_su_id_recibe_la_tarea():
 
     assert asyncio.run(correr()) is True
     assert rutas[0].startswith("/devices/00259E-HG8145X6%252D10-48575443AEBB13AD/tasks?")
+
+
+def test_senal_wifi_de_huawei_y_zte():
+    from src.application.services.red_cliente_service import _senal_dbm, calidad_senal
+
+    assert _senal_dbm({"X_HW_RSSI": {"_value": "-48"}}) == -48
+    assert _senal_dbm({"AssociatedDeviceRssi": {"_value": -82}, "X_ZTE-COM_Rssi": {"_value": -70}}) == -82
+    # 0 o sin dato: la ONU no la midió.
+    assert _senal_dbm({"X_HW_RSSI": {"_value": "0"}}) is None and _senal_dbm({}) is None
+    assert [calidad_senal(d) for d in (-50, -65, -75, -85, None)] == ["buena", "regular", "débil", "muy débil", None]

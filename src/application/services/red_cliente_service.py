@@ -39,6 +39,8 @@ RE_CLAVE_WIFI = re.compile(r"^[\x20-\x7e]{8,63}$")
 # Dónde va la contraseña del WiFi: la Huawei V5R020 rechaza KeyPassphrase y solo acepta
 # PreSharedKey.1.KeyPassphrase; si una ONU rechaza el primero, se prueba el otro.
 CAMPOS_CLAVE_WIFI = ("PreSharedKey.1.KeyPassphrase", "KeyPassphrase")
+# Señal del equipo en el WiFi (dBm): Huawei y ZTE (la F670L la repite en sus campos propios).
+CAMPOS_SENAL_WIFI = ("X_HW_RSSI", "AssociatedDeviceRssi", "X_ZTE-COM_Rssi", "X_TELMEX_COM_Rssi")
 MAX_APODO = 40
 # Los parámetros propios de la ZTE llevan el prefijo de su firmware: X_ZTE-COM_ (el de
 # fábrica) o X_TELMEX_COM_ (el de Telmex). La misma ONU pasa de uno a otro si le cambian
@@ -168,8 +170,35 @@ def redes_wifi(lan: Dict[str, Any]) -> List[Dict[str, Any]]:
             "clave": clave or None,
             "macs": [normalizar_mac(_valor(d.get("AssociatedDeviceMACAddress")))
                      for _, d in _instancias(wlan.get("AssociatedDevice")) if _valor(d.get("AssociatedDeviceMACAddress"))],
+            "senales": {normalizar_mac(_valor(d.get("AssociatedDeviceMACAddress"))): senal
+                        for _, d in _instancias(wlan.get("AssociatedDevice"))
+                        if _valor(d.get("AssociatedDeviceMACAddress")) and (senal := _senal_dbm(d)) is not None},
         })
     return redes
+
+
+def _senal_dbm(asociado: Dict[str, Any]) -> Optional[int]:
+    """Con cuánta señal llega el equipo al WiFi (dBm). Huawei: X_HW_RSSI; ZTE: AssociatedDeviceRssi."""
+    for campo in CAMPOS_SENAL_WIFI:
+        try:
+            valor = int(float(_valor(asociado.get(campo))))
+        except (TypeError, ValueError):
+            continue
+        if -100 <= valor < 0:
+            return valor
+    return None
+
+
+def calidad_senal(dbm: Optional[int]) -> Optional[str]:
+    if dbm is None:
+        return None
+    if dbm >= -60:
+        return "buena"
+    if dbm >= -70:
+        return "regular"
+    if dbm >= -80:
+        return "débil"
+    return "muy débil"
 
 
 def equipos(lan: Dict[str, Any], redes: List[Dict[str, Any]], bloqueadas: Optional[set],
@@ -180,6 +209,7 @@ def equipos(lan: Dict[str, Any], redes: List[Dict[str, Any]], bloqueadas: Option
     """
     apodos = apodos or {}
     red_de = {mac: red for red in redes for mac in red["macs"]}
+    senal_de = {mac: dbm for red in redes for mac, dbm in red.get("senales", {}).items()}
     red_por_indice = {red["indice"]: red for red in redes}
     lista, vistas = [], set()
     for _, host in _instancias((lan.get("Hosts") or {}).get("Host")):
@@ -194,12 +224,16 @@ def equipos(lan: Dict[str, Any], redes: List[Dict[str, Any]], bloqueadas: Option
         interfaz = re.search(r"WLANConfiguration\.(\d+)", str(_valor(host.get("Layer2Interface")) or ""))
         # Layer2Interface viene fresco con los equipos; AssociatedDevice puede ser de una lectura vieja del WiFi.
         red = (red_por_indice.get(int(interfaz.group(1))) if interfaz else None) or red_de.get(mac)
+        conexion = "wifi" if "802.11" in str(_valor(host.get("InterfaceType"))) else "cable"
+        senal = senal_de.get(mac) if conexion == "wifi" else None
         lista.append({
             "mac": mac,
             "nombre": _valor(host.get("HostName")) or "",
             "ip": _valor(host.get("IPAddress")) or "",
             "conectado": str(_valor(host.get("Active"))).lower() in ("true", "1"),
-            "conexion": "wifi" if "802.11" in str(_valor(host.get("InterfaceType"))) else "cable",
+            "conexion": conexion,
+            "senal_dbm": senal,
+            "calidad_senal": calidad_senal(senal),
             "red": f"{red['ssid']} · {red['banda']}" if red else None,
             "indice_red": red["indice"] if red else (int(interfaz.group(1)) if interfaz else None),
             "bloqueado": mac in bloqueadas if bloqueadas is not None else None,
@@ -207,7 +241,7 @@ def equipos(lan: Dict[str, Any], redes: List[Dict[str, Any]], bloqueadas: Option
         })
     for mac in sorted((bloqueadas or set()) - vistas):
         lista.append({"mac": mac, "nombre": "", "ip": "", "conectado": False, "conexion": None,
-                      "red": None, "indice_red": None, "bloqueado": True, "apodo": apodos.get(mac)})
+                      "senal_dbm": None, "calidad_senal": None, "red": None, "indice_red": None, "bloqueado": True, "apodo": apodos.get(mac)})
     lista.sort(key=lambda e: (not e["conectado"], not e["bloqueado"], (e["apodo"] or e["nombre"]).lower() or "~", e["mac"]))
     return lista
 
@@ -543,7 +577,18 @@ class RedClienteService:
                 await asyncio.sleep(2)
 
     # ---------------------------------------------------------- lo que ve el admin
-    async def estado(self, cliente_id: int, servicio_id: Optional[int] = None, solo_principal: bool = False) -> Dict[str, Any]:
+    async def en_tr069(self, cliente_id: int) -> bool:
+        """Si el módem del cliente se reporta al ACS (sin pedirle nada a la ONU)."""
+        try:
+            equipo = await self._equipo(cliente_id)
+        except (LookupError, ValueError):
+            return False
+        async with httpx.AsyncClient(base_url=self.nbi, timeout=10) as http:
+            return bool(await self._id_tr069(http, equipo))
+
+    async def estado(self, cliente_id: int, servicio_id: Optional[int] = None, solo_principal: bool = False,
+                     con_senal: bool = False) -> Dict[str, Any]:
+        """`con_senal`: lee también el WiFi (~12 s más) para que la señal de cada equipo sea la de ahora."""
         equipo = await self._equipo(cliente_id, servicio_id)
         async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
             device_id = await self._id_tr069(http, equipo)
@@ -557,7 +602,7 @@ class RedClienteService:
                 al_dia = await self._tarea(http, device_id, {"name": "refreshObject", "objectName": f"{LAN}.Hosts"})
                 documento = await self._leer_lan(http, device_id)
                 lan = ((documento.get("InternetGatewayDevice") or {}).get("LANDevice") or {}).get("1") or {}
-                if al_dia and not redes_wifi(lan):
+                if al_dia and (con_senal or not redes_wifi(lan)):
                     await self._tarea(http, device_id, {"name": "refreshObject", "objectName": f"{LAN}.WLANConfiguration"})
                     documento = await self._leer_lan(http, device_id)
                 firewall = (documento.get("InternetGatewayDevice") or {}).get("Firewall") or {}
@@ -595,7 +640,7 @@ class RedClienteService:
             "al_dia": al_dia,
             "ultimo_reporte": (documento or {}).get("_lastInform"),
             "equipos": [{k: v for k, v in e.items() if k != "indice_red"} for e in lista],
-            "redes": [{k: v for k, v in r.items() if k != "macs"}
+            "redes": [{k: v for k, v in r.items() if k not in ("macs", "senales")}
                       | {"conectados": sum(1 for e in lista if e["conectado"] and e["indice_red"] == r["indice"])} for r in redes],
             "bloqueo_disponible": bloqueadas is not None,
             "error_bloqueo": error_web,

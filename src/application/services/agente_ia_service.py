@@ -78,7 +78,8 @@ PRECIOS = {"entrada": Decimal("0.30"), "cache": Decimal("0.006"), "salida": Deci
 
 CONSULTAS = {
     "registrar_nombre", "identificar_cliente", "elegir_contrato", "consultar_cuenta", "diagnosticar_conexion", "medir_velocidad",
-    "consultar_avisos", "datos_de_pago", "leer_comprobante", "cotizar_adelanto",
+    "consultar_avisos", "datos_de_pago", "leer_comprobante", "cotizar_adelanto", "ver_equipos_conectados",
+    "revisar_cambio_contrasena",
 }
 ACCIONES = {
     "registrar_prospecto", "registrar_promesa", "crear_orden_tecnica", "aplicar_comprobante",
@@ -87,7 +88,17 @@ ACCIONES = {
 REQUIEREN_CLIENTE = {
     "consultar_cuenta", "diagnosticar_conexion", "medir_velocidad", "registrar_promesa",
     "crear_orden_tecnica", "aplicar_comprobante", "solicitar_cambio_contrasena", "cobrar_por_codi",
-    "mandar_qr_codi", "cotizar_adelanto",
+    "mandar_qr_codi", "cotizar_adelanto", "ver_equipos_conectados", "revisar_cambio_contrasena",
+}
+# Qué decirle cuando la contraseña del WiFi no se cambia al momento.
+MOTIVOS_SIN_CAMBIO = {
+    "telefono_no_registrado": "No escribe desde el teléfono registrado en su cuenta: por seguridad la cambia el personal. "
+                              "Dile que queda solicitada y que el personal la aplica y le confirma; no le prometas que es inmediato.",
+    "modem_sin_acceso_remoto": "Su módem (o router) no está conectado al sistema, así que no se puede cambiar desde aquí: "
+                               "la cambia el personal. Dile que queda solicitada y que le avisan cuando quede; no le "
+                               "prometas que es inmediato.",
+    "modem_no_respondio": "Su módem no respondió al cambio: queda en manos del personal. Dile que queda solicitada y que "
+                          "le avisan cuando quede.",
 }
 CATEGORIAS_ORDEN = ("sin_internet", "cable_roto", "potencia_baja", "lentitud", "router_wifi", "cambio_domicilio", "otro")
 RE_COORDENADAS = re.compile(r"(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})")
@@ -189,6 +200,8 @@ HERRAMIENTAS = [
                       "type": "boolean",
                       "description": "true solo si el cliente no identificado confirmó que el pago es para el cliente_sugerido de leer_comprobante",
                   }}, ["revision_id"]),
+    _herramienta("ver_equipos_conectados", "Equipos conectados al módem del cliente identificado (celulares, tele, computadora) y con cuánta señal le llega el WiFi a cada uno. Tarda unos 20 segundos."),
+    _herramienta("revisar_cambio_contrasena", "Antes de pedir la contraseña nueva: dice si al cliente identificado se le puede cambiar la contraseña del WiFi al momento o si la cambia el personal."),
     _herramienta("solicitar_cambio_contrasena", "Cambia la contraseña del WiFi principal del cliente identificado (si no se puede al momento, se la pide al personal).",
                  {"nueva": {"type": "string"}}, ["nueva"]),
     _herramienta("pasar_a_humano", "Pasa la conversación a un asesor y pausa el agente en este chat.",
@@ -1136,14 +1149,32 @@ class _Contexto:
             )
         return {**resultado, "cliente": sugerido.nombre}
 
+    async def _motivo_sin_cambio_al_momento(self) -> str | None:
+        """Por qué la contraseña no se le puede cambiar al momento (None: sí se puede)."""
+        # El contrato va en el nombre del WiFi: cualquiera que vea la red lo sabe. Solo se cambia
+        # al momento si escribe desde el teléfono registrado del cliente; si no, lo verifica el personal.
+        registrado = await self._cliente_del_telefono_registrado()
+        if not (registrado and registrado.cedula == self.cliente.cedula):
+            return "telefono_no_registrado"
+        try:
+            if not await RedClienteService(self.db).en_tr069(self.cliente.id):
+                return "modem_sin_acceso_remoto"
+        except httpx.HTTPError:
+            return "modem_sin_acceso_remoto"
+        return None
+
+    async def _revisar_cambio_contrasena(self) -> dict:
+        motivo = await self._motivo_sin_cambio_al_momento()
+        if motivo is None:
+            return {"al_momento": True, "nota": "Pídele la contraseña nueva; se la cambias tú al momento."}
+        return {"al_momento": False, "motivo": motivo, "nota": MOTIVOS_SIN_CAMBIO[motivo]}
+
     async def _solicitar_cambio_contrasena(self, nueva: str) -> dict:
         nueva = (nueva or "").strip()
         if not RE_CLAVE_WIFI.match(nueva):
             return {"error": "La contraseña debe tener de 8 a 63 caracteres, sin acentos ni ñ."}
-        # El contrato va en el nombre del WiFi: cualquiera que vea la red lo sabe. Solo se cambia
-        # al momento si escribe desde el teléfono registrado del cliente; si no, lo verifica el personal.
-        registrado = await self._cliente_del_telefono_registrado()
-        if registrado and registrado.cedula == self.cliente.cedula:
+        motivo = await self._motivo_sin_cambio_al_momento()
+        if motivo is None:
             try:
                 resultado = await RedClienteService(self.db).cambiar_clave_wifi(
                     self.cliente.id, None, nueva, self.usuario or await self._usuario_sistema(), solo_principal=True,
@@ -1155,9 +1186,38 @@ class _Contexto:
                 }
             except (LookupError, ValueError, httpx.HTTPError) as exc:
                 logger.info("El agente no pudo cambiar el WiFi del cliente %s: %s", self.cliente.id, exc)
-        return await self._crear_orden_tecnica(
+                motivo = "modem_no_respondio"
+        orden = await self._crear_orden_tecnica(
             "router_wifi", f"Cambio de contraseña del WiFi solicitado por el cliente. Nueva contraseña: {nueva}"
         )
+        return {**orden, "cambiada": False, "motivo": motivo, "nota": MOTIVOS_SIN_CAMBIO[motivo]}
+
+    async def _ver_equipos_conectados(self) -> dict:
+        try:
+            estado = await RedClienteService(self.db).estado(self.cliente.id, solo_principal=True, con_senal=True)
+        except (LookupError, ValueError, httpx.HTTPError):
+            estado = {"tr069": False}
+        if not estado.get("tr069"):
+            return {"disponible": False,
+                    "nota": "Su módem no está conectado al sistema y no se pueden ver sus equipos desde aquí. "
+                            "Si se queja de lentitud usa medir_velocidad; si quiere revisarlo, crea una orden router_wifi."}
+        conectados = [e for e in estado["equipos"] if e["conectado"]]
+        return {
+            "disponible": True,
+            "al_momento": bool(estado.get("al_dia")),
+            "total_conectados": len(conectados),
+            "equipos": [{
+                "nombre": e.get("apodo") or e.get("nombre") or "Equipo sin nombre",
+                "conexion": e["conexion"],
+                "red": e.get("red"),
+                "senal_dbm": e.get("senal_dbm"),
+                "calidad_senal": e.get("calidad_senal"),
+            } for e in conectados],
+            "nota": "Díselo en lista corta (nombre, cable o WiFi y la calidad de señal en palabras, no en dBm salvo que la pida). "
+                    "Señal débil o muy débil: acercar el equipo al módem, quitar obstáculos o usar la red de 2.4 GHz si está "
+                    "lejos (la de 5 GHz es más rápida pero llega menos). Si hay equipos que no reconoce, puede cambiar la "
+                    "contraseña. Si al_momento es false, la lista es de la última vez que el módem se reportó.",
+        }
 
     async def _pasar_a_humano(self, motivo: str) -> dict:
         for llave in {self.telefono, self.telefono_busqueda}:

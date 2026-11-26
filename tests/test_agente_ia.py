@@ -919,7 +919,7 @@ def test_cada_orden_del_agente_avisa_a_los_administradores(monkeypatch):
 
     contexto._cliente_del_telefono_registrado = sin_telefono_registrado
     resultado = asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "FdezNet2026"}))
-    assert resultado == {"orden_creada": True, "orden_id": 55}
+    assert resultado["orden_creada"] is True and resultado["orden_id"] == 55
     assert [n for n, _ in enviados] == ["9610000001", "9610000002"]
     assert "#55" in enviados[0][1] and "router wifi" in enviados[0][1] and "FdezNet2026" in enviados[0][1]
 
@@ -1075,12 +1075,19 @@ def test_colonia_sin_zona_se_registra_igual_y_lo_confirma_un_asesor(monkeypatch)
 
 
 # --------------------------------------------------------- contraseña del WiFi
-def _contexto_wifi(monkeypatch, registrado, falla=None):
+def _contexto_wifi(monkeypatch, registrado, falla=None, tr069=True, estado=None):
     cambios = []
 
     class _Red:
         def __init__(self, db):
             pass
+
+        async def en_tr069(self, cliente_id):
+            return tr069
+
+        async def estado(self, cliente_id, servicio_id=None, solo_principal=False, con_senal=False):
+            assert solo_principal and con_senal
+            return estado or {"tr069": False}
 
         async def cambiar_clave_wifi(self, cliente_id, ssid, clave, usuario=None, servicio_id=None, solo_principal=False):
             if falla:
@@ -1121,13 +1128,56 @@ def test_desde_otro_numero_no_se_cambia_y_lo_verifica_el_personal(monkeypatch):
     # El contrato va en el nombre del WiFi: un vecino lo conoce.
     contexto, cambios, enviados = _contexto_wifi(monkeypatch, registrado=None)
     resultado = asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "FdezNet2026"}))
-    assert resultado == {"orden_creada": True, "orden_id": 56}
+    assert resultado["orden_creada"] is True and resultado["orden_id"] == 56
+    assert resultado["cambiada"] is False and resultado["motivo"] == "telefono_no_registrado"
     assert cambios == [] and "FdezNet2026" in enviados[0][1]
 
 
-def test_si_su_modem_no_tiene_tr069_queda_la_orden(monkeypatch):
+def test_si_el_modem_no_responde_queda_la_orden(monkeypatch):
     contexto, _, _ = _contexto_wifi(monkeypatch, registrado=CLIENTE.cedula, falla=ValueError("sin TR-069"))
-    assert asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "FdezNet2026"})) == {"orden_creada": True, "orden_id": 56}
+    resultado = asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "FdezNet2026"}))
+    assert resultado["orden_id"] == 56 and resultado["motivo"] == "modem_no_respondio"
+
+
+def test_modem_sin_tr069_ni_se_intenta_y_lo_cambia_el_personal(monkeypatch):
+    # Clientes de radioenlace: su router no se reporta al ACS.
+    contexto, cambios, _ = _contexto_wifi(monkeypatch, registrado=CLIENTE.cedula, tr069=False)
+    resultado = asyncio.run(contexto.usar("solicitar_cambio_contrasena", {"nueva": "FdezNet2026"}))
+    assert cambios == [] and resultado["orden_id"] == 56 and resultado["motivo"] == "modem_sin_acceso_remoto"
+    assert "personal" in resultado["nota"]
+
+
+def test_antes_de_pedir_la_contrasena_sabe_si_se_cambia_al_momento(monkeypatch):
+    contexto, _, _ = _contexto_wifi(monkeypatch, registrado=CLIENTE.cedula)
+    assert asyncio.run(contexto.usar("revisar_cambio_contrasena", {}))["al_momento"] is True
+    contexto, _, _ = _contexto_wifi(monkeypatch, registrado=CLIENTE.cedula, tr069=False)
+    revision = asyncio.run(contexto.usar("revisar_cambio_contrasena", {}))
+    assert revision["al_momento"] is False and revision["motivo"] == "modem_sin_acceso_remoto"
+    contexto, _, _ = _contexto_wifi(monkeypatch, registrado=None)
+    assert asyncio.run(contexto.usar("revisar_cambio_contrasena", {}))["motivo"] == "telefono_no_registrado"
+
+
+def test_equipos_conectados_con_su_senal(monkeypatch):
+    estado = {"tr069": True, "al_dia": True, "equipos": [
+        {"mac": "a", "nombre": "Galaxy", "apodo": "Celular de Juan", "conectado": True, "conexion": "wifi",
+         "red": "Casa · 5GHz", "senal_dbm": -78, "calidad_senal": "débil", "bloqueado": False},
+        {"mac": "b", "nombre": "PC", "apodo": None, "conectado": True, "conexion": "cable",
+         "red": None, "senal_dbm": None, "calidad_senal": None, "bloqueado": False},
+        {"mac": "c", "nombre": "Tele", "apodo": None, "conectado": False, "conexion": "wifi",
+         "red": "Casa · 2.4GHz", "senal_dbm": None, "calidad_senal": None, "bloqueado": False},
+    ]}
+    contexto, _, _ = _contexto_wifi(monkeypatch, registrado=None, estado=estado)
+    resultado = asyncio.run(contexto.usar("ver_equipos_conectados", {}))
+    assert resultado["total_conectados"] == 2
+    assert resultado["equipos"][0] == {"nombre": "Celular de Juan", "conexion": "wifi", "red": "Casa · 5GHz",
+                                       "senal_dbm": -78, "calidad_senal": "débil"}
+    # Sin la MAC: el agente no la necesita.
+    assert all("mac" not in e for e in resultado["equipos"])
+
+
+def test_equipos_conectados_sin_tr069(monkeypatch):
+    contexto, _, _ = _contexto_wifi(monkeypatch, registrado=None)
+    assert asyncio.run(contexto.usar("ver_equipos_conectados", {}))["disponible"] is False
 
 
 def test_contrasena_wifi_invalida_ni_se_intenta(monkeypatch):
