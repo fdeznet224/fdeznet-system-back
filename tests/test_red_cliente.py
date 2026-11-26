@@ -437,3 +437,46 @@ def test_senal_wifi_de_huawei_y_zte():
     # 0 o sin dato: la ONU no la midió.
     assert _senal_dbm({"X_HW_RSSI": {"_value": "0"}}) is None and _senal_dbm({}) is None
     assert [calidad_senal(d) for d in (-50, -65, -75, -85, None)] == ["buena", "regular", "débil", "muy débil", None]
+
+
+def _estado_con_tareas(**opciones):
+    """estado() con la ONU falsa: devuelve las tareas que se le mandaron y el resultado."""
+    tareas = []
+    servicio = RedClienteService(None, nbi="http://nbi")
+
+    async def equipo(cliente_id, servicio_id=None):
+        return {"identificador": "HWTC1", "modelo": "HG8145V5", "marca": "huawei", "ip": "10.0.0.2", "_onu": None}
+
+    async def id_tr069(http, equipo):
+        return "dev-1"
+
+    async def nada(*args, **kwargs):
+        return None
+
+    async def tarea(http, device_id, datos):
+        tareas.append(datos["objectName"])
+        return True
+
+    async def leer_lan(http, device_id):
+        return {"InternetGatewayDevice": {"LANDevice": {"1": LAN}}}
+
+    async def bloqueadas(equipo):
+        return set()
+
+    async def apodos(cliente_id):
+        return {}
+
+    servicio._equipo, servicio._id_tr069, servicio._marca_por_tr069 = equipo, id_tr069, nada
+    servicio._tarea, servicio._leer_lan, servicio._bloqueadas, servicio.apodos = tarea, leer_lan, bloqueadas, apodos
+    return asyncio.run(servicio.estado(7, **opciones)), tareas
+
+
+def test_la_senal_se_lee_solo_de_los_equipos_de_cada_banda():
+    LANP = "InternetGatewayDevice.LANDevice.1"
+    _, tareas = _estado_con_tareas()
+    assert tareas == [f"{LANP}.Hosts"]
+    # Con señal: los asociados de cada banda de su red (no todo el WiFi, que tarda ~16 s).
+    estado, tareas = _estado_con_tareas(solo_principal=True, con_senal=True)
+    assert tareas == [f"{LANP}.Hosts", f"{LANP}.WLANConfiguration.1.AssociatedDevice",
+                      f"{LANP}.WLANConfiguration.5.AssociatedDevice"]
+    assert estado["equipos"][0]["senal_dbm"] == -72

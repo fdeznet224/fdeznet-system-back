@@ -588,7 +588,7 @@ class RedClienteService:
 
     async def estado(self, cliente_id: int, servicio_id: Optional[int] = None, solo_principal: bool = False,
                      con_senal: bool = False) -> Dict[str, Any]:
-        """`con_senal`: lee también el WiFi (~12 s más) para que la señal de cada equipo sea la de ahora."""
+        """`con_senal`: lee también los equipos de cada red WiFi (~3 s por banda) para que la señal sea la de ahora."""
         equipo = await self._equipo(cliente_id, servicio_id)
         async with httpx.AsyncClient(base_url=self.nbi, timeout=ESPERA_ONU_MS / 1000 + 10) as http:
             device_id = await self._id_tr069(http, equipo)
@@ -602,8 +602,16 @@ class RedClienteService:
                 al_dia = await self._tarea(http, device_id, {"name": "refreshObject", "objectName": f"{LAN}.Hosts"})
                 documento = await self._leer_lan(http, device_id)
                 lan = ((documento.get("InternetGatewayDevice") or {}).get("LANDevice") or {}).get("1") or {}
-                if al_dia and (con_senal or not redes_wifi(lan)):
+                redes = redes_wifi(lan)
+                if al_dia and not redes:
                     await self._tarea(http, device_id, {"name": "refreshObject", "objectName": f"{LAN}.WLANConfiguration"})
+                    documento = await self._leer_lan(http, device_id)
+                elif al_dia and con_senal:
+                    # Solo los equipos asociados de cada banda (unos 3 s cada una; todo el WiFi tarda ~16 s).
+                    suyas = indices_principales(redes) if solo_principal else {r["indice"] for r in redes if r["activa"]}
+                    for indice in sorted(suyas):
+                        await self._tarea(http, device_id, {"name": "refreshObject",
+                                                            "objectName": f"{LAN}.WLANConfiguration.{indice}.AssociatedDevice"})
                     documento = await self._leer_lan(http, device_id)
                 firewall = (documento.get("InternetGatewayDevice") or {}).get("Firewall") or {}
                 if al_dia and equipo["marca"] == "zte" and filtro_mac_zte(firewall)[1] is None:

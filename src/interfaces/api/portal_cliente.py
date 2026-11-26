@@ -197,11 +197,11 @@ async def consumo(mes: str = Query(..., pattern=r"^\d{4}-\d{2}$"), cliente=Depen
 
 
 @router.get("/red")
-async def red(cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
+async def red(senal: bool = Query(False), cliente=Depends(cliente_portal), db: AsyncSession = Depends(get_db)):
     from src.application.services.red_cliente_service import RedClienteService
 
     try:
-        return await RedClienteService(db).estado(cliente.id, solo_principal=True)
+        return await RedClienteService(db).estado(cliente.id, solo_principal=True, con_senal=senal)
     except (LookupError, ValueError, httpx.HTTPError) as error:
         raise _error(error) from error
 

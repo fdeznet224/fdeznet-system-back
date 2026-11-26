@@ -669,14 +669,16 @@ def _error_red(error: Exception) -> HTTPException:
 async def red_cliente(
     cliente_id: int,
     servicio_id: int | None = Query(None),
+    senal: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(role_required(["admin", "supervisor", "tecnico"])),
 ):
-    """Equipos conectados a la ONU del cliente, sus redes WiFi y los equipos bloqueados."""
+    """Equipos conectados a la ONU del cliente, sus redes WiFi y los equipos bloqueados.
+    Con `senal`, además la señal WiFi de cada equipo leída al momento (unos segundos más)."""
     from src.application.services.red_cliente_service import RedClienteService
 
     try:
-        return await RedClienteService(db).estado(cliente_id, servicio_id)
+        return await RedClienteService(db).estado(cliente_id, servicio_id, con_senal=senal)
     except (LookupError, ValueError, httpx.HTTPError) as error:
         raise _error_red(error) from error
 
