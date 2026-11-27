@@ -18,11 +18,15 @@ def _bloque(**cambios):
 def test_modo_router_con_pppoe_por_el_radio_y_administracion_en_la_vlan():
     c = _bloque()
     assert c["netmode"] == "router"
-    assert (c["netconf.1.devname"], c["netconf.1.role"]) == ("ath0", "wan")
+    # PPPoE etiquetado en la VLAN de clientes (10) sobre el radio, como espera el MikroTik.
+    assert (c["netconf.1.devname"], c["netconf.1.role"]) == ("ath0.10", "wan")
+    assert (c["vlan.2.devname"], c["vlan.2.id"]) == ("ath0", "10")
+    assert (c["netconf.4.devname"], c["netconf.4.role"], c["netconf.4.status"]) == ("ath0", "", "enabled")
+    assert c["dhcpc.1.devname"] == "ath0.10"
     assert (c["netconf.2.devname"], c["netconf.2.role"], c["netconf.2.ip"]) == ("eth0", "lan", "192.168.20.1")
     assert (c["netconf.3.devname"], c["netconf.3.role"], c["netconf.3.ip"]) == ("ath0.100", "mlan", "13.13.13.28")
     assert (c["vlan.1.devname"], c["vlan.1.id"]) == ("ath0", "100")
-    assert (c["ppp.1.devname"], c["ppp.1.name"], c["ppp.1.password"]) == ("ath0", "Arisel_Fernandez", "s3creta")
+    assert (c["ppp.1.devname"], c["ppp.1.name"], c["ppp.1.password"]) == ("ath0.10", "Arisel_Fernandez", "s3creta")
     # El Mercusys recibe siempre la .2 y la DMZ le manda el acceso remoto.
     assert c["dhcpd.1.start"] == c["dhcpd.1.end"] == c["iptables.sys.dmz.1.host"] == "192.168.20.2"
     # La administración se bloquea solo por el PPPoE, no por la VLAN.

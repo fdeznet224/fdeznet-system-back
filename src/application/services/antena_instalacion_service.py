@@ -2,7 +2,8 @@
 lo que se mide al instalarla.
 
 La antena queda en modo router (airOS 6 "Router"): el PPPoE del cliente va
-por el radio, la administración en la VLAN <vlan> del radio con la IP del pool
+por el radio etiquetado en la VLAN de clientes (ath0.10, como la antena de
+Ubelia Lopez que dejó el dueño funcionando el 27 nov), la administración en la VLAN <vlan> del radio con la IP del pool
 de antenas, y la LAN (cable) reparte una sola IP al Mercusys, que queda de
 fábrica; la DMZ le manda todo lo que llega al PPPoE (su acceso remoto 8080),
 menos los puertos de la propia antena. Bloque sacado de una LiteBeam M5
@@ -24,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.application.services.pool_antenas_service import PoolAntenasService
 from src.infrastructure.models import ClienteModel, ConfiguracionModel, EquipoRedModel
 
-CLAVES = ("antena_usuario", "antena_clave_hash", "antena_vlan", "antena_lan_ip", "antena_ruta_vpn")
+CLAVES = ("antena_usuario", "antena_clave_hash", "antena_vlan", "antena_vlan_cliente", "antena_lan_ip", "antena_ruta_vpn")
 NOMBRE_MAXIMO = 63
 
 
@@ -57,7 +58,7 @@ EXCEPCIONES_DMZ = (("8", "ICMP"), ("9", "UDP"), ("18888", "TCP"), ("80", "TCP"),
 
 
 def bloque_router(
-    *, vlan: int, ip: str, mascara: str, gateway: str, lan_ip: str, pppoe_usuario: str, pppoe_clave: str,
+    *, vlan: int, ip: str, vlan_cliente: int = 10, mascara: str, gateway: str, lan_ip: str, pppoe_usuario: str, pppoe_clave: str,
     ruta_vpn: ipaddress.IPv4Network, nombre: str, usuario: Optional[str], clave_hash: Optional[str],
 ) -> Dict[str, str]:
     """Claves de system.cfg del modo router (en el orden de airOS)."""
@@ -75,15 +76,24 @@ def bloque_router(
         if promisc:
             c[f"netconf.{n}.promisc"] = "enabled"
 
+    # El PPPoE del cliente va etiquetado en la VLAN de clientes (como lo espera
+    # el MikroTik en vlan-CLIENTES); la administración en la suya.
+    wan = f"ath0.{vlan_cliente}"
     c.update({"netmode": "router", "vlan.status": "enabled", "vlan.1.status": "enabled", "vlan.1.devname": "ath0",
-              "vlan.1.id": str(vlan), "vlan.1.comment": "Administracion", "netconf.status": "enabled"})
-    interfaz(1, "ath0", "wan", "0.0.0.0", "255.255.255.255", True)
+              "vlan.1.id": str(vlan), "vlan.1.comment": "Administracion",
+              "vlan.2.status": "enabled", "vlan.2.devname": "ath0", "vlan.2.id": str(vlan_cliente), "vlan.2.comment": "Cliente",
+              "netconf.status": "enabled"})
+    interfaz(1, wan, "wan", "0.0.0.0", "255.255.255.255", True)
     interfaz(2, "eth0", "lan", str(lan.ip), str(lan.netmask), True)
     c.update({"netconf.2.ip6.1.status": "disabled", "netconf.2.ip6.1.addr": "", "netconf.2.ip6.1.netmask": "64"})
     interfaz(3, f"ath0.{vlan}", "mlan", ip, mascara, False)
+    # El radio solo, encendido y sin rol: debajo de las dos VLAN.
+    c.update({"netconf.4.status": "enabled", "netconf.4.devname": "ath0", "netconf.4.mtu": "1500", "netconf.4.role": "",
+              "netconf.4.autoip.status": "disabled", "netconf.4.hwaddr.status": "disabled", "netconf.4.hwaddr.mac": "",
+              "netconf.4.up": "enabled"})
     c.update({
         "bridge.status": "disabled",
-        "dhcpc.status": "enabled", "dhcpc.1.status": "disabled", "dhcpc.1.devname": "ath0",
+        "dhcpc.status": "enabled", "dhcpc.1.status": "disabled", "dhcpc.1.devname": wan,
         "dhcpc.1.fallback": "192.168.10.1", "dhcpc.1.fallback_netmask": "255.255.255.0",
         "iptables.status": "enabled", "iptables.sys.portfw.status": "disabled",
         "iptables.sys.masq.status": "enabled", "iptables.sys.masq.1.devname": "ppp+", "iptables.sys.masq.1.status": "enabled",
@@ -97,7 +107,7 @@ def bloque_router(
         "iptables.sys.mgmt.1.devname": "ppp+", "iptables.sys.mgmt.1.status": "enabled", "iptables.sys.mgmt.status": "enabled",
         "iptables.sys.status": "enabled", "iptables.sys.tcpmss.status": "enabled",
         "iptables.sys.upnpd.status": "disabled", "iptables.sys.upnpd.devname": "",
-        "ppp.status": "enabled", "ppp.1.devname": "ath0", "ppp.1.name": pppoe_usuario, "ppp.1.password": pppoe_clave,
+        "ppp.status": "enabled", "ppp.1.devname": wan, "ppp.1.name": pppoe_usuario, "ppp.1.password": pppoe_clave,
         "ppp.1.pppoe_service": "", "ppp.1.require.mppe128": "disabled", "ppp.1.mtu": "1492", "ppp.1.mru": "1492",
         "ppp.1.status": "enabled", "ppp.1.fallback": "192.168.10.1", "ppp.1.fallback_netmask": "255.255.255.0",
         "ppp.1.ipv6.status": "disabled", "ppp.1.mru_negotiation": "enabled",
@@ -111,7 +121,7 @@ def bloque_router(
         "dhcpd.1.dns.2.server": "", "dhcpd.1.dns.2.status": "disabled", "dhcpd.1.devname": "eth0",
         "dhcpd.1.start": mercusys, "dhcpd.1.end": mercusys, "dhcpd.1.netmask": str(lan.netmask),
         "dhcpd.1.lease_time": "600", "dhcpd.1.dnsproxy": "enabled",
-        "ebtables.status": "disabled", "ebtables.sys.vlan.status": "disabled", "upnpd.status": "disabled", "upnpd.devname": "",
+        "ebtables.status": "disabled", "ebtables.sys.status": "disabled", "ebtables.sys.vlan.status": "disabled", "upnpd.status": "disabled", "upnpd.devname": "",
         "gui.network.advanced.status": "enabled",
         "unms.status": "disabled",
         "resolv.host.1.name": nombre, "resolv.host.1.status": "enabled",
@@ -139,8 +149,12 @@ async def plantilla_de_cliente(db: AsyncSession, cliente: ClienteModel) -> Dict[
         raise ValueError(f"El pool de antenas {red.nombre} no tiene gateway.")
     config = await config_antenas(db)
     vlan = config.get("antena_vlan") or "100"
-    if not vlan.isdigit() or not 1 <= int(vlan) <= 4094:
-        raise ValueError("La VLAN de administración de antenas no es válida.")
+    vlan_cliente = config.get("antena_vlan_cliente") or "10"
+    for valor in (vlan, vlan_cliente):
+        if not valor.isdigit() or not 1 <= int(valor) <= 4094:
+            raise ValueError("La VLAN de administración o de clientes de las antenas no es válida.")
+    if vlan == vlan_cliente:
+        raise ValueError("La VLAN de administración y la de clientes de las antenas deben ser distintas.")
     try:
         lan_ip = str(ipaddress.ip_address(config.get("antena_lan_ip") or "192.168.20.1"))
         ruta_vpn = ipaddress.ip_network(config.get("antena_ruta_vpn") or "10.8.0.0/24", strict=False)
@@ -154,6 +168,7 @@ async def plantilla_de_cliente(db: AsyncSession, cliente: ClienteModel) -> Dict[
         "mascara": str(network.netmask),
         "gateway": red.gateway,
         "vlan": int(vlan),
+        "vlan_cliente": int(vlan_cliente),
         "lan_ip": lan_ip,
         "nombre": nombre,
         "usuario": usuario,
@@ -161,7 +176,7 @@ async def plantilla_de_cliente(db: AsyncSession, cliente: ClienteModel) -> Dict[
         "pppoe_usuario": cliente.user_pppoe,
         "borrar": list(PREFIJOS_DE_RED),
         "claves": bloque_router(
-            vlan=int(vlan), ip=cliente.ip_antena, mascara=str(network.netmask), gateway=red.gateway, lan_ip=lan_ip,
+            vlan=int(vlan), vlan_cliente=int(vlan_cliente), ip=cliente.ip_antena, mascara=str(network.netmask), gateway=red.gateway, lan_ip=lan_ip,
             pppoe_usuario=cliente.user_pppoe, pppoe_clave=cliente.pass_pppoe, ruta_vpn=ruta_vpn,
             nombre=nombre, usuario=usuario, clave_hash=clave_hash,
         ),
