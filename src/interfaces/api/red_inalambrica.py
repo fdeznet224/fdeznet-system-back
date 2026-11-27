@@ -132,3 +132,28 @@ async def abrir(equipo_id: int, db: AsyncSession = Depends(get_db), _u=Depends(v
         return await RedInalambricaService(db).abrir(equipo_id)
     except Exception as error:
         raise _error(error) from error
+
+
+# ------------------------------------------------- antena de cliente (app del técnico)
+
+@router.get("/antena/instalacion")
+async def plantilla_instalacion_antena(db: AsyncSession = Depends(get_db), _u=Depends(ven)):
+    """Configuración para probar la antena con el PPPoE de instalación (antes del alta)."""
+    from src.application.services.antena_instalacion_service import plantilla_de_instalacion
+
+    try:
+        return await plantilla_de_instalacion(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/antena/instalacion/estado")
+async def estado_instalacion_antena(mac: str, db: AsyncSession = Depends(get_db), _u=Depends(ven)):
+    """¿La antena con esa MAC ya conectó el PPPoE de instalación en algún MikroTik?"""
+    from src.application.services.antena_instalacion_service import sesion_de_instalacion
+
+    try:
+        sesion = await sesion_de_instalacion(db, mac)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"conectado": bool(sesion), "sesion": sesion}

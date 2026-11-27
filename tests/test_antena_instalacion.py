@@ -49,3 +49,16 @@ def test_nombre_de_equipo_sin_caracteres_que_rompen_el_cfg():
     assert nombre_de_equipo("Ana\nLópez=Pérez") == "Ana López Pérez"
     assert len(nombre_de_equipo("x" * 100)) == 63
     assert nombre_de_equipo("  ") == "Cliente"
+
+
+def test_instalacion_sin_administracion_ni_usuario_de_empresa():
+    c = _bloque(ip=None, mascara=None, gateway=None, ruta_vpn=None, usuario=None, clave_hash=None,
+                pppoe_usuario="FdezNet", pppoe_clave="FdezNet224")
+    # Solo la VLAN de clientes y el radio debajo; sin VLAN 100 ni ruta a la VPN.
+    assert (c["vlan.1.id"], c["vlan.1.comment"]) == ("10", "Cliente") and "vlan.2.id" not in c
+    assert (c["netconf.1.devname"], c["netconf.3.devname"], c["netconf.3.role"]) == ("ath0.10", "ath0", "")
+    assert "netconf.4.devname" not in c
+    assert c["route.1.status"] == "disabled"
+    assert (c["ppp.1.devname"], c["ppp.1.name"]) == ("ath0.10", "FdezNet")
+    # La clave de fábrica se queda para que la app vuelva a entrar.
+    assert not any(k.startswith("users.") for k in c)

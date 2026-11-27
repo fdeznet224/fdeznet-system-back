@@ -25,7 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.application.services.pool_antenas_service import PoolAntenasService
 from src.infrastructure.models import ClienteModel, ConfiguracionModel, EquipoRedModel
 
-CLAVES = ("antena_usuario", "antena_clave_hash", "antena_vlan", "antena_vlan_cliente", "antena_lan_ip", "antena_ruta_vpn")
+CLAVES = (
+    "antena_usuario", "antena_clave_hash", "antena_vlan", "antena_vlan_cliente", "antena_lan_ip", "antena_ruta_vpn",
+    "antena_pppoe_instalacion_usuario", "antena_pppoe_instalacion_clave", "antena_pais", "antena_potencia",
+)
 NOMBRE_MAXIMO = 63
 
 
@@ -58,8 +61,9 @@ EXCEPCIONES_DMZ = (("8", "ICMP"), ("9", "UDP"), ("18888", "TCP"), ("80", "TCP"),
 
 
 def bloque_router(
-    *, vlan: int, ip: str, vlan_cliente: int = 10, mascara: str, gateway: str, lan_ip: str, pppoe_usuario: str, pppoe_clave: str,
-    ruta_vpn: ipaddress.IPv4Network, nombre: str, usuario: Optional[str], clave_hash: Optional[str],
+    *, vlan: int, ip: Optional[str], vlan_cliente: int = 10, mascara: Optional[str], gateway: Optional[str], lan_ip: str,
+    pppoe_usuario: str, pppoe_clave: str, ruta_vpn: Optional[ipaddress.IPv4Network], nombre: str,
+    usuario: Optional[str], clave_hash: Optional[str],
 ) -> Dict[str, str]:
     """Claves de system.cfg del modo router (en el orden de airOS)."""
     lan = ipaddress.ip_interface(f"{lan_ip}/24")
@@ -78,19 +82,25 @@ def bloque_router(
 
     # El PPPoE del cliente va etiquetado en la VLAN de clientes (como lo espera
     # el MikroTik en vlan-CLIENTES); la administración en la suya.
+    # Sin IP de administración (antena de instalación, aún sin cliente) no se
+    # crea la VLAN de administración ni la ruta a la VPN.
+    con_admin = bool(ip and mascara)
     wan = f"ath0.{vlan_cliente}"
-    c.update({"netmode": "router", "vlan.status": "enabled", "vlan.1.status": "enabled", "vlan.1.devname": "ath0",
-              "vlan.1.id": str(vlan), "vlan.1.comment": "Administracion",
-              "vlan.2.status": "enabled", "vlan.2.devname": "ath0", "vlan.2.id": str(vlan_cliente), "vlan.2.comment": "Cliente",
-              "netconf.status": "enabled"})
+    vlans = ([(vlan, "Administracion")] if con_admin else []) + [(vlan_cliente, "Cliente")]
+    c.update({"netmode": "router", "vlan.status": "enabled"})
+    for n, (vid, comentario) in enumerate(vlans, start=1):
+        c.update({f"vlan.{n}.status": "enabled", f"vlan.{n}.devname": "ath0", f"vlan.{n}.id": str(vid), f"vlan.{n}.comment": comentario})
+    c["netconf.status"] = "enabled"
     interfaz(1, wan, "wan", "0.0.0.0", "255.255.255.255", True)
     interfaz(2, "eth0", "lan", str(lan.ip), str(lan.netmask), True)
     c.update({"netconf.2.ip6.1.status": "disabled", "netconf.2.ip6.1.addr": "", "netconf.2.ip6.1.netmask": "64"})
-    interfaz(3, f"ath0.{vlan}", "mlan", ip, mascara, False)
-    # El radio solo, encendido y sin rol: debajo de las dos VLAN.
-    c.update({"netconf.4.status": "enabled", "netconf.4.devname": "ath0", "netconf.4.mtu": "1500", "netconf.4.role": "",
-              "netconf.4.autoip.status": "disabled", "netconf.4.hwaddr.status": "disabled", "netconf.4.hwaddr.mac": "",
-              "netconf.4.up": "enabled"})
+    if con_admin:
+        interfaz(3, f"ath0.{vlan}", "mlan", ip, mascara, False)
+    # El radio solo, encendido y sin rol: debajo de las VLAN.
+    r = 4 if con_admin else 3
+    c.update({f"netconf.{r}.status": "enabled", f"netconf.{r}.devname": "ath0", f"netconf.{r}.mtu": "1500", f"netconf.{r}.role": "",
+              f"netconf.{r}.autoip.status": "disabled", f"netconf.{r}.hwaddr.status": "disabled", f"netconf.{r}.hwaddr.mac": "",
+              f"netconf.{r}.up": "enabled"})
     c.update({
         "bridge.status": "disabled",
         "dhcpc.status": "enabled", "dhcpc.1.status": "disabled", "dhcpc.1.devname": wan,
@@ -112,8 +122,8 @@ def bloque_router(
         "ppp.1.status": "enabled", "ppp.1.fallback": "192.168.10.1", "ppp.1.fallback_netmask": "255.255.255.0",
         "ppp.1.ipv6.status": "disabled", "ppp.1.mru_negotiation": "enabled",
         # Por la VLAN de administración se responde a la VPN del sistema; lo demás sale por el PPPoE.
-        "route.status": "enabled", "route.1.ip": str(ruta_vpn.network_address), "route.1.netmask": str(ruta_vpn.netmask),
-        "route.1.gateway": gateway, "route.1.comment": "VPN FdezPay", "route.1.status": "enabled",
+        "route.status": "enabled", "route.1.ip": "", "route.1.netmask": "", "route.1.gateway": "",
+        "route.1.comment": "", "route.1.status": "disabled",
         "route6.status": "enabled", "route6.1.ip": "", "route6.1.netmask": "", "route6.1.gateway": "",
         "route6.1.comment": "", "route6.1.status": "disabled",
         "dnsmasq.status": "enabled", "dnsmasq.1.devname": "eth0", "dnsmasq.1.status": "enabled",
@@ -126,9 +136,77 @@ def bloque_router(
         "unms.status": "disabled",
         "resolv.host.1.name": nombre, "resolv.host.1.status": "enabled",
     })
+    if con_admin and ruta_vpn and gateway:
+        c.update({"route.1.ip": str(ruta_vpn.network_address), "route.1.netmask": str(ruta_vpn.netmask),
+                  "route.1.gateway": gateway, "route.1.comment": "VPN FdezPay", "route.1.status": "enabled"})
     if usuario and clave_hash:
         c.update({"users.status": "enabled", "users.1.status": "enabled", "users.1.name": usuario, "users.1.password": clave_hash})
     return c
+
+
+async def plantilla_de_instalacion(db: AsyncSession) -> Dict[str, Any]:
+    """Para probar la antena antes de dar de alta al cliente (como la ONU de fibra):
+    modo router con el PPPoE de instalación (la cuenta FdezNet de cada MikroTik),
+    sin IP de administración y con la clave de fábrica, para que la app vuelva a
+    entrar y le ponga los datos del cliente al activarlo."""
+    config = await config_antenas(db)
+    usuario = config.get("antena_pppoe_instalacion_usuario") or ""
+    clave = config.get("antena_pppoe_instalacion_clave") or ""
+    if not usuario or not clave:
+        raise ValueError("Falta el PPPoE de instalación de antenas en la configuración.")
+    vlan = config.get("antena_vlan") or "100"
+    vlan_cliente = config.get("antena_vlan_cliente") or "10"
+    lan_ip = str(ipaddress.ip_address(config.get("antena_lan_ip") or "192.168.20.1"))
+    pais = config.get("antena_pais") or "511"
+    potencia = config.get("antena_potencia") or "5"
+    if not pais.isdigit() or not potencia.isdigit():
+        raise ValueError("El país o la potencia de las antenas no son válidos.")
+    return {
+        "pppoe_usuario": usuario,
+        "lan_ip": lan_ip,
+        "pais": pais,
+        "potencia": int(potencia),
+        "borrar": list(PREFIJOS_DE_RED),
+        "claves": bloque_router(
+            vlan=int(vlan), vlan_cliente=int(vlan_cliente), ip=None, mascara=None, gateway=None, lan_ip=lan_ip,
+            pppoe_usuario=usuario, pppoe_clave=clave, ruta_vpn=None, nombre="Instalacion FdezNet",
+            usuario=None, clave_hash=None,
+        ),
+    }
+
+
+def _mac(texto: Any) -> str:
+    return re.sub(r"[^0-9A-F]", "", str(texto or "").upper())
+
+
+async def sesion_de_instalacion(db: AsyncSession, mac: str) -> Optional[Dict[str, Any]]:
+    """¿Hay en algún MikroTik una sesión del PPPoE de instalación con la MAC de esta antena?"""
+    import asyncio
+
+    from src.infrastructure.mikrotik_service import MikroTikService
+    from src.infrastructure.models import RouterModel
+
+    buscada = _mac(mac)
+    if len(buscada) != 12:
+        raise ValueError("MAC de la antena inválida.")
+    usuario = (await config_antenas(db)).get("antena_pppoe_instalacion_usuario") or ""
+    routers = (await db.execute(select(RouterModel))).scalars().all()
+
+    def buscar(router: RouterModel):
+        mk = MikroTikService(router.ip_vpn, router.user_api, router.pass_api, router.port_api)
+        for activa in mk._request("GET", "/ppp/active", None, True) or []:
+            if activa.get("name") == usuario and _mac(activa.get("caller-id")) == buscada:
+                return {"router": router.nombre, "ip": activa.get("address"), "uptime": activa.get("uptime")}
+        return None
+
+    for router in routers:
+        try:
+            encontrada = await asyncio.to_thread(buscar, router)
+        except Exception:
+            continue
+        if encontrada:
+            return encontrada
+    return None
 
 
 async def plantilla_de_cliente(db: AsyncSession, cliente: ClienteModel) -> Dict[str, Any]:
