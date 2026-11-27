@@ -72,7 +72,8 @@ def ips_vistas(
     for item in arp:
         if es_suyo(item):
             continue
-        if str(item.get("complete", "true")).lower() == "false" and not item.get("mac-address"):
+        # Sin MAC la entrada no resolvió (failed/incompleta): nadie usa esa IP.
+        if not item.get("mac-address"):
             continue
         detalle = item.get("comment") or item.get("mac-address") or "?"
         anotar(_ip(item.get("address")), f"Equipo en ARP: {detalle}")

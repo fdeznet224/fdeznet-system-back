@@ -8,6 +8,8 @@ from sqlalchemy import select
 
 # 🔥 1. IMPORTAMOS EL CACHÉ
 from fastapi_cache.decorator import cache
+from pydantic import BaseModel
+from src.application.services.pool_antenas_service import PoolAntenasService
 
 from src.application.services.vpn_service import VPNService 
 from src.domain.schemas import WireguardConfigResponse
@@ -284,7 +286,7 @@ async def ip_del_lease_dhcp(
 
 
 @router.get("/redes/", response_model=List[RedResponse])
-@cache(expire=300) # 🔥 Catálogo de Redes en caché
+# Sin caché: al crear o editar una red (o un pool de antenas) se ve al momento.
 async def listar_todas_las_redes(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(role_required(["admin", "supervisor"])),
@@ -333,13 +335,18 @@ async def eliminar_red(
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/redes/router/{router_id}", response_model=List[RedResponse])
-@cache(expire=300) # 🔥 Lista de redes filtrada en caché
 async def listar_redes_por_router(
     router_id: int,
+    tipo: str = "clientes",
     db: AsyncSession = Depends(get_db),
     current_user=Depends(role_required(["admin", "supervisor"])),
 ):
-    res = await db.execute(select(RedModel).where(RedModel.router_id == router_id))
+    """Redes del MikroTik. Por omisión solo las de clientes (los formularios de
+    alta e importación no deben ofrecer el pool de antenas); tipo=todas las da todas."""
+    consulta = select(RedModel).where(RedModel.router_id == router_id)
+    if tipo != "todas":
+        consulta = consulta.where(RedModel.tipo == tipo)
+    res = await db.execute(consulta)
     return res.scalars().all()
 
 @router.get("/redes/{red_id}/ips-libres", response_model=List[str])
@@ -357,6 +364,9 @@ async def obtener_ips_libres(
     if not red:
         raise HTTPException(404, "Red no encontrada")
     try:
+        if red.tipo == "antenas":
+            libre = await PoolAntenasService(db).siguiente_libre(red)
+            return [libre] if libre else []
         # Sin las que el MikroTik ya usa (casa, site, familiares sin ficha).
         return (await IpUsoService(db).uso_de_red(red))["disponibles"]
     except ValueError as exc:
@@ -378,6 +388,45 @@ async def uso_ips_red(
         raise HTTPException(404, "Red no encontrada")
     try:
         return await IpUsoService(db).uso_de_red(red, excluir_servicio_id=servicio_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/redes/{red_id}/mapa-ips")
+async def mapa_ips_red(
+    red_id: int,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "supervisor"])),
+):
+    """Cada IP del pool de antenas: libre, de qué cliente o equipo, o en uso sin registro."""
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    red = await db.get(RedModel, red_id)
+    if not red:
+        raise HTTPException(404, "Red no encontrada")
+    try:
+        return await PoolAntenasService(db).mapa(red)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class LiberarIpRequest(BaseModel):
+    ip: str
+
+
+@router.post("/redes/{red_id}/liberar")
+async def liberar_ip_red(
+    red_id: int,
+    datos: LiberarIpRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin"])),
+):
+    """Quita la IP de antena a los clientes dados de baja que la conservan."""
+    red = await db.get(RedModel, red_id)
+    if not red:
+        raise HTTPException(404, "Red no encontrada")
+    try:
+        return await PoolAntenasService(db).liberar(red, datos.ip)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

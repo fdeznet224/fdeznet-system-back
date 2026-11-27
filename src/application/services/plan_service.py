@@ -121,7 +121,7 @@ class PlanService:
                 mk = MikroTikService(router.ip_vpn, router.user_api, router.pass_api, router.port_api)
                 rate_limit_completo = self._formatear_velocidad_completa(plan)
 
-                stmt_red = select(RedModel).where(RedModel.router_id == router.id)
+                stmt_red = select(RedModel).where(RedModel.router_id == router.id, RedModel.tipo != "antenas")
                 red_result = await self.db.execute(stmt_red)
                 red = red_result.scalars().first()
 

@@ -127,6 +127,8 @@ class IPAMService:
         ).scalar_one_or_none()
         if not red:
             raise ValueError("Red no encontrada")
+        if getattr(red, "tipo", None) == "antenas":
+            raise ValueError("Esa red es el pool de antenas; elige la red de clientes")
 
         if router_id and red.router_id != router_id:
             raise ValueError(

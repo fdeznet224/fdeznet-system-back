@@ -295,11 +295,29 @@ def _router_de(monkeypatch, modo):
     monkeypatch.setattr(ActivacionService, "_infraestructura", infra)
 
 
+def _pool(monkeypatch, ip=None, ocupada_por=None):
+    """Pool de antenas falso: `ip` = la que daría (None = el MikroTik no tiene pool)."""
+    pedidas = []
+
+    async def asignar(self, router_id, cliente_id=None):
+        pedidas.append(router_id)
+        return ip
+
+    async def ocupada(self, valor, cliente_id=None):
+        return ocupada_por
+
+    monkeypatch.setattr(modulo.PoolAntenasService, "asignar", asignar)
+    monkeypatch.setattr(modulo.PoolAntenasService, "ocupada_por_otro", ocupada)
+    return pedidas
+
+
 def test_antena_en_router_de_ip_fija(monkeypatch):
     db, _orden, llamadas = _escenario(monkeypatch)
     _router_de(monkeypatch, "estatica")
+    _pool(monkeypatch)
 
-    with pytest.raises(ValueError, match="IP de administración de la antena"):
+    # Sin IP escrita y sin pool de antenas en el MikroTik: se pide la IP.
+    with pytest.raises(ValueError, match="no tiene pool de antenas"):
         asyncio.run(ActivacionService(db).activar(40, _datos(tipo_conexion="radio"), TECNICO))
 
     resultado = asyncio.run(ActivacionService(db).activar(40, _datos(
@@ -316,9 +334,30 @@ def test_antena_en_router_de_ip_fija(monkeypatch):
     assert resultado["modo"] == "estatica" and resultado["tipo_conexion"] == "radio"
 
 
+def test_sin_ip_escrita_la_antena_toma_la_siguiente_del_pool(monkeypatch):
+    db, _orden, llamadas = _escenario(monkeypatch)
+    pedidas = _pool(monkeypatch, ip="13.13.13.28")
+
+    resultado = asyncio.run(ActivacionService(db).activar(40, _datos(tipo_conexion="radio"), TECNICO))
+
+    datos, _ = llamadas["registro"]
+    assert pedidas == [3] and datos.ip_antena == "13.13.13.28"
+    assert resultado["tipo_conexion"] == "radio"
+
+
+def test_la_ip_escrita_no_puede_ser_de_otro_cliente(monkeypatch):
+    db, _orden, _llamadas = _escenario(monkeypatch)
+    pedidas = _pool(monkeypatch, ip="13.13.13.28", ocupada_por="Juan Perez")
+
+    with pytest.raises(ValueError, match="ya es de la antena de Juan Perez"):
+        asyncio.run(ActivacionService(db).activar(40, _datos(tipo_conexion="radio", ip_antena="13.13.13.15"), TECNICO))
+    assert pedidas == []
+
+
 def test_dhcp_con_antena_pide_la_mac_de_su_wan(monkeypatch):
     db, _orden, _llamadas = _escenario(monkeypatch)
     _router_de(monkeypatch, "dhcp")
+    _pool(monkeypatch)
     with pytest.raises(ValueError, match="MAC de la WAN de la antena"):
         asyncio.run(ActivacionService(db).activar(40, _datos(
             tipo_conexion="radio", ip_antena="192.168.1.20"), TECNICO))

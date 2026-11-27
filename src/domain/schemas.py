@@ -733,6 +733,17 @@ class RedBase(BaseModel):
     cidr: str
     gateway: Optional[str] = None
     router_id: int
+    # "clientes": IP de los clientes. "antenas": IP de administración de las
+    # antenas de radio (pool que se reparte al activar).
+    tipo: Literal["clientes", "antenas"] = "clientes"
+    ip_inicio: Optional[str] = None
+    ip_fin: Optional[str] = None
+
+    @field_validator("gateway", "ip_inicio", "ip_fin", mode="before")
+    @classmethod
+    def _vacio_es_nulo(cls, value):
+        texto = str(value or "").strip()
+        return texto or None
 
 class RedCreate(RedBase):
     pass

@@ -132,6 +132,11 @@ class RedModel(Base):
     nombre = Column(String(100))
     cidr = Column(String(50)) 
     gateway = Column(String(50))
+    # "clientes" (IP de los clientes) o "antenas" (IP de administración de las
+    # antenas de radio). Con rango, solo se reparte de ip_inicio a ip_fin.
+    tipo = Column(String(20), nullable=False, default="clientes", server_default="clientes")
+    ip_inicio = Column(String(45), nullable=True)
+    ip_fin = Column(String(45), nullable=True)
     router = relationship("RouterModel", back_populates="redes")
     clientes = relationship("ClienteModel", back_populates="red")
 

@@ -30,6 +30,31 @@ from src.utils.mikrotik import (
 # Configurar logger
 logger = logging.getLogger(__name__)
 
+def validar_red(datos: RedCreate) -> None:
+    """CIDR válido; el gateway y el rango (si lo hay) dentro de la red y en orden."""
+    try:
+        red = ipaddress.ip_network(datos.cidr, strict=False)
+    except ValueError:
+        raise ValueError(f"El formato CIDR '{datos.cidr}' no es válido.")
+
+    def dentro(valor, nombre):
+        if not valor:
+            return None
+        try:
+            ip = ipaddress.ip_address(valor)
+        except ValueError:
+            raise ValueError(f"{nombre} '{valor}' no es una IP válida.")
+        if ip not in red:
+            raise ValueError(f"{nombre} {valor} no está dentro de {datos.cidr}.")
+        return ip
+
+    dentro(datos.gateway, "El gateway")
+    inicio = dentro(datos.ip_inicio, "El inicio del rango")
+    fin = dentro(datos.ip_fin, "El fin del rango")
+    if inicio and fin and inicio > fin:
+        raise ValueError("El inicio del rango debe ser menor que el fin.")
+
+
 class NetworkService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -111,12 +136,9 @@ class NetworkService:
         router = await self.db.get(RouterModel, datos.router_id)
         if not router: raise ValueError("El Router especificado no existe.")
 
-        try:
-            ipaddress.ip_network(datos.cidr, strict=False)
-        except ValueError:
-            raise ValueError(f"El formato CIDR '{datos.cidr}' no es válido.")
+        validar_red(datos)
 
-        nueva_red = RedModel(**datos.dict())
+        nueva_red = RedModel(**datos.model_dump())
         self.db.add(nueva_red)
         try:
             await self.db.commit()
@@ -135,15 +157,15 @@ class NetworkService:
              router = await self.db.get(RouterModel, datos.router_id)
              if not router: raise ValueError("El Router especificado no existe.")
 
-        try:
-            ipaddress.ip_network(datos.cidr, strict=False)
-        except ValueError:
-            raise ValueError(f"El formato CIDR '{datos.cidr}' no es válido.")
+        validar_red(datos)
 
         red_db.nombre = datos.nombre
         red_db.cidr = datos.cidr
         red_db.gateway = datos.gateway
         red_db.router_id = datos.router_id
+        red_db.tipo = datos.tipo
+        red_db.ip_inicio = datos.ip_inicio
+        red_db.ip_fin = datos.ip_fin
 
         try:
             await self.db.commit()

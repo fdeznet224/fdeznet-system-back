@@ -129,7 +129,7 @@ async def ip_del_lease(db, router: Any, mac: Optional[str]) -> dict:
     ip = str((lease or {}).get("address") or "").strip()
     if not ip:
         return {"encontrado": False}
-    redes = (await db.execute(select(RedModel).where(RedModel.router_id == router.id))).scalars().all()
+    redes = (await db.execute(select(RedModel).where(RedModel.router_id == router.id, RedModel.tipo != "antenas"))).scalars().all()
     red = None
     for candidata in redes:
         try:

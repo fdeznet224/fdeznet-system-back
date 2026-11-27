@@ -27,6 +27,7 @@ from src.application.services.resumen_cobro import Prorrateo, resumen_cobro
 from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.utils.mikrotik import normalizar_mac
 from src.utils.telefono import telefono_cliente
+from src.application.services.pool_antenas_service import PoolAntenasService
 from src.infrastructure.models import (
     CajaNapModel,
     ClienteModel,
@@ -126,6 +127,31 @@ class ActivacionService:
             raise PermissionError("La solicitud está asignada a otro técnico")
         return orden
 
+    async def _ip_de_antena(self, datos, router: RouterModel, cliente_id: Optional[int]) -> None:
+        """IP de administración de la antena: la que escribió el técnico (si no la
+        tiene otro cliente) o la siguiente libre del pool de antenas del MikroTik."""
+        pool = PoolAntenasService(self.db)
+        escrita = (datos.ip_antena or "").strip()
+        if escrita:
+            otro = await pool.ocupada_por_otro(escrita, cliente_id)
+            if otro:
+                raise ValueError(f"La IP {escrita} ya es de la antena de {otro}. Déjala vacía y el sistema da una libre.")
+            datos.ip_antena = escrita
+            return
+        if cliente_id:
+            # Reintento: el cliente ya tiene la suya.
+            existente = await self.db.get(ClienteModel, cliente_id)
+            if existente and existente.ip_antena:
+                datos.ip_antena = existente.ip_antena
+                return
+        ip = await pool.asignar(router.id, cliente_id)
+        if not ip:
+            raise ValueError(
+                f"El MikroTik {router.nombre} no tiene pool de antenas: escribe la IP de la antena "
+                "o pide al administrador crearlo en Redes."
+            )
+        datos.ip_antena = ip
+
     async def _infraestructura(self, zona: ZonaModel) -> dict:
         router = await self.db.get(RouterModel, zona.router_id) if zona.router_id else None
         olt = await self.db.get(OLTModel, zona.olt_id) if zona.olt_id else None
@@ -137,7 +163,9 @@ class ActivacionService:
         )
         red = (
             (await self.db.execute(
-                select(RedModel).where(RedModel.router_id == router.id).order_by(RedModel.id).limit(1)
+                select(RedModel)
+                .where(RedModel.router_id == router.id, RedModel.tipo != "antenas")
+                .order_by(RedModel.id).limit(1)
             )).scalars().first()
             if router else None
         )
@@ -146,7 +174,8 @@ class ActivacionService:
                 select(CajaNapModel).where(CajaNapModel.zona_id == zona.id).order_by(CajaNapModel.nombre)
             )
         ).scalars().all()
-        return {"router": router, "olt": olt, "planes": planes, "red": red, "naps": naps}
+        pool_antenas = await PoolAntenasService(self.db).pool_de_router(router.id) if router else None
+        return {"router": router, "olt": olt, "planes": planes, "red": red, "naps": naps, "pool_antenas": pool_antenas}
 
     async def catalogo(self, orden_id: int, usuario: UsuarioModel, zona_id: Optional[int] = None) -> dict:
         orden = await self._solicitud(orden_id, usuario)
@@ -198,6 +227,10 @@ class ActivacionService:
                     "olt": {"id": infra["olt"].id, "nombre": infra["olt"].nombre} if infra["olt"] else None,
                     "red": {"id": infra["red"].id, "nombre": infra["red"].nombre, "cidr": infra["red"].cidr}
                     if infra["red"] else None,
+                    # Con pool, la IP de la antena la da el sistema al activar.
+                    "pool_antenas": {"id": infra["pool_antenas"].id, "nombre": infra["pool_antenas"].nombre,
+                                     "cidr": infra["pool_antenas"].cidr}
+                    if infra.get("pool_antenas") else None,
                     "planes": [{"id": p.id, "nombre": p.nombre, "precio": float(p.precio or 0)} for p in infra["planes"]],
                     "naps": [{"id": n.id, "nombre": n.nombre, "capacidad": n.capacidad or 16} for n in infra["naps"]],
                     "plantilla_id": zona.plantilla_id,
@@ -252,8 +285,8 @@ class ActivacionService:
             raise ValueError(
                 "Falta la MAC de la WAN de la antena" if antena else "Falta la MAC WAN/CPE que ve el MikroTik"
             )
-        if antena and not (datos.ip_antena or "").strip():
-            raise ValueError("Falta la IP de administración de la antena")
+        if antena:
+            await self._ip_de_antena(datos, router, orden.cliente_id)
         # Con antena no hay ONU: la OLT de la zona no aplica.
         olt = None if antena else infra["olt"]
         if olt and not datos.onu_id and datos.onu_identificador and not orden.cliente_id:
