@@ -5,8 +5,7 @@ La antena queda en modo router (airOS 6 "Router"): el PPPoE del cliente va
 por el radio, la administración en la VLAN <vlan> del radio con la IP del pool
 de antenas, y la LAN (cable) reparte una sola IP al Mercusys, que queda de
 fábrica; la DMZ le manda todo lo que llega al PPPoE (su acceso remoto 8080),
-menos los puertos de la propia antena, cuya web queda accesible también por
-la IP del PPPoE (sin "Block management access", 27 nov). Bloque sacado de una LiteBeam M5
+menos los puertos de la propia antena. Bloque sacado de una LiteBeam M5
 v6.3.11 configurada desde su web (27 nov 2026).
 
 El usuario y la clave de la empresa van como hash ($1$..., el de airOS), nunca
@@ -95,9 +94,7 @@ def bloque_router(
     c.update({
         "iptables.sys.dmz.1.except.status": "enabled", "iptables.sys.dmz.1.devname": "ppp+",
         "iptables.sys.dmz.1.status": "enabled", "iptables.sys.dmz.1.host": mercusys, "iptables.sys.dmz.status": "enabled",
-        # Administración abierta también por la IP del PPPoE (red interna): la
-        # web de la antena se alcanza remota; la DMZ no toca sus puertos.
-        "iptables.sys.mgmt.1.devname": "ppp+", "iptables.sys.mgmt.1.status": "disabled", "iptables.sys.mgmt.status": "disabled",
+        "iptables.sys.mgmt.1.devname": "ppp+", "iptables.sys.mgmt.1.status": "enabled", "iptables.sys.mgmt.status": "enabled",
         "iptables.sys.status": "enabled", "iptables.sys.tcpmss.status": "enabled",
         "iptables.sys.upnpd.status": "disabled", "iptables.sys.upnpd.devname": "",
         "ppp.status": "enabled", "ppp.1.devname": "ath0", "ppp.1.name": pppoe_usuario, "ppp.1.password": pppoe_clave,
@@ -114,7 +111,7 @@ def bloque_router(
         "dhcpd.1.dns.2.server": "", "dhcpd.1.dns.2.status": "disabled", "dhcpd.1.devname": "eth0",
         "dhcpd.1.start": mercusys, "dhcpd.1.end": mercusys, "dhcpd.1.netmask": str(lan.netmask),
         "dhcpd.1.lease_time": "600", "dhcpd.1.dnsproxy": "enabled",
-        "ebtables.status": "disabled", "ebtables.sys.status": "disabled", "ebtables.sys.vlan.status": "disabled", "upnpd.status": "disabled", "upnpd.devname": "",
+        "ebtables.status": "disabled", "ebtables.sys.vlan.status": "disabled", "upnpd.status": "disabled", "upnpd.devname": "",
         "gui.network.advanced.status": "enabled",
         "unms.status": "disabled",
         "resolv.host.1.name": nombre, "resolv.host.1.status": "enabled",

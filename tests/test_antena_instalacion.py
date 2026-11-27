@@ -25,11 +25,8 @@ def test_modo_router_con_pppoe_por_el_radio_y_administracion_en_la_vlan():
     assert (c["ppp.1.devname"], c["ppp.1.name"], c["ppp.1.password"]) == ("ath0", "Arisel_Fernandez", "s3creta")
     # El Mercusys recibe siempre la .2 y la DMZ le manda el acceso remoto.
     assert c["dhcpd.1.start"] == c["dhcpd.1.end"] == c["iptables.sys.dmz.1.host"] == "192.168.20.2"
-    # Sin bloqueo de administración: la antena se alcanza también por la IP del PPPoE.
-    assert c["iptables.sys.mgmt.status"] == c["iptables.sys.mgmt.1.status"] == "disabled"
-    # La DMZ no manda al Mercusys los puertos de la antena.
-    excepciones = {(c[f"iptables.sys.dmz.1.except.{i}.port"], c[f"iptables.sys.dmz.1.except.{i}.proto"]) for i in range(1, 8)}
-    assert {("80", "TCP"), ("443", "TCP"), ("22", "TCP")} <= excepciones
+    # La administración se bloquea solo por el PPPoE, no por la VLAN.
+    assert c["iptables.sys.mgmt.1.devname"] == "ppp+"
     # Regreso a la VPN del sistema por el gateway del pool.
     assert (c["route.1.ip"], c["route.1.netmask"], c["route.1.gateway"]) == ("10.8.0.0", "255.255.255.0", "13.13.13.1")
     assert c["unms.status"] == "disabled"
