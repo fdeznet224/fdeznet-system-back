@@ -27,6 +27,8 @@ from src.application.services.resumen_cobro import Prorrateo, resumen_cobro
 from src.domain.schemas import ClienteCreate, InstalacionRequest
 from src.utils.mikrotik import normalizar_mac
 from src.utils.telefono import telefono_cliente
+from src.infrastructure.mikrotik_service import MikroTikService
+from src.application.services.antena_instalacion_service import ap_del_sector, plantilla_de_cliente
 from src.application.services.pool_antenas_service import PoolAntenasService
 from src.infrastructure.models import (
     CajaNapModel,
@@ -48,6 +50,19 @@ from src.infrastructure.models import (
 
 ESPERA_SENAL_SEGUNDOS = 20
 logger = logging.getLogger(__name__)
+
+
+class AntenaInstalada(BaseModel):
+    """Lo que mide el asistente de antena al terminar."""
+
+    ssid: str = Field(min_length=1, max_length=100)
+    frecuencia: Optional[str] = Field(default=None, max_length=30)
+    senal: Optional[float] = Field(default=None, ge=-120, le=0)
+    ccq: Optional[float] = Field(default=None, ge=0, le=100)
+    distancia_m: Optional[int] = Field(default=None, ge=0, le=100000)
+    modelo: Optional[str] = Field(default=None, max_length=60)
+    calidad: Optional[str] = Field(default=None, max_length=30)
+    configurada: bool = False
 
 
 class ActivacionTecnicoRequest(BaseModel):
@@ -431,6 +446,7 @@ class ActivacionService:
         await self.db.commit()
 
         return {
+            "orden_id": orden.id,
             "cliente_id": activado.id,
             "contrato": activado.cedula,
             "nombre": activado.nombre,
@@ -438,6 +454,8 @@ class ActivacionService:
             "modo": modo,
             "tipo_conexion": datos.tipo_conexion,
             "ip_antena": getattr(activado, "ip_antena", None),
+            # Antena: lo que la app aplica sin internet en la casa del cliente.
+            "antena": await self._plantilla_o_aviso(activado.id) if antena else None,
             "usuario_pppoe": activado.user_pppoe,
             "password_pppoe": activado.pass_pppoe,
             "ip": activado.ip_asignada,
@@ -447,6 +465,93 @@ class ActivacionService:
             "wifi": wifi,
             "meses_gratis": datos.meses_gratis,
             "cobro": await self._cobro(orden.servicio_id),
+        }
+
+    async def _plantilla_o_aviso(self, cliente_id: int) -> dict:
+        # La activación ya quedó: un problema con la plantilla solo se avisa.
+        try:
+            cliente = await self.db.get(ClienteModel, cliente_id)
+            return {"plantilla": await plantilla_de_cliente(self.db, cliente), "aviso": None}
+        except ValueError as exc:
+            return {"plantilla": None, "aviso": str(exc)}
+        except Exception as exc:
+            logger.warning("No se armó la plantilla de antena del cliente %s: %s", cliente_id, exc)
+            return {"plantilla": None, "aviso": "No se pudo preparar la configuración de la antena; pídela desde el asistente."}
+
+    async def antena_de_orden(self, orden_id: int, usuario: UsuarioModel) -> dict:
+        """Para el asistente: el cliente de la orden y la plantilla de su antena."""
+        orden = await self._solicitud(orden_id, usuario)
+        if not orden.cliente_id:
+            raise ValueError("Primero activa la orden: así se crea el cliente y su IP de antena.")
+        cliente = await self.db.get(ClienteModel, orden.cliente_id)
+        return {
+            "orden_id": orden.id,
+            "cliente_id": cliente.id,
+            "contrato": cliente.cedula,
+            "nombre": cliente.nombre,
+            "usuario_pppoe": cliente.user_pppoe,
+            "password_pppoe": cliente.pass_pppoe,
+            "plantilla": await plantilla_de_cliente(self.db, cliente),
+        }
+
+    async def registrar_antena(self, orden_id: int, datos: "AntenaInstalada", usuario: UsuarioModel) -> dict:
+        """Lo que midió el asistente: sector (AP), señal y calidad; liga al cliente con su AP."""
+        orden = await self._solicitud(orden_id, usuario)
+        if not orden.cliente_id:
+            raise ValueError("La orden no tiene cliente activado.")
+        cliente = await self.db.get(ClienteModel, orden.cliente_id)
+        ap = await ap_del_sector(self.db, cliente.router_id, datos.ssid, datos.frecuencia)
+        if ap:
+            cliente.equipo_red_id = ap.id
+        if datos.senal is not None:
+            cliente.antena_senal = datos.senal
+        resumen = (
+            f"Antena {datos.modelo or ''} en {ap.nombre if ap else datos.ssid} ({datos.ssid}): "
+            f"{datos.senal} dBm, CCQ {datos.ccq if datos.ccq is not None else '—'}%, "
+            f"distancia {datos.distancia_m if datos.distancia_m is not None else '—'} m, calidad {datos.calidad or '—'}"
+            + (" · configurada por la app" if datos.configurada else " · SIN configurar por la app")
+        ).replace("  ", " ")
+        self.db.add(
+            HistorialEstadoOrdenModel(
+                orden_id=orden.id, usuario_id=usuario.id, estado_anterior=orden.estado,
+                estado_nuevo=orden.estado, comentario=resumen[:500],
+            )
+        )
+        await self.db.commit()
+        return {"ap": {"id": ap.id, "nombre": ap.nombre} if ap else None, "resumen": resumen}
+
+    async def estado_antena(self, orden_id: int, usuario: UsuarioModel) -> dict:
+        """Después de configurar la antena: ¿su PPPoE ya conectó y responde en su IP?"""
+        orden = await self._solicitud(orden_id, usuario)
+        if not orden.cliente_id:
+            raise ValueError("La orden no tiene cliente activado.")
+        cliente = await self.db.get(ClienteModel, orden.cliente_id)
+        router = await self.db.get(RouterModel, cliente.router_id) if cliente.router_id else None
+        if not router:
+            raise ValueError("El cliente no tiene MikroTik.")
+        mk = MikroTikService(router.ip_vpn, router.user_api, router.pass_api, router.port_api)
+
+        def sesion():
+            activos = mk._request("GET", "/ppp/active", None, True) or []
+            return next((a for a in activos if a.get("name") == cliente.user_pppoe), None)
+
+        try:
+            activa = await asyncio.to_thread(sesion)
+        except Exception as exc:
+            logger.warning("No se leyó el PPPoE de %s: %s", cliente.user_pppoe, exc)
+            activa = None
+        antena = None
+        if cliente.ip_antena:
+            from src.application.services.antena_service import AntenaService
+
+            try:
+                antena = await AntenaService(self.db).verificar(cliente.id)
+            except Exception as exc:
+                antena = {"responde": False, "error": str(exc)[:200]}
+        return {
+            "pppoe": {"conectado": bool(activa), "ip": (activa or {}).get("address"), "mac": (activa or {}).get("caller-id")},
+            "antena": antena,
+            "ip_antena": cliente.ip_antena,
         }
 
     async def _cobro(self, servicio_id: Optional[int]) -> Optional[dict]:

@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.application.services.activacion_service import ActivacionService, ActivacionTecnicoRequest
+from src.application.services.activacion_service import ActivacionService, ActivacionTecnicoRequest, AntenaInstalada
 from src.application.services import chat_orden_service as chat_orden
 from src.application.services.client_service import ClientService
 from src.application.services.orden_service import OrdenService
@@ -575,6 +575,47 @@ async def activar_solicitud(
         return await ActivacionService(db).activar(orden_id, datos, current_user)
     except (ValueError, PermissionError, RuntimeError) as error:
         await db.rollback()
+        manejar_error(error)
+
+
+@router.get("/{orden_id}/antena")
+async def antena_de_la_orden(
+    orden_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "tecnico"])),
+):
+    """Plantilla de la antena del cliente de la orden (la app la aplica sin internet)."""
+    try:
+        return await ActivacionService(db).antena_de_orden(orden_id, current_user)
+    except (ValueError, PermissionError, RuntimeError) as error:
+        manejar_error(error)
+
+
+@router.post("/{orden_id}/antena")
+async def registrar_antena_de_la_orden(
+    orden_id: int,
+    datos: AntenaInstalada,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "tecnico"])),
+):
+    """Sector, señal y calidad que midió el asistente; liga al cliente con su AP."""
+    try:
+        return await ActivacionService(db).registrar_antena(orden_id, datos, current_user)
+    except (ValueError, PermissionError, RuntimeError) as error:
+        await db.rollback()
+        manejar_error(error)
+
+
+@router.get("/{orden_id}/antena/estado")
+async def estado_antena_de_la_orden(
+    orden_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(role_required(["admin", "tecnico"])),
+):
+    """¿Ya conectó el PPPoE del cliente y responde su antena en la IP del pool?"""
+    try:
+        return await ActivacionService(db).estado_antena(orden_id, current_user)
+    except (ValueError, PermissionError, RuntimeError) as error:
         manejar_error(error)
 
 
