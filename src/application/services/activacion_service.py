@@ -132,11 +132,14 @@ class ActivacionService:
     def __init__(self, db):
         self.db = db
 
-    async def _solicitud(self, orden_id: int, usuario: UsuarioModel) -> OrdenServicioModel:
+    async def _solicitud(self, orden_id: int, usuario: UsuarioModel, permitir_cerrada: bool = False) -> OrdenServicioModel:
+        """La orden de instalación del técnico. Activarla la cierra; los pasos de
+        la antena (datos del cliente, su PPPoE, registro) siguen después: esos
+        pasan `permitir_cerrada`."""
         orden = await OrdenService(self.db).obtener(orden_id, usuario)
         if orden.tipo != "instalacion":
             raise ValueError("La orden no es una instalación")
-        if orden.estado in ESTADOS_TERMINALES:
+        if orden.estado in ESTADOS_TERMINALES and not (permitir_cerrada and orden.cliente_id):
             raise ValueError("La solicitud ya está cerrada")
         if usuario.rol == "tecnico" and orden.tecnico_id != usuario.id:
             raise PermissionError("La solicitud está asignada a otro técnico")
@@ -480,7 +483,7 @@ class ActivacionService:
 
     async def antena_de_orden(self, orden_id: int, usuario: UsuarioModel) -> dict:
         """Para el asistente: el cliente de la orden y la plantilla de su antena."""
-        orden = await self._solicitud(orden_id, usuario)
+        orden = await self._solicitud(orden_id, usuario, permitir_cerrada=True)
         if not orden.cliente_id:
             raise ValueError("Primero activa la orden: así se crea el cliente y su IP de antena.")
         cliente = await self.db.get(ClienteModel, orden.cliente_id)
@@ -496,7 +499,7 @@ class ActivacionService:
 
     async def registrar_antena(self, orden_id: int, datos: "AntenaInstalada", usuario: UsuarioModel) -> dict:
         """Lo que midió el asistente: sector (AP), señal y calidad; liga al cliente con su AP."""
-        orden = await self._solicitud(orden_id, usuario)
+        orden = await self._solicitud(orden_id, usuario, permitir_cerrada=True)
         if not orden.cliente_id:
             raise ValueError("La orden no tiene cliente activado.")
         cliente = await self.db.get(ClienteModel, orden.cliente_id)
@@ -522,7 +525,7 @@ class ActivacionService:
 
     async def estado_antena(self, orden_id: int, usuario: UsuarioModel) -> dict:
         """Después de configurar la antena: ¿su PPPoE ya conectó y responde en su IP?"""
-        orden = await self._solicitud(orden_id, usuario)
+        orden = await self._solicitud(orden_id, usuario, permitir_cerrada=True)
         if not orden.cliente_id:
             raise ValueError("La orden no tiene cliente activado.")
         cliente = await self.db.get(ClienteModel, orden.cliente_id)
