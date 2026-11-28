@@ -329,8 +329,11 @@ def test_antena_en_router_de_ip_fija(monkeypatch):
     assert datos.mac_address == "AA:BB:CC:DD:EE:01"
     _cliente, activacion, _ = llamadas["activacion"]
     assert activacion.onu_id is None and activacion.olt_id is None
-    # Una antena no se configura sola por TR-069.
-    assert "onu_automatica" not in llamadas and resultado["wifi"] is None
+    # Una antena no se configura sola por TR-069, pero el Mercusys recibe un WiFi
+    # listo (nombre con el contrato y 8 números) que va en la bienvenida.
+    assert "onu_automatica" not in llamadas
+    assert resultado["wifi"]["red"].endswith("A7F2") and len(resultado["wifi"]["clave"]) == 8
+    assert resultado["wifi"]["automatica"] is False and llamadas["bienvenida"][1] == resultado["wifi"]
     assert resultado["modo"] == "estatica" and resultado["tipo_conexion"] == "radio"
 
 

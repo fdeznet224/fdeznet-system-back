@@ -426,6 +426,12 @@ class ActivacionService:
             await AprovisionamientoOnuService(self.db).programar(activado.id)
             if modo == "pppoe" and not antena else None
         )
+        if antena:
+            # El Mercusys del cliente va de fábrica: se le da un WiFi listo (como en
+            # fibra) para no esperar a que el cliente invente una contraseña.
+            from src.application.services.aprovisionamiento_onu_service import clave_wifi_nueva, ssid_para
+
+            wifi = {"red": ssid_para(activado.cedula), "clave": clave_wifi_nueva(), "automatica": False}
         # Una sola bienvenida con el WiFi: la que se configura sola la manda al quedar lista.
         if not (wifi and wifi["automatica"]):
             await self._bienvenida(activado.id, wifi)
