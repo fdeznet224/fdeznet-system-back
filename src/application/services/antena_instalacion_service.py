@@ -28,6 +28,7 @@ from src.infrastructure.models import ClienteModel, ConfiguracionModel, EquipoRe
 CLAVES = (
     "antena_usuario", "antena_clave_hash", "antena_vlan", "antena_vlan_cliente", "antena_lan_ip", "antena_ruta_vpn",
     "antena_pppoe_instalacion_usuario", "antena_pppoe_instalacion_clave", "antena_pais", "antena_potencia",
+    "antena_clave",
 )
 NOMBRE_MAXIMO = 63
 
@@ -161,11 +162,19 @@ async def plantilla_de_instalacion(db: AsyncSession) -> Dict[str, Any]:
     potencia = config.get("antena_potencia") or "5"
     if not pais.isdigit() or not potencia.isdigit():
         raise ValueError("El país o la potencia de las antenas no son válidos.")
+    # Usuario de la empresa para todas las antenas de clientes (el dueño y los
+    # técnicos entran igual que a las de Flores Magón): la app lo pone en cuanto
+    # entra a una antena de fábrica y con él vuelve a entrar en cada paso.
+    acceso_usuario = config.get("antena_usuario") or ""
+    acceso_clave = config.get("antena_clave") or ""
+    acceso_hash = config.get("antena_clave_hash") or ""
     return {
         "pppoe_usuario": usuario,
         "lan_ip": lan_ip,
         "pais": pais,
         "potencia": int(potencia),
+        "acceso": {"usuario": acceso_usuario, "clave": acceso_clave, "clave_hash": acceso_hash}
+        if acceso_usuario and acceso_clave and acceso_hash else None,
         "borrar": list(PREFIJOS_DE_RED),
         "claves": bloque_router(
             vlan=int(vlan), vlan_cliente=int(vlan_cliente), ip=None, mascara=None, gateway=None, lan_ip=lan_ip,
